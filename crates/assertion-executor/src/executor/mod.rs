@@ -25,7 +25,11 @@ use crate::{
         AssertionExecutionError,
         ExecutorError,
     },
-    evm::build_evm::evm_env,
+    evm::build_evm::{
+        EthCtx,
+        OpCtx,
+        evm_env,
+    },
     inspectors::{
         CallTracer,
         LogsAndTraces,
@@ -59,6 +63,7 @@ use crate::{
 use revm::{
     Database,
     InspectEvm,
+    Inspector,
 };
 
 use rayon::{
@@ -119,6 +124,23 @@ pub struct ExecuteForkedTxResult {
     pub result_and_state: ResultAndState,
 }
 
+pub trait AssertionExtraInspector<Active>: Clone + Send + Sync
+where
+    Active: DatabaseRef + Sync + Send + Clone,
+    for<'db> Self: Inspector<EthCtx<'db, MultiForkDb<ForkDb<Active>>>>,
+    for<'db> Self: Inspector<OpCtx<'db, MultiForkDb<ForkDb<Active>>>>,
+{
+}
+
+impl<Active, T> AssertionExtraInspector<Active> for T
+where
+    Active: DatabaseRef + Sync + Send + Clone,
+    for<'db> T: Inspector<EthCtx<'db, MultiForkDb<ForkDb<Active>>>>,
+    for<'db> T: Inspector<OpCtx<'db, MultiForkDb<ForkDb<Active>>>>,
+    T: Clone + Send + Sync,
+{
+}
+
 impl AssertionExecutor {
     /// Executes a transaction against an external revm database, and runs the appropriate
     /// assertions.
@@ -165,6 +187,115 @@ impl AssertionExecutor {
 
         let results = self
             .execute_assertions(block_env, tx_fork_db, &forked_tx_result)
+            .map_err(|e| {
+                ExecutorError::AssertionExecutionError(
+                    forked_tx_result.result_and_state.state.clone(),
+                    e,
+                )
+            })?;
+
+        if results.is_empty() {
+            debug!(target: "assertion-executor::validate_tx", "No assertions were executed");
+            trace!(target: "assertion-executor::validate_tx", "Comitting state changes to fork db");
+            fork_db.commit(forked_tx_result.result_and_state.state.clone());
+            return Ok(TxValidationResult::new(
+                true,
+                forked_tx_result.result_and_state,
+                vec![],
+            ));
+        }
+
+        let invalid_assertions: Vec<AssertionFnId> = results
+            .iter()
+            .filter(|a| {
+                !a.assertion_fns_results
+                    .iter()
+                    .all(AssertionFunctionResult::is_success)
+            })
+            .flat_map(|a| a.assertion_fns_results.iter().map(|r| r.id))
+            .collect::<Vec<_>>();
+
+        let valid = invalid_assertions.is_empty();
+
+        if valid {
+            debug!(
+                target: "assertion-executor::validate_tx",
+                gas_used = results.iter().map(|a| a.total_assertion_gas).sum::<u64>(),
+                assertions_ran = results.iter().map(|a| a.total_assertion_funcs_ran).sum::<u64>(),
+                "Tx validated"
+            );
+            fork_db.commit(forked_tx_result.result_and_state.state.clone());
+        } else {
+            warn!(
+                target: "assertion-executor::validate_tx",
+                gas_used = results.iter().map(|a| a.total_assertion_gas).sum::<u64>(), assertions_ran = results.iter().map(|a| a.total_assertion_funcs_ran).sum::<u64>(),
+                ?invalid_assertions,
+                "Tx invalidated by assertions"
+            );
+            debug!(
+                target: "assertion-executor::validate_tx",
+                tx_env = ?tx_env,
+                result_and_state = ?forked_tx_result.result_and_state,
+                "Tx invalidated by assertions details"
+            );
+        }
+
+        Ok(TxValidationResult::new(
+            valid,
+            forked_tx_result.result_and_state,
+            results,
+        ))
+    }
+
+    /// Executes a transaction against an external revm database, and runs the appropriate
+    /// assertions using an additional inspector during assertion execution.
+    #[instrument(level = "debug", skip_all, target = "executor::validate_tx")]
+    pub fn validate_transaction_ext_db_with_inspector<ExtDb, Active, Extra, InspectorFactory, InspectorHandler>(
+        &mut self,
+        block_env: BlockEnv,
+        tx_env: &TxEnv,
+        fork_db: &mut ForkDb<Active>,
+        external_db: &mut ExtDb,
+        inspector_factory: &InspectorFactory,
+        inspector_handler: &InspectorHandler,
+    ) -> Result<
+        TxValidationResult,
+        ExecutorError<<Active as DatabaseRef>::Error, <ExtDb as Database>::Error>,
+    >
+    where
+        ExtDb: Database + Sync + Send,
+        ExtDb::Error: Send,
+        Active: DatabaseRef + Sync + Send + Clone,
+        Active::Error: Send,
+        Extra: AssertionExtraInspector<Active>,
+        InspectorFactory: Fn() -> Extra + Sync + Send,
+        InspectorHandler: Fn(Extra) + Sync + Send,
+    {
+        let tx_fork_db = fork_db.clone();
+
+        let forked_tx_result = self
+            .execute_forked_tx_ext_db::<ExtDb>(&block_env, tx_env.clone(), external_db)
+            .map_err(ExecutorError::ForkTxExecutionError)?;
+
+        let exec_result = &forked_tx_result.result_and_state.result;
+        if !exec_result.is_success() {
+            debug!(target: "assertion-executor::validate_tx", "Transaction execution failed, skipping assertions");
+            return Ok(TxValidationResult::new(
+                true,
+                forked_tx_result.result_and_state,
+                vec![],
+            ));
+        }
+        debug!(target: "assertion-executor::validate_tx", gas_used=exec_result.gas_used(), "Transaction execution succeeded.");
+
+        let results = self
+            .execute_assertions_with(
+                block_env,
+                tx_fork_db,
+                &forked_tx_result,
+                inspector_factory,
+                inspector_handler,
+            )
             .map_err(|e| {
                 ExecutorError::AssertionExecutionError(
                     forked_tx_result.result_and_state.state.clone(),
@@ -291,6 +422,79 @@ impl AssertionExecutor {
         results
     }
 
+    fn execute_assertions_with<Active, Extra, InspectorFactory, InspectorHandler>(
+        &self,
+        block_env: BlockEnv,
+        tx_fork_db: ForkDb<Active>,
+        forked_tx_result: &ExecuteForkedTxResult,
+        inspector_factory: &InspectorFactory,
+        inspector_handler: &InspectorHandler,
+    ) -> Result<
+        Vec<AssertionContractExecution>,
+        AssertionExecutionError<<Active as DatabaseRef>::Error>,
+    >
+    where
+        Active: DatabaseRef + Sync + Send + Clone,
+        Active::Error: Send,
+        Extra: AssertionExtraInspector<Active>,
+        InspectorFactory: Fn() -> Extra + Sync + Send,
+        InspectorHandler: Fn(Extra) + Sync + Send,
+    {
+        let ExecuteForkedTxResult {
+            call_tracer,
+            result_and_state,
+        } = forked_tx_result;
+        let logs_and_traces = LogsAndTraces {
+            tx_logs: result_and_state.result.logs(),
+            call_traces: call_tracer,
+        };
+
+        let assertions = self
+            .store
+            .read(logs_and_traces.call_traces, U256::from(block_env.number))
+            .map_err(AssertionExecutionError::AssertionReadError)?;
+
+        if assertions.is_empty() {
+            return Ok(vec![]);
+        }
+
+        debug!(
+            target: "assertion-executor::execute_assertions",
+            assertion_contract_count = assertions.len(),
+            "Retrieved Assertion contracts from Assertion store"
+        );
+
+        let results: Result<
+            Vec<AssertionContractExecution>,
+            AssertionExecutionError<<Active as DatabaseRef>::Error>,
+        > = assertion_executor_pool().install(|| {
+            assertions
+                .into_par_iter()
+                .map(
+                    move |assertion_for_execution| -> Result<
+                        AssertionContractExecution,
+                        AssertionExecutionError<<Active as DatabaseRef>::Error>,
+                    > {
+                        let phevm_context =
+                            PhEvmContext::new(&logs_and_traces, assertion_for_execution.adopter);
+
+                        self.run_assertion_contract_with(
+                            &assertion_for_execution.assertion_contract,
+                            &assertion_for_execution.selectors,
+                            &block_env,
+                            tx_fork_db.clone(),
+                            &phevm_context,
+                            inspector_factory,
+                            inspector_handler,
+                        )
+                    },
+                )
+                .collect()
+        });
+        debug!(target: "assertion-executor::execute_assertions", ?results, "Assertion Execution Results");
+        results
+    }
+
     #[instrument(
         skip_all,
         fields(assertion_id=%assertion_contract.id),
@@ -345,6 +549,96 @@ impl AssertionExecutor {
                                 assertions_ran: &assertions_ran,
                                 inspector: inspector.clone(),
                             })
+                        },
+                    )
+                    .collect::<Vec<
+                        Result<
+                            AssertionFunctionResult,
+                            AssertionExecutionError<<Active as DatabaseRef>::Error>,
+                        >,
+                    >>()
+            })
+        });
+
+        trace!(target: "assertion-executor::execute_assertions", execution_results=?results_vec.iter().map(|result| format!("{result:?}")).collect::<Vec<_>>(), "Assertion Execution Results");
+        let mut valid_results = vec![];
+        for result in results_vec {
+            valid_results.push(result?);
+        }
+
+        let rax = AssertionContractExecution {
+            adopter: context.adopter,
+            assertion_fns_results: valid_results,
+            total_assertion_gas: assertion_gas.into_inner(),
+            total_assertion_funcs_ran: assertions_ran.into_inner(),
+        };
+
+        Ok(rax)
+    }
+
+    #[instrument(
+        skip_all,
+        fields(assertion_id=%assertion_contract.id),
+        level = "debug",
+        target = "assertion-executor::execute_assertions"
+    )]
+    fn run_assertion_contract_with<Active, Extra, InspectorFactory, InspectorHandler>(
+        &self,
+        assertion_contract: &AssertionContract,
+        fn_selectors: &[FixedBytes<4>],
+        block_env: &BlockEnv,
+        mut tx_fork_db: ForkDb<Active>,
+        context: &PhEvmContext,
+        inspector_factory: &InspectorFactory,
+        inspector_handler: &InspectorHandler,
+    ) -> Result<AssertionContractExecution, AssertionExecutionError<<Active as DatabaseRef>::Error>>
+    where
+        Active: DatabaseRef + Sync + Send + Clone,
+        Active::Error: Send,
+        Extra: AssertionExtraInspector<Active>,
+        InspectorFactory: Fn() -> Extra + Sync + Send,
+        InspectorHandler: Fn(Extra) + Sync + Send,
+    {
+        let AssertionContract { id, .. } = assertion_contract;
+
+        trace!(
+            target: "assertion-executor::execute_assertions",
+            assertion_contract_id = ?id,
+            selector_count = fn_selectors.len(),
+            selectors = ?fn_selectors.iter().map(|s| format!("{s:x?}")).collect::<Vec<_>>(),
+            "Executing assertion contract"
+        );
+
+        self.insert_persistent_accounts(assertion_contract, &mut tx_fork_db);
+        let multi_fork_db = MultiForkDb::new(tx_fork_db, context.post_tx_journal());
+
+        let inspector = PhEvmInspector::new(context.clone());
+        let assertion_gas = AtomicU64::new(0);
+        let assertions_ran = AtomicU64::new(0);
+
+        let current_span = tracing::Span::current();
+        let results_vec = current_span.in_scope(|| {
+            assertion_executor_pool().install(|| {
+                fn_selectors
+                    .into_par_iter()
+                    .map(
+                        |fn_selector: &FixedBytes<4>| -> Result<
+                            AssertionFunctionResult,
+                            AssertionExecutionError<<Active as DatabaseRef>::Error>,
+                        > {
+                            self.execute_assertion_fn_with::<Active, Extra, _, _>(
+                                AssertionExecutionParams {
+                                    assertion_contract,
+                                    fn_selector,
+                                    block_env: block_env.clone(),
+                                    multi_fork_db: multi_fork_db.clone(),
+                                    assertion_gas: &assertion_gas,
+                                    assertions_ran: &assertions_ran,
+                                    inspector: inspector.clone(),
+                                },
+                                inspector_factory,
+                                inspector_handler,
+                            )
                         },
                     )
                     .collect::<Vec<
@@ -435,6 +729,82 @@ impl AssertionExecutor {
             },
             result: AssertionFunctionExecutionResult::AssertionExecutionResult(result),
             console_logs: evm.inspector.context.console_logs.clone(),
+        })
+    }
+
+    #[instrument(
+        skip_all,
+        level = "debug",
+        target = "assertion-executor::execute_assertions"
+    )]
+    fn execute_assertion_fn_with<Active, Extra, InspectorFactory, InspectorHandler>(
+        &self,
+        params: AssertionExecutionParams<'_, Active>,
+        inspector_factory: &InspectorFactory,
+        inspector_handler: &InspectorHandler,
+    ) -> Result<AssertionFunctionResult, AssertionExecutionError<<Active as DatabaseRef>::Error>>
+    where
+        Active: DatabaseRef + Sync + Send + Clone,
+        Extra: AssertionExtraInspector<Active>,
+        InspectorFactory: Fn() -> Extra + Sync + Send,
+        InspectorHandler: Fn(Extra) + Sync + Send,
+    {
+        let AssertionExecutionParams {
+            assertion_contract,
+            fn_selector,
+            block_env,
+            mut multi_fork_db,
+            assertion_gas,
+            assertions_ran,
+            inspector,
+        } = params;
+
+        let tx_env = TxEnv {
+            kind: TxKind::Call(ASSERTION_CONTRACT),
+            caller: CALLER,
+            data: (*fn_selector).into(),
+            gas_limit: self.config.assertion_gas_limit,
+            gas_price: block_env.basefee.into(),
+            nonce: 42,
+            chain_id: Some(self.config.chain_id),
+            ..Default::default()
+        };
+        let env = evm_env(self.config.chain_id, self.config.spec_id, block_env.clone());
+
+        let extra_inspector = inspector_factory();
+        let mut evm = crate::build_evm_by_features!(
+            &mut multi_fork_db,
+            &env,
+            (extra_inspector, inspector)
+        );
+        let tx_env = crate::wrap_tx_env_for_optimism!(tx_env);
+
+        reprice_evm_storage!(evm);
+
+        let result_and_state = evm.inspect_tx(tx_env);
+
+        let result = result_and_state
+            .map(|result_and_state| result_and_state.result)
+            .map_err(|e| {
+                warn!(target: "assertion-executor::execute_assertions", error = ?e, "Evm error executing assertions");
+                e
+            })
+            .map_err(AssertionExecutionError::AssertionExecutionError)?;
+
+        let (extra_inspector, inspector) = evm.into_inspector();
+        inspector_handler(extra_inspector);
+
+        assertion_gas.fetch_add(result.gas_used(), std::sync::atomic::Ordering::Relaxed);
+        assertions_ran.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+        trace!(target: "assertion-executor::execute_assertions", ?result, "Assertion execution result and state");
+        Ok(AssertionFunctionResult {
+            id: AssertionFnId {
+                fn_selector: *fn_selector,
+                assertion_contract_id: assertion_contract.id,
+            },
+            result: AssertionFunctionExecutionResult::AssertionExecutionResult(result),
+            console_logs: inspector.context.console_logs.clone(),
         })
     }
 
@@ -704,14 +1074,23 @@ mod test {
             Output,
             SuccessReason,
         },
+        interpreter::Interpreter,
         database::{
             CacheDB,
             EmptyDBTyped,
         },
+        Inspector,
     };
     use std::{
         collections::HashMap,
         convert::Infallible,
+        sync::{
+            Arc,
+            atomic::{
+                AtomicUsize,
+                Ordering,
+            },
+        },
     };
 
     // Define a concrete error type for tests if needed, or use Infallible
@@ -721,6 +1100,29 @@ mod test {
     type TestDB = OverlayDb<CacheDB<EmptyDBTyped<TestDbError>>>;
     // Define the Fork DB type alias used in tests
     type TestForkDB = ForkDb<TestDB>;
+
+    #[derive(Clone)]
+    struct CountingInspector {
+        hits: Arc<AtomicUsize>,
+    }
+
+    impl CountingInspector {
+        fn new(hits: Arc<AtomicUsize>) -> Self {
+            Self { hits }
+        }
+    }
+
+    impl<'db> Inspector<EthCtx<'db, MultiForkDb<ForkDb<TestDB>>>> for CountingInspector {
+        fn step(&mut self, _interp: &mut Interpreter, _context: &mut EthCtx<'db, MultiForkDb<ForkDb<TestDB>>>) {
+            self.hits.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    impl<'db> Inspector<OpCtx<'db, MultiForkDb<ForkDb<TestDB>>>> for CountingInspector {
+        fn step(&mut self, _interp: &mut Interpreter, _context: &mut OpCtx<'db, MultiForkDb<ForkDb<TestDB>>>) {
+            self.hits.fetch_add(1, Ordering::Relaxed);
+        }
+    }
 
     #[tokio::test]
     async fn test_deploy_assertion_contract() {
@@ -987,5 +1389,73 @@ mod test {
 
         // Check original TestDB via executor.db
         assert_eq!(test_db.basic_ref(ASSERTION_CONTRACT).unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn test_validate_tx_with_extra_inspector() {
+        let test_db: TestDB = OverlayDb::<CacheDB<EmptyDBTyped<TestDbError>>>::new_test();
+        let mut mock_db = MockDb::new();
+        mock_db.insert_account(COUNTER_ADDRESS, counter_acct_info());
+
+        let assertion_store = AssertionStore::new_ephemeral();
+        let assertion_bytecode = bytecode(SIMPLE_ASSERTION_COUNTER);
+        assertion_store
+            .insert(COUNTER_ADDRESS, AssertionState::new_test(&assertion_bytecode))
+            .unwrap();
+
+        let config = ExecutorConfig::default();
+        let mut executor = AssertionExecutor::new(config.clone(), assertion_store);
+
+        let basefee = 10;
+        let block_env = BlockEnv {
+            number: U256::from(1),
+            basefee,
+            ..Default::default()
+        };
+
+        let tx = TxEnv {
+            gas_price: basefee.into(),
+            ..counter_call()
+        };
+
+        mock_db.insert_account(
+            tx.caller,
+            AccountInfo {
+                balance: U256::MAX,
+                ..Default::default()
+            },
+        );
+
+        let mut fork_db: TestForkDB = test_db.fork();
+
+        let hits = Arc::new(AtomicUsize::new(0));
+        let handled = Arc::new(AtomicUsize::new(0));
+
+        let inspector_factory = {
+            let hits = hits.clone();
+            move || CountingInspector::new(hits.clone())
+        };
+        let inspector_handler = {
+            let handled = handled.clone();
+            move |_inspector: CountingInspector| {
+                handled.fetch_add(1, Ordering::Relaxed);
+            }
+        };
+
+        let result = executor
+            .validate_transaction_ext_db_with_inspector::<_, _, _, _, _>(
+                block_env,
+                &tx,
+                &mut fork_db,
+                &mut mock_db,
+                &inspector_factory,
+                &inspector_handler,
+            )
+            .unwrap();
+
+        let funcs_ran = result.total_assertion_funcs_ran();
+        assert!(funcs_ran > 0);
+        assert_eq!(handled.load(Ordering::Relaxed) as u64, funcs_ran);
+        assert!(hits.load(Ordering::Relaxed) > 0);
     }
 }
