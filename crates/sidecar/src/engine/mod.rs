@@ -112,6 +112,13 @@ use assertion_executor::{
 };
 use revm::state::EvmState;
 
+#[derive(Debug)]
+struct FailedAssertionLog {
+    adopter: assertion_executor::primitives::Address,
+    assertion_id: assertion_executor::primitives::B256,
+    fn_selector: assertion_executor::primitives::FixedBytes<4>,
+}
+
 use crate::{
     cache::Sources,
     engine::system_calls::SystemCallError,
@@ -583,9 +590,35 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 self.block_metrics.transactions_simulated_failure += 1;
             }
         } else {
+            let failed_assertions: Vec<_> = rax
+                .assertions_executions
+                .iter()
+                .flat_map(|assertion_execution| {
+                    assertion_execution
+                        .assertion_fns_results
+                        .iter()
+                        .filter(|fn_result| !fn_result.is_success())
+                        .map(move |fn_result| {
+                            FailedAssertionLog {
+                                adopter: assertion_execution.adopter,
+                                assertion_id: fn_result.id.assertion_contract_id,
+                                fn_selector: fn_result.id.fn_selector,
+                            }
+                        })
+                })
+                .collect();
+
+            let span = tracing::Span::current();
+            span.record("assertion_failure_count", failed_assertions.len());
+            span.record(
+                "failed_assertions",
+                tracing::field::debug(&failed_assertions),
+            );
+
             warn!(
                 target = "engine",
                 tx_hash = %tx_hash,
+                failed_assertions = ?failed_assertions,
                 "Transaction failed assertion validation"
             );
 
@@ -655,8 +688,11 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         skip(self, tx_env),
         fields(
             tx_execution_id = %tx_execution_id.to_json_string(),
+            tx_hash = %tx_execution_id.tx_hash,
             caller = %tx_env.caller,
-            gas_limit = tx_env.gas_limit
+            gas_limit = tx_env.gas_limit,
+            failed_assertions = tracing::field::Empty,
+            assertion_failure_count = tracing::field::Empty
         ),
         level = "debug"
     )]
