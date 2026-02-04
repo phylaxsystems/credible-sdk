@@ -428,7 +428,7 @@ impl CallTracer {
         result
     }
 
-        /// Test helper to set checkpoints for the last inserted call record.
+    /// Test helper to set checkpoints for the last inserted call record.
     #[cfg(any(test, feature = "test"))]
     pub fn set_last_call_checkpoints(
         &mut self,
