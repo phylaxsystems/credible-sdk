@@ -1308,7 +1308,7 @@ mod tests {
         // Engine would call record_invalidating when !is_valid
         let decoded_tx_env = decode_tx_env(&pb_tx_env_1).unwrap();
         let content_hash = tx_content_hash(&decoded_tx_env);
-        content_hash_cache.record_invalidating(content_hash, 100);
+        content_hash_cache.record_invalidating(content_hash);
 
         // Verify content hash is now in cache
         assert!(

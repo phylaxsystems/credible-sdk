@@ -547,9 +547,11 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         Ok(())
     }
 
-    /// Takes a transaction validation result and dispatches metrics according
-    /// to it.
-    fn trace_execute_transaction_result(
+    /// Records the outcome of transaction validation, updating metrics and logging results.
+    ///
+    /// Increments `invalidated_transactions` for failed assertions, or
+    /// `transactions_simulated_success`/`transactions_simulated_failure` for valid transactions.
+    fn record_validation_outcome(
         &mut self,
         tx_execution_id: TxExecutionId,
         tx_env: &TxEnv,
@@ -612,6 +614,58 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             );
 
             self.block_metrics.invalidated_transactions += 1;
+        }
+    }
+
+    /// Records execution metrics for a transaction, handling dedup suppression.
+    ///
+    /// When `suppress` is true (dedup cache hit for invalid tx), only logs a warning
+    /// and increments the skip counter. Otherwise, records full metrics and traces.
+    fn record_execution_metrics(
+        &mut self,
+        tx_execution_id: TxExecutionId,
+        tx_env: &TxEnv,
+        rax: &TxValidationResult,
+        content_hash: B256,
+        processing_duration: std::time::Duration,
+        suppress: bool,
+    ) {
+        if suppress {
+            let assertion_ids: Vec<_> = rax
+                .assertions_executions
+                .iter()
+                .flat_map(|assertion_execution| {
+                    assertion_execution
+                        .assertion_fns_results
+                        .iter()
+                        .filter(|fn_result| !fn_result.is_success())
+                        .map(|fn_result| fn_result.id.assertion_contract_id)
+                })
+                .collect();
+
+            warn!(
+                target = "engine",
+                tx_hash = %tx_execution_id.tx_hash,
+                content_hash = ?content_hash,
+                assertion_ids = ?assertion_ids,
+                "Transaction failed assertion validation (dedup cache hit; metrics/reporting suppressed)"
+            );
+            counter!("sidecar_dedup_transactions_skipped_total").increment(1);
+        } else {
+            let assertions_ran = rax.total_assertion_funcs_ran();
+            let assertions_gas = rax.total_assertions_gas();
+
+            self.block_metrics.assertions_per_block += assertions_ran;
+            self.block_metrics.assertion_gas_per_block += assertions_gas;
+            self.block_metrics.transactions_simulated += 1;
+
+            let mut tx_metrics = TransactionMetrics::new();
+            tx_metrics.transaction_processing_duration = processing_duration;
+            tx_metrics.assertions_per_transaction = assertions_ran;
+            tx_metrics.assertion_gas_per_transaction = assertions_gas;
+            tx_metrics.commit();
+
+            self.record_validation_outcome(tx_execution_id, tx_env, rax, processing_duration);
         }
     }
 
@@ -748,9 +802,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 self.invalidating_tx_cache.remove(content_hash);
             }
         } else {
-            let block_number = tx_execution_id.block_number.saturating_to::<u64>();
-            self.invalidating_tx_cache
-                .record_invalidating(content_hash, block_number);
+            self.invalidating_tx_cache.record_invalidating(content_hash);
         }
 
         let suppress_metrics_and_reporting = is_dedup && !is_valid;
@@ -760,50 +812,14 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             None
         };
 
-        if suppress_metrics_and_reporting {
-            let assertion_ids: Vec<_> = rax
-                .assertions_executions
-                .iter()
-                .flat_map(|assertion_execution| {
-                    assertion_execution
-                        .assertion_fns_results
-                        .iter()
-                        .filter(|fn_result| !fn_result.is_success())
-                        .map(|fn_result| fn_result.id.assertion_contract_id)
-                })
-                .collect();
-
-            warn!(
-                target = "engine",
-                tx_hash = %tx_execution_id.tx_hash,
-                content_hash = ?content_hash,
-                assertion_ids = ?assertion_ids,
-                "Transaction failed assertion validation (dedup cache hit; metrics/reporting suppressed)"
-            );
-            counter!("sidecar_dedup_transactions_skipped_total").increment(1);
-        } else {
-            // Batch metric updates
-            let assertions_ran = rax.total_assertion_funcs_ran();
-            let assertions_gas = rax.total_assertions_gas();
-
-            self.block_metrics.assertions_per_block += assertions_ran;
-            self.block_metrics.assertion_gas_per_block += assertions_gas;
-            self.block_metrics.transactions_simulated += 1;
-
-            // Commit transaction metrics
-            let mut tx_metrics = TransactionMetrics::new();
-            tx_metrics.transaction_processing_duration = processing_duration;
-            tx_metrics.assertions_per_transaction = assertions_ran;
-            tx_metrics.assertion_gas_per_transaction = assertions_gas;
-            tx_metrics.commit();
-
-            self.trace_execute_transaction_result(
-                tx_execution_id,
-                tx_env,
-                &rax,
-                processing_duration,
-            );
-        }
+        self.record_execution_metrics(
+            tx_execution_id,
+            tx_env,
+            &rax,
+            content_hash,
+            processing_duration,
+            suppress_metrics_and_reporting,
+        );
 
         let tx_data: ReconstructableTx = (tx_execution_id.tx_hash, tx_env.clone());
         if !suppress_metrics_and_reporting {

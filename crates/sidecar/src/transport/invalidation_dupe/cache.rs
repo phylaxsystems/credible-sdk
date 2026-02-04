@@ -11,7 +11,7 @@ const TTL: Duration = Duration::from_secs(600);
 
 /// Inner state for `ContentHashCache`, wrapped in Arc for cheap cloning.
 struct ContentHashCacheInner {
-    moka: Cache<B256, u64>,
+    moka: Cache<B256, ()>,
     enabled: bool,
 }
 
@@ -80,7 +80,7 @@ impl ContentHashCache {
     /// Record a hash as invalidating, inserting into the cache.
     ///
     /// Only increments the insert counter if this is a new entry (not already in cache).
-    pub fn record_invalidating(&self, hash: B256, block: u64) {
+    pub fn record_invalidating(&self, hash: B256) {
         if !self.inner.enabled {
             return;
         }
@@ -88,7 +88,7 @@ impl ContentHashCache {
         if self.inner.moka.get(&hash).is_none() {
             counter!("sidecar_dedup_content_hash_inserts_total").increment(1);
         }
-        self.inner.moka.insert(hash, block);
+        self.inner.moka.insert(hash, ());
     }
 
     /// Remove a hash from the cache (used when a previously invalid tx later validates).
@@ -115,7 +115,7 @@ mod tests {
     fn record_then_contains_returns_true() {
         let cache = ContentHashCache::new(1000);
         let hash = B256::from([0xbb; 32]);
-        cache.record_invalidating(hash, 10);
+        cache.record_invalidating(hash);
         assert!(cache.contains(hash));
     }
 
@@ -124,7 +124,7 @@ mod tests {
         let cache = ContentHashCache::disabled();
         let hash = B256::from([0xcc; 32]);
         assert!(!cache.contains(hash));
-        cache.record_invalidating(hash, 10);
+        cache.record_invalidating(hash);
         assert!(!cache.contains(hash));
     }
 
@@ -132,7 +132,7 @@ mod tests {
     fn remove_clears_hash() {
         let cache = ContentHashCache::new(1000);
         let hash = B256::from([0xab; 32]);
-        cache.record_invalidating(hash, 1);
+        cache.record_invalidating(hash);
         assert!(cache.contains(hash));
 
         cache.remove(hash);
@@ -145,17 +145,17 @@ mod tests {
         let hash = B256::from([0xdd; 32]);
 
         // First record
-        cache.record_invalidating(hash, 10);
+        cache.record_invalidating(hash);
         assert!(cache.contains(hash));
 
         // Re-record same hash (should not change behavior)
-        cache.record_invalidating(hash, 20);
+        cache.record_invalidating(hash);
         assert!(cache.contains(hash));
 
         // Cache still works for other hashes
         let hash2 = B256::from([0xee; 32]);
         assert!(!cache.contains(hash2));
-        cache.record_invalidating(hash2, 30);
+        cache.record_invalidating(hash2);
         assert!(cache.contains(hash2));
     }
 
@@ -172,7 +172,7 @@ mod tests {
                         bytes[0] = thread_id;
                         bytes[1] = i;
                         let hash = B256::from(bytes);
-                        cache.record_invalidating(hash, u64::from(i));
+                        cache.record_invalidating(hash);
                         let _ = cache.contains(hash);
                     }
                 })
