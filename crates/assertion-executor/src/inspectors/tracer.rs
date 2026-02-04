@@ -57,6 +57,8 @@ pub struct CallTracer {
     assertion_store: Option<AssertionStore>,
     /// Cache adopter lookups to avoid repeated sled hits per address
     adopter_cache: HashMap<Address, bool>,
+    // Records assertion triggers
+    // triggers: HashMap<Address, HashSet<TriggerType>>,
     pub journal: JournalInner<JournalEntry>,
     /// Stack of call indices awaiting `post_call_checkpoint`, indexed by depth.
     /// Uses Vec instead of `HashMap` since calls follow strict stack discipline (LIFO).
