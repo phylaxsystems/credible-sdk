@@ -627,8 +627,8 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             );
 
             // Only count if not already cached (avoid duplicate noise on re-execution)
-            let cached = self.assertion_failure_cache.get(&tx_hash).is_none();
-            if cached {
+            let not_cached = self.assertion_failure_cache.get(&tx_hash).is_none();
+            if not_cached {
                 self.block_metrics.invalidated_transactions += 1;
                 self.assertion_failure_cache.insert(tx_hash, ());
             }
@@ -637,7 +637,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 target = "engine",
                 tx_hash = %tx_hash,
                 failed_assertions = ?failed_assertions,
-                seen_previously = cached,
+                not_seen = not_cached,
                 "Transaction failed assertion validation"
             );
         }
@@ -771,7 +771,11 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         let assertions_gas = rax.total_assertions_gas();
 
         // Only count assertion metrics if TX not already cached (failed assertion dedup)
-        if self.assertion_failure_cache.get(&tx_execution_id.tx_hash).is_none() {
+        if self
+            .assertion_failure_cache
+            .get(&tx_execution_id.tx_hash)
+            .is_none()
+        {
             self.block_metrics.assertions_per_block += assertions_ran;
             self.block_metrics.assertion_gas_per_block += assertions_gas;
         }
