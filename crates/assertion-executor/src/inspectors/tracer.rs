@@ -49,7 +49,10 @@ pub enum CallTracerError {
 
 #[derive(Clone, Debug)]
 pub struct CallTracer {
-    /// All call records, consolidating inputs, checkpoints, and indexing data.
+    /// All call records, consolidating call inputs, checkpoints, and indexing data.
+    ///
+    /// Each `CallRecord` contains the call inputs (with bytes coerced to avoid `SharedBuffer` issues),
+    /// the (target, selector) key for indexing, position for O(1) truncation, and journal checkpoints.
     call_records: Vec<CallRecord>,
     /// Assertion store, we limit call input recording to AAs when present.
     ///
@@ -64,7 +67,9 @@ pub struct CallTracer {
     /// Uses Vec instead of `HashMap` since calls follow strict stack discipline (LIFO).
     /// Push on `call_start`, pop on `call_end`.
     pending_post_call_writes: Vec<usize>,
+    /// Maps (target, selector) keys to indices in `call_records` for fast lookup.
     pub target_and_selector_indices: HashMap<TargetAndSelector, Vec<usize>>,
+    /// Result of call tracing operations. Check after tracing to detect errors.
     pub result: Result<(), CallTracerError>,
 }
 
