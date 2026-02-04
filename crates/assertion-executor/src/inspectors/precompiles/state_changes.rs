@@ -220,11 +220,13 @@ mod test {
             tx_logs: &[],
             call_traces: &call_tracer,
         };
+        let tx_env = crate::primitives::TxEnv::default();
 
         let context = PhEvmContext {
             logs_and_traces: &logs_and_traces,
             adopter: Address::ZERO,
             console_logs: vec![],
+            original_tx_env: &tx_env,
         };
         f(&context)
     }

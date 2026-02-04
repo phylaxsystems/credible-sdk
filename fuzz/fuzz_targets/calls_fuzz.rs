@@ -198,7 +198,8 @@ fuzz_target!(|data: &[u8]| {
         tx_logs: log_array,
         call_traces: &call_tracer,
     };
-    let context = PhEvmContext::new(&logs_traces, params.target);
+    let default_tx_env = revm::primitives::TxEnv::default();
+    let context = PhEvmContext::new(&logs_traces, params.target, &default_tx_env);
 
     // Modify the call_inputs to include the selector in the expected position
     // in the input data for get_call_inputs

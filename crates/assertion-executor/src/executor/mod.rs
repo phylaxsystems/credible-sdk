@@ -164,7 +164,7 @@ impl AssertionExecutor {
         debug!(target: "assertion-executor::validate_tx", gas_used=exec_result.gas_used(), "Transaction execution succeeded.");
 
         let results = self
-            .execute_assertions(block_env, tx_fork_db, &forked_tx_result)
+            .execute_assertions(block_env, tx_fork_db, &forked_tx_result, tx_env)
             .map_err(|e| {
                 ExecutorError::AssertionExecutionError(
                     forked_tx_result.result_and_state.state.clone(),
@@ -230,6 +230,7 @@ impl AssertionExecutor {
         block_env: BlockEnv,
         tx_fork_db: ForkDb<Active>,
         forked_tx_result: &ExecuteForkedTxResult,
+        tx_env: &TxEnv,
     ) -> Result<
         Vec<AssertionContractExecution>,
         AssertionExecutionError<<Active as DatabaseRef>::Error>,
@@ -274,7 +275,7 @@ impl AssertionExecutor {
                         AssertionExecutionError<<Active as DatabaseRef>::Error>,
                     > {
                         let phevm_context =
-                            PhEvmContext::new(&logs_and_traces, assertion_for_execution.adopter);
+                            PhEvmContext::new(&logs_and_traces, assertion_for_execution.adopter, tx_env);
 
                         self.run_assertion_contract(
                             &assertion_for_execution.assertion_contract,
@@ -469,7 +470,7 @@ impl AssertionExecutor {
         }
 
         let results = self
-            .execute_assertions(block_env, tx_fork_db, &forked_tx_result)
+            .execute_assertions(block_env, tx_fork_db, &forked_tx_result, tx_env)
             .map_err(|e| {
                 ExecutorError::AssertionExecutionError(
                     forked_tx_result.result_and_state.state.clone(),
@@ -822,7 +823,7 @@ mod test {
         };
 
         let results = executor
-            .execute_assertions(block_env, fork_db, &forked_tx_result)
+            .execute_assertions(block_env, fork_db, &forked_tx_result, &TxEnv::default())
             .expect("assertion execution should succeed");
 
         assert!(!results.is_empty());

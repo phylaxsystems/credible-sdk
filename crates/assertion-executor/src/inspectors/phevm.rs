@@ -44,6 +44,7 @@ use crate::{
         Journal,
         JournalEntry,
         JournalInner,
+        TxEnv,
     },
 };
 
@@ -111,14 +112,16 @@ pub struct PhEvmContext<'a> {
     pub logs_and_traces: &'a LogsAndTraces<'a>,
     pub adopter: Address,
     pub console_logs: Vec<String>,
+    pub original_tx_env: &'a TxEnv,
 }
 
 impl<'a> PhEvmContext<'a> {
-    pub fn new(logs_and_traces: &'a LogsAndTraces<'a>, adopter: Address) -> Self {
+    pub fn new(logs_and_traces: &'a LogsAndTraces<'a>, adopter: Address, tx_env: &'a TxEnv) -> Self {
         Self {
             logs_and_traces,
             adopter,
             console_logs: vec![],
+            original_tx_env: tx_env,
         }
     }
 
