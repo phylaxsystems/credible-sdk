@@ -303,7 +303,7 @@ impl CallTracer {
                     .iter()
                     .map(|&index| {
                         CallInputsWithId {
-                            call_input: &self.call_records[index].inputs,
+                            call_input: self.call_records[index].inputs(),
                             id: index,
                         }
                     })
@@ -447,17 +447,41 @@ impl CallTracer {
 /// A record of a single call in the call stack.
 #[derive(Clone, Debug)]
 pub struct CallRecord {
-    /// The call inputs for this call.
-    pub inputs: CallInputs,
+    /// Not public to prevent inserting `CallInputs` with `CallInput::SharedBuffer`.
+    /// `SharedBuffer` references context that may not exist when reading later.
+    /// Bytes are coerced at recording time via `record_call_start`.
+    inputs: CallInputs,
     /// The (target, selector) key used for indexing this call.
-    pub target_and_selector: TargetAndSelector,
+    target_and_selector: TargetAndSelector,
     /// Index within the key's Vec in `target_and_selector_indices`.
     /// Enables O(1) truncation on reverts.
-    pub key_index: usize,
+    key_index: usize,
     /// Journal checkpoint at the start of the call.
-    pub pre_call_checkpoint: JournalCheckpoint,
+    pre_call_checkpoint: JournalCheckpoint,
     /// Journal checkpoint at the end of the call, None until `call_end`.
-    pub post_call_checkpoint: Option<JournalCheckpoint>,
+    post_call_checkpoint: Option<JournalCheckpoint>,
+}
+
+impl CallRecord {
+    /// Returns the call inputs for this call.
+    pub fn inputs(&self) -> &CallInputs {
+        &self.inputs
+    }
+
+    /// Returns the (target, selector) key for this call.
+    pub fn target_and_selector(&self) -> &TargetAndSelector {
+        &self.target_and_selector
+    }
+
+    /// Returns the journal checkpoint at the start of the call.
+    pub fn pre_call_checkpoint(&self) -> JournalCheckpoint {
+        self.pre_call_checkpoint
+    }
+
+    /// Returns the journal checkpoint at the end of the call, or None if the call hasn't ended.
+    pub fn post_call_checkpoint(&self) -> Option<JournalCheckpoint> {
+        self.post_call_checkpoint
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -635,7 +659,7 @@ mod test {
         // Verify call was recorded
         assert_eq!(evm.inspector.call_records().len(), 1);
         assert_eq!(
-            evm.inspector.call_records()[0].pre_call_checkpoint,
+            evm.inspector.call_records()[0].pre_call_checkpoint(),
             JournalCheckpoint {
                 log_i: 0,
                 journal_i: 0,
@@ -643,7 +667,7 @@ mod test {
         );
         assert!(
             evm.inspector.call_records()[0]
-                .post_call_checkpoint
+                .post_call_checkpoint()
                 .is_none()
         ); // Should be None before call_end
 
@@ -671,11 +695,11 @@ mod test {
         // Verify call end was recorded
         assert!(
             evm.inspector.call_records()[0]
-                .post_call_checkpoint
+                .post_call_checkpoint()
                 .is_some()
         ); // Should now have a checkpoint
         assert_eq!(
-            evm.inspector.call_records()[0].post_call_checkpoint,
+            evm.inspector.call_records()[0].post_call_checkpoint(),
             Some(JournalCheckpoint {
                 log_i: 0,
                 journal_i: 3,
