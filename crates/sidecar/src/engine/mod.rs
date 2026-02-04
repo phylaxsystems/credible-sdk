@@ -183,8 +183,8 @@ type ProcessedBlocksCache = Arc<moka::sync::Cache<u64, BlockTxStateMap>>;
 /// Timeout for recv - threads will check for the shutdown flag at this interval
 const RECV_TIMEOUT: Duration = Duration::from_millis(100);
 
-/// TTL for assertion failure cache entries (10 minutes).
-const ASSERTION_FAILURE_CACHE_TTL: Duration = Duration::from_secs(600);
+/// Max capacity for assertion failure cache.
+const ASSERTION_FAILURE_CACHE_SIZE: u64 = 2048;
 
 /// Branch prediction hint for unlikely conditions
 #[inline]
@@ -358,7 +358,7 @@ pub struct CoreEngine<DB> {
     #[cfg(feature = "cache_validation")]
     cache_checker: Option<AbortHandle>,
     cache_metrics_handle: Option<JoinHandle<()>>,
-    /// Cache of tx hashes that triggered assertion failures (10min TTL).
+    /// Cache of tx hashes that triggered assertion failures.
     /// Prevents duplicate logging/metrics on re-execution.
     assertion_failure_cache: moka::sync::Cache<TxHash, ()>,
 }
@@ -410,7 +410,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         };
 
         let assertion_failure_cache = moka::sync::Cache::builder()
-            .time_to_live(ASSERTION_FAILURE_CACHE_TTL)
+            .max_capacity(ASSERTION_FAILURE_CACHE_SIZE)
             .build();
 
         Self {
