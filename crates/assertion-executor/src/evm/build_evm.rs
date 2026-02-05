@@ -344,7 +344,8 @@ mod tests {
             tx_logs: &[],
             call_traces: &tracer,
         };
-        let phvem_context = PhEvmContext::new(&logs_and_traces, address);
+        let default_tx_env = TxEnv::default();
+        let phvem_context = PhEvmContext::new(&logs_and_traces, address, &default_tx_env);
 
         let inspector = PhEvmInspector::new(phvem_context);
 
@@ -401,7 +402,8 @@ mod tests {
             tx_logs: &[],
             call_traces: &tracer,
         };
-        let phvem_context = PhEvmContext::new(&logs_and_traces, address);
+        let default_tx_env = TxEnv::default();
+        let phvem_context = PhEvmContext::new(&logs_and_traces, address, &default_tx_env);
 
         let inspector = PhEvmInspector::new(phvem_context);
 

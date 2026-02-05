@@ -51,11 +51,13 @@ mod test {
             call_traces: &call_tracer,
         };
         let adopter = random_address();
+        let tx_env = crate::primitives::TxEnv::default();
 
         let mut context = PhEvmContext {
             logs_and_traces: &logs_and_traces,
             adopter,
             console_logs: vec![],
+            original_tx_env: &tx_env,
         };
         console_log(input_bytes, &mut context)
     }
@@ -73,11 +75,13 @@ mod test {
             call_traces: &call_tracer,
         };
         let adopter = random_address();
+        let tx_env = crate::primitives::TxEnv::default();
 
         let mut context = PhEvmContext {
             logs_and_traces: &logs_and_traces,
             adopter,
             console_logs: vec![],
+            original_tx_env: &tx_env,
         };
         let result = console_log(
             &logCall {
