@@ -274,7 +274,6 @@ mod test {
     }
 
     #[tokio::test]
-    #[ignore = "Requires TestLoadTxObject.sol contract to be created in testdata/mock-protocol"]
     async fn test_load_tx_object_integration() {
         let result = run_precompile_test("TestLoadTxObject");
         assert!(result.is_valid());
