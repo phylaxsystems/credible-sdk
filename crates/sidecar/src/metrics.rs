@@ -161,6 +161,8 @@ pub struct TransactionMetrics {
     pub assertions_per_transaction: u64,
     /// Duration we spent processing a transaction in microseconds
     pub transaction_processing_duration: std::time::Duration,
+    /// Duration spent executing assertions for a transaction
+    pub assertion_execution_duration: std::time::Duration,
     /// How much gas we have executed per assertion
     pub gas_per_assertion: u64,
 }
@@ -171,6 +173,7 @@ impl TransactionMetrics {
             assertion_gas_per_transaction: 0,
             assertions_per_transaction: 0,
             transaction_processing_duration: std::time::Duration::default(),
+            assertion_execution_duration: std::time::Duration::default(),
             gas_per_assertion: 0,
         }
     }
@@ -183,6 +186,8 @@ impl TransactionMetrics {
             .record(self.assertions_per_transaction as f64);
         histogram!("sidecar_transaction_processing_duration")
             .record(self.transaction_processing_duration);
+        histogram!("sidecar_assertion_execution_duration")
+            .record(self.assertion_execution_duration);
         histogram!("sidecar_gas_per_assertion").record(self.gas_per_assertion as f64);
     }
 }

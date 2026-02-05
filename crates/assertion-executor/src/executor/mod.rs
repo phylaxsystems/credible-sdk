@@ -6,6 +6,7 @@ use std::{
         OnceLock,
         atomic::AtomicU64,
     },
+    time::Instant,
 };
 
 use crate::{
@@ -159,10 +160,12 @@ impl AssertionExecutor {
                 true,
                 forked_tx_result.result_and_state,
                 vec![],
+                std::time::Duration::ZERO,
             ));
         }
         debug!(target: "assertion-executor::validate_tx", gas_used=exec_result.gas_used(), "Transaction execution succeeded.");
 
+        let assertion_timer = Instant::now();
         let results = self
             .execute_assertions(block_env, tx_fork_db, &forked_tx_result)
             .map_err(|e| {
@@ -171,6 +174,7 @@ impl AssertionExecutor {
                     e,
                 )
             })?;
+        let assertion_execution_duration = assertion_timer.elapsed();
 
         if results.is_empty() {
             debug!(target: "assertion-executor::validate_tx", "No assertions were executed");
@@ -180,6 +184,7 @@ impl AssertionExecutor {
                 true,
                 forked_tx_result.result_and_state,
                 vec![],
+                assertion_execution_duration,
             ));
         }
 
@@ -222,6 +227,7 @@ impl AssertionExecutor {
             valid,
             forked_tx_result.result_and_state,
             results,
+            assertion_execution_duration,
         ))
     }
 
@@ -465,9 +471,11 @@ impl AssertionExecutor {
                 true,
                 forked_tx_result.result_and_state,
                 vec![],
+                std::time::Duration::ZERO,
             ));
         }
 
+        let assertion_timer = Instant::now();
         let results = self
             .execute_assertions(block_env, tx_fork_db, &forked_tx_result)
             .map_err(|e| {
@@ -476,6 +484,7 @@ impl AssertionExecutor {
                     e,
                 )
             })?;
+        let assertion_execution_duration = assertion_timer.elapsed();
 
         if results.is_empty() {
             trace!(target: "assertion-executor::validate_tx", "No assertions were executed");
@@ -486,6 +495,7 @@ impl AssertionExecutor {
                 true,
                 forked_tx_result.result_and_state,
                 vec![],
+                assertion_execution_duration,
             ));
         }
 
@@ -512,6 +522,7 @@ impl AssertionExecutor {
             valid,
             forked_tx_result.result_and_state,
             results,
+            assertion_execution_duration,
         ))
     }
 
