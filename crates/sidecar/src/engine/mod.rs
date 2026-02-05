@@ -146,8 +146,6 @@ use dashmap::DashMap;
 use metrics::counter;
 #[cfg(feature = "cache_validation")]
 use monitoring::cache::CacheChecker;
-use revm::primitives::hardfork::SpecId;
-#[allow(unused_imports)]
 use revm::{
     DatabaseCommit,
     DatabaseRef,
@@ -158,6 +156,7 @@ use revm::{
     primitives::{
         Address,
         B256,
+        hardfork::SpecId,
     },
 };
 use std::collections::HashMap;
@@ -269,9 +268,6 @@ struct BlockIterationData<DB> {
     /// Versioned database managing state with rollback capability.
     /// Handles base state, current state, and commit log internally.
     version_db: VersionDb<OverlayDb<DB>>,
-    /// How many transactions we have processed for this iteration.
-    /// This tracks executed txs (including assertion-invalid ones) to stay in sync with the sequencer's `CommitHead`.
-    n_transactions: u64,
     /// Ordered list of executed transactions for this iteration (used for rollback).
     executed_txs: Vec<TxExecutionId>,
     /// State deltas for executed transactions (used to persist canonical state in tests).
@@ -284,6 +280,12 @@ struct BlockIterationData<DB> {
 }
 
 impl<DB> BlockIterationData<DB> {
+    /// Returns the number of executed transactions in this iteration.
+    #[inline]
+    fn len(&self) -> u64 {
+        self.executed_txs.len() as u64
+    }
+
     /// Checks if the last executed transaction matches the given transaction ID
     #[inline]
     fn has_last_tx(&self, tx_id: TxExecutionId) -> bool {
@@ -810,9 +812,6 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             .get_mut(&block_id)
             .ok_or(EngineError::TransactionError)?;
         current_block_iteration.incident_txs.push(tx_data);
-        // Count every executed transaction; the sequencer is authoritative on inclusion.
-        // If it later decides to drop one, it will reorg and we will roll back.
-        current_block_iteration.n_transactions += 1;
 
         Ok(())
     }
@@ -871,7 +870,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         };
 
         let last_tx_id = data.last_tx_id();
-        let n_transactions = data.n_transactions;
+        let n_transactions = data.len();
 
         // Check cheapest conditions first
         let head_mismatch =
@@ -1208,7 +1207,6 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         // Create a VersionDb with a clone of the cache - VersionDb will create its own ForkDb internally
         let mut block_iteration_data = BlockIterationData {
             version_db: VersionDb::new(self.cache.clone()),
-            n_transactions: 0,
             executed_txs: Vec::new(),
             #[cfg(any(test, feature = "bench-utils"))]
             executed_state_deltas: Vec::new(),
@@ -1636,8 +1634,6 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 }
             }
 
-            // Decrement by reorg depth to keep in sync with executed txs.
-            current_block_iteration.n_transactions = new_len as u64;
             return Ok(());
         }
 
