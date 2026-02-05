@@ -16,8 +16,8 @@ use alloy_sol_types::SolValue;
 
 use super::BASE_COST;
 
-/// Base cost for the fixed-size fields in `TxObject` (96 bytes = 3 words)
-const FIXED_FIELDS_COST: u64 = 9;
+/// Base cost for the fixed-size fields in `TxObject` (102 bytes = 4 words)
+const FIXED_FIELDS_COST: u64 = 12;
 /// Cost per 32-byte word for dynamic data (input calldata)
 const DYNAMIC_WORD_COST: u64 = 3;
 
@@ -28,12 +28,19 @@ const DYNAMIC_WORD_COST: u64 = 3;
 pub fn load_tx_object(context: &PhEvmContext, gas: u64) -> PhevmOutcome {
     let gas_limit = gas;
     let mut gas_left = gas;
-    if let Some(rax) = deduct_gas_and_check(&mut gas_left, BASE_COST + FIXED_FIELDS_COST, gas_limit)
-    {
-        return rax;
-    }
 
     let tx_env = context.original_tx_env;
+
+    let input_words = tx_env.data.len().div_ceil(32) as u64;
+    let dynamic_cost = input_words * DYNAMIC_WORD_COST;
+
+    if let Some(rax) = deduct_gas_and_check(
+        &mut gas_left,
+        BASE_COST + FIXED_FIELDS_COST + dynamic_cost,
+        gas_limit,
+    ) {
+        return rax;
+    }
 
     // Extract the 'to' address from TxKind
     let to: Address = match tx_env.kind {
@@ -50,14 +57,6 @@ pub fn load_tx_object(context: &PhEvmContext, gas: u64) -> PhevmOutcome {
         gas_price: tx_env.gas_price,
         input: tx_env.data.clone(),
     };
-
-    // Calculate dynamic cost based on input data size
-    let input_words = tx_env.data.len().div_ceil(32) as u64;
-    let dynamic_cost = input_words * DYNAMIC_WORD_COST;
-
-    if let Some(rax) = deduct_gas_and_check(&mut gas_left, dynamic_cost, gas_limit) {
-        return rax;
-    }
 
     let encoded: Bytes = object.abi_encode().into();
 
