@@ -373,6 +373,8 @@ pub struct CoreEngine<DB> {
     current_block_iterations: HashMap<BlockExecutionId, BlockIterationData<DB>>,
     /// Current head: last committed block.
     current_head: U256,
+    /// Whether at least one commit head event has been processed.
+    first_commit_head_processed: bool,
     /// External providers of state we use when we do not have a piece of state cached in our in memory db.
     /// External state providers implement a trait that we use to query databaseref-like data and populate `state: OverlayDb<DB>`
     /// for execution with it.
@@ -470,6 +472,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             canonical_db: None,
             current_block_iterations: HashMap::new(),
             current_head: U256::ZERO,
+            first_commit_head_processed: false,
             sources: sources.clone(),
             tx_receiver,
             incident_sender,
@@ -1093,8 +1096,8 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             return Ok(());
         }
 
-        // Return early when we have not processed a commithead
-        if self.current_head == U256::ZERO {
+        // Return early until the first commit head has been processed
+        if !self.first_commit_head_processed {
             return Ok(());
         }
 
@@ -1320,6 +1323,8 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             "Processing CommitHead",
         );
 
+        self.first_commit_head_processed = true;
+
         let block_execution_id = BlockExecutionId::from(commit_head);
 
         // Check if cache should be invalidated
@@ -1439,6 +1444,17 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             tx_hash = ?tx_hash,
             "Processing a new transaction",
         );
+
+        if !self.first_commit_head_processed {
+            debug!(
+                target = "engine",
+                tx_hash = %tx_hash,
+                block_number = %tx_execution_id.block_number,
+                iteration_id = tx_execution_id.iteration_id,
+                "Ignoring transaction before first CommitHead is processed"
+            );
+            return Ok(());
+        }
 
         let block_id = tx_execution_id.as_block_execution_id();
 
