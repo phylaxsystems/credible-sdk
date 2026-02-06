@@ -307,7 +307,7 @@ impl ExecutedTx {
 impl<DB> BlockIterationData<DB> {
     /// Returns the number of executed transactions in this iteration, including validation errors.
     #[inline]
-    fn len(&self) -> u64 {
+    fn total_tx_count(&self) -> u64 {
         self.executed_txs.len() as u64
     }
 

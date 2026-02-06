@@ -962,7 +962,7 @@ async fn test_execute_reorg_depth_truncates_tail() {
         .expect("block iteration should exist");
     assert_eq!(current_block_iteration.executed_txs, vec![invalid_tx(tx1)]);
     assert_eq!(current_block_iteration.depth(), 1);
-    assert_eq!(current_block_iteration.len(), 1);
+    assert_eq!(current_block_iteration.total_tx_count(), 1);
 }
 
 /// Tests that reorg works correctly when the remaining `commit_log` contains
@@ -1048,7 +1048,7 @@ async fn test_execute_reorg_with_failed_tx_in_remaining_commit_log() {
         vec![invalid_tx(tx1), invalid_tx(tx2)]
     );
     assert_eq!(current_block_iteration.depth(), 2);
-    assert_eq!(current_block_iteration.len(), 2);
+    assert_eq!(current_block_iteration.total_tx_count(), 2);
 }
 
 /// Tests that missing transaction results do not affect `n_transactions` tracking.
@@ -1115,7 +1115,7 @@ async fn test_execute_reorg_missing_transaction_result_not_counted_valid() {
         .get(&block_execution_id)
         .expect("block iteration should exist");
     assert_eq!(current_block_iteration.executed_txs, vec![invalid_tx(tx1)]);
-    assert_eq!(current_block_iteration.len(), 1);
+    assert_eq!(current_block_iteration.total_tx_count(), 1);
 }
 
 /// Tests that a reorg can remove ALL transactions, resetting to the base state.
@@ -1198,7 +1198,7 @@ async fn test_execute_reorg_removes_all_transactions() {
         "All transactions should be removed"
     );
     assert_eq!(current_block_iteration.depth(), 0, "Depth should be 0");
-    assert_eq!(current_block_iteration.len(), 0);
+    assert_eq!(current_block_iteration.total_tx_count(), 0);
 }
 
 /// Tests reorg when all transactions in the commit log were failures (`commit_empty`).
@@ -1270,7 +1270,7 @@ async fn test_execute_reorg_with_all_failed_transactions() {
         .expect("block iteration should exist");
     assert_eq!(current_block_iteration.executed_txs, vec![invalid_tx(tx1)]);
     assert_eq!(current_block_iteration.depth(), 1);
-    assert_eq!(current_block_iteration.len(), 1);
+    assert_eq!(current_block_iteration.total_tx_count(), 1);
 }
 
 /// Tests a deep reorg (depth > 1) with an alternating success/failure pattern.
@@ -1351,7 +1351,7 @@ async fn test_execute_reorg_deep_with_alternating_success_failure() {
         "Only TX0 should remain"
     );
     assert_eq!(current_block_iteration.depth(), 1, "Depth should be 1");
-    assert_eq!(current_block_iteration.len(), 1);
+    assert_eq!(current_block_iteration.total_tx_count(), 1);
 }
 
 #[allow(clippy::too_many_lines)]
