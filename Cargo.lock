@@ -1443,11 +1443,11 @@ checksum = "9b34d609dfbaf33d6889b2b7106d3ca345eacad44200913df5ba02bfd31d2ba9"
 
 [[package]]
 name = "assertion-da-client"
-version = "0.9.2"
-source = "git+https://github.com/phylaxsystems/credible-sdk.git?tag=0.9.2#ed8c0fa7d9cdbbc4abc1e6031c959b46c52a2a2e"
+version = "1.0.7"
+source = "git+https://github.com/phylaxsystems/credible-sdk.git?rev=5ace6939c7027f1ba0bcf6f8751904dd4ca4f986#5ace6939c7027f1ba0bcf6f8751904dd4ca4f986"
 dependencies = [
  "alloy",
- "assertion-da-core 0.9.2",
+ "assertion-da-core 1.0.7",
  "http",
  "reqwest",
  "serde",
@@ -1460,10 +1460,10 @@ dependencies = [
 
 [[package]]
 name = "assertion-da-client"
-version = "1.0.7"
+version = "1.0.8"
 dependencies = [
  "alloy",
- "assertion-da-core 1.0.7",
+ "assertion-da-core 1.0.8",
  "assertion-da-server",
  "bincode",
  "bollard",
@@ -1482,8 +1482,8 @@ dependencies = [
 
 [[package]]
 name = "assertion-da-core"
-version = "0.9.2"
-source = "git+https://github.com/phylaxsystems/credible-sdk.git?tag=0.9.2#ed8c0fa7d9cdbbc4abc1e6031c959b46c52a2a2e"
+version = "1.0.7"
+source = "git+https://github.com/phylaxsystems/credible-sdk.git?rev=5ace6939c7027f1ba0bcf6f8751904dd4ca4f986#5ace6939c7027f1ba0bcf6f8751904dd4ca4f986"
 dependencies = [
  "alloy",
  "serde",
@@ -1491,7 +1491,7 @@ dependencies = [
 
 [[package]]
 name = "assertion-da-core"
-version = "1.0.7"
+version = "1.0.8"
 dependencies = [
  "alloy",
  "serde",
@@ -1499,14 +1499,14 @@ dependencies = [
 
 [[package]]
 name = "assertion-da-server"
-version = "1.0.7"
+version = "1.0.8"
 dependencies = [
  "alloy",
  "alloy-dyn-abi",
  "alloy-json-abi",
  "anyhow",
- "assertion-da-client 1.0.7",
- "assertion-da-core 1.0.7",
+ "assertion-da-client 1.0.8",
+ "assertion-da-core 1.0.8",
  "bincode",
  "bollard",
  "clap",
@@ -1540,8 +1540,8 @@ dependencies = [
 
 [[package]]
 name = "assertion-executor"
-version = "0.9.2"
-source = "git+https://github.com/phylaxsystems/credible-sdk.git?tag=0.9.2#ed8c0fa7d9cdbbc4abc1e6031c959b46c52a2a2e"
+version = "1.0.7"
+source = "git+https://github.com/phylaxsystems/credible-sdk.git?rev=5ace6939c7027f1ba0bcf6f8751904dd4ca4f986#5ace6939c7027f1ba0bcf6f8751904dd4ca4f986"
 dependencies = [
  "alloy",
  "alloy-consensus",
@@ -1557,7 +1557,7 @@ dependencies = [
  "alloy-sol-types",
  "alloy-transport",
  "alloy-transport-ws",
- "assertion-da-client 0.9.2",
+ "assertion-da-client 1.0.7",
  "bincode",
  "clap",
  "dashmap",
@@ -1579,7 +1579,7 @@ dependencies = [
 
 [[package]]
 name = "assertion-executor"
-version = "1.0.7"
+version = "1.0.8"
 dependencies = [
  "alloy",
  "alloy-consensus",
@@ -1598,8 +1598,8 @@ dependencies = [
  "alloy-transport",
  "alloy-transport-ws",
  "anyhow",
- "assertion-da-client 1.0.7",
- "assertion-executor 1.0.7",
+ "assertion-da-client 1.0.8",
+ "assertion-executor 1.0.8",
  "benchmark-utils",
  "bincode",
  "clap",
@@ -1893,10 +1893,10 @@ checksum = "d86b93f97252c47b41663388e6d155714a9d0c398b99f1005cbc5f978b29f445"
 
 [[package]]
 name = "benchmark-utils"
-version = "1.0.7"
+version = "1.0.8"
 dependencies = [
  "alloy",
- "assertion-executor 1.0.7",
+ "assertion-executor 1.0.8",
  "revm",
  "tokio",
 ]
@@ -2880,7 +2880,7 @@ dependencies = [
 
 [[package]]
 name = "credible-utils"
-version = "1.0.7"
+version = "1.0.8"
 dependencies = [
  "anyhow",
  "tokio",
@@ -3092,7 +3092,7 @@ dependencies = [
 
 [[package]]
 name = "dapp-api-client"
-version = "1.0.7"
+version = "1.0.8"
 dependencies = [
  "anyhow",
  "assert_matches",
@@ -4062,7 +4062,7 @@ checksum = "00b0228411908ca8685dba7fc2cdd70ec9990a6e753e89b6ac91a84c40fbaf4b"
 [[package]]
 name = "forge"
 version = "1.5.1"
-source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#85b466882d790fca8403734453bba6a89a3b306b"
+source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#e161ddce390f75346afe4f2e0052125bf12588d9"
 dependencies = [
  "alloy-chains",
  "alloy-dyn-abi",
@@ -4130,7 +4130,7 @@ dependencies = [
 [[package]]
 name = "forge-doc"
 version = "1.5.1"
-source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#85b466882d790fca8403734453bba6a89a3b306b"
+source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#e161ddce390f75346afe4f2e0052125bf12588d9"
 dependencies = [
  "alloy-primitives",
  "derive_more",
@@ -4155,7 +4155,7 @@ dependencies = [
 [[package]]
 name = "forge-fmt"
 version = "1.5.1"
-source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#85b466882d790fca8403734453bba6a89a3b306b"
+source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#e161ddce390f75346afe4f2e0052125bf12588d9"
 dependencies = [
  "foundry-common",
  "foundry-config",
@@ -4167,7 +4167,7 @@ dependencies = [
 [[package]]
 name = "forge-lint"
 version = "1.5.1"
-source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#85b466882d790fca8403734453bba6a89a3b306b"
+source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#e161ddce390f75346afe4f2e0052125bf12588d9"
 dependencies = [
  "eyre",
  "foundry-common",
@@ -4182,7 +4182,7 @@ dependencies = [
 [[package]]
 name = "forge-script"
 version = "1.5.1"
-source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#85b466882d790fca8403734453bba6a89a3b306b"
+source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#e161ddce390f75346afe4f2e0052125bf12588d9"
 dependencies = [
  "alloy-chains",
  "alloy-consensus",
@@ -4227,7 +4227,7 @@ dependencies = [
 [[package]]
 name = "forge-script-sequence"
 version = "1.5.1"
-source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#85b466882d790fca8403734453bba6a89a3b306b"
+source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#e161ddce390f75346afe4f2e0052125bf12588d9"
 dependencies = [
  "alloy-network",
  "alloy-primitives",
@@ -4244,7 +4244,7 @@ dependencies = [
 [[package]]
 name = "forge-sol-macro-gen"
 version = "1.5.1"
-source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#85b466882d790fca8403734453bba6a89a3b306b"
+source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#e161ddce390f75346afe4f2e0052125bf12588d9"
 dependencies = [
  "alloy-sol-macro-expander",
  "alloy-sol-macro-input",
@@ -4260,7 +4260,7 @@ dependencies = [
 [[package]]
 name = "forge-verify"
 version = "1.5.1"
-source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#85b466882d790fca8403734453bba6a89a3b306b"
+source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#e161ddce390f75346afe4f2e0052125bf12588d9"
 dependencies = [
  "alloy-dyn-abi",
  "alloy-json-abi",
@@ -4320,7 +4320,7 @@ dependencies = [
 [[package]]
 name = "foundry-cheatcodes"
 version = "1.5.1"
-source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#85b466882d790fca8403734453bba6a89a3b306b"
+source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#e161ddce390f75346afe4f2e0052125bf12588d9"
 dependencies = [
  "alloy-chains",
  "alloy-consensus",
@@ -4337,7 +4337,7 @@ dependencies = [
  "alloy-signer",
  "alloy-signer-local",
  "alloy-sol-types",
- "assertion-executor 0.9.2",
+ "assertion-executor 1.0.7",
  "base64 0.22.1",
  "dialoguer",
  "ecdsa",
@@ -4375,7 +4375,7 @@ dependencies = [
 [[package]]
 name = "foundry-cheatcodes-spec"
 version = "1.5.1"
-source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#85b466882d790fca8403734453bba6a89a3b306b"
+source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#e161ddce390f75346afe4f2e0052125bf12588d9"
 dependencies = [
  "alloy-sol-types",
  "foundry-macros",
@@ -4385,7 +4385,7 @@ dependencies = [
 [[package]]
 name = "foundry-cli"
 version = "1.5.1"
-source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#85b466882d790fca8403734453bba6a89a3b306b"
+source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#e161ddce390f75346afe4f2e0052125bf12588d9"
 dependencies = [
  "alloy-chains",
  "alloy-dyn-abi",
@@ -4431,7 +4431,7 @@ dependencies = [
 [[package]]
 name = "foundry-common"
 version = "1.5.1"
-source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#85b466882d790fca8403734453bba6a89a3b306b"
+source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#e161ddce390f75346afe4f2e0052125bf12588d9"
 dependencies = [
  "alloy-chains",
  "alloy-consensus",
@@ -4487,7 +4487,7 @@ dependencies = [
 [[package]]
 name = "foundry-common-fmt"
 version = "1.5.1"
-source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#85b466882d790fca8403734453bba6a89a3b306b"
+source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#e161ddce390f75346afe4f2e0052125bf12588d9"
 dependencies = [
  "alloy-consensus",
  "alloy-dyn-abi",
@@ -4602,7 +4602,7 @@ dependencies = [
 [[package]]
 name = "foundry-config"
 version = "1.5.1"
-source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#85b466882d790fca8403734453bba6a89a3b306b"
+source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#e161ddce390f75346afe4f2e0052125bf12588d9"
 dependencies = [
  "alloy-chains",
  "alloy-primitives",
@@ -4641,7 +4641,7 @@ dependencies = [
 [[package]]
 name = "foundry-debugger"
 version = "1.5.1"
-source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#85b466882d790fca8403734453bba6a89a3b306b"
+source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#e161ddce390f75346afe4f2e0052125bf12588d9"
 dependencies = [
  "alloy-primitives",
  "crossterm 0.29.0",
@@ -4660,7 +4660,7 @@ dependencies = [
 [[package]]
 name = "foundry-evm"
 version = "1.5.1"
-source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#85b466882d790fca8403734453bba6a89a3b306b"
+source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#e161ddce390f75346afe4f2e0052125bf12588d9"
 dependencies = [
  "alloy-dyn-abi",
  "alloy-evm",
@@ -4693,7 +4693,7 @@ dependencies = [
 [[package]]
 name = "foundry-evm-abi"
 version = "1.5.1"
-source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#85b466882d790fca8403734453bba6a89a3b306b"
+source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#e161ddce390f75346afe4f2e0052125bf12588d9"
 dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
@@ -4706,7 +4706,7 @@ dependencies = [
 [[package]]
 name = "foundry-evm-core"
 version = "1.5.1"
-source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#85b466882d790fca8403734453bba6a89a3b306b"
+source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#e161ddce390f75346afe4f2e0052125bf12588d9"
 dependencies = [
  "alloy-chains",
  "alloy-consensus",
@@ -4747,7 +4747,7 @@ dependencies = [
 [[package]]
 name = "foundry-evm-coverage"
 version = "1.5.1"
-source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#85b466882d790fca8403734453bba6a89a3b306b"
+source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#e161ddce390f75346afe4f2e0052125bf12588d9"
 dependencies = [
  "alloy-primitives",
  "eyre",
@@ -4764,7 +4764,7 @@ dependencies = [
 [[package]]
 name = "foundry-evm-fuzz"
 version = "1.5.1"
-source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#85b466882d790fca8403734453bba6a89a3b306b"
+source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#e161ddce390f75346afe4f2e0052125bf12588d9"
 dependencies = [
  "alloy-dyn-abi",
  "alloy-json-abi",
@@ -4790,7 +4790,7 @@ dependencies = [
 [[package]]
 name = "foundry-evm-networks"
 version = "1.5.1"
-source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#85b466882d790fca8403734453bba6a89a3b306b"
+source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#e161ddce390f75346afe4f2e0052125bf12588d9"
 dependencies = [
  "alloy-chains",
  "alloy-evm",
@@ -4803,7 +4803,7 @@ dependencies = [
 [[package]]
 name = "foundry-evm-traces"
 version = "1.5.1"
-source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#85b466882d790fca8403734453bba6a89a3b306b"
+source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#e161ddce390f75346afe4f2e0052125bf12588d9"
 dependencies = [
  "alloy-dyn-abi",
  "alloy-json-abi",
@@ -4860,7 +4860,7 @@ dependencies = [
 [[package]]
 name = "foundry-linking"
 version = "1.5.1"
-source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#85b466882d790fca8403734453bba6a89a3b306b"
+source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#e161ddce390f75346afe4f2e0052125bf12588d9"
 dependencies = [
  "alloy-primitives",
  "foundry-compilers",
@@ -4872,7 +4872,7 @@ dependencies = [
 [[package]]
 name = "foundry-macros"
 version = "1.5.1"
-source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#85b466882d790fca8403734453bba6a89a3b306b"
+source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#e161ddce390f75346afe4f2e0052125bf12588d9"
 dependencies = [
  "proc-macro-error2",
  "proc-macro2",
@@ -4897,7 +4897,7 @@ dependencies = [
 [[package]]
 name = "foundry-wallets"
 version = "1.5.1"
-source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#85b466882d790fca8403734453bba6a89a3b306b"
+source = "git+https://github.com/phylaxsystems/phoundry.git?branch=main#e161ddce390f75346afe4f2e0052125bf12588d9"
 dependencies = [
  "alloy-consensus",
  "alloy-dyn-abi",
@@ -5109,7 +5109,7 @@ dependencies = [
 
 [[package]]
 name = "geth_snapshot"
-version = "1.0.7"
+version = "1.0.8"
 dependencies = [
  "alloy",
  "anyhow",
@@ -6459,7 +6459,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.62.2",
+ "windows-core 0.57.0",
 ]
 
 [[package]]
@@ -6784,11 +6784,11 @@ dependencies = [
 
 [[package]]
 name = "int-test-utils"
-version = "1.0.7"
+version = "1.0.8"
 dependencies = [
  "alloy",
  "anyhow",
- "assertion-da-client 1.0.7",
+ "assertion-da-client 1.0.8",
  "assertion-da-server",
  "axum",
  "dashmap",
@@ -7385,7 +7385,7 @@ dependencies = [
 
 [[package]]
 name = "mdbx"
-version = "1.0.7"
+version = "1.0.8"
 dependencies = [
  "alloy",
  "bytes",
@@ -8479,7 +8479,7 @@ dependencies = [
 
 [[package]]
 name = "pcl"
-version = "1.0.7"
+version = "1.0.8"
 dependencies = [
  "anyhow",
  "clap",
@@ -8494,7 +8494,7 @@ dependencies = [
 
 [[package]]
 name = "pcl-common"
-version = "1.0.7"
+version = "1.0.8"
 dependencies = [
  "clap",
  "serde_json",
@@ -8502,12 +8502,12 @@ dependencies = [
 
 [[package]]
 name = "pcl-core"
-version = "1.0.7"
+version = "1.0.8"
 dependencies = [
  "alloy",
  "alloy-primitives",
  "anyhow",
- "assertion-da-client 1.0.7",
+ "assertion-da-client 1.0.8",
  "chrono",
  "clap",
  "color-eyre",
@@ -8531,7 +8531,7 @@ dependencies = [
 
 [[package]]
 name = "pcl-phoundry"
-version = "1.0.7"
+version = "1.0.8"
 dependencies = [
  "alloy-json-abi",
  "clap",
@@ -11161,7 +11161,7 @@ dependencies = [
 
 [[package]]
 name = "shadow-driver"
-version = "1.0.7"
+version = "1.0.8"
 dependencies = [
  "alloy",
  "alloy-provider",
@@ -11211,7 +11211,7 @@ checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
 name = "sidecar"
-version = "1.0.7"
+version = "1.0.8"
 dependencies = [
  "alloy",
  "alloy-eips",
@@ -11219,8 +11219,8 @@ dependencies = [
  "alloy-provider",
  "alloy-rpc-types-trace",
  "anyhow",
- "assertion-da-client 1.0.7",
- "assertion-executor 1.0.7",
+ "assertion-da-client 1.0.8",
+ "assertion-executor 1.0.8",
  "axum",
  "bincode",
  "chrono",
@@ -11273,7 +11273,7 @@ dependencies = [
 
 [[package]]
 name = "sidecar-test-macros"
-version = "1.0.7"
+version = "1.0.8"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -11498,7 +11498,7 @@ dependencies = [
  "solar-config",
  "solar-data-structures",
  "solar-macros",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tracing",
  "unicode-width 0.2.0",
 ]
@@ -11646,7 +11646,7 @@ dependencies = [
 
 [[package]]
 name = "state-checker"
-version = "1.0.7"
+version = "1.0.8"
 dependencies = [
  "alloy",
  "alloy-provider",
@@ -11667,7 +11667,7 @@ dependencies = [
 
 [[package]]
 name = "state-worker"
-version = "1.0.7"
+version = "1.0.8"
 dependencies = [
  "alloy",
  "alloy-provider",
@@ -11913,7 +11913,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "tempfile",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "url",
  "zip",
 ]
