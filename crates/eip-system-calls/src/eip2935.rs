@@ -46,11 +46,13 @@ impl SystemContract for Eip2935 {
 }
 
 impl Eip2935 {
-    /// Calculate the storage slot for a block number.
+    /// Calculate the storage slot where the parent block hash is stored.
+    ///
+    /// EIP-2935 stores the **parent** block's hash at the start of each block.
+    /// At block N, the hash of block N-1 is written to slot `(N-1) % HISTORY_SERVE_WINDOW`.
     #[inline]
     #[must_use]
-    pub fn slot(block_number: u64) -> U256 {
-        // At block N, store parent hash (block N-1) at slot (N-1) % HISTORY_SERVE_WINDOW
+    pub fn parent_hash_slot(block_number: u64) -> U256 {
         let parent_block_number = block_number.saturating_sub(1);
         U256::from(parent_block_number % Self::RING_BUFFER_SIZE)
     }

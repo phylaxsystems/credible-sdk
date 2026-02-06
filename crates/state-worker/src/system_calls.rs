@@ -125,7 +125,7 @@ impl SystemCalls {
         let address_hash = Eip2935::ADDRESS.into();
 
         // Storage slot = (block_number - 1) % HISTORY_SERVE_WINDOW (parent hash)
-        let slot = Eip2935::slot(config.block_number);
+        let slot = Eip2935::parent_hash_slot(config.block_number);
         let value = Eip2935::hash_to_value(parent_hash);
 
         let mut storage = HashMap::new();

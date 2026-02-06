@@ -215,7 +215,7 @@ impl SystemCalls {
 
         let block_number: u64 = config.block_number.saturating_to();
         // EIP-2935: At block N, store parent hash (block N-1) at slot (N-1) % HISTORY_SERVE_WINDOW
-        let parent_slot = Eip2935::slot(block_number);
+        let parent_slot = Eip2935::parent_hash_slot(block_number);
 
         debug!(
             target = "system_calls",
