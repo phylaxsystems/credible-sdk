@@ -78,6 +78,22 @@ use crate::{
         ReconstructableTx,
     },
 };
+use assertion_executor::{
+    AssertionExecutor,
+    ExecutorConfig,
+    db::overlay::OverlayDb,
+    primitives::{
+        EVMError,
+        ExecutionResult,
+        TxValidationResult,
+    },
+    store::{
+        AssertionState,
+        AssertionStore,
+        AssertionStoreError,
+    },
+};
+use revm::state::EvmState;
 use std::{
     fmt::Debug,
     sync::{
@@ -93,19 +109,6 @@ use std::{
     },
 };
 use tokio::sync::oneshot;
-use assertion_executor::{
-    AssertionExecutor,
-    ExecutorConfig,
-    db::overlay::OverlayDb,
-    primitives::{    EVMError,
-    TxValidationResult, ExecutionResult},
-    store::{
-        AssertionState,
-        AssertionStore,
-        AssertionStoreError,
-    },
-};
-use revm::state::EvmState;
 
 #[derive(Debug)]
 struct FailedAssertionLog {
