@@ -1092,6 +1092,12 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         if !self.check_sources_available {
             return Ok(());
         }
+
+        // Return early when we have not processed a commithead
+        if self.current_head == U256::ZERO {
+            return Ok(());
+        }
+
         self.check_sources_available = false;
 
         let start = Instant::now();
