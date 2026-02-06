@@ -122,7 +122,7 @@ impl SystemCalls {
             )
         };
 
-        let address_hash = AddressHash::from(keccak256(Eip2935::ADDRESS));
+        let address_hash = Eip2935::ADDRESS.into();
 
         // Storage slot = (block_number - 1) % HISTORY_SERVE_WINDOW (parent hash)
         let slot = Eip2935::slot(config.block_number);
@@ -175,7 +175,7 @@ impl SystemCalls {
             )
         };
 
-        let address_hash = AddressHash::from(keccak256(Eip4788::ADDRESS));
+        let address_hash = Eip4788::ADDRESS.into();
 
         let timestamp_slot = Eip4788::timestamp_slot(config.timestamp);
         let root_slot = Eip4788::root_slot(config.timestamp);
@@ -272,7 +272,7 @@ mod tests {
 
         let eip2935_state = states
             .iter()
-            .find(|s| s.address_hash == AddressHash::from(keccak256(Eip2935::ADDRESS)))
+            .find(|s| s.address_hash == Eip2935::ADDRESS.into())
             .expect("EIP-2935 state should exist");
 
         // Slot = (100 - 1) % 8191 = 99
@@ -302,13 +302,14 @@ mod tests {
             parent_beacon_block_root: Some(B256::repeat_byte(0xcd)),
         };
 
+        // No reader provided, should use defaults
         let states = system_calls
             .compute_system_call_states::<StateReader>(&config, None)
             .unwrap();
 
         let eip4788_state = states
             .iter()
-            .find(|s| s.address_hash == AddressHash::from(keccak256(Eip4788::ADDRESS)))
+            .find(|s| s.address_hash == Eip4788::ADDRESS.into())
             .expect("EIP-4788 state should exist");
 
         let timestamp_slot = Eip4788::timestamp_slot(1_700_000_000);
@@ -345,6 +346,7 @@ mod tests {
             parent_beacon_block_root: Some(B256::ZERO),
         };
 
+        // No reader provided, should use defaults
         let states = system_calls
             .compute_system_call_states::<StateReader>(&config, None)
             .unwrap();
@@ -408,7 +410,7 @@ mod tests {
 
         let eip2935_state = states
             .iter()
-            .find(|s| s.address_hash == AddressHash::from(keccak256(Eip2935::ADDRESS)))
+            .find(|s| s.address_hash == Eip2935::ADDRESS.into())
             .unwrap();
 
         // (8191 + 99 - 1) % 8191 = 98
@@ -435,7 +437,7 @@ mod tests {
         assert_eq!(states.len(), 1);
         assert_eq!(
             states[0].address_hash,
-            AddressHash::from(keccak256(Eip2935::ADDRESS))
+            Eip2935::ADDRESS.into()
         );
     }
 
@@ -457,7 +459,7 @@ mod tests {
         assert_eq!(states.len(), 1);
         assert_eq!(
             states[0].address_hash,
-            AddressHash::from(keccak256(Eip4788::ADDRESS))
+            Eip4788::ADDRESS.into()
         );
     }
 
