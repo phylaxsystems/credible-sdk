@@ -276,7 +276,7 @@ mod tests {
             .expect("EIP-2935 state should exist");
 
         // Slot = (100 - 1) % 8191 = 99
-        let expected_slot = Eip2935::slot(99);
+        let expected_slot = U256::from(99);
         let expected_slot_key = keccak256(expected_slot.to_be_bytes::<32>());
         assert!(eip2935_state.storage.contains_key(&expected_slot_key));
 
@@ -412,7 +412,7 @@ mod tests {
             .unwrap();
 
         // (8191 + 99 - 1) % 8191 = 98
-        let expected_slot = Eip2935::slot(98);
+        let expected_slot = U256::from(98);
         let expected_slot_key = keccak256(expected_slot.to_be_bytes::<32>());
         assert!(eip2935_state.storage.contains_key(&expected_slot_key));
     }
