@@ -332,8 +332,9 @@ impl<DB> BlockIterationData<DB> {
         self.executed_txs.last().map(ExecutedTx::id)
     }
 
-    /// Collects reconstruction data for all valid transactions.
-    fn reconstructable_txs(&self) -> Vec<ReconstructableTx> {
+    /// Collects `(TxHash, TxEnv)` reconstruction data from successfully executed transactions,
+    /// filtering out pre-execution validation failures (`Invalid` entries).
+    fn executed_tx_data(&self) -> Vec<ReconstructableTx> {
         self.executed_txs
             .iter()
             .filter_map(|tx| {
@@ -812,7 +813,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
 
         let is_valid = rax.is_valid();
         let prev_txs = if should_report && !is_valid {
-            Some(current_block_iteration.reconstructable_txs())
+            Some(current_block_iteration.executed_tx_data())
         } else {
             None
         };
