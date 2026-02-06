@@ -344,9 +344,11 @@ impl<DB> BlockIterationData<DB> {
     fn reconstructable_txs(&self) -> Vec<ReconstructableTx> {
         self.executed_txs
             .iter()
-            .filter_map(|tx| match tx {
-                ExecutedTx::Valid(_, data) => Some(data.as_ref().clone()),
-                ExecutedTx::Invalid(_) => None,
+            .filter_map(|tx| {
+                match tx {
+                    ExecutedTx::Valid(_, data) => Some(data.as_ref().clone()),
+                    ExecutedTx::Invalid(_) => None,
+                }
             })
             .collect()
     }
