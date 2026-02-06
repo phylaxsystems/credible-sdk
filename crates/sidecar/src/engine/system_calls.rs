@@ -24,11 +24,14 @@ use alloy::primitives::{
 use assertion_executor::db::BlockHashStore;
 use eip_system_calls::{
     SystemContract,
-    eip2935::{HISTORY_STORAGE_CODE, Eip2935},
+    eip2935::{
+        Eip2935,
+        HISTORY_STORAGE_CODE,
+    },
     eip4788::{
+        BEACON_ROOTS_CODE,
         Eip4788,
         HISTORY_BUFFER_LENGTH,
-        BEACON_ROOTS_CODE
     },
 };
 use revm::{
@@ -372,12 +375,17 @@ impl SystemCalls {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use eip_system_calls::eip2935::{HISTORY_STORAGE_ADDRESS, HISTORY_SERVE_WINDOW};
-    use eip_system_calls::eip4788::BEACON_ROOTS_ADDRESS;
     use assertion_executor::db::{
         DatabaseCommit,
         RollbackDb,
         VersionDb,
+    };
+    use eip_system_calls::{
+        eip2935::{
+            HISTORY_SERVE_WINDOW,
+            HISTORY_STORAGE_ADDRESS,
+        },
+        eip4788::BEACON_ROOTS_ADDRESS,
     };
     use revm::database::DBErrorMarker;
     use std::{
