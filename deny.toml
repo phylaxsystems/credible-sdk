@@ -80,19 +80,13 @@ ignore = [
     "RUSTSEC-2023-0018",
     # https://rustsec.org/advisories/RUSTSEC-2024-0436.html, paste! unmaintained
     "RUSTSEC-2024-0436",
-    # https://rustsec.org/advisories/RUSTSEC-2024-0437.htm, outdated version of protobuf
-    "RUSTSEC-2024-0437",
     # https://rustsec.org/advisories/RUSTSEC-2025-0134.html, rustls-pemfile is unmaintained
     # It is still used in bollard, but it can be hopeffully removed once https://github.com/fussybeaver/bollard/issues/666 is solved. 
     "RUSTSEC-2025-0134",
-    # https://rustsec.org/advisories/RUSTSEC-2025-0137 `reciprocal_mg10` OOB, unused
-    "RUSTSEC-2025-0137",
     # https://rustsec.org/advisories/RUSTSEC-2025-0140.html, vergen-gix
     "RUSTSEC-2025-0140",
     # https://rustsec.org/advisories/RUSTSEC-2025-0141.html, bincode deprecation
     "RUSTSEC-2025-0141",
-    # https://rustsec.org/advisories/RUSTSEC-2026-0002.html, outdated LRU, alloy just bumped it, waiting for next alloy release
-    "RUSTSEC-2026-0002",
 ]
 # If this is true, then cargo deny will use the git executable to fetch advisory database.
 # If this is false, then it uses a built-in git library.

@@ -162,7 +162,8 @@ fuzz_target!(|data: &[u8]| {
         tx_logs: log_array,
         call_traces: &call_tracer,
     };
-    let context = PhEvmContext::new(&logs_traces, params.target);
+    let default_tx_env = revm::primitives::TxEnv::default();
+    let context = PhEvmContext::new(&logs_traces, params.target, &default_tx_env);
 
     // Call the target function and catch any panics
     let _ = std::panic::catch_unwind(|| {

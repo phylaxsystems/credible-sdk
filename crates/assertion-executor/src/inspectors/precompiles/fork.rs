@@ -569,14 +569,16 @@ mod test {
         // post-tx journal (checkpoint at the end).
         let mut call_tracer = CallTracer::default();
         call_tracer.insert_trace(address);
-        call_tracer.pre_call_checkpoints = vec![JournalCheckpoint {
-            log_i: 0,
-            journal_i: 0,
-        }];
-        call_tracer.post_call_checkpoints = vec![Some(JournalCheckpoint {
-            log_i: test_journal.logs.len(),
-            journal_i: test_journal.journal.len(),
-        })];
+        call_tracer.set_last_call_checkpoints(
+            JournalCheckpoint {
+                log_i: 0,
+                journal_i: 0,
+            },
+            Some(JournalCheckpoint {
+                log_i: test_journal.logs.len(),
+                journal_i: test_journal.journal.len(),
+            }),
+        );
 
         let mut context = MainnetContext::new(&mut multi_fork_db, SpecId::default());
         context.modify_journal(|journal| {
@@ -624,14 +626,16 @@ mod test {
 
         let mut call_tracer = CallTracer::default();
         call_tracer.insert_trace(address);
-        call_tracer.pre_call_checkpoints = vec![JournalCheckpoint {
-            log_i: test_journal.logs.len(),
-            journal_i: test_journal.journal.len(),
-        }];
-        call_tracer.post_call_checkpoints = vec![Some(JournalCheckpoint {
-            log_i: test_journal.logs.len(),
-            journal_i: test_journal.journal.len(),
-        })];
+        call_tracer.set_last_call_checkpoints(
+            JournalCheckpoint {
+                log_i: test_journal.logs.len(),
+                journal_i: test_journal.journal.len(),
+            },
+            Some(JournalCheckpoint {
+                log_i: test_journal.logs.len(),
+                journal_i: test_journal.journal.len(),
+            }),
+        );
 
         let mut context = MainnetContext::new(&mut multi_fork_db, SpecId::default());
         context.modify_journal(|journal| {
@@ -728,14 +732,16 @@ mod test {
 
         let mut call_tracer = CallTracer::default();
         call_tracer.insert_trace(address);
-        call_tracer.pre_call_checkpoints = vec![JournalCheckpoint {
-            log_i: test_journal.logs.len(),
-            journal_i: test_journal.journal.len(),
-        }];
-        call_tracer.post_call_checkpoints = vec![Some(JournalCheckpoint {
-            log_i: test_journal.logs.len(),
-            journal_i: test_journal.journal.len(),
-        })];
+        call_tracer.set_last_call_checkpoints(
+            JournalCheckpoint {
+                log_i: test_journal.logs.len(),
+                journal_i: test_journal.journal.len(),
+            },
+            Some(JournalCheckpoint {
+                log_i: test_journal.logs.len(),
+                journal_i: test_journal.journal.len(),
+            }),
+        );
 
         let mut context = MainnetContext::new(&mut multi_fork_db, SpecId::default());
         context.modify_journal(|journal| {
@@ -809,14 +815,16 @@ mod test {
 
         let mut call_tracer = CallTracer::default();
         call_tracer.insert_trace(address);
-        call_tracer.pre_call_checkpoints = vec![JournalCheckpoint {
-            log_i: test_journal.logs.len(),
-            journal_i: test_journal.journal.len(),
-        }];
-        call_tracer.post_call_checkpoints = vec![Some(JournalCheckpoint {
-            log_i: test_journal.logs.len(),
-            journal_i: test_journal.journal.len(),
-        })];
+        call_tracer.set_last_call_checkpoints(
+            JournalCheckpoint {
+                log_i: test_journal.logs.len(),
+                journal_i: test_journal.journal.len(),
+            },
+            Some(JournalCheckpoint {
+                log_i: test_journal.logs.len(),
+                journal_i: test_journal.journal.len(),
+            }),
+        );
 
         let mut context = MainnetContext::new(&mut multi_fork_db, SpecId::default());
         context.modify_journal(|journal| {

@@ -21,6 +21,7 @@ pub mod fork;
 pub mod get_logs;
 pub mod load;
 pub mod state_changes;
+pub mod tx_object;
 
 pub use revm::interpreter::gas::COLD_SLOAD_COST;
 

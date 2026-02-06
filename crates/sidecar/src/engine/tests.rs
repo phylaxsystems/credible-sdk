@@ -22,7 +22,10 @@ use assertion_executor::{
         ExecutionResult,
     },
     store::AssertionStore,
-    test_utils::counter_call,
+    test_utils::{
+        bytecode,
+        counter_call,
+    },
 };
 use eip_system_calls::eip4788::HISTORY_BUFFER_LENGTH;
 use revm::{
@@ -41,8 +44,10 @@ use revm::{
         Address,
         B256,
         Bytes,
+        Log,
         TxKind,
         U256,
+        keccak256,
         uint,
     },
 };
@@ -100,6 +105,9 @@ impl<DB> CoreEngine<DB> {
             ),
             current_head: U256::from(0),
             cache_metrics_handle: None,
+            assertion_failure_cache: moka::sync::Cache::builder()
+                .max_capacity(super::ASSERTION_FAILURE_CACHE_SIZE)
+                .build(),
         }
     }
 
@@ -261,6 +269,8 @@ async fn test_core_engine_errors_when_no_synced_sources() {
     let new_iteration = queue::NewIteration {
         block_env,
         iteration_id: 0,
+        parent_block_hash: Some(B256::ZERO),
+        parent_beacon_block_root: Some(B256::ZERO),
     };
 
     let queue_tx = queue::QueueTransaction {
@@ -295,6 +305,8 @@ async fn test_tx_block_mismatch_yields_validation_error() {
     let queue_iteration_1 = queue::NewIteration {
         block_env: block_env_1,
         iteration_id: 0,
+        parent_block_hash: Some(B256::ZERO),
+        parent_beacon_block_root: Some(B256::ZERO),
     };
     engine.process_iteration(&queue_iteration_1).unwrap();
 
@@ -325,6 +337,8 @@ async fn test_tx_block_mismatch_yields_validation_error() {
     let queue_iteration_mismatch = queue::NewIteration {
         block_env: block_env_mismatched,
         iteration_id: 0,
+        parent_block_hash: Some(B256::ZERO),
+        parent_beacon_block_root: Some(B256::ZERO),
     };
     let iteration_result = engine.process_iteration(&queue_iteration_mismatch);
     assert!(
@@ -433,7 +447,6 @@ async fn test_execute_assertion_passing_failing_pair(mut instance: crate::utils:
 async fn test_assertion_invalid_tx_count_matches_sent_no_reorg(
     mut instance: crate::utils::LocalInstance,
 ) {
-    let initial_cache_resets = instance.cache_reset_count();
     let basefee = 10u64;
     let caller = counter_call().caller;
     let tx_block_number = instance.block_number + U256::from(1);
@@ -457,6 +470,10 @@ async fn test_assertion_invalid_tx_count_matches_sent_no_reorg(
         .send_block_with_txs(vec![(hash_pass, tx_pass), (hash_fail, tx_fail)])
         .await
         .unwrap();
+
+    // Capture cache resets after initial setup. The first send_block_with_txs() may cause one reset
+    // because CommitHead arrives before any NewIteration exists for that block.
+    let initial_cache_resets = instance.cache_reset_count();
 
     let tx_pass_id = TxExecutionId {
         block_number: tx_block_number,
@@ -503,7 +520,6 @@ async fn test_assertion_invalid_tx_count_matches_sent_no_reorg(
 async fn test_assertion_invalid_tx_reorg_keeps_count_in_sync(
     mut instance: crate::utils::LocalInstance,
 ) {
-    let initial_cache_resets = instance.cache_reset_count();
     let basefee = 10u64;
     let caller = counter_call().caller;
     let tx_block_number = instance.block_number + U256::from(1);
@@ -536,6 +552,10 @@ async fn test_assertion_invalid_tx_reorg_keeps_count_in_sync(
         ])
         .await
         .unwrap();
+
+    // Capture cache resets after initial setup. The first send_block_with_txs() may cause one reset
+    // because CommitHead arrives before any NewIteration exists for that block.
+    let initial_cache_resets = instance.cache_reset_count();
 
     let tx_pass_id = TxExecutionId {
         block_number: tx_block_number,
@@ -793,13 +813,15 @@ async fn test_core_engine_reorg_valid_then_previous_rejected(
 async fn test_core_engine_reorg_followed_by_blockenv_with_last_tx_hash(
     mut instance: crate::utils::LocalInstance,
 ) {
-    let initial_cache_resets = instance.cache_reset_count();
-
     // Start by sending a block environment so subsequent dry transactions share the same block.
     instance
         .new_block()
         .await
         .expect("initial blockenv should be accepted");
+
+    // Capture cache resets after initial setup. The first new_block() may cause one reset
+    // because CommitHead arrives before any NewIteration exists for that block.
+    let initial_cache_resets = instance.cache_reset_count();
 
     // Send two transactions without new blockenvs so they belong to the same block.
     let tx1 = instance
@@ -1681,7 +1703,12 @@ async fn test_canonical_db_nonce_committed_on_commit_head() {
         ..Default::default()
     };
     engine
-        .process_iteration(&NewIteration::new(1, block_env))
+        .process_iteration(&NewIteration::new(
+            1,
+            block_env,
+            Some(B256::ZERO),
+            Some(B256::ZERO),
+        ))
         .unwrap();
 
     let tx_hash = B256::from([0x42; 32]);
@@ -1838,7 +1865,12 @@ async fn test_canonical_db_nonce_committed_after_initial_empty_block() {
         ..Default::default()
     };
     engine
-        .process_iteration(&NewIteration::new(1, block_env_2))
+        .process_iteration(&NewIteration::new(
+            1,
+            block_env_2,
+            Some(B256::ZERO),
+            Some(B256::ZERO),
+        ))
         .unwrap();
 
     let tx_hash = B256::from([0x42; 32]);
@@ -1976,61 +2008,6 @@ async fn test_all_tx_types(mut instance: crate::utils::LocalInstance) {
     instance.send_all_tx_types().await.unwrap();
 }
 
-#[crate::utils::engine_test(http)]
-async fn test_block_env_transaction_number_greater_than_zero_and_no_last_tx_hash(
-    mut instance: crate::utils::LocalInstance,
-) {
-    // Send and verify a reverting CREATE transaction
-    let tx_execution_id = instance
-        .send_successful_create_tx(uint!(0_U256), Bytes::new())
-        .await
-        .unwrap();
-
-    assert!(
-        instance
-            .is_transaction_successful(&tx_execution_id)
-            .await
-            .unwrap(),
-        "Transaction should execute successfully and pass assertions"
-    );
-
-    instance.transport.set_last_tx_hash(None);
-
-    // Send a blockEnv with the wrong number of transactions
-    let res = instance.new_block().await;
-
-    assert!(res.is_err());
-}
-
-#[crate::utils::engine_test(http)]
-async fn test_block_env_transaction_number_zero_and_last_tx_hash(
-    mut instance: crate::utils::LocalInstance,
-) {
-    // Send and verify a reverting CREATE transaction
-    let tx_execution_id = instance
-        .send_successful_create_tx(uint!(0_U256), Bytes::new())
-        .await
-        .unwrap();
-
-    assert!(
-        instance
-            .is_transaction_successful(&tx_execution_id)
-            .await
-            .unwrap(),
-        "Transaction should execute successfully and pass assertions"
-    );
-
-    instance
-        .transport
-        .set_last_tx_hash(Some(tx_execution_id.tx_hash));
-    instance.transport.set_n_transactions(0);
-
-    // Send a blockEnv with the wrong number of transactions
-    let res = instance.new_block().await;
-
-    assert!(res.is_err());
-}
-
 #[tokio::test]
 async fn test_failed_transaction_commit() {
     let (mut engine, _) = create_test_engine().await;
@@ -2083,9 +2060,10 @@ async fn test_failed_transaction_commit() {
 async fn test_iteration_selection_and_commit(mut instance: crate::utils::LocalInstance) {
     info!("Testing multiple iterations with winner selection");
 
-    let initial_cache_count = instance.cache_reset_count();
-
     instance.new_block().await.unwrap();
+
+    // Capture cache count after initial setup (first new_block may cause one reset)
+    let initial_cache_count = instance.cache_reset_count();
 
     // Send transactions with different iteration IDs in Block 1
     instance.new_iteration(1).await.unwrap();
@@ -2977,6 +2955,467 @@ async fn test_storage_slot_persistence_intra_and_cross_block(
     );
 }
 
+fn selector_bytes(signature: &str) -> Bytes {
+    let hash = keccak256(signature.as_bytes());
+    Bytes::from(hash[..4].to_vec())
+}
+
+fn event_topic(signature: &str) -> B256 {
+    keccak256(signature.as_bytes())
+}
+
+fn decode_u256_word(data: &[u8], index: usize) -> U256 {
+    let start = index * 32;
+    let end = start + 32;
+    let word: [u8; 32] = data[start..end].try_into().expect("word must be 32 bytes");
+    U256::from_be_bytes::<32>(word)
+}
+
+fn decode_b256_word(data: &[u8], index: usize) -> B256 {
+    let start = index * 32;
+    let end = start + 32;
+    let word: [u8; 32] = data[start..end].try_into().expect("word must be 32 bytes");
+    B256::from(word)
+}
+
+fn decode_bool_word(data: &[u8], index: usize) -> bool {
+    decode_u256_word(data, index) == U256::from(1)
+}
+
+fn find_event_log(logs: &[Log], address: Address, topic0: B256) -> Option<&Log> {
+    logs.iter().find(|log| {
+        log.address == address && log.topics().first().is_some_and(|topic| *topic == topic0)
+    })
+}
+
+fn find_last_event_log(logs: &[Log], address: Address, topic0: B256) -> Option<&Log> {
+    logs.iter().rev().find(|log| {
+        log.address == address && log.topics().first().is_some_and(|topic| *topic == topic0)
+    })
+}
+
+#[crate::utils::engine_test(all)]
+async fn test_eip4788_contract_reads_beacon_root(mut instance: crate::utils::LocalInstance) {
+    instance.new_block().await.unwrap();
+    instance.new_iteration(1).await.unwrap();
+
+    let constructor_bytecode = bytecode("BeaconRootTiming.sol:BeaconRootTiming");
+    let deploy_tx = instance
+        .send_successful_create_tx_dry(uint!(0_U256), constructor_bytecode)
+        .await
+        .unwrap();
+    assert!(
+        instance
+            .is_transaction_successful(&deploy_tx)
+            .await
+            .unwrap()
+    );
+
+    let contract_address = instance.default_account().create(0);
+
+    let expected_root = B256::repeat_byte(0x11);
+    let expected_hash = B256::repeat_byte(0xaa);
+    instance
+        .new_block_with_hashes(expected_hash, Some(expected_root))
+        .await
+        .unwrap();
+    instance.new_iteration(1).await.unwrap();
+
+    let call_tx = instance
+        .send_call_tx_dry(contract_address, uint!(0_U256), selector_bytes("check()"))
+        .await
+        .unwrap();
+
+    let result = instance
+        .wait_for_transaction_processed(&call_tx)
+        .await
+        .unwrap();
+    let (execution_result, is_valid) = match result {
+        TransactionResult::ValidationCompleted {
+            execution_result,
+            is_valid,
+        } => (execution_result, is_valid),
+        TransactionResult::ValidationError(error) => {
+            panic!("transaction failed validation: {error}")
+        }
+    };
+    assert!(is_valid, "transaction should be valid");
+
+    let logs = match execution_result {
+        ExecutionResult::Success { logs, .. } => logs,
+        other => panic!("expected success, got {other:?}"),
+    };
+
+    let topic0 = event_topic("Result(uint256,uint256,bool,bytes32)");
+    let log = find_event_log(&logs, contract_address, topic0)
+        .expect("expected BeaconRootTiming Result event");
+
+    let data = log.data.data.as_ref();
+    assert_eq!(
+        data.len(),
+        32 * 4,
+        "unexpected BeaconRootTiming event data length"
+    );
+
+    let returned_root = decode_b256_word(data, 3);
+    let call_success = decode_bool_word(data, 2);
+
+    assert!(call_success, "staticcall to beacon roots should succeed");
+    assert_eq!(
+        returned_root, expected_root,
+        "beacon root should match system call update"
+    );
+
+    let call_last_tx = instance
+        .send_call_tx_dry(
+            contract_address,
+            uint!(0_U256),
+            selector_bytes("check_last()"),
+        )
+        .await
+        .unwrap();
+
+    let result_last = instance
+        .wait_for_transaction_processed(&call_last_tx)
+        .await
+        .unwrap();
+    let (execution_result, is_valid) = match result_last {
+        TransactionResult::ValidationCompleted {
+            execution_result,
+            is_valid,
+        } => (execution_result, is_valid),
+        TransactionResult::ValidationError(error) => {
+            panic!("transaction failed validation: {error}")
+        }
+    };
+    assert!(is_valid, "transaction should be valid");
+
+    let logs = match execution_result {
+        ExecutionResult::Success { logs, .. } => logs,
+        other => panic!("expected success, got {other:?}"),
+    };
+
+    let topic0 = event_topic("ResultLast(uint256,uint256,uint256,bool,bytes32)");
+    let log = find_event_log(&logs, contract_address, topic0)
+        .expect("expected BeaconRootTiming ResultLast event");
+
+    let data = log.data.data.as_ref();
+    assert_eq!(
+        data.len(),
+        32 * 5,
+        "unexpected BeaconRootTiming ResultLast event data length"
+    );
+
+    let call_success = decode_bool_word(data, 3);
+    let returned_root = decode_b256_word(data, 4);
+    assert!(
+        !call_success && returned_root.is_zero(),
+        "check_last should fail until the ring buffer has filled"
+    );
+}
+
+#[crate::utils::engine_test(all)]
+async fn test_eip2935_contract_reads_block_hash(mut instance: crate::utils::LocalInstance) {
+    instance.new_block().await.unwrap();
+    instance.new_iteration(1).await.unwrap();
+
+    let constructor_bytecode = bytecode("BlockHashTiming.sol:BlockHashTiming");
+    let deploy_tx = instance
+        .send_successful_create_tx_dry(uint!(0_U256), constructor_bytecode)
+        .await
+        .unwrap();
+    assert!(
+        instance
+            .is_transaction_successful(&deploy_tx)
+            .await
+            .unwrap()
+    );
+
+    let contract_address = instance.default_account().create(0);
+
+    let expected_hash = B256::repeat_byte(0xbb);
+    let expected_root = B256::repeat_byte(0x22);
+    instance
+        .new_block_with_hashes(expected_hash, Some(expected_root))
+        .await
+        .unwrap();
+    instance.new_iteration(1).await.unwrap();
+
+    let call_tx = instance
+        .send_call_tx_dry(contract_address, uint!(0_U256), selector_bytes("check()"))
+        .await
+        .unwrap();
+
+    let result = instance
+        .wait_for_transaction_processed(&call_tx)
+        .await
+        .unwrap();
+    let (execution_result, is_valid) = match result {
+        TransactionResult::ValidationCompleted {
+            execution_result,
+            is_valid,
+        } => (execution_result, is_valid),
+        TransactionResult::ValidationError(error) => {
+            panic!("transaction failed validation: {error}")
+        }
+    };
+    assert!(is_valid, "transaction should be valid");
+
+    let logs = match execution_result {
+        ExecutionResult::Success { logs, .. } => logs,
+        other => panic!("expected success, got {other:?}"),
+    };
+
+    let topic0 = event_topic("Result(uint256,uint256,bool,bytes32,bytes32)");
+    let log = find_event_log(&logs, contract_address, topic0)
+        .expect("expected BlockHashTiming Result event");
+
+    let data = log.data.data.as_ref();
+    assert_eq!(
+        data.len(),
+        32 * 5,
+        "unexpected BlockHashTiming event data length"
+    );
+
+    let returned_hash = decode_b256_word(data, 3);
+    let expected_hash_from_opcode = decode_b256_word(data, 4);
+    let call_success = decode_bool_word(data, 2);
+
+    assert!(call_success, "staticcall to history storage should succeed");
+    assert_eq!(
+        returned_hash, expected_hash,
+        "history storage should return the parent block hash"
+    );
+    assert_eq!(
+        expected_hash_from_opcode, expected_hash,
+        "BLOCKHASH opcode should match history storage hash"
+    );
+
+    let call_last_tx = instance
+        .send_call_tx_dry(
+            contract_address,
+            uint!(0_U256),
+            selector_bytes("check_last()"),
+        )
+        .await
+        .unwrap();
+
+    let result_last = instance
+        .wait_for_transaction_processed(&call_last_tx)
+        .await
+        .unwrap();
+    let (execution_result, is_valid) = match result_last {
+        TransactionResult::ValidationCompleted {
+            execution_result,
+            is_valid,
+        } => (execution_result, is_valid),
+        TransactionResult::ValidationError(error) => {
+            panic!("transaction failed validation: {error}")
+        }
+    };
+    assert!(is_valid, "transaction should be valid");
+
+    let logs = match execution_result {
+        ExecutionResult::Success { logs, .. } => logs,
+        other => panic!("expected success, got {other:?}"),
+    };
+
+    let topic0 = event_topic("Result(uint256,uint256,bool,bytes32,bytes32)");
+    let log = find_last_event_log(&logs, contract_address, topic0)
+        .expect("expected BlockHashTiming Result event");
+
+    let data = log.data.data.as_ref();
+    assert_eq!(
+        data.len(),
+        32 * 5,
+        "unexpected BlockHashTiming Result event data length"
+    );
+
+    let call_success = decode_bool_word(data, 2);
+    let returned_hash = decode_b256_word(data, 3);
+    let expected_hash_from_opcode = decode_b256_word(data, 4);
+    assert!(
+        !call_success && returned_hash.is_zero() && expected_hash_from_opcode.is_zero(),
+        "check_last should fail until the history window has filled"
+    );
+}
+
+#[crate::utils::engine_test(all)]
+async fn test_eip4788_with_skipped_slot_timestamps(mut instance: crate::utils::LocalInstance) {
+    let base_timestamp = U256::from(1_234_567_890u64);
+    let block_1_timestamp = base_timestamp + U256::from(10u64);
+    let block_2_timestamp = base_timestamp + U256::from(1_000u64);
+
+    instance.set_block_timestamp(U256::from(1u64), block_1_timestamp);
+    instance.set_block_timestamp(U256::from(2u64), block_2_timestamp);
+
+    instance.new_block().await.unwrap();
+    instance.new_iteration(1).await.unwrap();
+
+    let beacon_bytecode = bytecode("BeaconRootTiming.sol:BeaconRootTiming");
+
+    let deploy_beacon = instance
+        .send_successful_create_tx_dry(uint!(0_U256), beacon_bytecode)
+        .await
+        .unwrap();
+    assert!(
+        instance
+            .is_transaction_successful(&deploy_beacon)
+            .await
+            .unwrap()
+    );
+
+    let beacon_address = instance.default_account().create(0);
+
+    let parent_hash = B256::repeat_byte(0x55);
+    let parent_root = B256::repeat_byte(0x66);
+    instance
+        .new_block_with_hashes(parent_hash, Some(parent_root))
+        .await
+        .unwrap();
+    instance.new_iteration(1).await.unwrap();
+
+    let beacon_check = instance
+        .send_call_tx_dry(beacon_address, uint!(0_U256), selector_bytes("check()"))
+        .await
+        .unwrap();
+
+    let beacon_result = instance
+        .wait_for_transaction_processed(&beacon_check)
+        .await
+        .unwrap();
+    let (execution_result, is_valid) = match beacon_result {
+        TransactionResult::ValidationCompleted {
+            execution_result,
+            is_valid,
+        } => (execution_result, is_valid),
+        TransactionResult::ValidationError(error) => {
+            panic!("transaction failed validation: {error}")
+        }
+    };
+    assert!(is_valid, "transaction should be valid");
+
+    let logs = match execution_result {
+        ExecutionResult::Success { logs, .. } => logs,
+        other => panic!("expected success, got {other:?}"),
+    };
+
+    let topic0 = event_topic("Result(uint256,uint256,bool,bytes32)");
+    let log = find_event_log(&logs, beacon_address, topic0)
+        .expect("expected BeaconRootTiming Result event");
+
+    let data = log.data.data.as_ref();
+    assert_eq!(
+        data.len(),
+        32 * 4,
+        "unexpected BeaconRootTiming event data length"
+    );
+
+    let call_success = decode_bool_word(data, 2);
+    let returned_root = decode_b256_word(data, 3);
+    assert!(
+        call_success,
+        "staticcall to beacon roots should succeed even with skipped slots"
+    );
+    assert_eq!(
+        returned_root, parent_root,
+        "beacon root should match system call update with skipped slots"
+    );
+
+    assert!(
+        call_success,
+        "staticcall to beacon roots should succeed even with skipped slots"
+    );
+    assert_eq!(
+        returned_root, parent_root,
+        "beacon root should match system call update with skipped slots"
+    );
+}
+
+#[crate::utils::engine_test(all)]
+async fn test_eip2935_with_skipped_slot_timestamps(mut instance: crate::utils::LocalInstance) {
+    let base_timestamp = U256::from(1_234_567_890u64);
+    let block_1_timestamp = base_timestamp + U256::from(10u64);
+    let block_2_timestamp = base_timestamp + U256::from(1_000u64);
+
+    instance.set_block_timestamp(U256::from(1u64), block_1_timestamp);
+    instance.set_block_timestamp(U256::from(2u64), block_2_timestamp);
+
+    instance.new_block().await.unwrap();
+    instance.new_iteration(1).await.unwrap();
+
+    let blockhash_bytecode = bytecode("BlockHashTiming.sol:BlockHashTiming");
+    let deploy_blockhash = instance
+        .send_successful_create_tx_dry(uint!(0_U256), blockhash_bytecode)
+        .await
+        .unwrap();
+    assert!(
+        instance
+            .is_transaction_successful(&deploy_blockhash)
+            .await
+            .unwrap()
+    );
+
+    let blockhash_address = instance.default_account().create(0);
+
+    let parent_hash = B256::repeat_byte(0x55);
+    let parent_root = B256::repeat_byte(0x66);
+    instance
+        .new_block_with_hashes(parent_hash, Some(parent_root))
+        .await
+        .unwrap();
+    instance.new_iteration(1).await.unwrap();
+
+    let blockhash_check = instance
+        .send_call_tx_dry(blockhash_address, uint!(0_U256), selector_bytes("check()"))
+        .await
+        .unwrap();
+
+    let blockhash_result = instance
+        .wait_for_transaction_processed(&blockhash_check)
+        .await
+        .unwrap();
+    let (execution_result, is_valid) = match blockhash_result {
+        TransactionResult::ValidationCompleted {
+            execution_result,
+            is_valid,
+        } => (execution_result, is_valid),
+        TransactionResult::ValidationError(error) => {
+            panic!("transaction failed validation: {error}")
+        }
+    };
+    assert!(is_valid, "transaction should be valid");
+
+    let logs = match execution_result {
+        ExecutionResult::Success { logs, .. } => logs,
+        other => panic!("expected success, got {other:?}"),
+    };
+
+    let topic0 = event_topic("Result(uint256,uint256,bool,bytes32,bytes32)");
+    let log = find_event_log(&logs, blockhash_address, topic0)
+        .expect("expected BlockHashTiming Result event");
+
+    let data = log.data.data.as_ref();
+    assert_eq!(
+        data.len(),
+        32 * 5,
+        "unexpected BlockHashTiming event data length"
+    );
+
+    let call_success = decode_bool_word(data, 2);
+    let returned_hash = decode_b256_word(data, 3);
+    let expected_hash_from_opcode = decode_b256_word(data, 4);
+    assert!(call_success, "staticcall to history storage should succeed");
+    assert_eq!(
+        returned_hash, parent_hash,
+        "history storage should return the parent block hash"
+    );
+    assert_eq!(
+        expected_hash_from_opcode, parent_hash,
+        "BLOCKHASH opcode should match history storage hash"
+    );
+}
+
 #[crate::utils::engine_test(all)]
 async fn test_system_calls_configurations(mut instance: crate::utils::LocalInstance) {
     // Block 1: Setup
@@ -3253,7 +3692,7 @@ fn test_ring_buffer_and_slot_calculations() {
         spec_id: SpecId::PRAGUE,
         block_number: U256::from(block_number),
         timestamp: U256::from(1234567890),
-        block_hash: hash,
+        block_hash: Some(hash),
         parent_beacon_block_root: None,
     };
 
@@ -3261,8 +3700,8 @@ fn test_ring_buffer_and_slot_calculations() {
     assert!(result.is_ok());
 
     let account = db.accounts.get(&HISTORY_STORAGE_ADDRESS).unwrap();
-    // EIP-2935: slot = (block_number - 1) % HISTORY_SERVE_WINDOW = 8290 % 8191 = 99
-    let expected_slot = U256::from(99u64);
+    // EIP-2935: slot = (block_number - 1) % HISTORY_SERVE_WINDOW = 8289 % 8191 = 98
+    let expected_slot = U256::from(98u64);
     assert!(account.storage.contains_key(&expected_slot));
 
     // EIP-4788: Test with timestamp that wraps around
@@ -3274,7 +3713,7 @@ fn test_ring_buffer_and_slot_calculations() {
         spec_id: SpecId::CANCUN,
         block_number: U256::from(100),
         timestamp: U256::from(timestamp),
-        block_hash: B256::ZERO,
+        block_hash: Some(B256::ZERO),
         parent_beacon_block_root: Some(beacon_root),
     };
 
@@ -3324,11 +3763,11 @@ fn test_spec_id_activation_and_behavior() {
         spec_id: SpecId::SHANGHAI,
         block_number: U256::from(100),
         timestamp: U256::from(1234567890),
-        block_hash: B256::repeat_byte(0x11),
+        block_hash: Some(B256::repeat_byte(0x11)),
         parent_beacon_block_root: Some(B256::repeat_byte(0x22)),
     };
 
-    let result = system_calls.apply_system_calls(&config, &mut db);
+    let result = system_calls.apply_pre_tx_system_calls(&config, &mut db);
     assert!(result.is_ok());
     // Neither contract should be touched for Shanghai
     assert!(!db.accounts.contains_key(&BEACON_ROOTS_ADDRESS));
@@ -3340,11 +3779,11 @@ fn test_spec_id_activation_and_behavior() {
         spec_id: SpecId::CANCUN,
         block_number: U256::from(100),
         timestamp: U256::from(1234567890),
-        block_hash: B256::repeat_byte(0x11),
+        block_hash: Some(B256::repeat_byte(0x11)),
         parent_beacon_block_root: Some(B256::repeat_byte(0x22)),
     };
 
-    let result = system_calls.apply_system_calls(&config, &mut db);
+    let result = system_calls.apply_pre_tx_system_calls(&config, &mut db);
     assert!(result.is_ok());
     // Only beacon roots should be touched for Cancun
     assert!(db.accounts.contains_key(&BEACON_ROOTS_ADDRESS));
@@ -3356,11 +3795,11 @@ fn test_spec_id_activation_and_behavior() {
         spec_id: SpecId::PRAGUE,
         block_number: U256::from(100),
         timestamp: U256::from(1234567890),
-        block_hash: B256::repeat_byte(0x11),
+        block_hash: Some(B256::repeat_byte(0x11)),
         parent_beacon_block_root: Some(B256::repeat_byte(0x22)),
     };
 
-    let result = system_calls.apply_system_calls(&config, &mut db);
+    let result = system_calls.apply_pre_tx_system_calls(&config, &mut db);
     assert!(result.is_ok());
     // Both contracts should be touched for Prague
     assert!(db.accounts.contains_key(&BEACON_ROOTS_ADDRESS));
@@ -3435,6 +3874,8 @@ async fn test_reverted_transactions_are_counted() {
     let new_iteration = queue::NewIteration {
         block_env: block_env.clone(),
         iteration_id: 0,
+        parent_block_hash: Some(B256::ZERO),
+        parent_beacon_block_root: Some(B256::ZERO),
     };
     engine.process_iteration(&new_iteration).unwrap();
 
@@ -3506,6 +3947,8 @@ async fn test_invalid_transactions_not_counted() {
     let new_iteration = queue::NewIteration {
         block_env: block_env.clone(),
         iteration_id: 0,
+        parent_block_hash: Some(B256::ZERO),
+        parent_beacon_block_root: Some(B256::ZERO),
     };
     engine.process_iteration(&new_iteration).unwrap();
 
@@ -3566,6 +4009,8 @@ async fn test_mixed_valid_and_invalid_transactions_counting() {
     let new_iteration = queue::NewIteration {
         block_env: block_env.clone(),
         iteration_id: 0,
+        parent_block_hash: Some(B256::ZERO),
+        parent_beacon_block_root: Some(B256::ZERO),
     };
     engine.process_iteration(&new_iteration).unwrap();
 

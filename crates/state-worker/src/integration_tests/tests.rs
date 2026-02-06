@@ -327,7 +327,10 @@ async fn test_state_worker_non_consecutive_blocks_critical_alert() {
 
 #[traced_test]
 #[tokio::test]
-async fn test_state_worker_missing_state_critical_alert() {
+async fn test_state_worker_missing_state_logs_warning() {
+    // Test that a single missing block occurrence logs a warning (not critical).
+    // Critical alerts are only triggered after MAX_MISSING_BLOCK_RETRIES consecutive
+    // failures to recover from a missing block.
     let instance = TestInstance::new_mdbx()
         .await
         .expect("Failed to create MDBX test instance");
@@ -355,7 +358,8 @@ async fn test_state_worker_missing_state_critical_alert() {
     instance.http_server_mock.send_new_head_with_block_number(3);
     sleep(Duration::from_millis(50)).await;
 
-    assert!(logs_contain("critical"));
+    // Should log warning for missing block, not critical on first occurrence
+    assert!(logs_contain("Missing block"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -6,7 +6,7 @@
 use crate::{
     critical,
     genesis::GenesisState,
-    metrics::WorkerMetrics,
+    metrics,
     state::{
         BlockStateUpdateBuilder,
         TraceProvider,
@@ -47,6 +47,7 @@ use tracing::{
 };
 
 const SUBSCRIPTION_RETRY_DELAY_SECS: u64 = 5;
+const MAX_MISSING_BLOCK_RETRIES: u32 = 3;
 
 /// Coordinates block ingestion, tracing, and persistence.
 pub struct StateWorker<WR>
@@ -58,7 +59,6 @@ where
     writer_reader: WR,
     genesis_state: Option<GenesisState>,
     system_calls: SystemCalls,
-    metrics: WorkerMetrics,
 }
 
 impl<WR> StateWorker<WR>
@@ -80,7 +80,6 @@ where
             writer_reader,
             genesis_state,
             system_calls,
-            metrics: WorkerMetrics::new(),
         }
     }
 
@@ -92,6 +91,7 @@ where
         mut shutdown_rx: broadcast::Receiver<()>,
     ) -> Result<()> {
         let mut next_block = self.compute_start_block(start_override)?;
+        let mut missing_block_retries: u32 = 0;
 
         loop {
             // Check for shutdown before starting catch-up
@@ -112,6 +112,24 @@ where
                     return Ok(());
                 }
                 Err(err) => {
+                    let err_str = err.to_string();
+                    let is_missing_block = err_str.contains("Missing block");
+
+                    if is_missing_block {
+                        missing_block_retries += 1;
+
+                        if missing_block_retries >= MAX_MISSING_BLOCK_RETRIES {
+                            critical!(
+                                error = %err,
+                                retries = missing_block_retries,
+                                "failed to recover from missing block after multiple retries"
+                            );
+                        }
+                    } else {
+                        // Reset retry counter for non-missing-block errors
+                        missing_block_retries = 0;
+                    }
+
                     warn!(error = %err, "block subscription ended, retrying");
                     tokio::select! {
                         _ = shutdown_rx.recv() => {
@@ -196,9 +214,11 @@ where
                                 continue;
                             }
 
-                            // If we are missing a block, trigger a critical error
+                            // If we are missing a block, log a warning and return error.
+                            // The run() loop tracks consecutive failures and escalates to
+                            // critical if we cannot recover after MAX_MISSING_BLOCK_RETRIES.
                             if block_number > *next_block {
-                                critical!("Missing block {block_number} (next block: {next_block})");
+                                warn!("Missing block {block_number} (next block: {next_block})");
                                 return Err(anyhow!(
                                     "Missing block {block_number} (next block: {next_block})"
                                 ));
@@ -230,7 +250,7 @@ where
             Ok(update) => update,
             Err(err) => {
                 critical!(error = ?err, block_number, "failed to trace block");
-                self.metrics.record_block_failure();
+                metrics::record_block_failure();
                 return Err(anyhow!("failed to trace block {block_number}"));
             }
         };
@@ -240,11 +260,11 @@ where
 
         match self.writer_reader.commit_block(&update) {
             Ok(stats) => {
-                self.metrics.record_commit(block_number, &stats);
+                metrics::record_commit(block_number, &stats);
             }
             Err(err) => {
                 critical!(error = ?err, block_number, "failed to persist block");
-                self.metrics.record_block_failure();
+                metrics::record_block_failure();
                 return Err(anyhow!("failed to persist block {block_number}"));
             }
         }
@@ -346,11 +366,11 @@ where
 
         match self.writer_reader.commit_block(&update) {
             Ok(stats) => {
-                self.metrics.record_commit(0, &stats);
+                metrics::record_commit(0, &stats);
             }
             Err(err) => {
                 critical!(error = ?err, block_number = 0, "failed to persist genesis block");
-                self.metrics.record_block_failure();
+                metrics::record_block_failure();
                 return Err(anyhow!("failed to persist genesis block"));
             }
         }

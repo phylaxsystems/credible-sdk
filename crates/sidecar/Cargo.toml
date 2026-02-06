@@ -45,7 +45,7 @@ rustls = { workspace = true }
 metrics = { workspace = true }
 futures = { workspace = true }
 hex = { workspace = true }
-moka = { version = "0.12.11", features = ["sync"], optional = true }
+moka = { version = "0.12.11", features = ["sync"] }
 alloy-rpc-types-trace = { workspace = true, optional = true }
 url = { workspace = true }
 console-subscriber = { workspace = true, optional = true }
@@ -92,7 +92,7 @@ tokio-console = [
     "console-subscriber",
     "tokio-metrics",
 ]
-cache_validation = ["moka", "alloy-rpc-types-trace"]
+cache_validation = ["alloy-rpc-types-trace"]
 
 [package.metadata.cargo-shear]
 ignored = ["prost", "tonic-prost"]

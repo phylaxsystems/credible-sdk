@@ -41,6 +41,25 @@ sol! {
             uint256 id;
         }
 
+        // Contains data about the original assertion-triggering transaction
+        struct TxObject {
+            // The address of caller.
+            address from;
+            // Transaction recepient. `Address::ZERO` if CREATE.
+            address to;
+            // Value of the transaction.
+            uint256 value;
+            // Chain id. `0` if not present.
+            uint64 chain_id;
+            // Gas limit.
+            uint64 gas_limit;
+            // The gas price or `max_fee_per_gas` if EIP-1559.
+            uint128 gas_price;
+            // Call data.
+            bytes input;
+
+        }
+
         //Forks to the state prior to the assertion triggering transaction.
         function forkPreTx() external;
 
@@ -104,6 +123,9 @@ sol! {
 
         // Get assertion adopter contract address associated with the assertion triggering transaction.
         function getAssertionAdopter() external view returns (address);
+
+        // Returns the original transaction object that triggered the assertion.
+        function getTxObject() external view returns (TxObject memory txObject);
     }
 
     interface Console {

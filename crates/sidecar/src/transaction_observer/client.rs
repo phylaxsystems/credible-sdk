@@ -9,11 +9,20 @@ use dapp_api_client::{
 use std::sync::Arc;
 use url::Url;
 
+/// Builds the dapp client if all required configuration is present.
+///
+/// Returns `None` if either endpoint or `auth_token` is empty/missing,
+/// which disables incident publishing.
 pub(super) fn build_dapp_client(
     config: &TransactionObserverConfig,
 ) -> Result<Option<Arc<DappClient>>, TransactionObserverError> {
     let endpoint = config.endpoint.trim();
     if endpoint.is_empty() {
+        return Ok(None);
+    }
+
+    // Auth token is required for publishing
+    if config.auth_token.trim().is_empty() {
         return Ok(None);
     }
 

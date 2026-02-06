@@ -17,6 +17,7 @@ members = [
     "crates/state-worker",
     "crates/shadow-driver",
     "crates/mdbx",
+    "crates/benchmark-utils",
     "crates/state-checker",
     "crates/credible-utils",
     "crates/eip-system-calls",
@@ -27,7 +28,7 @@ resolver = "2"
 
 
 [workspace.package]
-version = "1.0.3"
+version = "1.0.7"
 edition = "2024"
 authors = ["Phylax Systems"]
 license = "BSL 1.1"
@@ -62,6 +63,7 @@ eip-system-calls = { path = "crates/eip-system-calls" }
 
 sidecar = { path = "crates/sidecar" }
 mdbx = { path = "crates/mdbx", features = ["reader"] }
+benchmark-utils = { path = "crates/benchmark-utils", features = [] }
 
 # misc
 anyhow = "1.0.100"
@@ -159,6 +161,8 @@ reth-db = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
 reth-db-api = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
 reth-libmdbx = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
 
+[workspace.metadata.cargo-shear]
+ignored = ["benchmark-utils"]
 
 # Maxperf profile for absolute maximum performance
 # Only use for builds that are going to get used by end users

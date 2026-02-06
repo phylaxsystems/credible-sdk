@@ -122,6 +122,12 @@ impl DatabaseRef for JsonRpcDb {
             let nonce = nonce_result.map_err(|e| JsonRpcDbError::Provider(Box::new(e)))?;
             let code = code_result.map_err(|e| JsonRpcDbError::Provider(Box::new(e)))?;
 
+            // JSON-RPC returns zeros for non-existent accounts; treat them as None ie not found.
+            // TODO: Replace with `eth_getProof` - EIP-1186 - when EIP-7702 is enabled on Linea.
+            if balance.is_zero() && nonce == 0 && code.is_empty() {
+                return Ok(None);
+            }
+
             let code_hash = if code.is_empty() {
                 revm::primitives::KECCAK_EMPTY
             } else {

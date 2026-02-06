@@ -971,14 +971,15 @@ mod tests {
         assert!(result.is_err(), "Should fail with an invalid image");
     }
 
-    #[allow(clippy::case_sensitive_file_extension_comparisons)]
     #[tokio::test]
     async fn test_solidity_source_file() {
         let source_code = "contract Test {}";
         let source_file = SoliditySourceFile::new(source_code).unwrap();
 
         assert!(
-            source_file.file_name().ends_with(".sol"),
+            std::path::Path::new(source_file.file_name())
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("sol")),
             "File should have .sol extension"
         );
         assert!(

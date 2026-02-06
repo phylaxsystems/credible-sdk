@@ -50,14 +50,17 @@ impl Eip2935 {
     #[inline]
     #[must_use]
     pub fn slot(block_number: u64) -> U256 {
-        U256::from(block_number % Self::RING_BUFFER_SIZE)
+        // At block N, store parent hash (block N-1) at slot (N-1) % HISTORY_SERVE_WINDOW
+        let parent_block_number = block_number.saturating_sub(1);
+        U256::from(parent_block_number % Self::RING_BUFFER_SIZE)
     }
 
     /// Calculate the storage slot from U256.
     #[inline]
     #[must_use]
     pub fn slot_u256(block_number: U256) -> U256 {
-        block_number % U256::from(Self::RING_BUFFER_SIZE)
+        let parent_block_number = block_number.saturating_sub(U256::from(1));
+        parent_block_number % U256::from(Self::RING_BUFFER_SIZE)
     }
 
     /// Convert block hash to storage value.

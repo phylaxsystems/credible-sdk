@@ -152,10 +152,12 @@ mod test {
         let pre_tx_db = ForkDb::new(mock_db);
         let mut multi_fork_db = MultiForkDb::new(pre_tx_db, &JournalInner::new());
         let context = revm::handler::MainnetContext::new(&mut multi_fork_db, SpecId::default());
+        let tx_env = crate::primitives::TxEnv::default();
         let ph_context = PhEvmContext {
             logs_and_traces: &logs_and_traces,
             adopter: Address::ZERO,
             console_logs: vec![],
+            original_tx_env: &tx_env,
         };
         let input = call_inputs.input.bytes(&context);
         let inputs = getCallInputsCall::abi_decode(&input).unwrap();

@@ -124,7 +124,7 @@ impl SystemCalls {
 
         let address_hash = AddressHash::from(keccak256(Eip2935::ADDRESS));
 
-        // Storage slot = block_number % HISTORY_SERVE_WINDOW
+        // Storage slot = (block_number - 1) % HISTORY_SERVE_WINDOW (parent hash)
         let slot = Eip2935::slot(config.block_number);
         let value = Eip2935::hash_to_value(parent_hash);
 
@@ -275,8 +275,8 @@ mod tests {
             .find(|s| s.address_hash == AddressHash::from(keccak256(Eip2935::ADDRESS)))
             .expect("EIP-2935 state should exist");
 
-        // Slot = 100 % 8191 = 100
-        let expected_slot = Eip2935::slot(100);
+        // Slot = (100 - 1) % 8191 = 99
+        let expected_slot = Eip2935::slot(99);
         let expected_slot_key = keccak256(expected_slot.to_be_bytes::<32>());
         assert!(eip2935_state.storage.contains_key(&expected_slot_key));
 
@@ -411,8 +411,8 @@ mod tests {
             .find(|s| s.address_hash == AddressHash::from(keccak256(Eip2935::ADDRESS)))
             .unwrap();
 
-        // (8191 + 99) % 8191 = 99
-        let expected_slot = Eip2935::slot(block_number);
+        // (8191 + 99 - 1) % 8191 = 98
+        let expected_slot = Eip2935::slot(98);
         let expected_slot_key = keccak256(expected_slot.to_be_bytes::<32>());
         assert!(eip2935_state.storage.contains_key(&expected_slot_key));
     }

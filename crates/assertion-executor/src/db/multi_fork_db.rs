@@ -206,16 +206,19 @@ impl<ExtDb: DatabaseRef> MultiForkDb<ExtDb> {
             ForkId::PreCall(call_id) => {
                 let mut pre_call_journal = self.post_tx_journal.clone();
                 pre_call_journal.depth += 1;
-                pre_call_journal.checkpoint_revert(call_tracer.pre_call_checkpoints[call_id]);
+                let checkpoint = call_tracer
+                    .get_pre_call_checkpoint(call_id)
+                    .ok_or(MultiForkError::PostCallCheckpointNotFound)?;
+                pre_call_journal.checkpoint_revert(checkpoint);
                 Ok(pre_call_journal)
             }
             ForkId::PostCall(call_id) => {
                 let mut post_call_journal = self.post_tx_journal.clone();
                 post_call_journal.depth += 1;
-                post_call_journal.checkpoint_revert(
-                    call_tracer.post_call_checkpoints[call_id]
-                        .ok_or(MultiForkError::PostCallCheckpointNotFound)?,
-                );
+                let checkpoint = call_tracer
+                    .get_post_call_checkpoint(call_id)
+                    .ok_or(MultiForkError::PostCallCheckpointNotFound)?;
+                post_call_journal.checkpoint_revert(checkpoint);
                 Ok(post_call_journal)
             }
         }
