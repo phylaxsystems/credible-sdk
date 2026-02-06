@@ -78,10 +78,6 @@ use crate::{
         ReconstructableTx,
     },
 };
-use assertion_executor::primitives::{
-    EVMError,
-    TxValidationResult,
-};
 use std::{
     fmt::Debug,
     sync::{
@@ -97,13 +93,12 @@ use std::{
     },
 };
 use tokio::sync::oneshot;
-
-#[allow(unused_imports)]
 use assertion_executor::{
     AssertionExecutor,
     ExecutorConfig,
     db::overlay::OverlayDb,
-    primitives::ExecutionResult,
+    primitives::{    EVMError,
+    TxValidationResult, ExecutionResult},
     store::{
         AssertionState,
         AssertionStore,
