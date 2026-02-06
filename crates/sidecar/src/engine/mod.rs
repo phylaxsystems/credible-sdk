@@ -585,6 +585,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             status,
             gas_used = execution_result.gas_used(),
             processing_duration = ?processing_duration,
+            assertion_execution_duration = ?rax.assertion_execution_duration,
             "Transaction processed"
         );
 
@@ -786,6 +787,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         // Commit transaction metrics
         let mut tx_metrics = TransactionMetrics::new();
         tx_metrics.transaction_processing_duration = processing_duration;
+        tx_metrics.assertion_execution_duration = rax.assertion_execution_duration;
         tx_metrics.assertions_per_transaction = assertions_ran;
         tx_metrics.assertion_gas_per_transaction = assertions_gas;
         tx_metrics.commit();

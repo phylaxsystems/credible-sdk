@@ -83,6 +83,8 @@ pub struct TxValidationResult {
     pub result_and_state: ResultAndState,
     /// Results of the assertions executions
     pub assertions_executions: Vec<AssertionContractExecution>,
+    /// Duration spent executing assertions for the transaction
+    pub assertion_execution_duration: std::time::Duration,
 }
 
 impl TxValidationResult {
@@ -91,11 +93,13 @@ impl TxValidationResult {
         transaction_valid: bool,
         result_and_state: ResultAndState,
         assertions_executions: Vec<AssertionContractExecution>,
+        assertion_execution_duration: std::time::Duration,
     ) -> Self {
         Self {
             transaction_valid,
             result_and_state,
             assertions_executions,
+            assertion_execution_duration,
         }
     }
     /// Whether the transaction is valid
