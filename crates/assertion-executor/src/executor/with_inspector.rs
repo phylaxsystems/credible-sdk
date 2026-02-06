@@ -4,7 +4,10 @@
 //! a custom inspector, allowing observation of both transaction execution and
 //! assertion execution with independent inspectors.
 
-use std::sync::atomic::AtomicU64;
+use std::{
+    sync::atomic::AtomicU64,
+    time::Instant,
+};
 
 use crate::{
     constants::{
@@ -129,20 +132,33 @@ impl AssertionExecutor {
         if !exec_result.is_success() {
             debug!(target: "assertion-executor::validate_tx", "Transaction execution failed, skipping assertions");
             return Ok(TxValidationResultWithInspectors {
-                result: TxValidationResult::new(true, forked_tx_result.result_and_state, vec![]),
+                result: TxValidationResult::new(
+                    true,
+                    forked_tx_result.result_and_state,
+                    vec![],
+                    std::time::Duration::ZERO,
+                ),
                 inspectors: vec![tx_inspector],
             });
         }
         debug!(target: "assertion-executor::validate_tx", gas_used=exec_result.gas_used(), "Transaction execution succeeded.");
 
+        let assertion_timer = Instant::now();
         let (results, assertion_inspectors) = self
-            .execute_assertions_with_inspector(block_env, tx_fork_db, &forked_tx_result, inspector)
+            .execute_assertions_with_inspector(
+                block_env,
+                tx_fork_db,
+                &forked_tx_result,
+                tx_env,
+                inspector,
+            )
             .map_err(|e| {
                 ExecutorError::AssertionExecutionError(
                     forked_tx_result.result_and_state.state.clone(),
                     e,
                 )
             })?;
+        let assertion_execution_duration = assertion_timer.elapsed();
 
         // Combine inspectors: tx inspector first, then assertion inspectors
         let mut all_inspectors = vec![tx_inspector];
@@ -153,7 +169,12 @@ impl AssertionExecutor {
             trace!(target: "assertion-executor::validate_tx", "Committing state changes to fork db");
             fork_db.commit(forked_tx_result.result_and_state.state.clone());
             return Ok(TxValidationResultWithInspectors {
-                result: TxValidationResult::new(true, forked_tx_result.result_and_state, vec![]),
+                result: TxValidationResult::new(
+                    true,
+                    forked_tx_result.result_and_state,
+                    vec![],
+                    assertion_execution_duration,
+                ),
                 inspectors: all_inspectors,
             });
         }
@@ -195,7 +216,12 @@ impl AssertionExecutor {
         }
 
         Ok(TxValidationResultWithInspectors {
-            result: TxValidationResult::new(valid, forked_tx_result.result_and_state, results),
+            result: TxValidationResult::new(
+                valid,
+                forked_tx_result.result_and_state,
+                results,
+                assertion_execution_duration,
+            ),
             inspectors: all_inspectors,
         })
     }
@@ -253,6 +279,7 @@ impl AssertionExecutor {
         block_env: BlockEnv,
         tx_fork_db: ForkDb<Active>,
         forked_tx_result: &ExecuteForkedTxResult,
+        tx_env: &TxEnv,
         inspector: I,
     ) -> Result<
         (Vec<AssertionContractExecution>, Vec<I>),
@@ -300,8 +327,11 @@ impl AssertionExecutor {
                         (AssertionContractExecution, Vec<I>),
                         AssertionExecutionError<<Active as DatabaseRef>::Error>,
                     > {
-                        let phevm_context =
-                            PhEvmContext::new(&logs_and_traces, assertion_for_execution.adopter);
+                        let phevm_context = PhEvmContext::new(
+                            &logs_and_traces,
+                            assertion_for_execution.adopter,
+                            tx_env,
+                        );
 
                         self.run_assertion_contract_with_inspector(
                             &assertion_for_execution.assertion_contract,
