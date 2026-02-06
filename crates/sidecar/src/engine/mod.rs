@@ -304,12 +304,6 @@ impl ExecutedTx {
     }
 }
 
-impl From<TxExecutionId> for ExecutedTx {
-    fn from(id: TxExecutionId) -> Self {
-        Self::Invalid(id)
-    }
-}
-
 impl<DB> BlockIterationData<DB> {
     /// Returns the number of executed transactions in this iteration, including validation errors.
     #[inline]

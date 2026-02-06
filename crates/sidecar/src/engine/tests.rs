@@ -253,6 +253,11 @@ fn record_validation_result(
         .add_transaction_result(tx_execution_id, &result);
 }
 
+/// Creates an `ExecutedTx::Invalid` entry for test setup.
+fn invalid_tx(id: TxExecutionId) -> ExecutedTx {
+    ExecutedTx::Invalid(id)
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_core_engine_errors_when_no_synced_sources() {
     let (engine, tx_sender) = create_test_engine_with_timeout(Duration::from_millis(10)).await;
@@ -928,7 +933,7 @@ async fn test_execute_reorg_depth_truncates_tail() {
 
     let current_block_iteration_id = BlockIterationData {
         version_db,
-        executed_txs: vec![tx1.into(), tx2.into(), tx3.into()],
+        executed_txs: vec![invalid_tx(tx1), invalid_tx(tx2), invalid_tx(tx3)],
         executed_state_deltas: Vec::new(),
         block_env: BlockEnv {
             number: block_number,
@@ -955,7 +960,7 @@ async fn test_execute_reorg_depth_truncates_tail() {
         .current_block_iterations
         .get(&block_execution_id)
         .expect("block iteration should exist");
-    assert_eq!(current_block_iteration.executed_txs, vec![tx1.into()]);
+    assert_eq!(current_block_iteration.executed_txs, vec![invalid_tx(tx1)]);
     assert_eq!(current_block_iteration.depth(), 1);
     assert_eq!(current_block_iteration.len(), 1);
 }
@@ -1005,7 +1010,7 @@ async fn test_execute_reorg_with_failed_tx_in_remaining_commit_log() {
 
     let current_block_iteration_data = BlockIterationData {
         version_db,
-        executed_txs: vec![tx1.into(), tx2.into(), tx3.into()],
+        executed_txs: vec![invalid_tx(tx1), invalid_tx(tx2), invalid_tx(tx3)],
         executed_state_deltas: Vec::new(),
         block_env: BlockEnv {
             number: block_number,
@@ -1040,7 +1045,7 @@ async fn test_execute_reorg_with_failed_tx_in_remaining_commit_log() {
         .expect("block iteration should exist");
     assert_eq!(
         current_block_iteration.executed_txs,
-        vec![tx1.into(), tx2.into()]
+        vec![invalid_tx(tx1), invalid_tx(tx2)]
     );
     assert_eq!(current_block_iteration.depth(), 2);
     assert_eq!(current_block_iteration.len(), 2);
@@ -1080,7 +1085,7 @@ async fn test_execute_reorg_missing_transaction_result_not_counted_valid() {
 
     let current_block_iteration_data = BlockIterationData {
         version_db,
-        executed_txs: vec![tx1.into(), tx2.into()],
+        executed_txs: vec![invalid_tx(tx1), invalid_tx(tx2)],
         executed_state_deltas: Vec::new(),
         block_env: BlockEnv {
             number: block_number,
@@ -1109,7 +1114,7 @@ async fn test_execute_reorg_missing_transaction_result_not_counted_valid() {
         .current_block_iterations
         .get(&block_execution_id)
         .expect("block iteration should exist");
-    assert_eq!(current_block_iteration.executed_txs, vec![tx1.into()]);
+    assert_eq!(current_block_iteration.executed_txs, vec![invalid_tx(tx1)]);
     assert_eq!(current_block_iteration.len(), 1);
 }
 
@@ -1156,7 +1161,7 @@ async fn test_execute_reorg_removes_all_transactions() {
 
     let current_block_iteration_data = BlockIterationData {
         version_db,
-        executed_txs: vec![tx1.into(), tx2.into(), tx3.into()],
+        executed_txs: vec![invalid_tx(tx1), invalid_tx(tx2), invalid_tx(tx3)],
         executed_state_deltas: Vec::new(),
         block_env: BlockEnv {
             number: block_number,
@@ -1232,7 +1237,7 @@ async fn test_execute_reorg_with_all_failed_transactions() {
 
     let current_block_iteration_data = BlockIterationData {
         version_db,
-        executed_txs: vec![tx1.into(), tx2.into()],
+        executed_txs: vec![invalid_tx(tx1), invalid_tx(tx2)],
         executed_state_deltas: Vec::new(),
         block_env: BlockEnv {
             number: block_number,
@@ -1263,7 +1268,7 @@ async fn test_execute_reorg_with_all_failed_transactions() {
         .current_block_iterations
         .get(&block_execution_id)
         .expect("block iteration should exist");
-    assert_eq!(current_block_iteration.executed_txs, vec![tx1.into()]);
+    assert_eq!(current_block_iteration.executed_txs, vec![invalid_tx(tx1)]);
     assert_eq!(current_block_iteration.depth(), 1);
     assert_eq!(current_block_iteration.len(), 1);
 }
@@ -1306,7 +1311,7 @@ async fn test_execute_reorg_deep_with_alternating_success_failure() {
 
     let current_block_iteration_data = BlockIterationData {
         version_db,
-        executed_txs: txs.iter().copied().map(super::ExecutedTx::from).collect(),
+        executed_txs: txs.iter().copied().map(invalid_tx).collect(),
         executed_state_deltas: Vec::new(),
         block_env: BlockEnv {
             number: block_number,
@@ -1342,7 +1347,7 @@ async fn test_execute_reorg_deep_with_alternating_success_failure() {
         .expect("block iteration should exist");
     assert_eq!(
         current_block_iteration.executed_txs,
-        vec![txs[0].into()],
+        vec![invalid_tx(txs[0])],
         "Only TX0 should remain"
     );
     assert_eq!(current_block_iteration.depth(), 1, "Depth should be 1");
@@ -2021,7 +2026,7 @@ async fn test_failed_transaction_commit() {
 
     let current_block_iteration_id = BlockIterationData {
         version_db,
-        executed_txs: vec![tx_execution_id.into()],
+        executed_txs: vec![invalid_tx(tx_execution_id)],
         executed_state_deltas: Vec::new(),
         block_env: BlockEnv {
             number: U256::from(1),
