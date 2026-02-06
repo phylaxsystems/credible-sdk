@@ -182,7 +182,7 @@ impl<DB> CoreEngine<DB> {
     pub fn get_n_transactions(&self, block_execution_id: &BlockExecutionId) -> Option<u64> {
         self.current_block_iterations
             .get(block_execution_id)
-            .map(super::BlockIterationData::len)
+            .map(super::BlockIterationData::valid_count)
     }
 }
 

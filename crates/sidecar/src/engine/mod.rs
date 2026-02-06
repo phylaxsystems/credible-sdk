@@ -280,10 +280,16 @@ struct BlockIterationData<DB> {
 }
 
 impl<DB> BlockIterationData<DB> {
-    /// Returns the number of executed transactions in this iteration.
+    /// Returns the number of executed transactions in this iteration (including validation errors).
     #[inline]
     fn len(&self) -> u64 {
         self.executed_txs.len() as u64
+    }
+
+    /// Returns the number of successfully validated transactions (excludes validation errors).
+    #[inline]
+    fn valid_count(&self) -> u64 {
+        self.incident_txs.len() as u64
     }
 
     /// Checks if the last executed transaction matches the given transaction ID
@@ -872,7 +878,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         };
 
         let last_tx_id = data.last_tx_id();
-        let n_transactions = data.len();
+        let n_transactions = data.valid_count();
 
         // Check cheapest conditions first
         let head_mismatch =
@@ -1516,8 +1522,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
     ///
     /// ## State Rollback
     /// Uses `VersionDb::rollback_to()` to restore state to before the reorged
-    /// transactions. `n_transactions` tracks executed txs, so we decrement by
-    /// the reorg depth.
+    /// transactions.
     #[allow(clippy::too_many_lines)]
     fn execute_reorg(&mut self, reorg: &ReorgRequest) -> Result<(), EngineError> {
         let tx_execution_id = reorg.tx_execution_id;
