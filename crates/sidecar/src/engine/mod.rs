@@ -268,19 +268,52 @@ struct BlockIterationData<DB> {
     /// Versioned database managing state with rollback capability.
     /// Handles base state, current state, and commit log internally.
     version_db: VersionDb<OverlayDb<DB>>,
-    /// Ordered list of executed transactions for this iteration (used for rollback).
-    executed_txs: Vec<TxExecutionId>,
-    /// State deltas for executed transactions (used to persist canonical state in tests).
-    #[cfg(any(test, feature = "bench-utils"))]
-    executed_state_deltas: Vec<Option<EvmState>>,
-    /// Stores executed transactions for incident reporting (full tx data).
-    incident_txs: Vec<ReconstructableTx>,
+    /// List of ordered executed transactions for this iteration, used for rollback.
+    executed_txs: Vec<ExecutedTx>,
     /// Iteration `BlockEnv`
     block_env: BlockEnv,
+    /// State deltas for executed transactions, used to persist canonical state in tests.
+    #[cfg(any(test, feature = "bench-utils"))]
+    executed_state_deltas: Vec<Option<EvmState>>,
+}
+
+/// A single executed transaction entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ExecutedTx {
+    /// Carries full reconstruction data for incident reporting.
+    Valid(TxExecutionId, Box<ReconstructableTx>),
+    /// Pre-execution validation errors ie. bad nonce, insufficient funds, etc.
+    Invalid(TxExecutionId),
+}
+
+impl ExecutedTx {
+    /// Creates a valid executed transaction entry.
+    #[inline]
+    fn valid(id: TxExecutionId, tx_data: ReconstructableTx) -> Self {
+        Self::Valid(id, Box::new(tx_data))
+    }
+
+    #[inline]
+    fn id(&self) -> TxExecutionId {
+        match self {
+            Self::Valid(id, _) | Self::Invalid(id) => *id,
+        }
+    }
+
+    #[inline]
+    fn tx_hash(&self) -> TxHash {
+        self.id().tx_hash
+    }
+}
+
+impl From<TxExecutionId> for ExecutedTx {
+    fn from(id: TxExecutionId) -> Self {
+        Self::Invalid(id)
+    }
 }
 
 impl<DB> BlockIterationData<DB> {
-    /// Returns the number of executed transactions in this iteration (including validation errors).
+    /// Returns the number of executed transactions in this iteration, including validation errors.
     #[inline]
     fn len(&self) -> u64 {
         self.executed_txs.len() as u64
@@ -289,19 +322,35 @@ impl<DB> BlockIterationData<DB> {
     /// Returns the number of successfully validated transactions (excludes validation errors).
     #[inline]
     fn valid_count(&self) -> u64 {
-        self.incident_txs.len() as u64
+        self.executed_txs
+            .iter()
+            .filter(|tx| matches!(tx, ExecutedTx::Valid(..)))
+            .count() as u64
     }
 
     /// Checks if the last executed transaction matches the given transaction ID
     #[inline]
     fn has_last_tx(&self, tx_id: TxExecutionId) -> bool {
-        self.executed_txs.last().is_some_and(|id| *id == tx_id)
+        self.executed_txs.last().is_some_and(|tx| tx.id() == tx_id)
     }
 
     /// Gets the transaction ID of the last executed transaction, if any
     #[inline]
     fn last_tx_id(&self) -> Option<TxExecutionId> {
-        self.executed_txs.last().copied()
+        self.executed_txs.last().map(ExecutedTx::id)
+    }
+
+    /// Collects reconstruction data for all valid transactions.
+    fn reconstructable_txs(&self) -> Vec<ReconstructableTx> {
+        self.executed_txs
+            .iter()
+            .filter_map(|tx| {
+                match tx {
+                    ExecutedTx::Valid(_, data) => Some(*data.clone()),
+                    ExecutedTx::Invalid(_) => None,
+                }
+            })
+            .collect()
     }
 
     /// Returns the current depth (number of commits) in the version database.
@@ -503,7 +552,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 );
 
                 self.add_transaction_result(
-                    tx_execution_id,
+                    ExecutedTx::Invalid(tx_execution_id),
                     &TransactionResult::ValidationError(format!("{e:?}")),
                     None,
                 )?;
@@ -520,7 +569,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                     "Fatal assertion execution error occurred"
                 );
                 self.add_transaction_result(
-                    tx_execution_id,
+                    ExecutedTx::Invalid(tx_execution_id),
                     &TransactionResult::ValidationError(format!("{e:?}")),
                     Some(state.clone()),
                 )?;
@@ -534,10 +583,11 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
     /// the executed transaction for reorg validation.
     fn add_transaction_result(
         &mut self,
-        tx_execution_id: TxExecutionId,
+        executed_tx: ExecutedTx,
         result: &TransactionResult,
         state: Option<EvmState>,
     ) -> Result<(), EngineError> {
+        let tx_execution_id = executed_tx.id();
         let block_id = tx_execution_id.as_block_execution_id();
 
         let current_block_iteration = self
@@ -553,7 +603,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 .insert(tx_execution_id.tx_hash, state.clone());
         }
 
-        current_block_iteration.executed_txs.push(tx_execution_id);
+        current_block_iteration.executed_txs.push(executed_tx);
         #[cfg(any(test, feature = "bench-utils"))]
         current_block_iteration
             .executed_state_deltas
@@ -770,7 +820,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
 
         let is_valid = rax.is_valid();
         let prev_txs = if should_report && !is_valid {
-            Some(current_block_iteration.incident_txs.clone())
+            Some(current_block_iteration.reconstructable_txs())
         } else {
             None
         };
@@ -807,19 +857,13 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
 
         let result_and_state = rax.result_and_state;
         self.add_transaction_result(
-            tx_execution_id,
+            ExecutedTx::valid(tx_execution_id, tx_data),
             &TransactionResult::ValidationCompleted {
                 is_valid,
                 execution_result: result_and_state.result,
             },
             Some(result_and_state.state),
         )?;
-
-        let current_block_iteration = self
-            .current_block_iterations
-            .get_mut(&block_id)
-            .ok_or(EngineError::TransactionError)?;
-        current_block_iteration.incident_txs.push(tx_data);
 
         Ok(())
     }
@@ -840,7 +884,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         let tx_ids = self
             .current_block_iterations
             .values()
-            .flat_map(|iteration| iteration.executed_txs.iter().copied())
+            .flat_map(|iteration| iteration.executed_txs.iter().map(ExecutedTx::id))
             .collect::<Vec<_>>();
         self.transaction_results.invalidate_tx_ids(tx_ids);
         #[cfg(feature = "cache_validation")]
@@ -1218,7 +1262,6 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             executed_txs: Vec::new(),
             #[cfg(any(test, feature = "bench-utils"))]
             executed_state_deltas: Vec::new(),
-            incident_txs: Vec::new(),
             block_env: block_env.clone(),
         };
 
@@ -1429,7 +1472,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 tx_execution_id.block_number, expected_block_number, self.current_head
             );
             self.add_transaction_result(
-                tx_execution_id,
+                ExecutedTx::Invalid(tx_execution_id),
                 &TransactionResult::ValidationError(message),
                 None,
             )?;
@@ -1596,7 +1639,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 .get(start..)
                 .ok_or(EngineError::BadReorgHash)?
                 .iter()
-                .map(|id| id.tx_hash);
+                .map(ExecutedTx::tx_hash);
             if !expected_hashes.eq(reorg.tx_hashes.iter().copied()) {
                 error!(
                     target = "engine",
@@ -1621,8 +1664,6 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             current_block_iteration
                 .executed_state_deltas
                 .truncate(new_len);
-            // Also truncate incident_txs to match
-            current_block_iteration.incident_txs.truncate(new_len);
             // Rollback the version database to the state before the removed transactions
             // This handles both truncating the commit log and rebuilding state
             current_block_iteration
@@ -1631,13 +1672,14 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 .map_err(|_| EngineError::ReorgError)?;
 
             for removed in removed_txs {
-                self.transaction_results.remove_transaction_result(removed);
+                let id = removed.id();
+                self.transaction_results.remove_transaction_result(id);
                 #[cfg(feature = "cache_validation")]
                 if let Some(iteration) = self
                     .iteration_pending_processed_transactions
-                    .get_mut(&removed.as_block_execution_id())
+                    .get_mut(&id.as_block_execution_id())
                 {
-                    iteration.remove(&removed.tx_hash);
+                    iteration.remove(&id.tx_hash);
                 }
             }
 
