@@ -385,8 +385,6 @@ pub struct CoreEngine<DB> {
     tx_receiver: TransactionQueueReceiver,
     /// Channel on which the core engine sends invalidation reports.
     incident_sender: Option<IncidentReportSender>,
-    /// Cache whether incident reporting is enabled.
-    report_incidents: bool,
     /// Core engines instance of the assertion executor, executes transactions and assertions
     assertion_executor: AssertionExecutor,
     /// Stores results of executed transactions
@@ -443,7 +441,6 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         incident_sender: Option<IncidentReportSender>,
         #[cfg(feature = "cache_validation")] provider_ws_url: Option<&str>,
     ) -> Self {
-        let report_incidents = incident_sender.is_some();
         #[cfg(feature = "cache_validation")]
         let (processed_transactions, cache_checker) = {
             let processed_transactions: ProcessedBlocksCache =
@@ -476,7 +473,6 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             sources: sources.clone(),
             tx_receiver,
             incident_sender,
-            report_incidents,
             assertion_executor,
             transaction_results: TransactionsResults::new(
                 state_results,
@@ -774,7 +770,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         tx_env: &TxEnv,
     ) -> Result<(), EngineError> {
         let block_id = tx_execution_id.as_block_execution_id();
-        let should_report = self.report_incidents;
+        let should_report = self.incident_sender.is_some();
 
         let current_block_iteration = self
             .current_block_iterations

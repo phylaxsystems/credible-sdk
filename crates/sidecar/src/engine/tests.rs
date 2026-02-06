@@ -79,7 +79,6 @@ impl<DB> CoreEngine<DB> {
             current_block_iterations: HashMap::new(),
             tx_receiver,
             incident_sender: None,
-            report_incidents: false,
             assertion_executor: AssertionExecutor::new(
                 ExecutorConfig::default(),
                 AssertionStore::new_ephemeral(),
