@@ -7,6 +7,10 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+
+# internal 
+eip-system-calls.workspace = true
+
 anyhow = { workspace = true }
 async-trait.workspace = true
 clap = { workspace = true }

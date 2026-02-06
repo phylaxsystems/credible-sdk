@@ -3,10 +3,7 @@
 #![allow(clippy::cast_sign_loss)]
 
 use super::*;
-use crate::{
-    engine::system_calls::HISTORY_BUFFER_LENGTH,
-    utils::TestDbError,
-};
+use crate::utils::TestDbError;
 use alloy::eips::{
     eip2935::{
         HISTORY_SERVE_WINDOW,
@@ -30,6 +27,7 @@ use assertion_executor::{
         counter_call,
     },
 };
+use eip_system_calls::eip4788::HISTORY_BUFFER_LENGTH;
 use revm::{
     DatabaseRef,
     bytecode::Bytecode,

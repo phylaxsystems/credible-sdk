@@ -14,6 +14,7 @@ assertion-executor = { workspace = true, default-features = false }
 assertion-da-client.workspace = true
 credible-utils.workspace = true
 dapp-api-client.workspace = true
+eip-system-calls.workspace = true
 sidecar-test-macros = { path = "src/utils/test-macros", optional = true }
 mdbx = { workspace = true, features = ["reader"] }
 int-test-utils = { workspace = true, optional = true }
