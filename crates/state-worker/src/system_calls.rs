@@ -435,10 +435,7 @@ mod tests {
 
         // Should only have EIP-2935, not EIP-4788
         assert_eq!(states.len(), 1);
-        assert_eq!(
-            states[0].address_hash,
-            Eip2935::ADDRESS.into()
-        );
+        assert_eq!(states[0].address_hash, Eip2935::ADDRESS.into());
     }
 
     #[test]
@@ -457,10 +454,7 @@ mod tests {
 
         // Should only have EIP-4788, not EIP-2935
         assert_eq!(states.len(), 1);
-        assert_eq!(
-            states[0].address_hash,
-            Eip4788::ADDRESS.into()
-        );
+        assert_eq!(states[0].address_hash, Eip4788::ADDRESS.into());
     }
 
     #[test]

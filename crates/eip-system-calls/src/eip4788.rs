@@ -54,19 +54,6 @@ impl Eip4788 {
         U256::from((timestamp % Self::RING_BUFFER_SIZE) + Self::RING_BUFFER_SIZE)
     }
 
-    /// U256 variants for when you already have U256.
-    #[inline]
-    #[must_use]
-    pub fn timestamp_slot_u256(timestamp: U256) -> U256 {
-        timestamp % U256::from(Self::RING_BUFFER_SIZE)
-    }
-
-    #[inline]
-    #[must_use]
-    pub fn root_slot_u256(timestamp: U256) -> U256 {
-        Self::timestamp_slot_u256(timestamp) + U256::from(Self::RING_BUFFER_SIZE)
-    }
-
     /// Convert beacon root to storage value.
     #[inline]
     #[must_use]

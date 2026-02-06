@@ -55,14 +55,6 @@ impl Eip2935 {
         U256::from(parent_block_number % Self::RING_BUFFER_SIZE)
     }
 
-    /// Calculate the storage slot from U256.
-    #[inline]
-    #[must_use]
-    pub fn slot_u256(block_number: U256) -> U256 {
-        let parent_block_number = block_number.saturating_sub(U256::from(1));
-        parent_block_number % U256::from(Self::RING_BUFFER_SIZE)
-    }
-
     /// Convert block hash to storage value.
     #[inline]
     #[must_use]

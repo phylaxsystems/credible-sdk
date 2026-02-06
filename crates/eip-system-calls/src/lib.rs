@@ -34,7 +34,7 @@ pub trait SystemContract {
     }
 }
 
-// Convert a 32-byte value to storage format.
+/// Convert a 32-byte value to storage format.
 #[inline]
 #[must_use]
 pub fn b256_to_storage(value: B256) -> U256 {
