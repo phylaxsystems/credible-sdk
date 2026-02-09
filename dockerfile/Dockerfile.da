@@ -29,7 +29,7 @@ ARG BUILD_FLAGS=""
 COPY crates ./crates
 COPY scripts ./scripts
 COPY Cargo.* .
-RUN cargo build --release --locked $BUILD_FLAGS
+RUN cargo build --release --locked --bin assertion-da $BUILD_FLAGS
 
 FROM ubuntu:24.04
 WORKDIR /usr/local/bin
