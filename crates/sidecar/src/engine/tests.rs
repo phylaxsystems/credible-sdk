@@ -428,6 +428,48 @@ async fn test_transaction_before_first_commit_head_is_ignored() {
     );
 }
 
+#[tokio::test]
+async fn test_failed_commit_head_does_not_mark_first_commit_processed() {
+    let (mut engine, _) = create_test_engine().await;
+    assert!(!engine.first_commit_head_processed);
+
+    let tx_execution_id = TxExecutionId::new(U256::from(1), 0, B256::from([0x99; 32]), 0);
+    let mut version_db = VersionDb::new(engine.cache.clone());
+    version_db.commit_empty();
+
+    engine.current_block_iterations.insert(
+        tx_execution_id.as_block_execution_id(),
+        BlockIterationData {
+            version_db,
+            n_transactions: 1,
+            executed_txs: vec![tx_execution_id],
+            executed_state_deltas: Vec::new(),
+            incident_txs: Vec::new(),
+            block_env: BlockEnv {
+                number: U256::from(1),
+                ..Default::default()
+            },
+        },
+    );
+
+    let commit_head = queue::CommitHead::new(
+        U256::from(1),
+        0,
+        Some(tx_execution_id.tx_hash),
+        1,
+        B256::from([0x11; 32]),
+        Some(B256::from([0x22; 32])),
+        U256::from(100),
+    );
+
+    let result = engine.process_commit_head(&commit_head, &mut 0, &mut Instant::now());
+    assert!(matches!(result, Err(EngineError::NothingToCommit)));
+    assert!(
+        !engine.first_commit_head_processed,
+        "first_commit_head_processed must remain false when CommitHead processing fails"
+    );
+}
+
 #[crate::utils::engine_test(all)]
 async fn test_core_engine_functionality(mut instance: crate::utils::LocalInstance) {
     // Send an empty block to verify we can advance the chain with empty blocks

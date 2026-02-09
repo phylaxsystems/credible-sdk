@@ -1319,8 +1319,6 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             "Processing CommitHead",
         );
 
-        self.first_commit_head_processed = true;
-
         let block_execution_id = BlockExecutionId::from(commit_head);
 
         // Check if cache should be invalidated
@@ -1340,6 +1338,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 processed_blocks,
                 block_processing_time,
             );
+            self.first_commit_head_processed = true;
             return Ok(());
         }
 
@@ -1408,6 +1407,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             block_processing_time,
         );
         self.current_block_iterations.clear();
+        self.first_commit_head_processed = true;
 
         debug!(
             target = "engine",
