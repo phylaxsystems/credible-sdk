@@ -160,13 +160,17 @@ pub fn create_trace_provider(
 #[cfg(test)]
 mod account_deletion_tests {
     use super::*;
+    use anyhow::{
+        Context,
+        Result,
+    };
 
     fn test_address() -> AddressHash {
         AddressHash::new([0u8; 20])
     }
 
     #[test]
-    fn existing_account_without_code_has_keccak_empty() {
+    fn existing_account_without_code_has_keccak_empty() -> Result<()> {
         let snapshot = AccountSnapshot {
             balance: Some(U256::from(100)),
             nonce: Some(1),
@@ -176,15 +180,18 @@ mod account_deletion_tests {
             deleted: false,
         };
 
-        let state = snapshot.finalize(test_address()).unwrap();
+        let state = snapshot
+            .finalize(test_address())
+            .context("expected account state")?;
 
         // Per EIP-1052: existing account without code has code_hash = keccak256("")
         assert_eq!(state.code_hash, KECCAK_EMPTY);
         assert!(!state.deleted);
+        Ok(())
     }
 
     #[test]
-    fn existing_contract_has_code_hash() {
+    fn existing_contract_has_code_hash() -> Result<()> {
         let code = vec![0x60, 0x80, 0x60, 0x40];
         let expected_hash = keccak256(&code);
 
@@ -197,9 +204,12 @@ mod account_deletion_tests {
             deleted: false,
         };
 
-        let state = snapshot.finalize(test_address()).unwrap();
+        let state = snapshot
+            .finalize(test_address())
+            .context("expected account state")?;
 
         assert_eq!(state.code_hash, expected_hash);
         assert!(!state.deleted);
+        Ok(())
     }
 }
