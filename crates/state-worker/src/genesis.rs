@@ -183,9 +183,13 @@ fn decode_hex_bytes(value: &str) -> Result<Bytes> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::{
+        Context,
+        Result,
+    };
 
     #[test]
-    fn test_parse_valid_genesis() {
+    fn test_parse_valid_genesis() -> Result<()> {
         let genesis_json = r#"{
             "alloc": {
                 "00000000000000000000000000000000000000f0": {
@@ -200,23 +204,24 @@ mod tests {
             }
         }"#;
 
-        let state = parse_from_str(genesis_json).expect("should parse valid genesis");
+        let state = parse_from_str(genesis_json).context("should parse valid genesis")?;
         assert_eq!(state.accounts().len(), 1);
 
-        let account = &state.accounts()[0];
+        let account = state.accounts().first().context("missing account")?;
         assert_eq!(
             account.address_hash,
             Address::from_str("00000000000000000000000000000000000000f0")
-                .unwrap()
+                .context("failed to parse account address")?
                 .into()
         );
         assert_eq!(account.balance, U256::from(0x100));
         assert_eq!(account.nonce, 5);
         assert_eq!(account.storage.len(), 2);
+        Ok(())
     }
 
     #[test]
-    fn test_parse_genesis_with_missing_fields() {
+    fn test_parse_genesis_with_missing_fields() -> Result<()> {
         let genesis_json = r#"{
             "alloc": {
                 "0000000000000000000000000000000000000002": {
@@ -226,22 +231,24 @@ mod tests {
         }"#;
 
         let state =
-            parse_from_str(genesis_json).expect("should parse with missing optional fields");
+            parse_from_str(genesis_json).context("should parse with missing optional fields")?;
         assert_eq!(state.accounts().len(), 1);
 
-        let account = &state.accounts()[0];
+        let account = state.accounts().first().context("missing account")?;
         assert_eq!(account.balance, U256::from(0x200));
         assert_eq!(account.nonce, 0);
         assert_eq!(account.code, None);
         assert_eq!(account.code_hash, KECCAK_EMPTY);
         assert_eq!(account.storage.len(), 0);
+        Ok(())
     }
 
     #[test]
-    fn test_parse_empty_genesis() {
+    fn test_parse_empty_genesis() -> Result<()> {
         let genesis_json = r#"{"alloc": {}}"#;
-        let state = parse_from_str(genesis_json).expect("should parse empty genesis");
+        let state = parse_from_str(genesis_json).context("should parse empty genesis")?;
         assert_eq!(state.accounts().len(), 0);
+        Ok(())
     }
 
     #[test]
@@ -398,7 +405,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_hex_with_uppercase() {
+    fn test_parse_hex_with_uppercase() -> Result<()> {
         let genesis_json = r#"{
             "alloc": {
                 "0000000000000000000000000000000000000001": {
@@ -408,14 +415,16 @@ mod tests {
             }
         }"#;
 
-        let state = parse_from_str(genesis_json).expect("should parse uppercase hex");
+        let state = parse_from_str(genesis_json).context("should parse uppercase hex")?;
         assert_eq!(state.accounts().len(), 1);
-        assert_eq!(state.accounts()[0].balance, U256::from(0x00AB_CDEF));
-        assert_eq!(state.accounts()[0].nonce, 10);
+        let account = state.accounts().first().context("missing account")?;
+        assert_eq!(account.balance, U256::from(0x00AB_CDEF));
+        assert_eq!(account.nonce, 10);
+        Ok(())
     }
 
     #[test]
-    fn test_parse_hex_without_prefix() {
+    fn test_parse_hex_without_prefix() -> Result<()> {
         let genesis_json = r#"{
             "alloc": {
                 "0000000000000000000000000000000000000001": {
@@ -425,14 +434,16 @@ mod tests {
             }
         }"#;
 
-        let state = parse_from_str(genesis_json).expect("should parse decimal values");
+        let state = parse_from_str(genesis_json).context("should parse decimal values")?;
         assert_eq!(state.accounts().len(), 1);
-        assert_eq!(state.accounts()[0].balance, U256::from(256));
-        assert_eq!(state.accounts()[0].nonce, 10);
+        let account = state.accounts().first().context("missing account")?;
+        assert_eq!(account.balance, U256::from(256));
+        assert_eq!(account.nonce, 10);
+        Ok(())
     }
 
     #[test]
-    fn test_parse_empty_code() {
+    fn test_parse_empty_code() -> Result<()> {
         let genesis_json = r#"{
             "alloc": {
                 "0000000000000000000000000000000000000001": {
@@ -442,14 +453,16 @@ mod tests {
             }
         }"#;
 
-        let state = parse_from_str(genesis_json).expect("should handle empty code");
+        let state = parse_from_str(genesis_json).context("should handle empty code")?;
         assert_eq!(state.accounts().len(), 1);
-        assert_eq!(state.accounts()[0].code, None);
-        assert_eq!(state.accounts()[0].code_hash, KECCAK_EMPTY);
+        let account = state.accounts().first().context("missing account")?;
+        assert_eq!(account.code, None);
+        assert_eq!(account.code_hash, KECCAK_EMPTY);
+        Ok(())
     }
 
     #[test]
-    fn test_parse_multiple_accounts() {
+    fn test_parse_multiple_accounts() -> Result<()> {
         let genesis_json = r#"{
             "alloc": {
                 "0000000000000000000000000000000000000001": {
@@ -464,15 +477,18 @@ mod tests {
             }
         }"#;
 
-        let state = parse_from_str(genesis_json).expect("should parse multiple accounts");
+        let state = parse_from_str(genesis_json).context("should parse multiple accounts")?;
         assert_eq!(state.accounts().len(), 3);
 
         // Verify accounts are sorted by address
-        for i in 0..state.accounts().len() - 1 {
+        for window in state.accounts().windows(2) {
+            let first = window.first().context("missing first account")?;
+            let second = window.get(1).context("missing second account")?;
             assert!(
-                state.accounts()[i].address_hash < state.accounts()[i + 1].address_hash,
+                first.address_hash < second.address_hash,
                 "accounts should be sorted by address"
             );
         }
+        Ok(())
     }
 }
