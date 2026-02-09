@@ -279,8 +279,12 @@ mod tests {
         let expected_slot_key = keccak256(expected_slot.to_be_bytes::<32>());
         assert!(eip2935_state.storage.contains_key(&expected_slot_key));
 
-        let stored_hash = eip2935_state.storage.get(&expected_slot_key).context("EIP-2935 slot should exist")?;
-            assert_eq!(*stored_hash,
+        let stored_hash = eip2935_state
+            .storage
+            .get(&expected_slot_key)
+            .context("EIP-2935 slot should exist")?;
+        assert_eq!(
+            *stored_hash,
             Eip2935::hash_to_value(B256::repeat_byte(0xab))
         );
 
@@ -288,7 +292,7 @@ mod tests {
         assert_eq!(eip2935_state.balance, U256::ZERO);
         assert_eq!(eip2935_state.nonce, 1);
         assert_eq!(eip2935_state.code_hash, Eip2935::code_hash());
-           Ok(())
+        Ok(())
     }
 
     #[test]
@@ -436,7 +440,7 @@ mod tests {
 
         // Should only have EIP-2935, not EIP-4788
         assert_eq!(states.len(), 1);
-        
+
         let account = states.first().context("expected EIP-2935 state")?;
         assert_eq!(account.address_hash, Eip2935::ADDRESS.into());
         Ok(())
