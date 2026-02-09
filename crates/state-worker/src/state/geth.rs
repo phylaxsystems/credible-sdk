@@ -168,7 +168,6 @@ fn process_diff_frame(
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::similar_names)]
     use super::*;
     use alloy::primitives::{
         Address,
@@ -181,6 +180,10 @@ mod tests {
         GethTrace,
         PreStateFrame,
     };
+    use anyhow::{
+        Context,
+        Result,
+    };
     use std::collections::BTreeMap;
 
     fn make_trace_result(frame: PreStateFrame) -> TraceResult {
@@ -191,12 +194,12 @@ mod tests {
     }
 
     #[test]
-    fn test_selfdestruct_only_balance_changes() {
+    fn test_selfdestruct_only_balance_changes() -> Result<()> {
         // Post-Cancun: SELFDESTRUCT only transfers balance, account remains in post
         let address = Address::from([0x42u8; 20]);
 
-        let mut pre = std::collections::BTreeMap::new();
-        pre.insert(
+        let mut prior_state = std::collections::BTreeMap::new();
+        prior_state.insert(
             address,
             GethAccountState {
                 balance: Some(U256::from(1000)),
@@ -206,8 +209,8 @@ mod tests {
             },
         );
 
-        let mut post = std::collections::BTreeMap::new();
-        post.insert(
+        let mut next_state = std::collections::BTreeMap::new();
+        next_state.insert(
             address,
             GethAccountState {
                 balance: Some(U256::ZERO),
@@ -217,27 +220,31 @@ mod tests {
             },
         );
 
-        let diff = DiffMode { pre, post };
+        let diff = DiffMode {
+            pre: prior_state,
+            post: next_state,
+        };
 
-        let results =
-            process_geth_traces(vec![make_trace_result(PreStateFrame::Diff(diff))]).unwrap();
+        let results = process_geth_traces(vec![make_trace_result(PreStateFrame::Diff(diff))])?;
 
         assert_eq!(results.len(), 1);
-        assert!(!results[0].deleted);
-        assert_eq!(results[0].balance, U256::ZERO);
+        let account = results.first().context("expected one account result")?;
+        assert!(!account.deleted);
+        assert_eq!(account.balance, U256::ZERO);
+        Ok(())
     }
 
     #[test]
-    fn test_storage_updated() {
+    fn test_storage_updated() -> Result<()> {
         let address = Address::from([0x42u8; 20]);
         let slot = B256::from([0x01u8; 32]);
         let new_value = B256::from([0xBBu8; 32]);
 
-        let mut post = std::collections::BTreeMap::new();
+        let mut next_state = std::collections::BTreeMap::new();
         let mut storage = std::collections::BTreeMap::new();
         storage.insert(slot, new_value);
 
-        post.insert(
+        next_state.insert(
             address,
             GethAccountState {
                 balance: Some(U256::from(100)),
@@ -249,26 +256,27 @@ mod tests {
 
         let diff = DiffMode {
             pre: std::collections::BTreeMap::new(),
-            post,
+            post: next_state,
         };
 
-        let results =
-            process_geth_traces(vec![make_trace_result(PreStateFrame::Diff(diff))]).unwrap();
+        let results = process_geth_traces(vec![make_trace_result(PreStateFrame::Diff(diff))])?;
 
         assert_eq!(results.len(), 1);
+        let account = results.first().context("expected one account result")?;
         let slot_hash = keccak256(slot.0);
         assert_eq!(
-            results[0].storage.get(&slot_hash),
+            account.storage.get(&slot_hash),
             Some(&U256::from_be_bytes(new_value.0))
         );
+        Ok(())
     }
 
     #[test]
-    fn test_new_account_created() {
+    fn test_new_account_created() -> Result<()> {
         let address = Address::from([0x42u8; 20]);
 
-        let mut post = std::collections::BTreeMap::new();
-        post.insert(
+        let mut next_state = std::collections::BTreeMap::new();
+        next_state.insert(
             address,
             GethAccountState {
                 balance: Some(U256::from(1000)),
@@ -280,26 +288,27 @@ mod tests {
 
         let diff = DiffMode {
             pre: std::collections::BTreeMap::new(),
-            post,
+            post: next_state,
         };
 
-        let results =
-            process_geth_traces(vec![make_trace_result(PreStateFrame::Diff(diff))]).unwrap();
+        let results = process_geth_traces(vec![make_trace_result(PreStateFrame::Diff(diff))])?;
 
         assert_eq!(results.len(), 1);
-        assert!(!results[0].deleted);
-        assert_eq!(results[0].balance, U256::from(1000));
-        assert_eq!(results[0].nonce, 0);
-        assert!(results[0].code.is_some());
+        let account = results.first().context("expected one account result")?;
+        assert!(!account.deleted);
+        assert_eq!(account.balance, U256::from(1000));
+        assert_eq!(account.nonce, 0);
+        assert!(account.code.is_some());
+        Ok(())
     }
 
     #[test]
-    fn test_balance_transfer() {
+    fn test_balance_transfer() -> Result<()> {
         let sender = Address::from([0x01u8; 20]);
         let receiver = Address::from([0x02u8; 20]);
 
-        let mut post = std::collections::BTreeMap::new();
-        post.insert(
+        let mut next_state = std::collections::BTreeMap::new();
+        next_state.insert(
             sender,
             GethAccountState {
                 balance: Some(U256::from(900)),
@@ -308,7 +317,7 @@ mod tests {
                 storage: BTreeMap::default(),
             },
         );
-        post.insert(
+        next_state.insert(
             receiver,
             GethAccountState {
                 balance: Some(U256::from(600)),
@@ -320,34 +329,34 @@ mod tests {
 
         let diff = DiffMode {
             pre: std::collections::BTreeMap::new(),
-            post,
+            post: next_state,
         };
 
-        let results =
-            process_geth_traces(vec![make_trace_result(PreStateFrame::Diff(diff))]).unwrap();
+        let results = process_geth_traces(vec![make_trace_result(PreStateFrame::Diff(diff))])?;
 
         assert_eq!(results.len(), 2);
 
         let sender_state = results
             .iter()
             .find(|a| a.balance == U256::from(900))
-            .unwrap();
+            .context("missing sender state")?;
         assert_eq!(sender_state.nonce, 6);
         assert!(!sender_state.deleted);
 
         let receiver_state = results
             .iter()
             .find(|a| a.balance == U256::from(600))
-            .unwrap();
+            .context("missing receiver state")?;
         assert!(!receiver_state.deleted);
+        Ok(())
     }
 
     #[test]
-    fn test_multiple_transactions() {
+    fn test_multiple_transactions() -> Result<()> {
         let address = Address::from([0x42u8; 20]);
 
-        let mut post1 = std::collections::BTreeMap::new();
-        post1.insert(
+        let mut next_state_first = std::collections::BTreeMap::new();
+        next_state_first.insert(
             address,
             GethAccountState {
                 balance: Some(U256::from(900)),
@@ -356,13 +365,13 @@ mod tests {
                 storage: BTreeMap::default(),
             },
         );
-        let diff1 = DiffMode {
+        let diff_first = DiffMode {
             pre: std::collections::BTreeMap::new(),
-            post: post1,
+            post: next_state_first,
         };
 
-        let mut post2 = std::collections::BTreeMap::new();
-        post2.insert(
+        let mut next_state_second = std::collections::BTreeMap::new();
+        next_state_second.insert(
             address,
             GethAccountState {
                 balance: Some(U256::from(800)),
@@ -371,37 +380,38 @@ mod tests {
                 storage: BTreeMap::default(),
             },
         );
-        let diff2 = DiffMode {
+        let diff_second = DiffMode {
             pre: std::collections::BTreeMap::new(),
-            post: post2,
+            post: next_state_second,
         };
 
         let results = process_geth_traces(vec![
-            make_trace_result(PreStateFrame::Diff(diff1)),
-            make_trace_result(PreStateFrame::Diff(diff2)),
-        ])
-        .unwrap();
+            make_trace_result(PreStateFrame::Diff(diff_first)),
+            make_trace_result(PreStateFrame::Diff(diff_second)),
+        ])?;
 
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].balance, U256::from(800));
-        assert_eq!(results[0].nonce, 7);
+        let account = results.first().context("expected one account result")?;
+        assert_eq!(account.balance, U256::from(800));
+        assert_eq!(account.nonce, 7);
+        Ok(())
     }
 
     #[test]
-    fn test_empty_diff_returns_nothing() {
+    fn test_empty_diff_returns_nothing() -> Result<()> {
         let diff = DiffMode {
             pre: std::collections::BTreeMap::new(),
             post: std::collections::BTreeMap::new(),
         };
 
-        let results =
-            process_geth_traces(vec![make_trace_result(PreStateFrame::Diff(diff))]).unwrap();
+        let results = process_geth_traces(vec![make_trace_result(PreStateFrame::Diff(diff))])?;
 
         assert!(results.is_empty());
+        Ok(())
     }
 
     #[test]
-    fn test_code_preserved_when_only_storage_changes() {
+    fn test_code_preserved_when_only_storage_changes() -> Result<()> {
         // This test verifies the fix: when only storage changes, code should be
         // preserved from pre-state since it won't appear in post-state
         let address = Address::from([0x42u8; 20]);
@@ -410,73 +420,77 @@ mod tests {
         let new_value = B256::from([0xBBu8; 32]);
         let code = Bytes::from(vec![0x60, 0x80, 0x60, 0x40]);
 
-        let mut pre_storage = std::collections::BTreeMap::new();
-        pre_storage.insert(slot, old_value);
+        let mut prior_storage = std::collections::BTreeMap::new();
+        prior_storage.insert(slot, old_value);
 
-        let mut pre = std::collections::BTreeMap::new();
-        pre.insert(
+        let mut prior_state = std::collections::BTreeMap::new();
+        prior_state.insert(
             address,
             GethAccountState {
                 balance: Some(U256::from(1000)),
                 nonce: Some(5),
                 code: Some(code.clone()),
-                storage: pre_storage,
+                storage: prior_storage,
             },
         );
 
-        let mut post_storage = std::collections::BTreeMap::new();
-        post_storage.insert(slot, new_value);
+        let mut next_storage = std::collections::BTreeMap::new();
+        next_storage.insert(slot, new_value);
 
-        let mut post = std::collections::BTreeMap::new();
-        post.insert(
+        let mut next_state = std::collections::BTreeMap::new();
+        next_state.insert(
             address,
             GethAccountState {
                 balance: None, // Not changed
                 nonce: None,   // Not changed
                 code: None,    // Not changed - but we need to preserve it!
-                storage: post_storage,
+                storage: next_storage,
             },
         );
 
-        let diff = DiffMode { pre, post };
+        let diff = DiffMode {
+            pre: prior_state,
+            post: next_state,
+        };
 
-        let results =
-            process_geth_traces(vec![make_trace_result(PreStateFrame::Diff(diff))]).unwrap();
+        let results = process_geth_traces(vec![make_trace_result(PreStateFrame::Diff(diff))])?;
 
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].balance, U256::from(1000));
-        assert_eq!(results[0].nonce, 5);
-        assert_eq!(results[0].code, Some(code));
+        let account = results.first().context("expected one account result")?;
+        assert_eq!(account.balance, U256::from(1000));
+        assert_eq!(account.nonce, 5);
+        assert_eq!(account.code, Some(code));
 
         let slot_hash = keccak256(slot.0);
         assert_eq!(
-            results[0].storage.get(&slot_hash),
+            account.storage.get(&slot_hash),
             Some(&U256::from_be_bytes(new_value.0))
         );
+        Ok(())
     }
 
     #[test]
-    fn test_storage_deletion_inferred_when_post_omits_zero() {
+    fn test_storage_deletion_inferred_when_post_omits_zero() -> Result<()> {
         let address = Address::from([0x42u8; 20]);
         let slot = B256::from([0x01u8; 32]);
         let old_value = B256::from([0xAAu8; 32]);
 
-        let mut pre_storage = std::collections::BTreeMap::new();
-        pre_storage.insert(slot, old_value);
+        let mut prior_storage = std::collections::BTreeMap::new();
+        prior_storage.insert(slot, old_value);
 
-        let mut pre = std::collections::BTreeMap::new();
-        pre.insert(
+        let mut prior_state = std::collections::BTreeMap::new();
+        prior_state.insert(
             address,
             GethAccountState {
                 balance: Some(U256::from(1000)),
                 nonce: Some(5),
                 code: Some(Bytes::from(vec![0x60, 0x80])),
-                storage: pre_storage,
+                storage: prior_storage,
             },
         );
 
-        let mut post = std::collections::BTreeMap::new();
-        post.insert(
+        let mut next_state = std::collections::BTreeMap::new();
+        next_state.insert(
             address,
             GethAccountState {
                 balance: Some(U256::from(900)),
@@ -486,180 +500,196 @@ mod tests {
             },
         );
 
-        let diff = DiffMode { pre, post };
+        let diff = DiffMode {
+            pre: prior_state,
+            post: next_state,
+        };
 
-        let results =
-            process_geth_traces(vec![make_trace_result(PreStateFrame::Diff(diff))]).unwrap();
+        let results = process_geth_traces(vec![make_trace_result(PreStateFrame::Diff(diff))])?;
 
         assert_eq!(results.len(), 1);
+        let account = results.first().context("expected one account result")?;
         let slot_hash = keccak256(slot.0);
-        assert_eq!(results[0].storage.get(&slot_hash), Some(&U256::ZERO));
+        assert_eq!(account.storage.get(&slot_hash), Some(&U256::ZERO));
+        Ok(())
     }
 
     #[test]
-    fn test_account_deletion_inferred_when_post_missing() {
+    fn test_account_deletion_inferred_when_post_missing() -> Result<()> {
         let address = Address::from([0x24u8; 20]);
         let slot = B256::from([0x02u8; 32]);
         let old_value = B256::from([0x11u8; 32]);
 
-        let mut pre_storage = std::collections::BTreeMap::new();
-        pre_storage.insert(slot, old_value);
+        let mut prior_storage = std::collections::BTreeMap::new();
+        prior_storage.insert(slot, old_value);
 
-        let mut pre = std::collections::BTreeMap::new();
-        pre.insert(
+        let mut prior_state = std::collections::BTreeMap::new();
+        prior_state.insert(
             address,
             GethAccountState {
                 balance: Some(U256::from(1)),
                 nonce: Some(1),
                 code: None,
-                storage: pre_storage,
+                storage: prior_storage,
             },
         );
 
         let diff = DiffMode {
-            pre,
+            pre: prior_state,
             post: std::collections::BTreeMap::new(),
         };
 
-        let results =
-            process_geth_traces(vec![make_trace_result(PreStateFrame::Diff(diff))]).unwrap();
+        let results = process_geth_traces(vec![make_trace_result(PreStateFrame::Diff(diff))])?;
 
         assert_eq!(results.len(), 1);
-        assert!(results[0].deleted);
+        let account = results.first().context("expected one account result")?;
+        assert!(account.deleted);
+        Ok(())
     }
 
     #[test]
-    fn test_storage_mixed_add_change_delete() {
+    fn test_storage_mixed_add_change_delete() -> Result<()> {
         let address = Address::from([0x33u8; 20]);
         let slot_a = B256::from([0x0Au8; 32]);
         let slot_b = B256::from([0x0Bu8; 32]);
         let slot_c = B256::from([0x0Cu8; 32]);
 
-        let mut pre_storage = std::collections::BTreeMap::new();
-        pre_storage.insert(slot_a, B256::from(U256::from(10)));
-        pre_storage.insert(slot_b, B256::from(U256::from(20)));
+        let mut prior_storage = std::collections::BTreeMap::new();
+        prior_storage.insert(slot_a, B256::from(U256::from(10)));
+        prior_storage.insert(slot_b, B256::from(U256::from(20)));
 
-        let mut pre = std::collections::BTreeMap::new();
-        pre.insert(
+        let mut prior_state = std::collections::BTreeMap::new();
+        prior_state.insert(
             address,
             GethAccountState {
                 balance: Some(U256::ZERO),
                 nonce: Some(0),
                 code: None,
-                storage: pre_storage,
+                storage: prior_storage,
             },
         );
 
-        let mut post_storage = std::collections::BTreeMap::new();
-        post_storage.insert(slot_b, B256::from(U256::from(200)));
-        post_storage.insert(slot_c, B256::from(U256::from(300)));
+        let mut next_storage = std::collections::BTreeMap::new();
+        next_storage.insert(slot_b, B256::from(U256::from(200)));
+        next_storage.insert(slot_c, B256::from(U256::from(300)));
 
-        let mut post = std::collections::BTreeMap::new();
-        post.insert(
+        let mut next_state = std::collections::BTreeMap::new();
+        next_state.insert(
             address,
             GethAccountState {
                 balance: None,
                 nonce: None,
                 code: None,
-                storage: post_storage,
+                storage: next_storage,
             },
         );
 
-        let diff = DiffMode { pre, post };
+        let diff = DiffMode {
+            pre: prior_state,
+            post: next_state,
+        };
 
-        let results =
-            process_geth_traces(vec![make_trace_result(PreStateFrame::Diff(diff))]).unwrap();
+        let results = process_geth_traces(vec![make_trace_result(PreStateFrame::Diff(diff))])?;
         assert_eq!(results.len(), 1);
+        let account = results.first().context("expected one account result")?;
 
-        let slot_a_hash = keccak256(slot_a.0);
-        let slot_b_hash = keccak256(slot_b.0);
-        let slot_c_hash = keccak256(slot_c.0);
+        let slot_a_digest = keccak256(slot_a.0);
+        let slot_b_fingerprint = keccak256(slot_b.0);
+        let slot_c_checksum = keccak256(slot_c.0);
 
-        assert_eq!(results[0].storage.get(&slot_a_hash), Some(&U256::ZERO));
-        assert_eq!(results[0].storage.get(&slot_b_hash), Some(&U256::from(200)));
-        assert_eq!(results[0].storage.get(&slot_c_hash), Some(&U256::from(300)));
+        assert_eq!(account.storage.get(&slot_a_digest), Some(&U256::ZERO));
+        assert_eq!(
+            account.storage.get(&slot_b_fingerprint),
+            Some(&U256::from(200))
+        );
+        assert_eq!(
+            account.storage.get(&slot_c_checksum),
+            Some(&U256::from(300))
+        );
+        Ok(())
     }
 
     #[test]
-    fn test_storage_deletion_then_recreate_in_later_tx() {
+    fn test_storage_deletion_then_recreate_in_later_tx() -> Result<()> {
         let address = Address::from([0x55u8; 20]);
         let slot = B256::from([0x05u8; 32]);
 
-        let mut pre_storage = std::collections::BTreeMap::new();
-        pre_storage.insert(slot, B256::from(U256::from(7)));
+        let mut prior_storage = std::collections::BTreeMap::new();
+        prior_storage.insert(slot, B256::from(U256::from(7)));
 
-        let mut pre = std::collections::BTreeMap::new();
-        pre.insert(
+        let mut prior_state = std::collections::BTreeMap::new();
+        prior_state.insert(
             address,
             GethAccountState {
                 balance: Some(U256::ZERO),
                 nonce: Some(0),
                 code: None,
-                storage: pre_storage,
+                storage: prior_storage,
             },
         );
 
         let diff1 = DiffMode {
-            pre,
+            pre: prior_state,
             post: std::collections::BTreeMap::new(),
         };
 
-        let mut post_storage = std::collections::BTreeMap::new();
-        post_storage.insert(slot, B256::from(U256::from(9)));
+        let mut next_storage = std::collections::BTreeMap::new();
+        next_storage.insert(slot, B256::from(U256::from(9)));
 
-        let mut post = std::collections::BTreeMap::new();
-        post.insert(
+        let mut next_state = std::collections::BTreeMap::new();
+        next_state.insert(
             address,
             GethAccountState {
                 balance: None,
                 nonce: None,
                 code: None,
-                storage: post_storage,
+                storage: next_storage,
             },
         );
 
         let diff2 = DiffMode {
             pre: std::collections::BTreeMap::new(),
-            post,
+            post: next_state,
         };
 
         let results = process_geth_traces(vec![
             make_trace_result(PreStateFrame::Diff(diff1)),
             make_trace_result(PreStateFrame::Diff(diff2)),
-        ])
-        .unwrap();
+        ])?;
 
         assert_eq!(results.len(), 1);
+        let account = results.first().context("expected one account result")?;
         let slot_hash = keccak256(slot.0);
-        assert_eq!(results[0].storage.get(&slot_hash), Some(&U256::from(9)));
+        assert_eq!(account.storage.get(&slot_hash), Some(&U256::from(9)));
+        Ok(())
     }
 
     #[test]
-    fn test_account_deletion_overrides_prior_storage_updates_in_block() {
+    fn test_account_deletion_overrides_prior_storage_updates_in_block() -> Result<()> {
         let address = Address::from([0x21u8; 20]);
         let slot = B256::from([0x09u8; 32]);
         let value = B256::from([0xAAu8; 32]);
 
-        let mut post1 = std::collections::BTreeMap::new();
-        let mut storage1 = std::collections::BTreeMap::new();
-        storage1.insert(slot, value);
-        post1.insert(
+        let mut next_state_first = std::collections::BTreeMap::new();
+        let mut storage_first = std::collections::BTreeMap::new();
+        storage_first.insert(slot, value);
+        next_state_first.insert(
             address,
             GethAccountState {
                 balance: Some(U256::from(10)),
                 nonce: Some(1),
                 code: None,
-                storage: storage1,
+                storage: storage_first,
             },
         );
 
-        let diff1 = DiffMode {
+        let diff_first = DiffMode {
             pre: std::collections::BTreeMap::new(),
-            post: post1,
+            post: next_state_first,
         };
 
-        let mut pre2 = std::collections::BTreeMap::new();
-        pre2.insert(
+        let mut prior_state_second = std::collections::BTreeMap::new();
+        prior_state_second.insert(
             address,
             GethAccountState {
                 balance: Some(U256::from(10)),
@@ -669,31 +699,32 @@ mod tests {
             },
         );
 
-        let diff2 = DiffMode {
-            pre: pre2,
+        let diff_second = DiffMode {
+            pre: prior_state_second,
             post: std::collections::BTreeMap::new(),
         };
 
         let results = process_geth_traces(vec![
-            make_trace_result(PreStateFrame::Diff(diff1)),
-            make_trace_result(PreStateFrame::Diff(diff2)),
-        ])
-        .unwrap();
+            make_trace_result(PreStateFrame::Diff(diff_first)),
+            make_trace_result(PreStateFrame::Diff(diff_second)),
+        ])?;
 
         assert_eq!(results.len(), 1);
-        assert!(results[0].deleted);
-        assert!(results[0].storage.is_empty());
+        let account = results.first().context("expected one account result")?;
+        assert!(account.deleted);
+        assert!(account.storage.is_empty());
+        Ok(())
     }
 
     #[test]
-    fn test_account_deleted_then_recreated_in_later_tx() {
+    fn test_account_deleted_then_recreated_in_later_tx() -> Result<()> {
         let address = Address::from([0x22u8; 20]);
         let slot = B256::from([0x0Au8; 32]);
         let value = B256::from([0xBBu8; 32]);
         let code = Bytes::from(vec![0x60, 0x80]);
 
-        let mut pre1 = std::collections::BTreeMap::new();
-        pre1.insert(
+        let mut prior_state_first = std::collections::BTreeMap::new();
+        prior_state_first.insert(
             address,
             GethAccountState {
                 balance: Some(U256::from(10)),
@@ -703,88 +734,90 @@ mod tests {
             },
         );
 
-        let diff1 = DiffMode {
-            pre: pre1,
+        let diff_first = DiffMode {
+            pre: prior_state_first,
             post: std::collections::BTreeMap::new(),
         };
 
-        let mut post2 = std::collections::BTreeMap::new();
-        let mut storage2 = std::collections::BTreeMap::new();
-        storage2.insert(slot, value);
-        post2.insert(
+        let mut next_state_second = std::collections::BTreeMap::new();
+        let mut storage_second = std::collections::BTreeMap::new();
+        storage_second.insert(slot, value);
+        next_state_second.insert(
             address,
             GethAccountState {
                 balance: Some(U256::from(50)),
                 nonce: Some(2),
                 code: Some(code.clone()),
-                storage: storage2,
+                storage: storage_second,
             },
         );
 
-        let diff2 = DiffMode {
+        let diff_second = DiffMode {
             pre: std::collections::BTreeMap::new(),
-            post: post2,
+            post: next_state_second,
         };
 
         let results = process_geth_traces(vec![
-            make_trace_result(PreStateFrame::Diff(diff1)),
-            make_trace_result(PreStateFrame::Diff(diff2)),
-        ])
-        .unwrap();
+            make_trace_result(PreStateFrame::Diff(diff_first)),
+            make_trace_result(PreStateFrame::Diff(diff_second)),
+        ])?;
 
         assert_eq!(results.len(), 1);
-        assert!(!results[0].deleted);
-        assert_eq!(results[0].balance, U256::from(50));
-        assert_eq!(results[0].nonce, 2);
+        let account = results.first().context("expected one account result")?;
+        assert!(!account.deleted);
+        assert_eq!(account.balance, U256::from(50));
+        assert_eq!(account.nonce, 2);
         let slot_hash = keccak256(slot.0);
         assert_eq!(
-            results[0].storage.get(&slot_hash),
+            account.storage.get(&slot_hash),
             Some(&U256::from_be_bytes(value.0))
         );
-        assert_eq!(results[0].code, Some(code));
+        assert_eq!(account.code, Some(code));
+        Ok(())
     }
 
     #[test]
-    fn test_account_deletion_clears_pre_storage_in_same_tx() {
+    fn test_account_deletion_clears_pre_storage_in_same_tx() -> Result<()> {
         let address = Address::from([0x44u8; 20]);
         let slot = B256::from([0x0Du8; 32]);
 
-        let mut pre_storage = std::collections::BTreeMap::new();
-        pre_storage.insert(slot, B256::from(U256::from(123)));
+        let mut prior_storage = std::collections::BTreeMap::new();
+        prior_storage.insert(slot, B256::from(U256::from(123)));
 
-        let mut pre = std::collections::BTreeMap::new();
-        pre.insert(
+        let mut prior_state = std::collections::BTreeMap::new();
+        prior_state.insert(
             address,
             GethAccountState {
                 balance: Some(U256::from(100)),
                 nonce: Some(1),
                 code: Some(Bytes::from(vec![0x60, 0x80])),
-                storage: pre_storage,
+                storage: prior_storage,
             },
         );
 
         let diff = DiffMode {
-            pre,
+            pre: prior_state,
             post: std::collections::BTreeMap::new(),
         };
 
-        let results =
-            process_geth_traces(vec![make_trace_result(PreStateFrame::Diff(diff))]).unwrap();
+        let results = process_geth_traces(vec![make_trace_result(PreStateFrame::Diff(diff))])?;
 
         assert_eq!(results.len(), 1);
-        assert!(results[0].deleted);
-        assert!(results[0].storage.is_empty());
-        assert_eq!(results[0].code_hash, B256::ZERO);
+        let account = results.first().context("expected one account result")?;
+        assert!(account.deleted);
+        assert!(account.storage.is_empty());
+        assert_eq!(account.code_hash, B256::ZERO);
+        Ok(())
     }
 
     #[test]
-    fn test_code_change_overrides_pre_code() {
+    fn test_code_change_overrides_pre_code() -> Result<()> {
         let address = Address::from([0x66u8; 20]);
         let old_code = Bytes::from(vec![0x60, 0x80]);
         let new_code = Bytes::from(vec![0x61, 0x01, 0x00]);
 
-        let mut pre = std::collections::BTreeMap::new();
-        pre.insert(
+        let mut prior_state = std::collections::BTreeMap::new();
+        prior_state.insert(
             address,
             GethAccountState {
                 balance: Some(U256::from(1)),
@@ -794,8 +827,8 @@ mod tests {
             },
         );
 
-        let mut post = std::collections::BTreeMap::new();
-        post.insert(
+        let mut next_state = std::collections::BTreeMap::new();
+        next_state.insert(
             address,
             GethAccountState {
                 balance: None,
@@ -805,13 +838,17 @@ mod tests {
             },
         );
 
-        let diff = DiffMode { pre, post };
-        let results =
-            process_geth_traces(vec![make_trace_result(PreStateFrame::Diff(diff))]).unwrap();
+        let diff = DiffMode {
+            pre: prior_state,
+            post: next_state,
+        };
+        let results = process_geth_traces(vec![make_trace_result(PreStateFrame::Diff(diff))])?;
 
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].code, Some(new_code.clone()));
-        assert_eq!(results[0].code_hash, keccak256(&new_code));
-        assert!(!results[0].deleted);
+        let account = results.first().context("expected one account result")?;
+        assert_eq!(account.code, Some(new_code.clone()));
+        assert_eq!(account.code_hash, keccak256(&new_code));
+        assert!(!account.deleted);
+        Ok(())
     }
 }

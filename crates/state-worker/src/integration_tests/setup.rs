@@ -3,8 +3,6 @@
 //! This module provides the `TestInstance` struct which abstracts over
 //! the MDBX database backend for running integration tests.
 
-#![allow(dead_code)]
-
 use crate::{
     connect_provider,
     genesis::GenesisState,
@@ -40,7 +38,7 @@ pub struct TestInstance {
 
 impl TestInstance {
     /// Get MDBX path for this instance.
-    pub fn mdbx_path(&self) -> &str {
+    pub fn mdbx_path(&self) -> Result<&str, String> {
         self.mdbx_dir.path_str()
     }
 
@@ -85,18 +83,19 @@ impl TestInstance {
 
         let http_server_mock = DualProtocolMockServer::new()
             .await
-            .expect("Failed to create the http server mock");
+            .map_err(|e| format!("Failed to create the http server mock: {e}"))?;
 
         setup(&http_server_mock);
 
         let provider = connect_provider(&http_server_mock.ws_url())
             .await
-            .expect("Failed to connect to provider");
+            .map_err(|e| format!("Failed to connect to provider: {e}"))?;
 
         let config = CircularBufferConfig::new(3).map_err(|e| e.to_string())?;
 
         // For MDBX, StateWriter implements both Reader and Writer.
-        let writer_reader = StateWriter::new(mdbx_dir.path_str(), config.clone())
+        let mdbx_path = mdbx_dir.path_str()?;
+        let writer_reader = StateWriter::new(mdbx_path, config.clone())
             .map_err(|e| format!("Failed to initialize MDBX writer: {e}"))?;
 
         // Clone the reader BEFORE the worker takes ownership of the writer.

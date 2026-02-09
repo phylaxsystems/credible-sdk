@@ -7,10 +7,6 @@
 #![deny(clippy::todo)]
 #![deny(clippy::unimplemented)]
 #![warn(clippy::indexing_slicing)]
-#![cfg_attr(test, allow(clippy::panic))]
-#![cfg_attr(test, allow(clippy::unwrap_used))]
-#![cfg_attr(test, allow(clippy::expect_used))]
-#![cfg_attr(test, allow(clippy::indexing_slicing))]
 
 mod cli;
 mod genesis;

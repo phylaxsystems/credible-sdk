@@ -15,6 +15,10 @@ use alloy_rpc_types_trace::geth::{
     PreStateFrame,
     TraceResult,
 };
+use anyhow::{
+    Context,
+    Result,
+};
 use mdbx::AddressHash;
 use std::collections::BTreeMap;
 
@@ -26,7 +30,7 @@ fn make_trace_result(frame: PreStateFrame) -> TraceResult {
 }
 
 #[test]
-fn test_simple_balance_change() {
+fn test_simple_balance_change() -> Result<()> {
     let address = address!("0x1111111111111111111111111111111111111111");
     let balance = U256::from(1000);
     let nonce = 5u64;
@@ -47,18 +51,19 @@ fn test_simple_balance_change() {
         post,
     }))];
 
-    let mut accounts = geth::process_geth_traces(traces).unwrap();
+    let mut accounts = geth::process_geth_traces(traces)?;
     assert_eq!(accounts.len(), 1);
     accounts.sort_by_key(|a| a.address_hash);
 
-    let account = &accounts[0];
+    let account = accounts.first().context("expected one account")?;
     assert_eq!(account.balance, balance);
     assert_eq!(account.nonce, nonce);
     assert!(!account.deleted);
+    Ok(())
 }
 
 #[test]
-fn test_contract_deployment() {
+fn test_contract_deployment() -> Result<()> {
     let address = address!("0x2222222222222222222222222222222222222222");
     let code = vec![0x60, 0x80, 0x60, 0x40, 0x52];
     let balance = U256::ZERO;
@@ -80,20 +85,21 @@ fn test_contract_deployment() {
         post,
     }))];
 
-    let mut accounts = geth::process_geth_traces(traces).unwrap();
+    let mut accounts = geth::process_geth_traces(traces)?;
     assert_eq!(accounts.len(), 1);
     accounts.sort_by_key(|a| a.address_hash);
 
-    let account = &accounts[0];
+    let account = accounts.first().context("expected one account")?;
     assert_eq!(account.balance, balance);
     assert_eq!(account.nonce, nonce);
     assert_eq!(account.code, Some(Bytes::from(code.clone())));
     assert_eq!(account.code_hash, keccak256(&code));
     assert!(!account.deleted);
+    Ok(())
 }
 
 #[test]
-fn test_storage_updates() {
+fn test_storage_updates() -> Result<()> {
     let address = address!("0x3333333333333333333333333333333333333333");
     let slot1 = B256::from(U256::from(1));
     let slot2 = B256::from(U256::from(2));
@@ -136,19 +142,20 @@ fn test_storage_updates() {
         pre,
         post,
     }))];
-    let mut accounts = geth::process_geth_traces(traces).unwrap();
+    let mut accounts = geth::process_geth_traces(traces)?;
     assert_eq!(accounts.len(), 1);
     accounts.sort_by_key(|a| a.address_hash);
 
-    let account = &accounts[0];
+    let account = accounts.first().context("expected one account")?;
     assert_eq!(account.storage.get(&slot1_hash), Some(&U256::from(100)));
     assert_eq!(account.storage.get(&slot2_hash), Some(&U256::from(300)));
     assert_eq!(account.storage.get(&slot3_hash), Some(&U256::ZERO));
     assert!(!account.deleted);
+    Ok(())
 }
 
 #[test]
-fn test_selfdestruct_balance_transfer() {
+fn test_selfdestruct_balance_transfer() -> Result<()> {
     let address = address!("0x4444444444444444444444444444444444444444");
 
     let mut pre = BTreeMap::new();
@@ -177,15 +184,17 @@ fn test_selfdestruct_balance_transfer() {
         pre,
         post,
     }))];
-    let accounts = geth::process_geth_traces(traces).unwrap();
+    let accounts = geth::process_geth_traces(traces)?;
 
     assert_eq!(accounts.len(), 1);
-    assert_eq!(accounts[0].balance, U256::ZERO);
-    assert!(!accounts[0].deleted);
+    let account = accounts.first().context("expected one account")?;
+    assert_eq!(account.balance, U256::ZERO);
+    assert!(!account.deleted);
+    Ok(())
 }
 
 #[test]
-fn test_selfdestruct_storage_persists() {
+fn test_selfdestruct_storage_persists() -> Result<()> {
     let address = address!("0x5555555555555555555555555555555555555555");
 
     let mut pre = BTreeMap::new();
@@ -214,16 +223,18 @@ fn test_selfdestruct_storage_persists() {
         pre,
         post,
     }))];
-    let accounts = geth::process_geth_traces(traces).unwrap();
+    let accounts = geth::process_geth_traces(traces)?;
 
     assert_eq!(accounts.len(), 1);
-    assert_eq!(accounts[0].balance, U256::ZERO);
-    assert!(accounts[0].storage.is_empty());
-    assert!(!accounts[0].deleted);
+    let account = accounts.first().context("expected one account")?;
+    assert_eq!(account.balance, U256::ZERO);
+    assert!(account.storage.is_empty());
+    assert!(!account.deleted);
+    Ok(())
 }
 
 #[test]
-fn test_account_deletion() {
+fn test_account_deletion() -> Result<()> {
     let address = address!("0x7777777777777777777777777777777777777777");
 
     let mut pre = BTreeMap::new();
@@ -242,13 +253,15 @@ fn test_account_deletion() {
         post: BTreeMap::new(),
     }))];
 
-    let accounts = geth::process_geth_traces(traces).unwrap();
+    let accounts = geth::process_geth_traces(traces)?;
     assert_eq!(accounts.len(), 1);
-    assert!(accounts[0].deleted);
+    let account = accounts.first().context("expected one account")?;
+    assert!(account.deleted);
+    Ok(())
 }
 
 #[test]
-fn test_account_deletion_overrides_storage_updates() {
+fn test_account_deletion_overrides_storage_updates() -> Result<()> {
     let address = address!("0x8888888888888888888888888888888888888888");
     let slot = B256::from(U256::from(7));
     let value = B256::from(U256::from(42));
@@ -287,14 +300,16 @@ fn test_account_deletion_overrides_storage_updates() {
         post: BTreeMap::new(),
     }));
 
-    let accounts = geth::process_geth_traces(vec![trace1, trace2]).unwrap();
+    let accounts = geth::process_geth_traces(vec![trace1, trace2])?;
     assert_eq!(accounts.len(), 1);
-    assert!(accounts[0].deleted);
-    assert!(accounts[0].storage.is_empty());
+    let account = accounts.first().context("expected one account")?;
+    assert!(account.deleted);
+    assert!(account.storage.is_empty());
+    Ok(())
 }
 
 #[test]
-fn test_account_deleted_then_recreated() {
+fn test_account_deleted_then_recreated() -> Result<()> {
     let address = address!("0x9999999999999999999999999999999999999999");
     let slot = B256::from(U256::from(9));
     let value = B256::from(U256::from(77));
@@ -334,20 +349,21 @@ fn test_account_deleted_then_recreated() {
         post: post2,
     }));
 
-    let accounts = geth::process_geth_traces(vec![trace1, trace2]).unwrap();
+    let accounts = geth::process_geth_traces(vec![trace1, trace2])?;
     assert_eq!(accounts.len(), 1);
 
-    let account = &accounts[0];
+    let account = accounts.first().context("expected one account")?;
     assert!(!account.deleted);
     assert_eq!(account.balance, U256::from(50));
     assert_eq!(account.nonce, 2);
     let slot_hash = keccak256(slot.0);
     assert_eq!(account.storage.get(&slot_hash), Some(&U256::from(77)));
     assert_eq!(account.code, Some(code));
+    Ok(())
 }
 
 #[test]
-fn test_multiple_transactions() {
+fn test_multiple_transactions() -> Result<()> {
     let address = address!("0x6666666666666666666666666666666666666666");
 
     let mut post1 = BTreeMap::new();
@@ -382,14 +398,16 @@ fn test_multiple_transactions() {
         post: post2,
     }));
 
-    let accounts = geth::process_geth_traces(vec![trace1, trace2]).unwrap();
+    let accounts = geth::process_geth_traces(vec![trace1, trace2])?;
     assert_eq!(accounts.len(), 1);
-    assert_eq!(accounts[0].balance, U256::from(800));
-    assert_eq!(accounts[0].nonce, 2);
+    let account = accounts.first().context("expected one account")?;
+    assert_eq!(account.balance, U256::from(800));
+    assert_eq!(account.nonce, 2);
+    Ok(())
 }
 
 #[test]
-fn test_complex_scenario() {
+fn test_complex_scenario() -> Result<()> {
     let addr1 = address!("0x1111111111111111111111111111111111111111");
     let addr2 = address!("0x2222222222222222222222222222222222222222");
     let addr3 = address!("0x3333333333333333333333333333333333333333");
@@ -444,7 +462,7 @@ fn test_complex_scenario() {
         pre,
         post,
     }))];
-    let mut results = geth::process_geth_traces(traces).unwrap();
+    let mut results = geth::process_geth_traces(traces)?;
 
     assert_eq!(results.len(), 3);
     results.sort_by_key(|a| a.address_hash);
@@ -454,17 +472,24 @@ fn test_complex_scenario() {
         .map(|account| (account.address_hash, account))
         .collect::<std::collections::HashMap<_, _>>();
 
-    let account1 = by_addr.remove(&AddressHash::new(addr1)).expect("addr1");
+    let account1 = by_addr
+        .remove(&AddressHash::new(addr1))
+        .context("addr1 missing")?;
     assert_eq!(account1.balance, U256::from(1000));
     assert_eq!(account1.nonce, 0);
 
-    let account2 = by_addr.remove(&AddressHash::new(addr2)).expect("addr2");
+    let account2 = by_addr
+        .remove(&AddressHash::new(addr2))
+        .context("addr2 missing")?;
     assert_eq!(account2.code_hash, keccak256(&code));
     let slot_hash = keccak256(slot.0);
     assert_eq!(account2.storage.get(&slot_hash), Some(&U256::from(999)));
 
-    let account3 = by_addr.remove(&AddressHash::new(addr3)).expect("addr3");
+    let account3 = by_addr
+        .remove(&AddressHash::new(addr3))
+        .context("addr3 missing")?;
     assert_eq!(account3.balance, U256::ZERO);
     assert_eq!(account3.nonce, 5);
     assert!(!account3.deleted);
+    Ok(())
 }

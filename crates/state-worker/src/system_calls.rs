@@ -268,6 +268,7 @@ impl SystemCalls {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::Context;
     use mdbx::StateReader;
 
     fn system_calls_always_active() -> SystemCalls {
@@ -275,7 +276,7 @@ mod tests {
     }
 
     #[test]
-    fn test_eip2935_computes_correct_slot() {
+    fn test_eip2935_computes_correct_slot() -> Result<()> {
         let system_calls = system_calls_always_active();
         let config = SystemCallConfig {
             block_number: 100,
@@ -285,31 +286,33 @@ mod tests {
         };
 
         // No reader provided, should use defaults
-        let states = system_calls
-            .compute_system_call_states::<StateReader>(&config, None)
-            .unwrap();
+        let states = system_calls.compute_system_call_states::<StateReader>(&config, None)?;
 
         let eip2935_state = states
             .iter()
             .find(|s| s.address_hash == HISTORY_STORAGE_ADDRESS.into())
-            .expect("EIP-2935 state should exist");
+            .context("EIP-2935 state should exist")?;
 
         // Slot = (100 - 1) % 8191 = 99
         let raw_slot = U256::from(99);
         let expected_slot_key = keccak256(raw_slot.to_be_bytes::<32>());
         assert!(eip2935_state.storage.contains_key(&expected_slot_key));
 
-        let stored_hash = eip2935_state.storage.get(&expected_slot_key).unwrap();
+        let stored_hash = eip2935_state
+            .storage
+            .get(&expected_slot_key)
+            .context("EIP-2935 slot should exist")?;
         assert_eq!(*stored_hash, U256::from_be_bytes(B256::repeat_byte(0xab).0));
 
         // Verify defaults are used
         assert_eq!(eip2935_state.balance, U256::ZERO);
         assert_eq!(eip2935_state.nonce, 1);
         assert_eq!(eip2935_state.code_hash, keccak256(&HISTORY_STORAGE_CODE));
+        Ok(())
     }
 
     #[test]
-    fn test_eip4788_computes_dual_slots() {
+    fn test_eip4788_computes_dual_slots() -> Result<()> {
         let system_calls = system_calls_always_active();
         let config = SystemCallConfig {
             block_number: 100,
@@ -319,14 +322,12 @@ mod tests {
         };
 
         // No reader provided, should use defaults
-        let states = system_calls
-            .compute_system_call_states::<StateReader>(&config, None)
-            .unwrap();
+        let states = system_calls.compute_system_call_states::<StateReader>(&config, None)?;
 
         let eip4788_state = states
             .iter()
             .find(|s| s.address_hash == AddressHash::from(keccak256(BEACON_ROOTS_ADDRESS)))
-            .expect("EIP-4788 state should exist");
+            .context("EIP-4788 state should exist")?;
 
         let timestamp_index = 1_700_000_000u64 % HISTORY_BUFFER_LENGTH;
 
@@ -338,23 +339,26 @@ mod tests {
         assert!(eip4788_state.storage.contains_key(&timestamp_slot_key));
         assert!(eip4788_state.storage.contains_key(&root_slot_key));
 
-        assert_eq!(
-            *eip4788_state.storage.get(&timestamp_slot_key).unwrap(),
-            U256::from(1_700_000_000u64)
-        );
-        assert_eq!(
-            *eip4788_state.storage.get(&root_slot_key).unwrap(),
-            U256::from_be_bytes(B256::repeat_byte(0xcd).0)
-        );
+        let timestamp_value = eip4788_state
+            .storage
+            .get(&timestamp_slot_key)
+            .context("timestamp slot should exist")?;
+        assert_eq!(*timestamp_value, U256::from(1_700_000_000u64));
+        let root_value = eip4788_state
+            .storage
+            .get(&root_slot_key)
+            .context("root slot should exist")?;
+        assert_eq!(*root_value, U256::from_be_bytes(B256::repeat_byte(0xcd).0));
 
         // Verify defaults are used
         assert_eq!(eip4788_state.balance, U256::ZERO);
         assert_eq!(eip4788_state.nonce, 1);
         assert_eq!(eip4788_state.code_hash, keccak256(&BEACON_ROOTS_CODE));
+        Ok(())
     }
 
     #[test]
-    fn test_genesis_block_skipped() {
+    fn test_genesis_block_skipped() -> Result<()> {
         let system_calls = system_calls_always_active();
         let config = SystemCallConfig {
             block_number: 0,
@@ -363,14 +367,13 @@ mod tests {
             parent_beacon_block_root: Some(B256::ZERO),
         };
 
-        let states = system_calls
-            .compute_system_call_states::<StateReader>(&config, None)
-            .unwrap();
+        let states = system_calls.compute_system_call_states::<StateReader>(&config, None)?;
         assert!(states.is_empty());
+        Ok(())
     }
 
     #[test]
-    fn test_missing_parent_hash_errors() {
+    fn test_missing_parent_hash_errors() -> Result<()> {
         let system_calls = system_calls_always_active();
         let config = SystemCallConfig {
             block_number: 100,
@@ -380,17 +383,19 @@ mod tests {
         };
 
         let result = system_calls.compute_system_call_states::<StateReader>(&config, None);
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("missing parent block hash")
-        );
+        match result {
+            Err(err) => {
+                assert!(err.to_string().contains("missing parent block hash"));
+            }
+            Ok(_) => {
+                return Err(anyhow::anyhow!("expected missing parent block hash error"));
+            }
+        }
+        Ok(())
     }
 
     #[test]
-    fn test_missing_beacon_root_errors() {
+    fn test_missing_beacon_root_errors() -> Result<()> {
         let system_calls = system_calls_always_active();
         let config = SystemCallConfig {
             block_number: 100,
@@ -400,17 +405,21 @@ mod tests {
         };
 
         let result = system_calls.compute_system_call_states::<StateReader>(&config, None);
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("missing parent beacon block root")
-        );
+        match result {
+            Err(err) => {
+                assert!(err.to_string().contains("missing parent beacon block root"));
+            }
+            Ok(_) => {
+                return Err(anyhow::anyhow!(
+                    "expected missing parent beacon block root error"
+                ));
+            }
+        }
+        Ok(())
     }
 
     #[test]
-    fn test_ring_buffer_wraparound() {
+    fn test_ring_buffer_wraparound() -> Result<()> {
         let system_calls = system_calls_always_active();
         let config = SystemCallConfig {
             block_number: HISTORY_SERVE_WINDOW as u64 + 99, // Wraps to slot 99
@@ -419,24 +428,23 @@ mod tests {
             parent_beacon_block_root: Some(B256::repeat_byte(0xee)),
         };
 
-        let states = system_calls
-            .compute_system_call_states::<StateReader>(&config, None)
-            .unwrap();
+        let states = system_calls.compute_system_call_states::<StateReader>(&config, None)?;
 
         let eip2935_state = states
             .iter()
             .find(|s| s.address_hash == HISTORY_STORAGE_ADDRESS.into())
-            .unwrap();
+            .context("EIP-2935 state should exist")?;
 
         // (8191 + 99 - 1) % 8191 = 98
 
         let raw_slot = U256::from(98);
         let expected_slot_key = keccak256(raw_slot.to_be_bytes::<32>());
         assert!(eip2935_state.storage.contains_key(&expected_slot_key));
+        Ok(())
     }
 
     #[test]
-    fn test_cancun_not_active_skips_eip4788() {
+    fn test_cancun_not_active_skips_eip4788() -> Result<()> {
         let system_calls = SystemCalls::new(Some(2_000_000_000), Some(0));
         let config = SystemCallConfig {
             block_number: 100,
@@ -445,17 +453,17 @@ mod tests {
             parent_beacon_block_root: Some(B256::repeat_byte(0xcd)),
         };
 
-        let states = system_calls
-            .compute_system_call_states::<StateReader>(&config, None)
-            .unwrap();
+        let states = system_calls.compute_system_call_states::<StateReader>(&config, None)?;
 
         // Should only have EIP-2935, not EIP-4788
         assert_eq!(states.len(), 1);
-        assert_eq!(states[0].address_hash, HISTORY_STORAGE_ADDRESS.into());
+        let account = states.first().context("expected EIP-2935 state")?;
+        assert_eq!(account.address_hash, HISTORY_STORAGE_ADDRESS.into());
+        Ok(())
     }
 
     #[test]
-    fn test_prague_not_active_skips_eip2935() {
+    fn test_prague_not_active_skips_eip2935() -> Result<()> {
         let system_calls = SystemCalls::new(Some(0), Some(2_000_000_000));
         let config = SystemCallConfig {
             block_number: 100,
@@ -464,20 +472,20 @@ mod tests {
             parent_beacon_block_root: Some(B256::repeat_byte(0xcd)),
         };
 
-        let states = system_calls
-            .compute_system_call_states::<StateReader>(&config, None)
-            .unwrap();
+        let states = system_calls.compute_system_call_states::<StateReader>(&config, None)?;
 
         // Should only have EIP-4788, not EIP-2935
         assert_eq!(states.len(), 1);
+        let account = states.first().context("expected EIP-4788 state")?;
         assert_eq!(
-            states[0].address_hash,
+            account.address_hash,
             AddressHash::from(keccak256(BEACON_ROOTS_ADDRESS))
         );
+        Ok(())
     }
 
     #[test]
-    fn test_no_forks_active_returns_empty() {
+    fn test_no_forks_active_returns_empty() -> Result<()> {
         let system_calls = SystemCalls::new(Some(2_000_000_000), Some(2_000_000_000));
         let config = SystemCallConfig {
             block_number: 100,
@@ -486,15 +494,14 @@ mod tests {
             parent_beacon_block_root: Some(B256::repeat_byte(0xcd)),
         };
 
-        let states = system_calls
-            .compute_system_call_states::<StateReader>(&config, None)
-            .unwrap();
+        let states = system_calls.compute_system_call_states::<StateReader>(&config, None)?;
 
         assert!(states.is_empty());
+        Ok(())
     }
 
     #[test]
-    fn test_no_fork_times_configured_returns_empty() {
+    fn test_no_fork_times_configured_returns_empty() -> Result<()> {
         let system_calls = SystemCalls::default();
         let config = SystemCallConfig {
             block_number: 100,
@@ -503,10 +510,9 @@ mod tests {
             parent_beacon_block_root: Some(B256::repeat_byte(0xcd)),
         };
 
-        let states = system_calls
-            .compute_system_call_states::<StateReader>(&config, None)
-            .unwrap();
+        let states = system_calls.compute_system_call_states::<StateReader>(&config, None)?;
 
         assert!(states.is_empty());
+        Ok(())
     }
 }

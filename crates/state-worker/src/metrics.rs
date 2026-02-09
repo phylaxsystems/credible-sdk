@@ -3,8 +3,6 @@
 //! Tracks statistics from `commit_block` operations including account/storage
 //! changes, bytecode writes, and timing information.
 
-#![allow(clippy::cast_precision_loss)]
-
 use mdbx::CommitStats;
 use metrics::{
     counter,
@@ -41,16 +39,16 @@ use metrics::{
 /// - `state_worker_total_storage_slots_written`: Cumulative storage slots written
 pub fn record_commit(block_number: u64, stats: &CommitStats) {
     // Gauges for current block stats
-    gauge!("state_worker_accounts_written").set(stats.accounts_written as f64);
-    gauge!("state_worker_accounts_deleted").set(stats.accounts_deleted as f64);
-    gauge!("state_worker_storage_slots_written").set(stats.storage_slots_written as f64);
-    gauge!("state_worker_storage_slots_deleted").set(stats.storage_slots_deleted as f64);
-    gauge!("state_worker_full_storage_deletes").set(stats.full_storage_deletes as f64);
-    gauge!("state_worker_bytecodes_written").set(stats.bytecodes_written as f64);
-    gauge!("state_worker_diffs_applied").set(stats.diffs_applied as f64);
-    gauge!("state_worker_diff_bytes").set(stats.diff_bytes as f64);
-    gauge!("state_worker_largest_account_storage").set(stats.largest_account_storage as f64);
-    gauge!("state_worker_current_block").set(block_number as f64);
+    gauge!("state_worker_accounts_written").set(usize_to_f64(stats.accounts_written));
+    gauge!("state_worker_accounts_deleted").set(usize_to_f64(stats.accounts_deleted));
+    gauge!("state_worker_storage_slots_written").set(usize_to_f64(stats.storage_slots_written));
+    gauge!("state_worker_storage_slots_deleted").set(usize_to_f64(stats.storage_slots_deleted));
+    gauge!("state_worker_full_storage_deletes").set(usize_to_f64(stats.full_storage_deletes));
+    gauge!("state_worker_bytecodes_written").set(usize_to_f64(stats.bytecodes_written));
+    gauge!("state_worker_diffs_applied").set(usize_to_f64(stats.diffs_applied));
+    gauge!("state_worker_diff_bytes").set(usize_to_f64(stats.diff_bytes));
+    gauge!("state_worker_largest_account_storage").set(usize_to_f64(stats.largest_account_storage));
+    gauge!("state_worker_current_block").set(u64_to_f64(block_number));
 
     // Histograms for timing distributions
     histogram!("state_worker_preprocess_duration_seconds").record(stats.preprocess_duration);
@@ -72,4 +70,14 @@ pub fn record_commit(block_number: u64, stats: &CommitStats) {
 /// Committed as a `Counter`: `state_worker_block_failures_total`
 pub fn record_block_failure() {
     counter!("state_worker_block_failures_total").increment(1);
+}
+
+fn usize_to_f64(value: usize) -> f64 {
+    let capped = u32::try_from(value).unwrap_or(u32::MAX);
+    f64::from(capped)
+}
+
+fn u64_to_f64(value: u64) -> f64 {
+    let capped = u32::try_from(value).unwrap_or(u32::MAX);
+    f64::from(capped)
 }
