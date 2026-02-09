@@ -1,0 +1,12 @@
+# syntax=docker/dockerfile:1.6
+# Shared base image for all credible-sdk binary builds.
+# Contains: Rust nightly toolchain, cargo-chef, and system deps.
+# Rebuild only when the toolchain version changes.
+FROM rustlang/rust:nightly
+
+RUN rustup install nightly-2026-01-07 && \
+    rustup default nightly-2026-01-07 && \
+    cargo install cargo-chef && \
+    apt-get update && \
+    apt-get install -y libclang-dev clang && \
+    rm -rf /var/lib/apt/lists/*

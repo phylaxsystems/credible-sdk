@@ -1,11 +1,6 @@
-# syntax=docker/dockerfile:1.2
-FROM rustlang/rust:nightly AS chef
-
-RUN rustup install nightly-2026-01-07 && \
-    rustup default nightly-2026-01-07 && \
-    cargo install cargo-chef && \
-    apt-get update && \
-    apt-get install -y libclang-dev clang
+# syntax=docker/dockerfile:1.6
+ARG BASE_IMAGE=ghcr.io/phylaxsystems/credible-sdk/credible-base:latest
+FROM ${BASE_IMAGE} AS chef
 
 WORKDIR /shadow-driver
 
