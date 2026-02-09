@@ -423,7 +423,8 @@ async fn test_transaction_before_first_commit_head_is_ignored() {
         "ignored startup transaction must not be tracked as executed"
     );
     assert_eq!(
-        iteration.n_transactions, 0,
+        iteration.total_tx_count(),
+        0,
         "ignored startup transaction must not change transaction count"
     );
 }
@@ -441,10 +442,11 @@ async fn test_failed_commit_head_does_not_mark_first_commit_processed() {
         tx_execution_id.as_block_execution_id(),
         BlockIterationData {
             version_db,
-            n_transactions: 1,
-            executed_txs: vec![tx_execution_id],
+            executed_txs: vec![ExecutedTx::valid(
+                tx_execution_id,
+                (tx_execution_id.tx_hash, TxEnv::default()),
+            )],
             executed_state_deltas: Vec::new(),
-            incident_txs: Vec::new(),
             block_env: BlockEnv {
                 number: U256::from(1),
                 ..Default::default()
