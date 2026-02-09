@@ -11,6 +11,7 @@ pub mod instance;
 pub mod local_instance_db;
 pub(crate) mod macros;
 pub mod profiling;
+pub mod sidecar_info;
 #[cfg(any(test, feature = "bench-utils"))]
 pub mod test_drivers;
 #[cfg(any(test, feature = "bench-utils"))]

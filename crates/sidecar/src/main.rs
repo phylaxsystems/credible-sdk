@@ -64,7 +64,10 @@ use sidecar::{
         Transport,
         grpc::GrpcTransport,
     },
-    utils::ErrorRecoverability,
+    utils::{
+        ErrorRecoverability,
+        sidecar_info::print_sidecar_info,
+    },
 };
 use std::{
     net::SocketAddr,
@@ -80,7 +83,6 @@ use std::{
 };
 use tracing::{
     error,
-    log::info,
     warn,
 };
 
@@ -158,7 +160,7 @@ async fn main() -> anyhow::Result<()> {
     let _guard = rust_tracing::trace();
     let config = Config::load()?;
 
-    info!("Starting sidecar with config: {config:?}");
+    print_sidecar_info(&config);
 
     let executor_config = init_executor_config(&config);
     let assertion_store = init_assertion_store(&config)?;
