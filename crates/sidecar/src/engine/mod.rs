@@ -109,6 +109,7 @@ use std::{
     },
 };
 use tokio::sync::oneshot;
+
 #[derive(Debug)]
 struct FailedAssertionLog {
     adopter: assertion_executor::primitives::Address,
