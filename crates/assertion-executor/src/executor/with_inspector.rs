@@ -10,10 +10,6 @@ use std::{
 };
 
 use crate::{
-    constants::{
-        ASSERTION_CONTRACT,
-        CALLER,
-    },
     db::{
         DatabaseRef,
         fork_db::ForkDb,
@@ -32,16 +28,12 @@ use crate::{
     primitives::{
         AssertionContract,
         AssertionContractExecution,
-        AssertionFnId,
-        AssertionFunctionExecutionResult,
         AssertionFunctionResult,
         BlockEnv,
         FixedBytes,
         TxEnv,
-        TxKind,
         TxValidationResultWithInspectors,
     },
-    reprice_evm_storage,
 };
 
 use revm::{
@@ -50,24 +42,17 @@ use revm::{
     Inspector,
 };
 
-use rayon::prelude::{
-    IntoParallelIterator,
-    ParallelIterator,
-};
-
 use crate::error::TxExecutionError;
 use tracing::{
     debug,
     instrument,
     trace,
-    warn,
 };
 
 use super::{
     AssertionExecutor,
     ExecuteForkedTxResult,
     ValidationLogStyle,
-    assertion_executor_pool,
 };
 
 use crate::evm::build_evm::{
@@ -75,9 +60,6 @@ use crate::evm::build_evm::{
     OpCtx,
 };
 
-// TODO: this has a lot of duplicate code with the main assertion paths
-// this needs to be refactored so that we deduplicate as much code as possible
-// with main executor whenever we make major changes to it in the future.
 impl AssertionExecutor {
     /// Validates a transaction with a custom inspector that observes both
     /// transaction execution and assertion execution.
@@ -281,7 +263,7 @@ impl AssertionExecutor {
         assertion_contract: &AssertionContract,
         fn_selectors: &[FixedBytes<4>],
         block_env: &BlockEnv,
-        mut tx_fork_db: ForkDb<Active>,
+        tx_fork_db: ForkDb<Active>,
         context: &PhEvmContext,
         inspector: I,
     ) -> Result<
@@ -295,48 +277,33 @@ impl AssertionExecutor {
         for<'db> I: Inspector<EthCtx<'db, MultiForkDb<ForkDb<Active>>>>,
         for<'db> I: Inspector<OpCtx<'db, MultiForkDb<ForkDb<Active>>>>,
     {
-        let AssertionContract { id, .. } = assertion_contract;
-
-        trace!(
-            target: "assertion-executor::execute_assertions",
-            assertion_contract_id = ?id,
-            selector_count = fn_selectors.len(),
-            selectors = ?fn_selectors.iter().map(|s| format!("{s:x?}")).collect::<Vec<_>>(),
-            "Executing assertion contract with inspector"
-        );
-
-        self.insert_persistent_accounts(assertion_contract, &mut tx_fork_db);
-        let multi_fork_db = MultiForkDb::new(tx_fork_db, context.post_tx_journal());
-
-        let phevm_inspector = PhEvmInspector::new(context.clone());
-        let assertion_gas = AtomicU64::new(0);
-        let assertions_ran = AtomicU64::new(0);
-
-        let current_span = tracing::Span::current();
-        let results_vec = current_span.in_scope(|| {
-            assertion_executor_pool().install(|| {
-                fn_selectors
-                    .into_par_iter()
-                    .map(
-                        |fn_selector: &FixedBytes<4>| -> Result<
-                            (AssertionFunctionResult, I),
-                            AssertionExecutionError<<Active as DatabaseRef>::Error>,
-                        > {
-                            self.execute_assertion_fn_with_inspector(
-                                assertion_contract,
-                                fn_selector,
-                                block_env.clone(),
-                                multi_fork_db.clone(),
-                                &assertion_gas,
-                                &assertions_ran,
-                                phevm_inspector.clone(),
-                                inspector.clone(),
-                            )
-                        },
+        let (results_vec, total_assertion_gas, total_assertion_funcs_ran) = self
+            .execute_assertion_contract_functions(
+                assertion_contract,
+                fn_selectors,
+                block_env,
+                tx_fork_db,
+                context,
+                "Executing assertion contract with inspector",
+                |assertion_contract,
+                 fn_selector,
+                 block_env,
+                 multi_fork_db,
+                 assertion_gas,
+                 assertions_ran,
+                 phevm_inspector| {
+                    self.execute_assertion_fn_with_inspector(
+                        assertion_contract,
+                        fn_selector,
+                        block_env,
+                        multi_fork_db,
+                        assertion_gas,
+                        assertions_ran,
+                        phevm_inspector,
+                        inspector.clone(),
                     )
-                    .collect::<Vec<_>>()
-            })
-        });
+                },
+            );
 
         trace!(target: "assertion-executor::execute_assertions", result_count=results_vec.len(), "Assertion Execution Results with Inspectors");
 
@@ -351,8 +318,8 @@ impl AssertionExecutor {
         let execution = AssertionContractExecution {
             adopter: context.adopter,
             assertion_fns_results: valid_results,
-            total_assertion_gas: assertion_gas.into_inner(),
-            total_assertion_funcs_ran: assertions_ran.into_inner(),
+            total_assertion_gas,
+            total_assertion_funcs_ran,
         };
 
         Ok((execution, inspectors))
@@ -382,52 +349,24 @@ impl AssertionExecutor {
         for<'db> I: Inspector<EthCtx<'db, MultiForkDb<ForkDb<Active>>>>,
         for<'db> I: Inspector<OpCtx<'db, MultiForkDb<ForkDb<Active>>>>,
     {
-        let tx_env = TxEnv {
-            kind: TxKind::Call(ASSERTION_CONTRACT),
-            caller: CALLER,
-            data: (*fn_selector).into(),
-            gas_limit: self.config.assertion_gas_limit,
-            gas_price: block_env.basefee.into(),
-            nonce: 42,
-            chain_id: Some(self.config.chain_id),
-            ..Default::default()
-        };
-        let env = evm_env(self.config.chain_id, self.config.spec_id, block_env.clone());
-
-        // Compose inspector: (custom_inspector, phevm_inspector)
+        // Compose inspector: (custom_inspector, phevm_inspector).
         let composed_inspector = (&mut inspector, &mut phevm_inspector);
-
-        let mut evm = crate::build_evm_by_features!(&mut multi_fork_db, &env, composed_inspector);
-        let tx_env = crate::wrap_tx_env_for_optimism!(tx_env);
-
-        // Reprice SSTORE for assertions to be 100 gas
-        reprice_evm_storage!(evm);
-
-        let result_and_state = evm.inspect_tx(tx_env);
-
-        let result = result_and_state
-            .map(|result_and_state| result_and_state.result)
-            .map_err(|e| {
-                warn!(target: "assertion-executor::execute_assertions", error = ?e, "Evm error executing assertions with inspector");
-                e
-            })
-            .map_err(AssertionExecutionError::AssertionExecutionError)?;
-
-        assertion_gas.fetch_add(result.gas_used(), std::sync::atomic::Ordering::Relaxed);
-        assertions_ran.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-
-        drop(evm);
+        let result = self.execute_assertion_fn_call(
+            &block_env,
+            fn_selector,
+            &mut multi_fork_db,
+            composed_inspector,
+        )?;
+        Self::record_assertion_metrics(assertion_gas, assertions_ran, result.gas_used());
 
         trace!(target: "assertion-executor::execute_assertions", ?result, "Assertion execution result with inspector");
         Ok((
-            AssertionFunctionResult {
-                id: AssertionFnId {
-                    fn_selector: *fn_selector,
-                    assertion_contract_id: assertion_contract.id,
-                },
-                result: AssertionFunctionExecutionResult::AssertionExecutionResult(result),
-                console_logs: phevm_inspector.context.console_logs.clone(),
-            },
+            Self::assertion_function_result(
+                assertion_contract,
+                fn_selector,
+                result,
+                phevm_inspector.context.console_logs.clone(),
+            ),
             inspector,
         ))
     }
