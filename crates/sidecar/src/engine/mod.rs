@@ -1577,8 +1577,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
     ///
     /// ## State Rollback
     /// Uses `VersionDb::rollback_to()` to restore state to before the reorged
-    /// transactions. `n_transactions` tracks executed txs, so we decrement by
-    /// the reorg depth.
+    /// transactions.
     fn execute_reorg(&mut self, reorg: &ReorgRequest) -> Result<(), EngineError> {
         let tx_execution_id = reorg.tx_execution_id;
         // Depth is derived from tx_hashes length
@@ -1629,6 +1628,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
 }
 
 impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
+    // Validation: tx_hashes must be non-empty (depth > 0)
     fn validate_reorg_non_empty(
         tx_execution_id: TxExecutionId,
         depth: usize,
@@ -1644,6 +1644,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         Ok(())
     }
 
+    // Validation: last hash in tx_hashes must match the reorg's tx_execution_id
     fn validate_reorg_tip_hash(
         tx_execution_id: TxExecutionId,
         reorg: &ReorgRequest,
@@ -1659,6 +1660,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         Ok(())
     }
 
+    // Validation: verify the reorg target matches our state
     fn validate_reorg_tail(
         tx_execution_id: TxExecutionId,
         depth: usize,
@@ -1668,6 +1670,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         if current_block_iteration.has_last_tx(tx_execution_id) {
             let executed_len = current_block_iteration.executed_txs.len();
 
+            // Validation: can't reorg more transactions than we've executed
             if depth > executed_len {
                 error!(
                     target = "engine",
@@ -1679,6 +1682,9 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 return Err(EngineError::BadReorgHash);
             }
 
+            // Validation: tx_hashes must match the tail of executed transactions
+            // This ensures the driver and engine agree on what's being reorged.
+            // tx_hashes are in chronological order (oldest first).
             let start = executed_len.saturating_sub(depth);
             let expected_hashes = current_block_iteration
                 .executed_txs
@@ -1706,6 +1712,8 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             "Reorg not found"
         );
 
+        // If we received a reorg event before executing a tx,
+        // or if the tx hashes dont match something bad happened and we need to exit
         Err(EngineError::BadReorgHash)
     }
 

@@ -1048,10 +1048,16 @@ impl<T: TestTransport> LocalInstance<T> {
     }
 
     async fn send_eip2930_tx(&mut self) -> Result<(), String> {
+        // type 1, eip-2930 optional access lists
+        // verify that we spend less gas on storage reads
+        // interact with the pre-loaded counter contract so the access list actually matters
         self.send_block(self.block_number, true).await?;
         self.block_number += U256::from(1);
 
+        // Generate transaction hash
         let tx_hash = Self::generate_random_tx_hash();
+
+        // Send transaction
         let tx_execution_id = self.build_tx_id(tx_hash);
         let nonce = self.next_nonce(
             self.default_account,
@@ -1061,10 +1067,12 @@ impl<T: TestTransport> LocalInstance<T> {
 
         let access_list = AccessList::from(vec![AccessListItem {
             address: COUNTER_ADDRESS,
+            // slot 0 stores the counter value and becomes warm via the access list
             storage_keys: vec![B256::ZERO],
         }]);
         let counter_call_data = counter_call().data;
 
+        // Create call transaction
         let tx_env = TxEnvBuilder::new()
             .caller(caller)
             .gas_limit(100_000)
@@ -1090,10 +1098,16 @@ impl<T: TestTransport> LocalInstance<T> {
     }
 
     async fn send_eip1559_tx(&mut self) -> Result<(), String> {
+        // verify we correctly decrement gas for the account sending the tx
+        // according to eip-1559 rules
+        // TODO: send blockenv with base fee of 2 and verify we include the
+        // tx below and properly decrement gas
         self.send_block(self.block_number, true).await?;
         self.block_number += U256::from(1);
 
         let tx_hash = Self::generate_random_tx_hash();
+
+        // Send transaction
         let tx_execution_id = self.build_tx_id(tx_hash);
         let nonce = self.next_nonce(
             self.default_account,
@@ -1101,6 +1115,7 @@ impl<T: TestTransport> LocalInstance<T> {
         );
         let caller = self.default_account;
 
+        // Create call transaction
         let tx_env = TxEnvBuilder::new()
             .caller(caller)
             .gas_limit(100_000)
@@ -1154,6 +1169,7 @@ impl<T: TestTransport> LocalInstance<T> {
             .tx_type(Some(3))
             .build()
             .unwrap();
+        // FIXME: Propagate correctly the prev tx hash
         let tx_id = tx_execution_id;
         self.transport
             .send_transaction(tx_execution_id, tx_env)
@@ -1167,6 +1183,8 @@ impl<T: TestTransport> LocalInstance<T> {
     }
 
     async fn send_eip7702_tx(&mut self) -> Result<(), String> {
+        // Authorization list present, should derive EIP-7702
+        // TODO: check if the account has code
         self.send_block(self.block_number, true).await?;
         self.block_number += U256::from(1);
 
@@ -1195,6 +1213,7 @@ impl<T: TestTransport> LocalInstance<T> {
             .tx_type(Some(4))
             .build()
             .unwrap();
+        // FIXME: Propagate correctly the prev tx hash
         self.transport
             .send_transaction(tx_execution_id, tx_env)
             .await?;
@@ -1503,6 +1522,19 @@ impl<T: TestTransport> LocalInstance<T> {
             }),
             ..BlockEnv::default()
         }
+    }
+
+    /// # Panics
+    /// Panics if waiting for the transaction exceeds the 8-second timeout, or
+    /// if the underlying wait returns an error.
+    pub async fn wait_for_processed(&self, tx_execution_id: &TxExecutionId) {
+        tokio::time::timeout(
+            Duration::from_secs(8),
+            self.wait_for_transaction_processed(tx_execution_id),
+        )
+        .await
+        .expect("timeout waiting for tx")
+        .expect("wait for tx");
     }
 }
 

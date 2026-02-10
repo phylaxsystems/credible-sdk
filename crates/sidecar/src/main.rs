@@ -1,20 +1,12 @@
 //! # The credible layer sidecar
 #![doc = include_str!("../README.md")]
-#![allow(clippy::must_use_candidate)]
-#![allow(clippy::missing_errors_doc)]
-#![allow(clippy::unreadable_literal)]
-#![allow(clippy::similar_names)]
 #![deny(clippy::panic)]
 #![deny(clippy::unwrap_used)]
 #![deny(clippy::expect_used)]
 #![deny(clippy::unreachable)]
 #![deny(clippy::todo)]
 #![deny(clippy::unimplemented)]
-#![warn(clippy::indexing_slicing)]
-#![cfg_attr(test, allow(clippy::panic))]
-#![cfg_attr(test, allow(clippy::unwrap_used))]
-#![cfg_attr(test, allow(clippy::expect_used))]
-#![cfg_attr(test, allow(clippy::indexing_slicing))]
+#![deny(clippy::indexing_slicing)]
 
 use assertion_executor::{
     AssertionExecutor,
@@ -91,6 +83,43 @@ struct SidecarInfo {
     cpu_cores: usize,
     memory_available: String,
     os_info: String,
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .map_err(|_| anyhow::anyhow!("Failed to install rustls crypto provider"))?;
+
+    let _guard = rust_tracing::trace();
+    let config = Config::load()?;
+
+    SidecarInfo::collect().log(&config);
+
+    let executor_config = init_executor_config(&config);
+    let assertion_store = init_assertion_store(&config)?;
+    let assertion_executor =
+        AssertionExecutor::new(executor_config.clone(), assertion_store.clone());
+    let health_bind_addr: SocketAddr = config.transport.health_bind_addr.parse()?;
+
+    loop {
+        let should_shutdown = Box::pin(run_sidecar_once(
+            &config,
+            &executor_config,
+            &assertion_store,
+            &assertion_executor,
+            health_bind_addr,
+        ))
+        .await?;
+
+        if should_shutdown {
+            break;
+        }
+        tracing::warn!("Sidecar restarting...");
+    }
+
+    tracing::info!("Sidecar shutdown complete.");
+    Ok(())
 }
 
 impl SidecarInfo {
@@ -637,41 +666,4 @@ async fn run_sidecar_once(
     thread_handles.join_all();
 
     Ok(should_shutdown)
-}
-
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    rustls::crypto::aws_lc_rs::default_provider()
-        .install_default()
-        .map_err(|_| anyhow::anyhow!("Failed to install rustls crypto provider"))?;
-
-    let _guard = rust_tracing::trace();
-    let config = Config::load()?;
-
-    SidecarInfo::collect().log(&config);
-
-    let executor_config = init_executor_config(&config);
-    let assertion_store = init_assertion_store(&config)?;
-    let assertion_executor =
-        AssertionExecutor::new(executor_config.clone(), assertion_store.clone());
-    let health_bind_addr: SocketAddr = config.transport.health_bind_addr.parse()?;
-
-    loop {
-        let should_shutdown = Box::pin(run_sidecar_once(
-            &config,
-            &executor_config,
-            &assertion_store,
-            &assertion_executor,
-            health_bind_addr,
-        ))
-        .await?;
-
-        if should_shutdown {
-            break;
-        }
-        tracing::warn!("Sidecar restarting...");
-    }
-
-    tracing::info!("Sidecar shutdown complete.");
-    Ok(())
 }

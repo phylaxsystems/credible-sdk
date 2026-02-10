@@ -348,19 +348,6 @@ fn incident_response_body(message: &str, tracking_id: &str) -> serde_json::Value
     })
 }
 
-async fn wait_for_processed(
-    instance: &crate::utils::LocalInstance<LocalInstanceMockDriver>,
-    tx_execution_id: &TxExecutionId,
-) {
-    tokio::time::timeout(
-        Duration::from_secs(8),
-        instance.wait_for_transaction_processed(tx_execution_id),
-    )
-    .await
-    .expect("timeout waiting for tx")
-    .expect("wait for tx");
-}
-
 fn incident_matches_invalid(body: &str, invalid_txs: &[(B256, TxEnv)]) -> bool {
     let incident: Value = serde_json::from_str(body).expect("incident json");
     let tx_data = incident
@@ -865,8 +852,8 @@ async fn observer_posts_invalidating_transaction_from_local_instance() {
         tx_hash_fail,
         1,
     );
-    wait_for_processed(&instance, &tx_execution_id_pass).await;
-    wait_for_processed(&instance, &tx_execution_id_fail).await;
+    instance.wait_for_processed(&tx_execution_id_pass).await;
+    instance.wait_for_processed(&tx_execution_id_fail).await;
     let pass_invalid = instance
         .is_transaction_invalid(&tx_execution_id_pass)
         .await
