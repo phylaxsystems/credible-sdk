@@ -63,20 +63,9 @@ fn format_timestamp(timestamp: u64) -> String {
 fn parse_chain_id(value: &Value) -> Option<u64> {
     match value {
         Value::Number(number) => {
-            number.as_u64().or_else(|| {
-                number.as_f64().and_then(|value| {
-                    #[allow(
-                        clippy::cast_sign_loss,
-                        clippy::cast_possible_truncation,
-                        clippy::cast_precision_loss
-                    )]
-                    if value.fract() == 0.0 && value >= 0.0 && value <= u64::MAX as f64 {
-                        Some(value as u64)
-                    } else {
-                        None
-                    }
-                })
-            })
+            number
+                .as_u64()
+                .or_else(|| number.as_i64().and_then(|value| u64::try_from(value).ok()))
         }
         Value::String(value) => {
             value.parse::<u64>().ok().or_else(|| {
@@ -357,6 +346,30 @@ fn incident_response_body(message: &str, tracking_id: &str) -> serde_json::Value
         "timestamp": format_timestamp(1_700_000_000),
         "tracking_id": tracking_id,
     })
+}
+
+async fn wait_for_processed(
+    instance: &crate::utils::LocalInstance<LocalInstanceMockDriver>,
+    tx_execution_id: &TxExecutionId,
+) {
+    tokio::time::timeout(
+        Duration::from_secs(8),
+        instance.wait_for_transaction_processed(tx_execution_id),
+    )
+    .await
+    .expect("timeout waiting for tx")
+    .expect("wait for tx");
+}
+
+fn incident_matches_invalid(body: &str, invalid_txs: &[(B256, TxEnv)]) -> bool {
+    let incident: Value = serde_json::from_str(body).expect("incident json");
+    let tx_data = incident
+        .get("transaction_data")
+        .and_then(Value::as_object)
+        .expect("transaction_data");
+    invalid_txs
+        .iter()
+        .any(|(tx_hash, tx_env)| tx_data_matches(tx_data, tx_hash, tx_env))
 }
 
 #[test]
@@ -798,7 +811,6 @@ fn observer_retries_after_failed_publish() {
     );
 }
 
-#[allow(clippy::too_many_lines)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn observer_posts_invalidating_transaction_from_local_instance() {
     let server = MockServer::start();
@@ -853,20 +865,8 @@ async fn observer_posts_invalidating_transaction_from_local_instance() {
         tx_hash_fail,
         1,
     );
-    tokio::time::timeout(
-        Duration::from_secs(8),
-        instance.wait_for_transaction_processed(&tx_execution_id_pass),
-    )
-    .await
-    .expect("timeout waiting for pass tx")
-    .expect("wait for pass tx");
-    tokio::time::timeout(
-        Duration::from_secs(8),
-        instance.wait_for_transaction_processed(&tx_execution_id_fail),
-    )
-    .await
-    .expect("timeout waiting for fail tx")
-    .expect("wait for fail tx");
+    wait_for_processed(&instance, &tx_execution_id_pass).await;
+    wait_for_processed(&instance, &tx_execution_id_fail).await;
     let pass_invalid = instance
         .is_transaction_invalid(&tx_execution_id_pass)
         .await
@@ -893,16 +893,9 @@ async fn observer_posts_invalidating_transaction_from_local_instance() {
         .expect("incident publish channel closed");
     let mut bodies = vec![first_body];
     bodies.extend(body_rx.try_iter());
-    let matches_invalid = bodies.iter().any(|body| {
-        let incident: Value = serde_json::from_str(body).expect("incident json");
-        let tx_data = incident
-            .get("transaction_data")
-            .and_then(Value::as_object)
-            .expect("transaction_data");
-        invalid_txs
-            .iter()
-            .any(|(tx_hash, tx_env)| tx_data_matches(tx_data, tx_hash, tx_env))
-    });
+    let matches_invalid = bodies
+        .iter()
+        .any(|body| incident_matches_invalid(body, &invalid_txs));
     assert!(
         matches_invalid,
         "incident payload did not match invalidating transaction"

@@ -67,6 +67,14 @@ pub struct EventSequencing {
     context: BTreeMap<U256, Context>,
 }
 
+pub type SequencingThreadResult = Result<
+    (
+        JoinHandle<Result<(), EventSequencingError>>,
+        oneshot::Receiver<Result<(), EventSequencingError>>,
+    ),
+    std::io::Error,
+>;
+
 #[derive(Clone, Copy)]
 enum Origin {
     Main,
@@ -221,24 +229,14 @@ impl EventSequencing {
     }
 
     /// Spawns event sequencing on a dedicated OS thread with blocking receive.
-    #[allow(clippy::type_complexity)]
-    pub fn spawn(
-        self,
-        shutdown: Arc<AtomicBool>,
-    ) -> Result<
-        (
-            JoinHandle<Result<(), EventSequencingError>>,
-            oneshot::Receiver<Result<(), EventSequencingError>>,
-        ),
-        std::io::Error,
-    > {
+    pub fn spawn(self, shutdown: Arc<AtomicBool>) -> SequencingThreadResult {
         let (tx, rx) = oneshot::channel();
 
         let handle = std::thread::Builder::new()
             .name("sidecar-sequencing".into())
             .spawn(move || {
                 let mut sequencing = self;
-                let result = sequencing.run_blocking(shutdown);
+                let result = sequencing.run_blocking(shutdown.as_ref());
                 let _ = tx.send(result.clone());
                 result
             })?;
@@ -247,8 +245,7 @@ impl EventSequencing {
     }
 
     /// Blocking run loop with shutdown support
-    #[allow(clippy::needless_pass_by_value)]
-    fn run_blocking(&mut self, shutdown: Arc<AtomicBool>) -> Result<(), EventSequencingError> {
+    fn run_blocking(&mut self, shutdown: &AtomicBool) -> Result<(), EventSequencingError> {
         loop {
             // Check for the shutdown flag
             if shutdown.load(Ordering::Relaxed) {
@@ -591,7 +588,6 @@ impl EventSequencing {
     /// IMPORTANT: We must not drop dependents that are not yet eligible (e.g., a reorg that cannot
     /// cancel the current last-sent tx, or a tx whose `prev_tx_hash` doesn't match). Those must be
     /// reinserted into the same bucket.
-    #[allow(clippy::too_many_lines)]
     fn send_event_recursive(
         &mut self,
         event: TxQueueContents,
@@ -605,195 +601,49 @@ impl EventSequencing {
         // Clone tx_sender before getting mutable context to avoid borrow conflicts
         let tx_sender = self.tx_sender.clone();
 
-        // Get context and extract what we need before sending
-        let context = self.get_context_mut(block_number, "send_event_recursive")?;
+        // Preserve original behavior: ensure context exists before sending non-reorg events.
+        if !event_metadata.is_reorg() {
+            let _ = self.get_context_mut(block_number, "send_event_recursive")?;
+        }
 
-        let (reorg_depth, reorg_tx_hashes) = match &event {
-            TxQueueContents::Reorg(reorg) => {
-                (reorg.depth() as u64, Some(reorg.tx_hashes.as_slice()))
-            }
-            _ => (0, None),
-        };
+        let should_send = self.validate_reorg_if_needed(
+            block_number,
+            iteration_id,
+            event_metadata,
+            &event,
+            &mut cancelled_events,
+        )?;
 
-        // Reorg validation: ensures the reorg request is valid before forwarding to engine.
-        // This is defense-in-depth - the engine also validates, but catching issues here
-        // prevents unnecessary work and provides clearer error attribution.
-        let should_send = if event_metadata.is_reorg() {
-            let Some(reorg_tx_hashes) = reorg_tx_hashes else {
-                error!(target = "event_sequencing", "Reorg event metadata mismatch");
-                return Ok(false);
-            };
-            let queue = context.sent_events.entry(iteration_id).or_default();
-
-            Self::validate_and_apply_reorg(
-                queue,
-                reorg_depth,
-                reorg_tx_hashes,
-                event_metadata,
-                &mut cancelled_events,
-            )
-        } else {
-            true
-        };
-
-        // Send event
         if should_send {
-            info!(
-                target = "event_sequencing",
-                event_metadata = ?event_metadata,
-                "Event sent to the core engine"
-            );
-            tx_sender.send(event).map_err(|e| {
-                error!(
-                    target = "event_sequencing",
-                    error = ?e,
-                    "Failed to send event to core engine"
-                );
-                EventSequencingError::SendFailed
-            })?;
-
-            // Record the send event
-            if !event_metadata.is_reorg() {
-                context
-                    .sent_events
-                    .entry(iteration_id)
-                    .or_default()
-                    .push_back(event_metadata.clone());
-            }
+            self.send_event_to_engine(
+                &tx_sender,
+                event,
+                event_metadata,
+                block_number,
+                iteration_id,
+            )?;
         }
 
-        // We are going to drain dependency buckets, so we must be careful to reinsert leftovers.
-        let origin_main = event_metadata.clone();
+        let drained = self.drain_dependents(
+            block_number,
+            iteration_id,
+            event_metadata,
+            should_send,
+            &cancelled_events,
+        )?;
 
-        // Drain dependents waiting on the current event
-        let deps_main: HashMap<CompleteEventMetadata, TxQueueContents> = context
-            .dependency_graph
-            .remove(event_metadata)
-            .unwrap_or_default();
+        let (leftovers, commit_head_found) =
+            self.process_dependents(block_number, iteration_id, event_metadata, drained)?;
 
-        if event_metadata.is_reorg() && should_send {
-            for cancelled in &cancelled_events {
-                context.dependency_graph.remove(cancelled);
-            }
-        }
-
-        // Special handling for reorgs: after removing the cancelled TX, check if there are
-        // events waiting for the new last event in sent_events.
-        let mut origin_after: Option<EventMetadata> = None;
-        let mut deps_after: HashMap<CompleteEventMetadata, TxQueueContents> = HashMap::new();
-
-        if event_metadata.is_reorg()
-            && should_send
-            && let Some(new_last_event) = context
-                .sent_events
-                .get(&iteration_id)
-                .and_then(|queue| queue.back())
-                .cloned()
-        {
-            origin_after = Some(new_last_event.clone());
-            deps_after = context
-                .dependency_graph
-                .remove(&new_last_event)
-                .unwrap_or_default();
-        }
-
-        // Drop the mutable borrow before recursing
-        let _ = context;
-
-        // Build a combined list of dependents with deterministic ordering.
-        let mut combined: Vec<(Origin, CompleteEventMetadata, TxQueueContents)> = Vec::new();
-        combined.extend(deps_main.into_iter().map(|(m, e)| (Origin::Main, m, e)));
-        combined.extend(deps_after.into_iter().map(|(m, e)| (Origin::After, m, e)));
-
-        combined.sort_by(|a, b| {
-            let ka = Self::dependent_sort_key(&a.1);
-            let kb = Self::dependent_sort_key(&b.1);
-            ka.cmp(&kb)
-        });
-
-        // Leftovers that must be reinserted (NOT dropped).
-        let mut leftovers_main: HashMap<CompleteEventMetadata, TxQueueContents> = HashMap::new();
-        let mut leftovers_after: HashMap<CompleteEventMetadata, TxQueueContents> = HashMap::new();
-
-        let mut commit_head_found = false;
-
-        for (origin, dependent_metadata, dependent_event) in combined {
-            let dep_meta: EventMetadata = (&dependent_metadata).into();
-
-            // If this dependent is a reorg but it cannot cancel *right now*, keep it queued.
-            if dep_meta.is_reorg()
-                && !self.is_reorg_ready_now(block_number, iteration_id, &dep_meta)
-            {
-                match origin {
-                    Origin::Main => {
-                        leftovers_main.insert(dependent_metadata, dependent_event);
-                    }
-                    Origin::After => {
-                        leftovers_after.insert(dependent_metadata, dependent_event);
-                    }
-                }
-                continue;
-            }
-
-            // Validate prev_tx_hash if present; if it doesn't match, keep queued.
-            if let (
-                EventMetadata::Transaction {
-                    tx_hash: sent_hash, ..
-                },
-                TxQueueContents::Tx(queue),
-            ) = (event_metadata, &dependent_event)
-                && let Some(prev_hash) = queue.prev_tx_hash
-                && prev_hash != *sent_hash
-            {
-                match origin {
-                    Origin::Main => {
-                        leftovers_main.insert(dependent_metadata, dependent_event);
-                    }
-                    Origin::After => {
-                        leftovers_after.insert(dependent_metadata, dependent_event);
-                    }
-                }
-                continue;
-            }
-
-            // Try to send it.
-            if self.send_event_recursive(dependent_event, &(&dependent_metadata).into())? {
-                commit_head_found = true;
-                // Remaining dependents are irrelevant if the commit head cleaned up context.
-                break;
-            }
-        }
-
-        // If a commit head was found downstream, or the context got cleaned up, do not reinsert.
         if is_commit_head || commit_head_found || !self.context.contains_key(&block_number) {
-            // Handle CommitHead logic if the current event itself is a commit head.
             if is_commit_head {
                 self.handle_commit_head_completion(event_metadata)?;
             }
             return Ok(is_commit_head || commit_head_found);
         }
 
-        // Reinsert leftovers back into the same buckets (so we don't drop events).
-        if !leftovers_main.is_empty()
-            && let Some(ctx) = self.context.get_mut(&block_number)
-        {
-            ctx.dependency_graph
-                .entry(origin_main)
-                .or_default()
-                .extend(leftovers_main);
-        }
+        self.reinsert_leftovers(block_number, leftovers);
 
-        if let Some(origin2) = origin_after
-            && !leftovers_after.is_empty()
-            && let Some(ctx) = self.context.get_mut(&block_number)
-        {
-            ctx.dependency_graph
-                .entry(origin2)
-                .or_default()
-                .extend(leftovers_after);
-        }
-
-        // After all dependencies are processed, handle CommitHead logic
         if is_commit_head {
             self.handle_commit_head_completion(event_metadata)?;
         }
@@ -876,6 +726,251 @@ impl EventSequencing {
                 block_number,
                 context: context_name,
             })
+    }
+}
+
+struct DrainedDependents {
+    origin_main: EventMetadata,
+    deps_main: HashMap<CompleteEventMetadata, TxQueueContents>,
+    origin_after: Option<EventMetadata>,
+    deps_after: HashMap<CompleteEventMetadata, TxQueueContents>,
+}
+
+struct Leftovers {
+    origin_main: EventMetadata,
+    leftovers_main: HashMap<CompleteEventMetadata, TxQueueContents>,
+    origin_after: Option<EventMetadata>,
+    leftovers_after: HashMap<CompleteEventMetadata, TxQueueContents>,
+}
+
+impl EventSequencing {
+    fn validate_reorg_if_needed(
+        &mut self,
+        block_number: U256,
+        iteration_id: u64,
+        event_metadata: &EventMetadata,
+        event: &TxQueueContents,
+        cancelled_events: &mut Vec<EventMetadata>,
+    ) -> Result<bool, EventSequencingError> {
+        if !event_metadata.is_reorg() {
+            return Ok(true);
+        }
+
+        let TxQueueContents::Reorg(reorg) = event else {
+            error!(target = "event_sequencing", "Reorg event metadata mismatch");
+            return Ok(false);
+        };
+
+        let context = self.get_context_mut(block_number, "send_event_recursive")?;
+        let queue = context.sent_events.entry(iteration_id).or_default();
+
+        Ok(Self::validate_and_apply_reorg(
+            queue,
+            reorg.depth() as u64,
+            reorg.tx_hashes.as_slice(),
+            event_metadata,
+            cancelled_events,
+        ))
+    }
+
+    fn send_event_to_engine(
+        &mut self,
+        tx_sender: &TransactionQueueSender,
+        event: TxQueueContents,
+        event_metadata: &EventMetadata,
+        block_number: U256,
+        iteration_id: u64,
+    ) -> Result<(), EventSequencingError> {
+        info!(
+            target = "event_sequencing",
+            event_metadata = ?event_metadata,
+            "Event sent to the core engine"
+        );
+        tx_sender.send(event).map_err(|e| {
+            error!(
+                target = "event_sequencing",
+                error = ?e,
+                "Failed to send event to core engine"
+            );
+            EventSequencingError::SendFailed
+        })?;
+
+        if !event_metadata.is_reorg() {
+            let context = self.get_context_mut(block_number, "send_event_recursive")?;
+            context
+                .sent_events
+                .entry(iteration_id)
+                .or_default()
+                .push_back(event_metadata.clone());
+        }
+        Ok(())
+    }
+
+    fn drain_dependents(
+        &mut self,
+        block_number: U256,
+        iteration_id: u64,
+        event_metadata: &EventMetadata,
+        should_send: bool,
+        cancelled_events: &[EventMetadata],
+    ) -> Result<DrainedDependents, EventSequencingError> {
+        let context = self.get_context_mut(block_number, "send_event_recursive")?;
+        let origin_main = event_metadata.clone();
+        let deps_main = context
+            .dependency_graph
+            .remove(event_metadata)
+            .unwrap_or_default();
+
+        if event_metadata.is_reorg() && should_send {
+            for cancelled in cancelled_events {
+                context.dependency_graph.remove(cancelled);
+            }
+        }
+
+        let mut origin_after = None;
+        let mut deps_after = HashMap::new();
+        if event_metadata.is_reorg()
+            && should_send
+            && let Some(new_last_event) = context
+                .sent_events
+                .get(&iteration_id)
+                .and_then(|queue| queue.back())
+                .cloned()
+        {
+            origin_after = Some(new_last_event.clone());
+            deps_after = context
+                .dependency_graph
+                .remove(&new_last_event)
+                .unwrap_or_default();
+        }
+
+        Ok(DrainedDependents {
+            origin_main,
+            deps_main,
+            origin_after,
+            deps_after,
+        })
+    }
+
+    fn process_dependents(
+        &mut self,
+        block_number: U256,
+        iteration_id: u64,
+        event_metadata: &EventMetadata,
+        drained: DrainedDependents,
+    ) -> Result<(Leftovers, bool), EventSequencingError> {
+        let mut combined: Vec<(Origin, CompleteEventMetadata, TxQueueContents)> = Vec::new();
+        combined.extend(
+            drained
+                .deps_main
+                .into_iter()
+                .map(|(m, e)| (Origin::Main, m, e)),
+        );
+        combined.extend(
+            drained
+                .deps_after
+                .into_iter()
+                .map(|(m, e)| (Origin::After, m, e)),
+        );
+
+        combined.sort_by(|a, b| {
+            let ka = Self::dependent_sort_key(&a.1);
+            let kb = Self::dependent_sort_key(&b.1);
+            ka.cmp(&kb)
+        });
+
+        let mut leftovers_main = HashMap::new();
+        let mut leftovers_after = HashMap::new();
+        let mut commit_head_found = false;
+
+        for (origin, dependent_metadata, dependent_event) in combined {
+            let dep_meta: EventMetadata = (&dependent_metadata).into();
+
+            if dep_meta.is_reorg()
+                && !self.is_reorg_ready_now(block_number, iteration_id, &dep_meta)
+            {
+                Self::push_leftover(
+                    origin,
+                    dependent_metadata,
+                    dependent_event,
+                    &mut leftovers_main,
+                    &mut leftovers_after,
+                );
+                continue;
+            }
+
+            if let (
+                EventMetadata::Transaction {
+                    tx_hash: sent_hash, ..
+                },
+                TxQueueContents::Tx(queue),
+            ) = (event_metadata, &dependent_event)
+                && let Some(prev_hash) = queue.prev_tx_hash
+                && prev_hash != *sent_hash
+            {
+                Self::push_leftover(
+                    origin,
+                    dependent_metadata,
+                    dependent_event,
+                    &mut leftovers_main,
+                    &mut leftovers_after,
+                );
+                continue;
+            }
+
+            if self.send_event_recursive(dependent_event, &(&dependent_metadata).into())? {
+                commit_head_found = true;
+                break;
+            }
+        }
+
+        Ok((
+            Leftovers {
+                origin_main: drained.origin_main,
+                leftovers_main,
+                origin_after: drained.origin_after,
+                leftovers_after,
+            },
+            commit_head_found,
+        ))
+    }
+
+    fn reinsert_leftovers(&mut self, block_number: U256, leftovers: Leftovers) {
+        if !leftovers.leftovers_main.is_empty()
+            && let Some(ctx) = self.context.get_mut(&block_number)
+        {
+            ctx.dependency_graph
+                .entry(leftovers.origin_main)
+                .or_default()
+                .extend(leftovers.leftovers_main);
+        }
+
+        if let Some(origin2) = leftovers.origin_after
+            && !leftovers.leftovers_after.is_empty()
+            && let Some(ctx) = self.context.get_mut(&block_number)
+        {
+            ctx.dependency_graph
+                .entry(origin2)
+                .or_default()
+                .extend(leftovers.leftovers_after);
+        }
+    }
+
+    fn push_leftover(
+        origin: Origin,
+        dependent_metadata: CompleteEventMetadata,
+        dependent_event: TxQueueContents,
+        leftovers_main: &mut HashMap<CompleteEventMetadata, TxQueueContents>,
+        leftovers_after: &mut HashMap<CompleteEventMetadata, TxQueueContents>,
+    ) {
+        match origin {
+            Origin::Main => {
+                leftovers_main.insert(dependent_metadata, dependent_event);
+            }
+            Origin::After => {
+                leftovers_after.insert(dependent_metadata, dependent_event);
+            }
+        }
     }
 }
 
