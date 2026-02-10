@@ -373,6 +373,8 @@ pub struct CoreEngine<DB> {
     current_block_iterations: HashMap<BlockExecutionId, BlockIterationData<DB>>,
     /// Current head: last committed block.
     current_head: U256,
+    /// Whether at least one commit head event has been processed.
+    first_commit_head_processed: bool,
     /// External providers of state we use when we do not have a piece of state cached in our in memory db.
     /// External state providers implement a trait that we use to query databaseref-like data and populate `state: OverlayDb<DB>`
     /// for execution with it.
@@ -383,8 +385,6 @@ pub struct CoreEngine<DB> {
     tx_receiver: TransactionQueueReceiver,
     /// Channel on which the core engine sends invalidation reports.
     incident_sender: Option<IncidentReportSender>,
-    /// Cache whether incident reporting is enabled.
-    report_incidents: bool,
     /// Core engines instance of the assertion executor, executes transactions and assertions
     assertion_executor: AssertionExecutor,
     /// Stores results of executed transactions
@@ -441,7 +441,6 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         incident_sender: Option<IncidentReportSender>,
         #[cfg(feature = "cache_validation")] provider_ws_url: Option<&str>,
     ) -> Self {
-        let report_incidents = incident_sender.is_some();
         #[cfg(feature = "cache_validation")]
         let (processed_transactions, cache_checker) = {
             let processed_transactions: ProcessedBlocksCache =
@@ -470,10 +469,10 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             canonical_db: None,
             current_block_iterations: HashMap::new(),
             current_head: U256::ZERO,
+            first_commit_head_processed: false,
             sources: sources.clone(),
             tx_receiver,
             incident_sender,
-            report_incidents,
             assertion_executor,
             transaction_results: TransactionsResults::new(
                 state_results,
@@ -771,7 +770,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         tx_env: &TxEnv,
     ) -> Result<(), EngineError> {
         let block_id = tx_execution_id.as_block_execution_id();
-        let should_report = self.report_incidents;
+        let should_report = self.incident_sender.is_some();
 
         let current_block_iteration = self
             .current_block_iterations
@@ -1092,6 +1091,12 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         if !self.check_sources_available {
             return Ok(());
         }
+
+        // Return early until the first commit head has been processed
+        if !self.first_commit_head_processed {
+            return Ok(());
+        }
+
         self.check_sources_available = false;
 
         let start = Instant::now();
@@ -1333,6 +1338,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 processed_blocks,
                 block_processing_time,
             );
+            self.first_commit_head_processed = true;
             return Ok(());
         }
 
@@ -1401,6 +1407,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             block_processing_time,
         );
         self.current_block_iterations.clear();
+        self.first_commit_head_processed = true;
 
         debug!(
             target = "engine",
@@ -1433,6 +1440,17 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             tx_hash = ?tx_hash,
             "Processing a new transaction",
         );
+
+        if !self.first_commit_head_processed {
+            debug!(
+                target = "engine",
+                tx_hash = %tx_hash,
+                block_number = %tx_execution_id.block_number,
+                iteration_id = tx_execution_id.iteration_id,
+                "Ignoring transaction before first CommitHead is processed"
+            );
+            return Ok(());
+        }
 
         let block_id = tx_execution_id.as_block_execution_id();
 

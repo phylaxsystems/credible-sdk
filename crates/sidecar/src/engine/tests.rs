@@ -79,7 +79,6 @@ impl<DB> CoreEngine<DB> {
             current_block_iterations: HashMap::new(),
             tx_receiver,
             incident_sender: None,
-            report_incidents: false,
             assertion_executor: AssertionExecutor::new(
                 ExecutorConfig::default(),
                 AssertionStore::new_ephemeral(),
@@ -104,6 +103,7 @@ impl<DB> CoreEngine<DB> {
                 Duration::from_millis(20),
             ),
             current_head: U256::from(0),
+            first_commit_head_processed: false,
             cache_metrics_handle: None,
             assertion_failure_cache: moka::sync::Cache::builder()
                 .max_capacity(super::ASSERTION_FAILURE_CACHE_SIZE)
@@ -376,6 +376,99 @@ async fn test_tx_block_mismatch_yields_validation_error() {
             .get_transaction_result_cloned(&tx_execution_id)
             .is_none(),
         "Rejected iteration should not record a transaction result"
+    );
+}
+
+#[tokio::test]
+async fn test_transaction_before_first_commit_head_is_ignored() {
+    let (mut engine, _) = create_test_engine().await;
+    assert!(!engine.first_commit_head_processed);
+
+    let block_env = create_test_block_env();
+    let block_execution_id = BlockExecutionId {
+        block_number: block_env.number,
+        iteration_id: 0,
+    };
+
+    let new_iteration = queue::NewIteration {
+        block_env,
+        iteration_id: 0,
+        parent_block_hash: Some(B256::ZERO),
+        parent_beacon_block_root: Some(B256::ZERO),
+    };
+    engine.process_iteration(&new_iteration).unwrap();
+
+    let tx_execution_id = TxExecutionId::new(U256::from(1), 0, B256::from([0x33; 32]), 0);
+    let queue_transaction = queue::QueueTransaction {
+        tx_execution_id,
+        tx_env: TxEnv::default(),
+        prev_tx_hash: None,
+    };
+
+    let result = engine.process_transaction_event(queue_transaction);
+    assert!(result.is_ok(), "startup transaction should be ignored");
+    assert!(
+        engine
+            .get_transaction_result_cloned(&tx_execution_id)
+            .is_none(),
+        "ignored startup transaction must not produce a result"
+    );
+
+    let iteration = engine
+        .current_block_iterations
+        .get(&block_execution_id)
+        .expect("iteration should still exist");
+    assert!(
+        iteration.executed_txs.is_empty(),
+        "ignored startup transaction must not be tracked as executed"
+    );
+    assert_eq!(
+        iteration.total_tx_count(),
+        0,
+        "ignored startup transaction must not change transaction count"
+    );
+}
+
+#[tokio::test]
+async fn test_failed_commit_head_does_not_mark_first_commit_processed() {
+    let (mut engine, _) = create_test_engine().await;
+    assert!(!engine.first_commit_head_processed);
+
+    let tx_execution_id = TxExecutionId::new(U256::from(1), 0, B256::from([0x99; 32]), 0);
+    let mut version_db = VersionDb::new(engine.cache.clone());
+    version_db.commit_empty();
+
+    engine.current_block_iterations.insert(
+        tx_execution_id.as_block_execution_id(),
+        BlockIterationData {
+            version_db,
+            executed_txs: vec![ExecutedTx::valid(
+                tx_execution_id,
+                (tx_execution_id.tx_hash, TxEnv::default()),
+            )],
+            executed_state_deltas: Vec::new(),
+            block_env: BlockEnv {
+                number: U256::from(1),
+                ..Default::default()
+            },
+        },
+    );
+
+    let commit_head = queue::CommitHead::new(
+        U256::from(1),
+        0,
+        Some(tx_execution_id.tx_hash),
+        1,
+        B256::from([0x11; 32]),
+        Some(B256::from([0x22; 32])),
+        U256::from(100),
+    );
+
+    let result = engine.process_commit_head(&commit_head, &mut 0, &mut Instant::now());
+    assert!(matches!(result, Err(EngineError::NothingToCommit)));
+    assert!(
+        !engine.first_commit_head_processed,
+        "first_commit_head_processed must remain false when CommitHead processing fails"
     );
 }
 
@@ -2006,6 +2099,8 @@ async fn test_all_tx_types(mut instance: crate::utils::LocalInstance) {
 #[tokio::test]
 async fn test_failed_transaction_commit() {
     let (mut engine, _) = create_test_engine().await;
+    // Not sending a commithead to isolate side effects of processing it
+    engine.first_commit_head_processed = true;
     let tx_hash = B256::from([0x44; 32]);
 
     let block_execution_id = BlockExecutionId {
