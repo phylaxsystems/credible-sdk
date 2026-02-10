@@ -83,25 +83,45 @@ use tracing::{
     warn,
 };
 
-fn print_sidecar_info(config: &Config) {
-    let version = env!("CARGO_PKG_VERSION");
-    let git_commit = option_env!("SIDECAR_GIT_SHA").unwrap_or("unknown");
-    let rustc_version = option_env!("SIDECAR_RUSTC_VERSION").unwrap_or("unknown");
-    let cpu_cores = std::thread::available_parallelism()
-        .map(std::num::NonZeroUsize::get)
-        .unwrap_or(0);
-    let memory_available = available_memory_info();
-    let os_info = run_command("uname", &["-a"])
-        .unwrap_or_else(|| format!("{} {}", std::env::consts::OS, std::env::consts::ARCH));
+struct SidecarInfo {
+    version: &'static str,
+    git_commit: &'static str,
+    rustc_version: &'static str,
+    cpu_cores: usize,
+    memory_available: String,
+    os_info: String,
+}
 
-    tracing::info!(version, git_commit, rustc_version, "Sidecar build info");
-    tracing::info!(
-        cpu_cores,
-        memory_available = %memory_available,
-        os_info = %os_info,
-        "Sidecar host info"
-    );
-    tracing::info!("Sidecar config: {config:?}");
+impl SidecarInfo {
+    fn collect() -> Self {
+        Self {
+            version: env!("CARGO_PKG_VERSION"),
+            git_commit: option_env!("SIDECAR_GIT_SHA").unwrap_or("unknown"),
+            rustc_version: option_env!("SIDECAR_RUSTC_VERSION").unwrap_or("unknown"),
+            cpu_cores: std::thread::available_parallelism()
+                .map(std::num::NonZeroUsize::get)
+                .unwrap_or(0),
+            memory_available: available_memory_info(),
+            os_info: run_command("uname", &["-a"])
+                .unwrap_or_else(|| format!("{} {}", std::env::consts::OS, std::env::consts::ARCH)),
+        }
+    }
+
+    fn log(&self, config: &Config) {
+        tracing::info!(
+            version = self.version,
+            git_commit = self.git_commit,
+            rustc_version = self.rustc_version,
+            "Sidecar build info"
+        );
+        tracing::info!(
+            cpu_cores = self.cpu_cores,
+            memory_available = %self.memory_available,
+            os_info = %self.os_info,
+            "Sidecar host info"
+        );
+        tracing::info!("Sidecar config: {config:?}");
+    }
 }
 
 fn run_command(command: &str, args: &[&str]) -> Option<String> {
@@ -255,7 +275,7 @@ async fn main() -> anyhow::Result<()> {
     let _guard = rust_tracing::trace();
     let config = Config::load()?;
 
-    print_sidecar_info(&config);
+    SidecarInfo::collect().log(&config);
 
     let executor_config = init_executor_config(&config);
     let assertion_store = init_assertion_store(&config)?;
