@@ -3553,6 +3553,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "eip-system-calls"
+version = "1.0.8"
+dependencies = [
+ "alloy-eips",
+ "alloy-primitives",
+]
+
+[[package]]
 name = "either"
 version = "1.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11231,6 +11239,7 @@ dependencies = [
  "ctor",
  "dapp-api-client",
  "dashmap",
+ "eip-system-calls",
  "flume",
  "futures",
  "hashlink",
@@ -11675,6 +11684,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "clap",
+ "eip-system-calls",
  "futures",
  "hex",
  "int-test-utils",

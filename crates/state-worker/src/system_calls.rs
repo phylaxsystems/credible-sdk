@@ -14,28 +14,20 @@
 //! - Contract: `0x000F3df6D732807Ef1319fB7B8bB8522d0Beac02`
 //! - Dual ring buffer: timestamps + roots, 8191 slots each
 
-use alloy::{
-    eips::{
-        eip2935::{
-            HISTORY_SERVE_WINDOW,
-            HISTORY_STORAGE_ADDRESS,
-            HISTORY_STORAGE_CODE,
-        },
-        eip4788::{
-            BEACON_ROOTS_ADDRESS,
-            BEACON_ROOTS_CODE,
-        },
-    },
-    primitives::{
-        B256,
-        Bytes,
-        U256,
-        keccak256,
-    },
+use alloy::primitives::{
+    B256,
+    Bytes,
+    U256,
+    keccak256,
 };
 use anyhow::{
     Result,
     bail,
+};
+use eip_system_calls::{
+    SystemContract,
+    eip2935::Eip2935,
+    eip4788::Eip4788,
 };
 use mdbx::{
     AccountState,
@@ -43,9 +35,6 @@ use mdbx::{
     Reader,
 };
 use std::collections::HashMap;
-
-/// The length of the ring buffer for storing beacon roots.
-pub const HISTORY_BUFFER_LENGTH: u64 = 8191;
 
 /// Configuration for system calls at block start
 #[derive(Debug, Clone)]
@@ -133,13 +122,11 @@ impl SystemCalls {
             )
         };
 
-        let address_hash = AddressHash::from(keccak256(HISTORY_STORAGE_ADDRESS));
+        let address_hash = Eip2935::ADDRESS.into();
 
         // Storage slot = (block_number - 1) % HISTORY_SERVE_WINDOW (parent hash)
-        let slot_index =
-            config.block_number.saturating_sub(1) % u64::try_from(HISTORY_SERVE_WINDOW)?;
-        let slot = U256::from(slot_index);
-        let value = U256::from_be_bytes(parent_hash.0);
+        let slot = Eip2935::parent_hash_slot(config.block_number);
+        let value = Eip2935::hash_to_value(parent_hash);
 
         let mut storage = HashMap::new();
         storage.insert(keccak256(slot.to_be_bytes::<32>()), value);
@@ -150,8 +137,8 @@ impl SystemCalls {
                 (
                     U256::ZERO,
                     1,
-                    keccak256(&HISTORY_STORAGE_CODE),
-                    Some(HISTORY_STORAGE_CODE.clone()),
+                    Eip2935::code_hash(),
+                    Some(Eip2935::bytecode().clone()),
                 )
             });
 
@@ -188,16 +175,10 @@ impl SystemCalls {
             )
         };
 
-        let address_hash = AddressHash::from(keccak256(BEACON_ROOTS_ADDRESS));
+        let address_hash = Eip4788::ADDRESS.into();
 
-        // Dual ring buffer layout:
-        // - Slot `timestamp % HISTORY_BUFFER_LENGTH`: timestamp
-        // - Slot `timestamp % HISTORY_BUFFER_LENGTH + HISTORY_BUFFER_LENGTH`: beacon root
-        let timestamp_index = config.timestamp % HISTORY_BUFFER_LENGTH;
-
-        // Compute raw EVM slots (U256)
-        let timestamp_slot = U256::from(timestamp_index);
-        let root_slot = U256::from(timestamp_index + HISTORY_BUFFER_LENGTH);
+        let timestamp_slot = Eip4788::timestamp_slot(config.timestamp);
+        let root_slot = Eip4788::root_slot(config.timestamp);
 
         // Hash slots to get trie keys (B256)
         let timestamp_slot_key = keccak256(timestamp_slot.to_be_bytes::<32>());
@@ -205,7 +186,7 @@ impl SystemCalls {
 
         let mut storage = HashMap::new();
         storage.insert(timestamp_slot_key, U256::from(config.timestamp));
-        storage.insert(root_slot_key, U256::from_be_bytes(beacon_root.0));
+        storage.insert(root_slot_key, Eip4788::root_to_value(beacon_root));
 
         // Try to fetch existing account state from the previous block
         let (balance, nonce, code_hash, code) =
@@ -213,8 +194,8 @@ impl SystemCalls {
                 (
                     U256::ZERO,
                     1,
-                    keccak256(&BEACON_ROOTS_CODE),
-                    Some(BEACON_ROOTS_CODE.clone()),
+                    Eip4788::code_hash(),
+                    Some(Eip4788::bytecode().clone()),
                 )
             });
 
@@ -290,24 +271,27 @@ mod tests {
 
         let eip2935_state = states
             .iter()
-            .find(|s| s.address_hash == HISTORY_STORAGE_ADDRESS.into())
+            .find(|s| s.address_hash == Eip2935::ADDRESS.into())
             .context("EIP-2935 state should exist")?;
 
         // Slot = (100 - 1) % 8191 = 99
-        let raw_slot = U256::from(99);
-        let expected_slot_key = keccak256(raw_slot.to_be_bytes::<32>());
+        let expected_slot = U256::from(99);
+        let expected_slot_key = keccak256(expected_slot.to_be_bytes::<32>());
         assert!(eip2935_state.storage.contains_key(&expected_slot_key));
 
         let stored_hash = eip2935_state
             .storage
             .get(&expected_slot_key)
             .context("EIP-2935 slot should exist")?;
-        assert_eq!(*stored_hash, U256::from_be_bytes(B256::repeat_byte(0xab).0));
+        assert_eq!(
+            *stored_hash,
+            Eip2935::hash_to_value(B256::repeat_byte(0xab))
+        );
 
         // Verify defaults are used
         assert_eq!(eip2935_state.balance, U256::ZERO);
         assert_eq!(eip2935_state.nonce, 1);
-        assert_eq!(eip2935_state.code_hash, keccak256(&HISTORY_STORAGE_CODE));
+        assert_eq!(eip2935_state.code_hash, Eip2935::code_hash());
         Ok(())
     }
 
@@ -326,15 +310,14 @@ mod tests {
 
         let eip4788_state = states
             .iter()
-            .find(|s| s.address_hash == AddressHash::from(keccak256(BEACON_ROOTS_ADDRESS)))
+            .find(|s| s.address_hash == Eip4788::ADDRESS.into())
             .context("EIP-4788 state should exist")?;
 
-        let timestamp_index = 1_700_000_000u64 % HISTORY_BUFFER_LENGTH;
+        let timestamp_slot = Eip4788::timestamp_slot(1_700_000_000);
+        let root_slot = Eip4788::root_slot(1_700_000_000);
 
-        // Hash the raw slots to get storage keys
-        let timestamp_slot_key = keccak256(U256::from(timestamp_index).to_be_bytes::<32>());
-        let root_slot_key =
-            keccak256(U256::from(timestamp_index + HISTORY_BUFFER_LENGTH).to_be_bytes::<32>());
+        let timestamp_slot_key = keccak256(timestamp_slot.to_be_bytes::<32>());
+        let root_slot_key = keccak256(root_slot.to_be_bytes::<32>());
 
         assert!(eip4788_state.storage.contains_key(&timestamp_slot_key));
         assert!(eip4788_state.storage.contains_key(&root_slot_key));
@@ -348,12 +331,12 @@ mod tests {
             .storage
             .get(&root_slot_key)
             .context("root slot should exist")?;
-        assert_eq!(*root_value, U256::from_be_bytes(B256::repeat_byte(0xcd).0));
+        assert_eq!(*root_value, Eip4788::root_to_value(B256::repeat_byte(0xcd)));
 
         // Verify defaults are used
         assert_eq!(eip4788_state.balance, U256::ZERO);
         assert_eq!(eip4788_state.nonce, 1);
-        assert_eq!(eip4788_state.code_hash, keccak256(&BEACON_ROOTS_CODE));
+        assert_eq!(eip4788_state.code_hash, Eip4788::code_hash());
         Ok(())
     }
 
@@ -421,8 +404,9 @@ mod tests {
     #[test]
     fn test_ring_buffer_wraparound() -> Result<()> {
         let system_calls = system_calls_always_active();
+        let block_number = Eip2935::RING_BUFFER_SIZE + 99; // Wraps to slot 99
         let config = SystemCallConfig {
-            block_number: HISTORY_SERVE_WINDOW as u64 + 99, // Wraps to slot 99
+            block_number,
             timestamp: 1_700_000_000,
             parent_block_hash: Some(B256::repeat_byte(0xff)),
             parent_beacon_block_root: Some(B256::repeat_byte(0xee)),
@@ -432,13 +416,12 @@ mod tests {
 
         let eip2935_state = states
             .iter()
-            .find(|s| s.address_hash == HISTORY_STORAGE_ADDRESS.into())
+            .find(|s| s.address_hash == Eip2935::ADDRESS.into())
             .context("EIP-2935 state should exist")?;
 
         // (8191 + 99 - 1) % 8191 = 98
-
-        let raw_slot = U256::from(98);
-        let expected_slot_key = keccak256(raw_slot.to_be_bytes::<32>());
+        let expected_slot = U256::from(98);
+        let expected_slot_key = keccak256(expected_slot.to_be_bytes::<32>());
         assert!(eip2935_state.storage.contains_key(&expected_slot_key));
         Ok(())
     }
@@ -457,8 +440,9 @@ mod tests {
 
         // Should only have EIP-2935, not EIP-4788
         assert_eq!(states.len(), 1);
+
         let account = states.first().context("expected EIP-2935 state")?;
-        assert_eq!(account.address_hash, HISTORY_STORAGE_ADDRESS.into());
+        assert_eq!(account.address_hash, Eip2935::ADDRESS.into());
         Ok(())
     }
 
@@ -477,10 +461,7 @@ mod tests {
         // Should only have EIP-4788, not EIP-2935
         assert_eq!(states.len(), 1);
         let account = states.first().context("expected EIP-4788 state")?;
-        assert_eq!(
-            account.address_hash,
-            AddressHash::from(keccak256(BEACON_ROOTS_ADDRESS))
-        );
+        assert_eq!(account.address_hash, Eip4788::ADDRESS.into());
         Ok(())
     }
 

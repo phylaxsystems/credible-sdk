@@ -1,0 +1,14 @@
+[package]
+name = "eip-system-calls"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shared system call logic"
+
+[dependencies]
+alloy-eips.workspace = true
+alloy-primitives.workspace = true
+
+[dev-dependencies]
