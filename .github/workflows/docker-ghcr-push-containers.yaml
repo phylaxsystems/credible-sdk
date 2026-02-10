@@ -15,7 +15,26 @@ permissions:
   contents: read
 
 jobs:
+  check-base-image:
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.check.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - name: Check if Dockerfile.base changed
+        id: check
+        run: |
+          if git diff --name-only HEAD~1 HEAD | grep -q '^dockerfile/Dockerfile.base$'; then
+            echo "changed=true" >> $GITHUB_OUTPUT
+          else
+            echo "changed=false" >> $GITHUB_OUTPUT
+          fi
+
   build-base-image:
+    needs: check-base-image
+    if: needs.check-base-image.outputs.changed == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -30,14 +49,14 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Build and push base image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: .
           file: dockerfile/Dockerfile.base
           platforms: linux/amd64,linux/arm64
           push: true
-          cache-from: type=gha,scope=credible-base
-          cache-to: type=gha,mode=max,scope=credible-base
+          cache-from: type=registry,ref=ghcr.io/phylaxsystems/credible-sdk/credible-base:cache
+          cache-to: type=registry,ref=ghcr.io/phylaxsystems/credible-sdk/credible-base:cache,mode=max
           tags: |
             ghcr.io/phylaxsystems/credible-sdk/credible-base:latest
             ghcr.io/phylaxsystems/credible-sdk/credible-base:sha-${{ github.sha }}
@@ -75,7 +94,8 @@ jobs:
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
   docker-ghcr-push-assertion-da:
-    needs: [get-version, build-base-image]
+    needs: [get-version, check-base-image, build-base-image]
+    if: always() && !failure() && !cancelled()
     uses: phylaxsystems/actions/.github/workflows/release-docker-ghcr.yaml@main
     with:
       rust-binary-name: assertion-da
@@ -84,7 +104,8 @@ jobs:
       version-tag: ${{ needs.get-version.outputs.version }}
 
   docker-ghcr-push-assertion-da-dev:
-    needs: [get-version, build-base-image]
+    needs: [get-version, check-base-image, build-base-image]
+    if: always() && !failure() && !cancelled()
     uses: phylaxsystems/actions/.github/workflows/release-docker-ghcr.yaml@main
     with:
       rust-binary-name: assertion-da-dev
@@ -94,7 +115,8 @@ jobs:
       version-tag: ${{ needs.get-version.outputs.version }}
 
   docker-ghcr-push-sidecar:
-    needs: [get-version, build-base-image]
+    needs: [get-version, check-base-image, build-base-image]
+    if: always() && !failure() && !cancelled()
     uses: phylaxsystems/actions/.github/workflows/release-docker-ghcr.yaml@main
     with:
       rust-binary-name: sidecar
@@ -103,7 +125,8 @@ jobs:
       version-tag: ${{ needs.get-version.outputs.version }}
 
   docker-ghcr-push-shadow-driver:
-    needs: [get-version, build-base-image]
+    needs: [get-version, check-base-image, build-base-image]
+    if: always() && !failure() && !cancelled()
     uses: phylaxsystems/actions/.github/workflows/release-docker-ghcr.yaml@main
     with:
       rust-binary-name: shadow-driver
@@ -112,7 +135,8 @@ jobs:
       version-tag: ${{ needs.get-version.outputs.version }}
 
   docker-ghcr-push-state-worker:
-    needs: [get-version, build-base-image]
+    needs: [get-version, check-base-image, build-base-image]
+    if: always() && !failure() && !cancelled()
     uses: phylaxsystems/actions/.github/workflows/release-docker-ghcr.yaml@main
     with:
       rust-binary-name: state-worker
