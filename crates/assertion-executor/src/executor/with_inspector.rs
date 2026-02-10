@@ -4,10 +4,7 @@
 //! a custom inspector, allowing observation of both transaction execution and
 //! assertion execution with independent inspectors.
 
-use std::{
-    sync::atomic::AtomicU64,
-    time::Instant,
-};
+use std::time::Instant;
 
 use crate::{
     db::{
@@ -100,8 +97,6 @@ impl AssertionExecutor {
         for<'db> I: Inspector<OpCtx<'db, ExtDb>>,
         for<'db> I: Inspector<OpCtx<'db, MultiForkDb<ForkDb<Active>>>>,
     {
-        let tx_fork_db = fork_db.clone();
-
         // Execute transaction with inspector
         let (forked_tx_result, tx_inspector) = self
             .execute_forked_tx_ext_db_with_inspector::<ExtDb, I>(
@@ -129,7 +124,7 @@ impl AssertionExecutor {
         let (results, assertion_inspectors) = self
             .execute_assertions_with_inspector(
                 block_env,
-                tx_fork_db,
+                fork_db,
                 &forked_tx_result,
                 tx_env,
                 inspector,
@@ -146,7 +141,7 @@ impl AssertionExecutor {
         let mut all_inspectors = vec![tx_inspector];
         all_inspectors.extend(assertion_inspectors);
 
-        let result = self.finalize_validation_result(
+        let result = Self::finalize_validation_result(
             fork_db,
             tx_env,
             forked_tx_result.result_and_state,
@@ -211,7 +206,7 @@ impl AssertionExecutor {
     fn execute_assertions_with_inspector<Active, I>(
         &self,
         block_env: BlockEnv,
-        tx_fork_db: ForkDb<Active>,
+        tx_fork_db: &ForkDb<Active>,
         forked_tx_result: &ExecuteForkedTxResult,
         tx_env: &TxEnv,
         inspector: I,
@@ -285,9 +280,8 @@ impl AssertionExecutor {
         for<'db> I: Inspector<EthCtx<'db, MultiForkDb<ForkDb<Active>>>>,
         for<'db> I: Inspector<OpCtx<'db, MultiForkDb<ForkDb<Active>>>>,
     {
-        let prepared = self.prepare_assertion_contract(
-            assertion_contract, fn_selectors, tx_fork_db, context,
-        );
+        let prepared =
+            self.prepare_assertion_contract(assertion_contract, fn_selectors, tx_fork_db, context);
 
         let current_span = tracing::Span::current();
         let results_vec: Vec<_> = current_span.in_scope(|| {
@@ -297,11 +291,9 @@ impl AssertionExecutor {
                     .map(|fn_selector| {
                         self.execute_assertion_fn_with_inspector(
                             assertion_contract,
-                            fn_selector,
+                            *fn_selector,
                             block_env.clone(),
                             prepared.multi_fork_db.clone(),
-                            &prepared.assertion_gas,
-                            &prepared.assertions_ran,
                             prepared.inspector.clone(),
                             inspector.clone(),
                         )
@@ -314,18 +306,21 @@ impl AssertionExecutor {
 
         let mut valid_results = Vec::with_capacity(results_vec.len());
         let mut inspectors = Vec::with_capacity(results_vec.len());
+        let mut total_assertion_gas = 0;
         for result in results_vec {
             let (fn_result, fn_inspector) = result?;
+            total_assertion_gas += fn_result.as_result().gas_used();
             valid_results.push(fn_result);
             inspectors.push(fn_inspector);
         }
+        let total_assertion_funcs_ran = valid_results.len() as u64;
 
         Ok((
             AssertionContractExecution {
                 adopter: context.adopter,
                 assertion_fns_results: valid_results,
-                total_assertion_gas: prepared.assertion_gas.into_inner(),
-                total_assertion_funcs_ran: prepared.assertions_ran.into_inner(),
+                total_assertion_gas,
+                total_assertion_funcs_ran,
             },
             inspectors,
         ))
@@ -342,11 +337,9 @@ impl AssertionExecutor {
     fn execute_assertion_fn_with_inspector<Active, I>(
         &self,
         assertion_contract: &AssertionContract,
-        fn_selector: &FixedBytes<4>,
+        fn_selector: FixedBytes<4>,
         block_env: BlockEnv,
         mut multi_fork_db: MultiForkDb<ForkDb<Active>>,
-        assertion_gas: &AtomicU64,
-        assertions_ran: &AtomicU64,
         mut phevm_inspector: PhEvmInspector<'_>,
         mut inspector: I,
     ) -> Result<(AssertionFunctionResult, I), AssertionExecutionError<<Active as DatabaseRef>::Error>>
@@ -358,12 +351,11 @@ impl AssertionExecutor {
         // Compose inspector: (custom_inspector, phevm_inspector).
         let composed_inspector = (&mut inspector, &mut phevm_inspector);
         let result = self.execute_assertion_fn_call(
-            &block_env,
+            block_env,
             fn_selector,
             &mut multi_fork_db,
             composed_inspector,
         )?;
-        Self::record_assertion_metrics(assertion_gas, assertions_ran, result.gas_used());
 
         trace!(target: "assertion-executor::execute_assertions", ?result, "Assertion execution result with inspector");
         Ok((
