@@ -111,6 +111,9 @@ impl AssertionExecutor {
     }
 }
 
+/// Per-function arguments passed into `execute_assertion_fn` during
+/// parallel execution. Each rayon task constructs one from the shared
+/// `PreparedAssertionContract` (cloning the db and inspector, borrowing the atomics).
 #[derive(Debug)]
 struct AssertionExecutionParams<'a, Active> {
     assertion_contract: &'a AssertionContract,
@@ -134,6 +137,19 @@ struct AssertionValidationSummary {
     invalid_assertions: Vec<AssertionFnId>,
     total_assertion_gas: u64,
     total_assertion_funcs_ran: u64,
+}
+
+/// Shared state produced by `prepare_assertion_contract` and consumed
+/// by the rayon parallel loop in each `run_assertion_contract*` variant.
+///
+/// Separating preparation from parallel execution keeps the per-variant code
+/// (with/without custom inspector) to just a rayon `.map` body, while the
+/// setup (inserting persistent accounts, building the overlay db and phevm
+struct PreparedAssertionContract<'ctx, Active> {
+    multi_fork_db: MultiForkDb<ForkDb<Active>>,
+    inspector: PhEvmInspector<'ctx>,
+    assertion_gas: AtomicU64,
+    assertions_ran: AtomicU64,
 }
 
 impl AssertionExecutor {
@@ -390,78 +406,40 @@ impl AssertionExecutor {
         }
     }
 
-    /// Executes all assertion functions of a contract in parallel against a prepared assertion context.
-    fn execute_assertion_contract_functions<'ctx, Active, T, F>(
+    /// Inserts the assertion contract's persistent accounts into the fork db and
+    /// builds the `PreparedAssertionContract` needed for parallel execution.
+    ///
+    /// Callers are responsible for running the actual rayon loop. This keeps the
+    /// parallel body visible at each call site instead of hidden behind a closure
+    /// parameter, which matters because the with inspector and without inspector
+    /// paths differ only in what they do per selector.
+    fn prepare_assertion_contract<'ctx, Active>(
         &self,
         assertion_contract: &AssertionContract,
         fn_selectors: &[FixedBytes<4>],
-        block_env: &BlockEnv,
         mut tx_fork_db: ForkDb<Active>,
         context: &'ctx PhEvmContext,
-        execute_assertion_fn: F,
-    ) -> (
-        Vec<Result<T, AssertionExecutionError<<Active as DatabaseRef>::Error>>>,
-        u64,
-        u64,
-    )
+    ) -> PreparedAssertionContract<'ctx, Active>
     where
-        Active: DatabaseRef + Sync + Send + Clone,
+        Active: DatabaseRef + Sync + Send,
         Active::Error: Send,
-        T: Send,
-        F: Fn(
-                &AssertionContract,
-                &FixedBytes<4>,
-                BlockEnv,
-                MultiForkDb<ForkDb<Active>>,
-                &AtomicU64,
-                &AtomicU64,
-                PhEvmInspector<'ctx>,
-            ) -> Result<T, AssertionExecutionError<<Active as DatabaseRef>::Error>>
-            + Sync
-            + Send,
     {
-        let AssertionContract { id, .. } = assertion_contract;
-
         trace!(
             target: "assertion-executor::execute_assertions",
-            assertion_contract_id = ?id,
+            assertion_contract_id = ?assertion_contract.id,
             selector_count = fn_selectors.len(),
             selectors = ?fn_selectors.iter().map(|s| format!("{s:x?}")).collect::<Vec<_>>(),
-            "Executing assertion contract",
+            "Preparing assertion contract",
         );
 
         self.insert_persistent_accounts(assertion_contract, &mut tx_fork_db);
-        let multi_fork_db = MultiForkDb::new(tx_fork_db, context.post_tx_journal());
 
-        let inspector = PhEvmInspector::new(context.clone());
-        let assertion_gas = AtomicU64::new(0);
-        let assertions_ran = AtomicU64::new(0);
-
-        let current_span = tracing::Span::current();
-        let results = current_span.in_scope(|| {
-            assertion_executor_pool().install(|| {
-                fn_selectors
-                    .into_par_iter()
-                    .map(|fn_selector| {
-                        execute_assertion_fn(
-                            assertion_contract,
-                            fn_selector,
-                            block_env.clone(),
-                            multi_fork_db.clone(),
-                            &assertion_gas,
-                            &assertions_ran,
-                            inspector.clone(),
-                        )
-                    })
-                    .collect::<Vec<_>>()
-            })
-        });
-
-        (
-            results,
-            assertion_gas.into_inner(),
-            assertions_ran.into_inner(),
-        )
+        PreparedAssertionContract {
+            multi_fork_db: MultiForkDb::new(tx_fork_db, context.post_tx_journal()),
+            inspector: PhEvmInspector::new(context.clone()),
+            assertion_gas: AtomicU64::new(0),
+            assertions_ran: AtomicU64::new(0),
+        }
     }
 
     /// Executes a transaction against an external revm database, and runs the appropriate
@@ -561,8 +539,11 @@ impl AssertionExecutor {
         results
     }
 
-    /// Runs individual assertion contract. If a tx hits a contract with assertions,
-    /// the store will return contracts associated and they will be ran here.
+    /// Runs a single assertion contract's functions in parallel (without a custom inspector).
+    ///
+    /// Prepares the shared context via `prepare_assertion_contract`, then fans out
+    /// each function selector to `execute_assertion_fn` on the assertion thread pool.
+    /// See `run_assertion_contract_with_inspector` for the inspector variant.
     #[instrument(
         skip_all,
         fields(assertion_id=%assertion_contract.id),
@@ -581,31 +562,29 @@ impl AssertionExecutor {
         Active: DatabaseRef + Sync + Send + Clone,
         Active::Error: Send,
     {
-        let (results_vec, total_assertion_gas, total_assertion_funcs_ran) = self
-            .execute_assertion_contract_functions(
-                assertion_contract,
-                fn_selectors,
-                block_env,
-                tx_fork_db,
-                context,
-                |assertion_contract,
-                 fn_selector,
-                 block_env,
-                 multi_fork_db,
-                 assertion_gas,
-                 assertions_ran,
-                 inspector| {
-                    self.execute_assertion_fn(AssertionExecutionParams {
-                        assertion_contract,
-                        fn_selector,
-                        block_env,
-                        multi_fork_db,
-                        assertion_gas,
-                        assertions_ran,
-                        inspector,
+        let prepared = self.prepare_assertion_contract(
+            assertion_contract, fn_selectors, tx_fork_db, context,
+        );
+
+        let current_span = tracing::Span::current();
+        let results_vec: Vec<_> = current_span.in_scope(|| {
+            assertion_executor_pool().install(|| {
+                fn_selectors
+                    .into_par_iter()
+                    .map(|fn_selector| {
+                        self.execute_assertion_fn(AssertionExecutionParams {
+                            assertion_contract,
+                            fn_selector,
+                            block_env: block_env.clone(),
+                            multi_fork_db: prepared.multi_fork_db.clone(),
+                            assertion_gas: &prepared.assertion_gas,
+                            assertions_ran: &prepared.assertions_ran,
+                            inspector: prepared.inspector.clone(),
+                        })
                     })
-                },
-            );
+                    .collect()
+            })
+        });
 
         trace!(target: "assertion-executor::execute_assertions", execution_results=?results_vec.iter().map(|result| format!("{result:?}")).collect::<Vec<_>>(), "Assertion Execution Results");
         let mut valid_results = Vec::with_capacity(results_vec.len());
@@ -616,8 +595,8 @@ impl AssertionExecutor {
         Ok(AssertionContractExecution {
             adopter: context.adopter,
             assertion_fns_results: valid_results,
-            total_assertion_gas,
-            total_assertion_funcs_ran,
+            total_assertion_gas: prepared.assertion_gas.into_inner(),
+            total_assertion_funcs_ran: prepared.assertions_ran.into_inner(),
         })
     }
 

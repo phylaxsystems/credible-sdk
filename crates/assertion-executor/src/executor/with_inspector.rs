@@ -49,9 +49,15 @@ use tracing::{
     trace,
 };
 
+use rayon::prelude::{
+    IntoParallelIterator,
+    ParallelIterator,
+};
+
 use super::{
     AssertionExecutor,
     ExecuteForkedTxResult,
+    assertion_executor_pool,
 };
 
 use crate::evm::build_evm::{
@@ -248,8 +254,12 @@ impl AssertionExecutor {
         Ok((all_executions, all_inspectors))
     }
 
-    /// Run a single assertion contract with a custom inspector.
-    /// Returns the contract execution result and a vector of inspectors (one per function).
+    /// Inspector variant of [`AssertionExecutor::run_assertion_contract`].
+    ///
+    /// Uses the same [`AssertionExecutor::prepare_assertion_contract`] setup, but each
+    /// rayon task composes the caller's inspector with the phevm inspector so both
+    /// observe execution. Returns one cloned inspector per function selector alongside
+    /// the execution results.
     #[instrument(
         skip_all,
         fields(assertion_id=%assertion_contract.id),
@@ -275,32 +285,30 @@ impl AssertionExecutor {
         for<'db> I: Inspector<EthCtx<'db, MultiForkDb<ForkDb<Active>>>>,
         for<'db> I: Inspector<OpCtx<'db, MultiForkDb<ForkDb<Active>>>>,
     {
-        let (results_vec, total_assertion_gas, total_assertion_funcs_ran) = self
-            .execute_assertion_contract_functions(
-                assertion_contract,
-                fn_selectors,
-                block_env,
-                tx_fork_db,
-                context,
-                |assertion_contract,
-                 fn_selector,
-                 block_env,
-                 multi_fork_db,
-                 assertion_gas,
-                 assertions_ran,
-                 phevm_inspector| {
-                    self.execute_assertion_fn_with_inspector(
-                        assertion_contract,
-                        fn_selector,
-                        block_env,
-                        multi_fork_db,
-                        assertion_gas,
-                        assertions_ran,
-                        phevm_inspector,
-                        inspector.clone(),
-                    )
-                },
-            );
+        let prepared = self.prepare_assertion_contract(
+            assertion_contract, fn_selectors, tx_fork_db, context,
+        );
+
+        let current_span = tracing::Span::current();
+        let results_vec: Vec<_> = current_span.in_scope(|| {
+            assertion_executor_pool().install(|| {
+                fn_selectors
+                    .into_par_iter()
+                    .map(|fn_selector| {
+                        self.execute_assertion_fn_with_inspector(
+                            assertion_contract,
+                            fn_selector,
+                            block_env.clone(),
+                            prepared.multi_fork_db.clone(),
+                            &prepared.assertion_gas,
+                            &prepared.assertions_ran,
+                            prepared.inspector.clone(),
+                            inspector.clone(),
+                        )
+                    })
+                    .collect()
+            })
+        });
 
         trace!(target: "assertion-executor::execute_assertions", result_count=results_vec.len(), "Assertion Execution Results with Inspectors");
 
@@ -312,14 +320,15 @@ impl AssertionExecutor {
             inspectors.push(fn_inspector);
         }
 
-        let execution = AssertionContractExecution {
-            adopter: context.adopter,
-            assertion_fns_results: valid_results,
-            total_assertion_gas,
-            total_assertion_funcs_ran,
-        };
-
-        Ok((execution, inspectors))
+        Ok((
+            AssertionContractExecution {
+                adopter: context.adopter,
+                assertion_fns_results: valid_results,
+                total_assertion_gas: prepared.assertion_gas.into_inner(),
+                total_assertion_funcs_ran: prepared.assertions_ran.into_inner(),
+            },
+            inspectors,
+        ))
     }
 
     /// Execute a single assertion function with a custom inspector.
