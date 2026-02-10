@@ -173,6 +173,7 @@ impl AssertionExecutor {
                     contract_execution
                         .assertion_fns_results
                         .iter()
+                        .filter(|result| !result.is_success())
                         .map(|result| result.id),
                 );
             }
@@ -1138,5 +1139,188 @@ mod test {
 
         // Check original TestDB via executor.db
         assert_eq!(test_db.basic_ref(ASSERTION_CONTRACT).unwrap(), None);
+    }
+
+    fn success_execution_result(gas_used: u64) -> ExecutionResult {
+        ExecutionResult::Success {
+            reason: SuccessReason::Stop,
+            gas_used,
+            gas_refunded: 0,
+            logs: vec![],
+            output: Output::Call(Bytes::new()),
+        }
+    }
+
+    fn touched_state_with_storage(address: Address, value: U256) -> EvmState {
+        let mut storage = EvmStorage::default();
+        storage.insert(
+            U256::ZERO,
+            EvmStorageSlot::new_changed(U256::ZERO, value, 0),
+        );
+
+        let mut state = EvmState::default();
+        state.insert(
+            address,
+            Account {
+                info: AccountInfo::default(),
+                transaction_id: 0,
+                storage,
+                status: AccountStatus::Touched,
+            },
+        );
+        state
+    }
+
+    fn success_assertion_result(id: AssertionFnId, gas_used: u64) -> AssertionFunctionResult {
+        AssertionFunctionResult {
+            id,
+            result: AssertionFunctionExecutionResult::AssertionExecutionResult(
+                success_execution_result(gas_used),
+            ),
+            console_logs: vec![],
+        }
+    }
+
+    fn failing_assertion_result(id: AssertionFnId, gas_used: u64) -> AssertionFunctionResult {
+        AssertionFunctionResult {
+            id,
+            result: AssertionFunctionExecutionResult::AssertionContractDeployFailure(
+                success_execution_result(gas_used),
+            ),
+            console_logs: vec![],
+        }
+    }
+
+    #[tokio::test]
+    async fn test_summarize_assertion_results_includes_only_failing_ids() {
+        let contract_id = counter_assertion().id;
+        let success_id = AssertionFnId {
+            fn_selector: FixedBytes::from([0xAA, 0xBB, 0xCC, 0xDD]),
+            assertion_contract_id: contract_id,
+        };
+        let failing_id = AssertionFnId {
+            fn_selector: FixedBytes::from([0x11, 0x22, 0x33, 0x44]),
+            assertion_contract_id: contract_id,
+        };
+
+        let results = vec![AssertionContractExecution {
+            adopter: COUNTER_ADDRESS,
+            assertion_fns_results: vec![
+                success_assertion_result(success_id, 15),
+                failing_assertion_result(failing_id, 20),
+            ],
+            total_assertion_gas: 35,
+            total_assertion_funcs_ran: 2,
+        }];
+
+        let summary = AssertionExecutor::summarize_assertion_results(&results);
+
+        assert_eq!(summary.total_assertion_gas, 35);
+        assert_eq!(summary.total_assertion_funcs_ran, 2);
+        assert_eq!(summary.invalid_assertions.len(), 1);
+        assert_eq!(
+            summary.invalid_assertions[0].fn_selector,
+            failing_id.fn_selector
+        );
+        assert_eq!(
+            summary.invalid_assertions[0].assertion_contract_id,
+            failing_id.assertion_contract_id
+        );
+    }
+
+    #[tokio::test]
+    async fn test_finalize_validation_result_respects_commit_policy() {
+        let test_db: TestDB = OverlayDb::<CacheDB<EmptyDBTyped<TestDbError>>>::new_test();
+        let mut fork_db_commit_true: TestForkDB = test_db.fork();
+        let mut fork_db_commit_false: TestForkDB = test_db.fork();
+        let mut fork_db_invalid: TestForkDB = test_db.fork();
+
+        let contract_id = counter_assertion().id;
+        let success_id = AssertionFnId {
+            fn_selector: FixedBytes::from([0xAA, 0xBB, 0xCC, 0xDD]),
+            assertion_contract_id: contract_id,
+        };
+        let failing_id = AssertionFnId {
+            fn_selector: FixedBytes::from([0x11, 0x22, 0x33, 0x44]),
+            assertion_contract_id: contract_id,
+        };
+
+        let valid_results = vec![AssertionContractExecution {
+            adopter: COUNTER_ADDRESS,
+            assertion_fns_results: vec![success_assertion_result(success_id, 21)],
+            total_assertion_gas: 21,
+            total_assertion_funcs_ran: 1,
+        }];
+
+        let invalid_results = vec![AssertionContractExecution {
+            adopter: COUNTER_ADDRESS,
+            assertion_fns_results: vec![
+                success_assertion_result(success_id, 5),
+                failing_assertion_result(failing_id, 6),
+            ],
+            total_assertion_gas: 11,
+            total_assertion_funcs_ran: 2,
+        }];
+
+        let tx_env = TxEnv::default();
+        let commit_value = U256::from(7);
+        let skipped_value = U256::from(9);
+        let invalid_value = U256::from(13);
+
+        let committed = AssertionExecutor::finalize_validation_result(
+            &mut fork_db_commit_true,
+            &tx_env,
+            ResultAndState {
+                result: success_execution_result(50),
+                state: touched_state_with_storage(COUNTER_ADDRESS, commit_value),
+            },
+            valid_results,
+            std::time::Duration::from_millis(1),
+            true,
+        );
+        assert!(committed.is_valid());
+        assert_eq!(
+            fork_db_commit_true.storage_ref(COUNTER_ADDRESS, U256::ZERO),
+            Ok(commit_value)
+        );
+
+        let not_committed = AssertionExecutor::finalize_validation_result(
+            &mut fork_db_commit_false,
+            &tx_env,
+            ResultAndState {
+                result: success_execution_result(50),
+                state: touched_state_with_storage(COUNTER_ADDRESS, skipped_value),
+            },
+            vec![AssertionContractExecution {
+                adopter: COUNTER_ADDRESS,
+                assertion_fns_results: vec![success_assertion_result(success_id, 21)],
+                total_assertion_gas: 21,
+                total_assertion_funcs_ran: 1,
+            }],
+            std::time::Duration::from_millis(1),
+            false,
+        );
+        assert!(not_committed.is_valid());
+        assert_eq!(
+            fork_db_commit_false.storage_ref(COUNTER_ADDRESS, U256::ZERO),
+            Ok(U256::ZERO)
+        );
+
+        let invalid = AssertionExecutor::finalize_validation_result(
+            &mut fork_db_invalid,
+            &tx_env,
+            ResultAndState {
+                result: success_execution_result(50),
+                state: touched_state_with_storage(COUNTER_ADDRESS, invalid_value),
+            },
+            invalid_results,
+            std::time::Duration::from_millis(1),
+            true,
+        );
+        assert!(!invalid.is_valid());
+        assert_eq!(
+            fork_db_invalid.storage_ref(COUNTER_ADDRESS, U256::ZERO),
+            Ok(U256::ZERO)
+        );
     }
 }
