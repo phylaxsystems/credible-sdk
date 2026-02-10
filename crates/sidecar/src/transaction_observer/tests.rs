@@ -13,6 +13,7 @@ use assertion_executor::test_utils::{
     counter_call,
 };
 use chrono::Utc;
+use credible_utils::hex::encode_hex_prefixed as hex_bytes;
 use httpmock::prelude::*;
 use revm::{
     context::{
@@ -49,10 +50,6 @@ use std::{
     },
 };
 use tempfile::TempDir;
-
-fn hex_bytes(bytes: &[u8]) -> String {
-    format!("0x{}", hex::encode(bytes))
-}
 
 fn format_timestamp(timestamp: u64) -> String {
     let seconds = i64::try_from(timestamp).expect("valid timestamp");
@@ -309,29 +306,29 @@ fn expected_incident_body() -> serde_json::Value {
     json!({
         "failures": [
             {
-                "assertion_adopter_address": hex_bytes(&[0x0a; 20]),
-                "assertion_id": hex_bytes(&[0x0b; 32]),
-                "assertion_fn_selector": hex_bytes(&[0x0c; 4]),
-                "revert_reason": hex_bytes(&[0x08, 0x04])
+                "assertion_adopter_address": hex_bytes([0x0a; 20]),
+                "assertion_id": hex_bytes([0x0b; 32]),
+                "assertion_fn_selector": hex_bytes([0x0c; 4]),
+                "revert_reason": hex_bytes([0x08, 0x04])
             }
         ],
         "enforcer_version": env!("CARGO_PKG_VERSION"),
         "incident_timestamp": format_timestamp(1_700_000_000),
         "transaction_data": {
-            "transaction_hash": hex_bytes(&[0xaa; 32]),
+            "transaction_hash": hex_bytes([0xaa; 32]),
             "chain_id": "1",
             "nonce": "7",
             "gas_limit": "21000",
-            "to_address": hex_bytes(&[0x02; 20]),
-            "from_address": hex_bytes(&[0x01; 20]),
+            "to_address": hex_bytes([0x02; 20]),
+            "from_address": hex_bytes([0x01; 20]),
             "value": "5",
             "type": 0.0,
-            "data": hex_bytes(&[0xde, 0xad, 0xbe, 0xef]),
+            "data": hex_bytes([0xde, 0xad, 0xbe, 0xef]),
             "gas_price": "100"
         },
         "block_env": {
             "number": "42",
-            "beneficiary": hex_bytes(&[0x0d; 20]),
+            "beneficiary": hex_bytes([0x0d; 20]),
             "timestamp": "1700000111",
             "gas_limit": "30000000",
             "basefee": "7",

@@ -12,6 +12,7 @@ use anyhow::{
     Context,
     Result,
 };
+use credible_utils::hex::decode_hex_trimmed_0x;
 use mdbx::{
     AccountState,
     AddressHash,
@@ -27,7 +28,7 @@ use tokio::time::sleep;
 use tracing_test::traced_test;
 
 fn address_hash_from_hex(address: &str) -> Result<alloy::primitives::B256> {
-    let bytes = hex::decode(address.trim_start_matches("0x"))
+    let bytes = decode_hex_trimmed_0x(address)
         .with_context(|| format!("Failed to decode address hex {address}"))?;
     Ok(keccak256(bytes))
 }

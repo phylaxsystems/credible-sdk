@@ -54,3 +54,4 @@ tempfile.workspace = true
 assertion-da-client = { path = "../da-client" }
 testcontainers.workspace = true
 testcontainers-modules.workspace = true
+credible-utils.workspace = true

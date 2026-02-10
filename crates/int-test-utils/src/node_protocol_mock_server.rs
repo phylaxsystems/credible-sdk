@@ -49,6 +49,14 @@ pub struct DualProtocolMockServer {
     ws_server_handle: AbortHandle,
 }
 
+fn hex_u64(value: u64) -> String {
+    format!("0x{value:x}")
+}
+
+fn hex_u64_padded(value: u64) -> String {
+    format!("0x{value:064x}")
+}
+
 impl DualProtocolMockServer {
     /// Create a new dual protocol mock server
     pub async fn new() -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
@@ -97,7 +105,7 @@ impl DualProtocolMockServer {
     /// Generate a mock parent beacon block root for a given block number
     fn mock_parent_beacon_block_root(block_number: u64) -> String {
         // Generate a deterministic beacon root based on the block number
-        format!("0x{:064x}", block_number.wrapping_mul(0xbeac_0000) + 0xbeef)
+        hex_u64_padded(block_number.wrapping_mul(0xbeac_0000) + 0xbeef)
     }
 
     /// Send a new head with a specific block number
@@ -106,8 +114,8 @@ impl DualProtocolMockServer {
         // Alloy's subscribe_blocks expects a full Block object, not just header
         let block = json!({
             // Header fields
-            "hash": format!("0x{:064x}", new_block),
-            "parentHash": format!("0x{:064x}", new_block.saturating_sub(1)),
+            "hash": hex_u64_padded(new_block),
+            "parentHash": hex_u64_padded(new_block.saturating_sub(1)),
             "sha3Uncles": "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347",
             "miner": "0x0000000000000000000000000000000000000000",
             "stateRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
@@ -115,10 +123,10 @@ impl DualProtocolMockServer {
             "receiptsRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
             "logsBloom": format!("0x{:0512}", 0),
             "difficulty": "0x0",
-            "number": format!("0x{:x}", new_block),
+            "number": hex_u64(new_block),
             "gasLimit": "0x1c9c380",
             "gasUsed": "0x0",
-            "timestamp": format!("0x{:x}", new_block * 12),
+            "timestamp": hex_u64(new_block * 12),
             "extraData": "0x",
             "mixHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
             "nonce": "0x0000000000000000",
@@ -158,8 +166,8 @@ impl DualProtocolMockServer {
         // Alloy's subscribe_blocks expects a full Block object, not just header
         let block = json!({
             // Header fields
-            "hash": format!("0x{:064x}", new_block),
-            "parentHash": format!("0x{:064x}", new_block.saturating_sub(1)),
+            "hash": hex_u64_padded(new_block),
+            "parentHash": hex_u64_padded(new_block.saturating_sub(1)),
             "sha3Uncles": "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347",
             "miner": "0x0000000000000000000000000000000000000000",
             "stateRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
@@ -167,10 +175,10 @@ impl DualProtocolMockServer {
             "receiptsRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
             "logsBloom": format!("0x{:0512}", 0),
             "difficulty": "0x0",
-            "number": format!("0x{:x}", new_block),
+            "number": hex_u64(new_block),
             "gasLimit": "0x1c9c380",
             "gasUsed": "0x0",
-            "timestamp": format!("0x{:x}", new_block * 12),
+            "timestamp": hex_u64(new_block * 12),
             "extraData": "0x",
             "mixHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
             "nonce": "0x0000000000000000",
@@ -218,7 +226,7 @@ impl DualProtocolMockServer {
         let block_number_response = json!({
             "jsonrpc": "2.0",
             "id": 1,
-            "result": format!("0x{:x}", current_block.load(Ordering::Acquire))
+            "result": hex_u64(current_block.load(Ordering::Acquire))
         });
 
         responses.insert("eth_blockNumber".to_string(), block_number_response);
@@ -303,7 +311,7 @@ impl DualProtocolMockServer {
         let block_number_response = json!({
             "jsonrpc": "2.0",
             "id": 1,
-            "result": format!("0x{:x}", current_block)
+            "result": hex_u64(current_block)
         });
         self.responses
             .insert("eth_blockNumber".to_string(), block_number_response);
@@ -313,8 +321,8 @@ impl DualProtocolMockServer {
             "jsonrpc": "2.0",
             "id": 1,
             "result": {
-                "hash": format!("0x{:064x}", current_block),
-                "parentHash": format!("0x{:064x}", current_block.saturating_sub(1)),
+                "hash": hex_u64_padded(current_block),
+                "parentHash": hex_u64_padded(current_block.saturating_sub(1)),
                 "sha3Uncles": "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347",
                 "miner": "0x0000000000000000000000000000000000000000",
                 "stateRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
@@ -322,10 +330,10 @@ impl DualProtocolMockServer {
                 "receiptsRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
                 "logsBloom": format!("0x{:0512}", 0),
                 "difficulty": "0x0",
-                "number": format!("0x{:x}", current_block),
+                "number": hex_u64(current_block),
                 "gasLimit": "0x1c9c380",
                 "gasUsed": "0x0",
-                "timestamp": format!("0x{:x}", current_block * 12),
+                "timestamp": hex_u64(current_block * 12),
                 "extraData": "0x",
                 "mixHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
                 "nonce": "0x0000000000000000",
@@ -457,7 +465,7 @@ impl DualProtocolMockServer {
 
                                     if subscription_type == "newHeads" {
                                         // Generate a unique subscription ID
-                                        let sub_id = format!("0x{:x}", rand::random::<u64>());
+                                        let sub_id = hex_u64(rand::random::<u64>());
                                         subscription_id = Some(sub_id.clone());
 
                                         // Send successful subscription response

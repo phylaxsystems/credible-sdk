@@ -1510,6 +1510,7 @@ dependencies = [
  "bincode",
  "bollard",
  "clap",
+ "credible-utils",
  "directories",
  "futures",
  "futures-util",
@@ -2883,6 +2884,7 @@ name = "credible-utils"
 version = "1.0.8"
 dependencies = [
  "anyhow",
+ "hex",
  "tokio",
 ]
 
@@ -11676,6 +11678,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "clap",
+ "credible-utils",
  "futures",
  "hex",
  "int-test-utils",

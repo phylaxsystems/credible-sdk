@@ -386,6 +386,10 @@ mod tests {
         },
         signers::Signer,
     };
+    use credible_utils::hex::{
+        decode_hex_trimmed_0x,
+        encode_hex_prefixed,
+    };
     use sled::Config as DbConfig;
     use tempfile::TempDir;
     use tokio::{
@@ -598,7 +602,7 @@ mod tests {
         let request_body = json!({
             "jsonrpc": "2.0",
             "method": "da_get_assertion",
-            "params": [format!("0x{}", hex::encode(id))],
+            "params": [encode_hex_prefixed(id.as_slice())],
             "id": 1
         });
 
@@ -619,13 +623,7 @@ mod tests {
         let result = response_json["result"].as_object().unwrap();
         assert_eq!(result["solidity_source"].as_str().unwrap(), source_code);
         assert_eq!(
-            hex::decode(
-                result["bytecode"]
-                    .as_str()
-                    .unwrap()
-                    .trim_start_matches("0x")
-            )
-            .unwrap(),
+            decode_hex_trimmed_0x(result["bytecode"].as_str().unwrap()).unwrap(),
             vec![1, 2, 3, 4]
         );
     }

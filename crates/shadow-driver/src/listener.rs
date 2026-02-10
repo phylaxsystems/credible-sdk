@@ -30,6 +30,7 @@ use anyhow::{
     Result,
     anyhow,
 };
+use credible_utils::hex::encode_hex_prefixed;
 use futures::StreamExt;
 use sidecar::transport::grpc::pb::{
     AccessListItem as ProtoAccessListItem,
@@ -1251,7 +1252,7 @@ impl Listener {
         for result in &sidecar_response.results {
             let tx_hash = result.tx_execution_id.as_ref().map_or_else(
                 || "unknown".to_string(),
-                |id| format!("0x{}", bytes_to_hex(&id.tx_hash)),
+                |id| encode_hex_prefixed(&id.tx_hash),
             );
             let status_str = result_status_to_string(result.status);
             info!(
@@ -1278,7 +1279,7 @@ impl Listener {
                 sidecar_response.not_found.len()
             );
             for not_found in &sidecar_response.not_found {
-                let tx_hash = format!("0x{}", bytes_to_hex(not_found));
+                let tx_hash = encode_hex_prefixed(not_found);
                 warn!("  Not found: {tx_hash}");
             }
         }
@@ -1636,10 +1637,6 @@ fn u256_to_bytes(val: U256) -> Vec<u8> {
 
 fn u128_to_bytes(val: u128) -> Vec<u8> {
     val.to_be_bytes().to_vec()
-}
-
-fn bytes_to_hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Convert `ResultStatus` enum value to human-readable string

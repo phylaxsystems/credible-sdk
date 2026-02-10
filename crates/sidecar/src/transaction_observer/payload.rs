@@ -5,6 +5,7 @@ use super::{
     TransactionObserverError,
 };
 use chrono::Utc;
+use credible_utils::hex::encode_hex_prefixed;
 use dapp_api_client::generated::client::types as dapp_types;
 use revm::{
     context::{
@@ -262,11 +263,11 @@ fn build_block_env_payload(block_env: &BlockEnv) -> BlockEnvPayload {
     });
     let prevrandao = block_env
         .prevrandao
-        .map(|prevrandao| bytes_to_hex(prevrandao.as_slice()));
+        .map(|prevrandao| encode_hex_prefixed(prevrandao.as_slice()));
 
     BlockEnvPayload {
         number: block_env.number.to_string(),
-        beneficiary: bytes_to_hex(block_env.beneficiary.as_slice()),
+        beneficiary: encode_hex_prefixed(block_env.beneficiary.as_slice()),
         timestamp: block_env.timestamp.to_string(),
         gas_limit: block_env.gas_limit.to_string(),
         basefee: block_env.basefee.to_string(),
@@ -280,13 +281,13 @@ fn build_failure_payload(failure: &IncidentData) -> FailurePayload {
     let revert_reason = if failure.revert_data.is_empty() {
         None
     } else {
-        Some(bytes_to_hex(failure.revert_data.as_ref()))
+        Some(encode_hex_prefixed(failure.revert_data.as_ref()))
     };
 
     FailurePayload {
-        assertion_adopter_address: bytes_to_hex(failure.adopter_address.as_slice()),
-        assertion_id: bytes_to_hex(failure.assertion_id.as_slice()),
-        assertion_fn_selector: Some(bytes_to_hex(failure.assertion_fn.as_slice())),
+        assertion_adopter_address: encode_hex_prefixed(failure.adopter_address.as_slice()),
+        assertion_id: encode_hex_prefixed(failure.assertion_id.as_slice()),
+        assertion_fn_selector: Some(encode_hex_prefixed(failure.assertion_fn.as_slice())),
         revert_reason,
     }
 }
@@ -329,15 +330,15 @@ fn build_common_transaction_fields(
     chain_id: Option<String>,
 ) -> TransactionCommonFields {
     TransactionCommonFields {
-        transaction_hash: bytes_to_hex(tx_hash),
+        transaction_hash: encode_hex_prefixed(tx_hash),
         chain_id,
         nonce: tx_env.nonce.to_string(),
         gas_limit: tx_env.gas_limit.to_string(),
         to_address: tx_kind_to_address(&tx_env.kind, true),
-        from_address: bytes_to_hex(tx_env.caller.as_slice()),
+        from_address: encode_hex_prefixed(tx_env.caller.as_slice()),
         value: tx_env.value.to_string(),
         tx_type: u64::from(tx_env.tx_type),
-        data: (!tx_env.data.is_empty()).then(|| bytes_to_hex(tx_env.data.as_ref())),
+        data: (!tx_env.data.is_empty()).then(|| encode_hex_prefixed(tx_env.data.as_ref())),
     }
 }
 
@@ -407,7 +408,7 @@ fn build_blob_payload(
         blob_versioned_hashes: tx_env
             .blob_hashes
             .iter()
-            .map(|hash| bytes_to_hex(hash.as_slice()))
+            .map(|hash| encode_hex_prefixed(hash.as_slice()))
             .collect(),
         chain_id: common_fields.chain_id,
         data: common_fields.data,
@@ -450,11 +451,11 @@ fn access_list_payload(access_list: &AccessList) -> Vec<AccessListItemPayload> {
         .iter()
         .map(|item| {
             AccessListItemPayload {
-                address: bytes_to_hex(item.address.as_slice()),
+                address: encode_hex_prefixed(item.address.as_slice()),
                 storage_keys: item
                     .storage_keys
                     .iter()
-                    .map(|key| bytes_to_hex(key.as_slice()))
+                    .map(|key| encode_hex_prefixed(key.as_slice()))
                     .collect(),
             }
         })
@@ -480,7 +481,7 @@ fn authorization_list_payload(
 
             AuthorizationListItemPayload {
                 chain_id: u256_to_hex(*authorization.chain_id()),
-                address: bytes_to_hex(authorization.address().as_slice()),
+                address: encode_hex_prefixed(authorization.address().as_slice()),
                 nonce: u64_to_hex(authorization.nonce()),
                 v: u64_to_hex(u64::from(v)),
                 r: u256_to_hex(r),
@@ -492,19 +493,15 @@ fn authorization_list_payload(
 
 fn tx_kind_to_address(kind: &TxKind, allow_empty: bool) -> String {
     match kind {
-        TxKind::Call(to) => bytes_to_hex(to.as_slice()),
+        TxKind::Call(to) => encode_hex_prefixed(to.as_slice()),
         TxKind::Create => {
             if allow_empty {
                 String::new()
             } else {
-                bytes_to_hex(Address::ZERO.as_slice())
+                encode_hex_prefixed(Address::ZERO.as_slice())
             }
         }
     }
-}
-
-fn bytes_to_hex(bytes: &[u8]) -> String {
-    format!("0x{}", hex::encode(bytes))
 }
 
 fn u256_to_hex(value: U256) -> String {
@@ -557,10 +554,10 @@ mod tests {
         assert_eq!(payload_array.len(), 1);
 
         let tx_value = payload_array[0].as_object().expect("transaction object");
-        let expected_hash = bytes_to_hex(tx_hash.as_slice());
-        let expected_to = bytes_to_hex(&[0x02; 20]);
-        let expected_from = bytes_to_hex(&[0x01; 20]);
-        let expected_data = bytes_to_hex(&[0xde, 0xad, 0xbe, 0xef]);
+        let expected_hash = encode_hex_prefixed(tx_hash.as_slice());
+        let expected_to = encode_hex_prefixed([0x02; 20]);
+        let expected_from = encode_hex_prefixed([0x01; 20]);
+        let expected_data = encode_hex_prefixed([0xde, 0xad, 0xbe, 0xef]);
         assert_eq!(
             tx_value.get("transaction_hash").and_then(Value::as_str),
             Some(expected_hash.as_str())
