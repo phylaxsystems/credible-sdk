@@ -18,8 +18,13 @@ use crate::{
 
 use alloy_sol_types::{
     SolCall,
-    SolValue,
+    SolType,
+    sol_data::{
+        Array,
+        Uint,
+    },
 };
+use bumpalo::Bump;
 
 use super::BASE_COST;
 
@@ -54,31 +59,35 @@ pub fn get_state_changes(
     let event = PhEvm::getStateChangesCall::abi_decode(input_bytes)
         .map_err(GetStateChangesError::CallDecodeError)?;
 
-    let differences = get_differences(
-        &context.logs_and_traces.call_traces.journal,
-        event.contractAddress,
-        event.slot.into(),
-        &mut gas_left,
-        gas_limit,
-    )?;
-    let dif_bytes: Bytes = Vec::<U256>::abi_encode(&differences).into();
+    let dif_bytes: Bytes = crate::arena::with_current_tx_arena(|arena| {
+        let mut differences: Vec<U256, &Bump> = Vec::new_in(arena);
+        get_differences(
+            &context.logs_and_traces.call_traces.journal,
+            event.contractAddress,
+            event.slot.into(),
+            &mut gas_left,
+            gas_limit,
+            &mut differences,
+        )?;
+
+        Ok::<_, GetStateChangesError>(Array::<Uint<256>>::abi_encode(differences.as_slice()).into())
+    })?;
 
     Ok(PhevmOutcome::new(dif_bytes, gas_limit - gas_left))
 }
 
 /// Returns an array of different values for an account and slot, from the `JournaledState` passed.
-fn get_differences(
+fn get_differences<A: std::alloc::Allocator>(
     journal: &JournalInner<JournalEntry>,
     contract_address: Address,
     slot: U256,
     gas_left: &mut u64,
     gas_limit: u64,
-) -> Result<Vec<U256>, GetStateChangesError> {
+    differences: &mut Vec<U256, A>,
+) -> Result<(), GetStateChangesError> {
     const JOURNAL_PROCESSING_COST: u64 = 16;
     const MEMORY_COST: u64 = 3;
     const PUSH_LAST: u64 = 6;
-
-    let mut differences = Vec::new();
 
     for entry in &journal.journal {
         if let Some(rax) = deduct_gas_and_check(gas_left, JOURNAL_PROCESSING_COST, gas_limit) {
@@ -122,7 +131,7 @@ fn get_differences(
         differences.push(current_slot_value);
     }
 
-    Ok(differences)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -483,10 +492,18 @@ mod test {
         );
 
         let mut gas_left = TEST_GAS;
-        let result = get_differences(&journal, contract_address, slot, &mut gas_left, TEST_GAS);
+        let mut differences = Vec::<U256>::new();
+        let result = get_differences(
+            &journal,
+            contract_address,
+            slot,
+            &mut gas_left,
+            TEST_GAS,
+            &mut differences,
+        );
         assert!(result.is_ok());
 
-        let differences = result.unwrap();
+        result.unwrap();
         assert_eq!(differences.len(), 3);
         assert_eq!(differences[0], current_value);
         assert_eq!(differences[1], value_updates[0]);

@@ -75,7 +75,13 @@ use rayon::{
     },
 };
 
-use crate::error::TxExecutionError;
+use crate::{
+    arena::{
+        next_tx_arena_epoch,
+        prepare_tx_arena_for_current_thread,
+    },
+    error::TxExecutionError,
+};
 use tracing::{
     debug,
     error,
@@ -115,6 +121,7 @@ impl AssertionExecutor {
 struct AssertionExecutionParams<'a, Active> {
     assertion_contract: &'a AssertionContract,
     fn_selector: &'a FixedBytes<4>,
+    tx_arena_epoch: u64,
     block_env: BlockEnv,
     multi_fork_db: MultiForkDb<ForkDb<Active>>,
     inspector: PhEvmInspector<'a>,
@@ -257,6 +264,7 @@ impl AssertionExecutor {
         tx_fork_db: &ForkDb<Active>,
         forked_tx_result: &ExecuteForkedTxResult,
         tx_env: &TxEnv,
+        tx_arena_epoch: u64,
         run_assertion_contract: F,
     ) -> Result<Vec<T>, AssertionExecutionError<<Active as DatabaseRef>::Error>>
     where
@@ -269,6 +277,7 @@ impl AssertionExecutor {
                 &BlockEnv,
                 ForkDb<Active>,
                 &PhEvmContext,
+                u64,
             ) -> Result<T, AssertionExecutionError<<Active as DatabaseRef>::Error>>
             + Sync
             + Send,
@@ -313,6 +322,7 @@ impl AssertionExecutor {
                         &block_env,
                         tx_fork_db.clone(),
                         &phevm_context,
+                        tx_arena_epoch,
                     )
                 })
                 .collect()
@@ -463,9 +473,16 @@ impl AssertionExecutor {
         }
         debug!(target: "assertion-executor::validate_tx", gas_used=exec_result.gas_used(), "Transaction execution succeeded.");
 
+        let tx_arena_epoch = next_tx_arena_epoch();
         let assertion_timer = Instant::now();
         let results = self
-            .execute_assertions(block_env, fork_db, &forked_tx_result, tx_env)
+            .execute_assertions(
+                block_env,
+                fork_db,
+                &forked_tx_result,
+                tx_env,
+                tx_arena_epoch,
+            )
             .map_err(|e| {
                 ExecutorError::AssertionExecutionError(
                     forked_tx_result.result_and_state.state.clone(),
@@ -490,6 +507,7 @@ impl AssertionExecutor {
         tx_fork_db: &ForkDb<Active>,
         forked_tx_result: &ExecuteForkedTxResult,
         tx_env: &TxEnv,
+        tx_arena_epoch: u64,
     ) -> Result<
         Vec<AssertionContractExecution>,
         AssertionExecutionError<<Active as DatabaseRef>::Error>,
@@ -503,13 +521,15 @@ impl AssertionExecutor {
             tx_fork_db,
             forked_tx_result,
             tx_env,
-            |assertion_contract, fn_selectors, block_env, tx_fork_db, context| {
+            tx_arena_epoch,
+            |assertion_contract, fn_selectors, block_env, tx_fork_db, context, tx_arena_epoch| {
                 self.run_assertion_contract(
                     assertion_contract,
                     fn_selectors,
                     block_env,
                     tx_fork_db,
                     context,
+                    tx_arena_epoch,
                 )
             },
         );
@@ -536,6 +556,7 @@ impl AssertionExecutor {
         block_env: &BlockEnv,
         tx_fork_db: ForkDb<Active>,
         context: &PhEvmContext,
+        tx_arena_epoch: u64,
     ) -> Result<AssertionContractExecution, AssertionExecutionError<<Active as DatabaseRef>::Error>>
     where
         Active: DatabaseRef + Sync + Send + Clone,
@@ -553,6 +574,7 @@ impl AssertionExecutor {
                         self.execute_assertion_fn(AssertionExecutionParams {
                             assertion_contract,
                             fn_selector,
+                            tx_arena_epoch,
                             block_env: block_env.clone(),
                             multi_fork_db: prepared.multi_fork_db.clone(),
                             inspector: prepared.inspector.clone(),
@@ -598,10 +620,13 @@ impl AssertionExecutor {
         let AssertionExecutionParams {
             assertion_contract,
             fn_selector,
+            tx_arena_epoch,
             block_env,
             mut multi_fork_db,
             mut inspector,
         } = params;
+
+        prepare_tx_arena_for_current_thread(tx_arena_epoch);
 
         let result = self.execute_assertion_fn_call(
             block_env,
@@ -646,9 +671,16 @@ impl AssertionExecutor {
             ));
         }
 
+        let tx_arena_epoch = next_tx_arena_epoch();
         let assertion_timer = Instant::now();
         let results = self
-            .execute_assertions(block_env, fork_db, &forked_tx_result, tx_env)
+            .execute_assertions(
+                block_env,
+                fork_db,
+                &forked_tx_result,
+                tx_env,
+                tx_arena_epoch,
+            )
             .map_err(|e| {
                 ExecutorError::AssertionExecutionError(
                     forked_tx_result.result_and_state.state.clone(),
@@ -973,8 +1005,15 @@ mod test {
             ..Default::default()
         };
 
+        let tx_arena_epoch = crate::arena::next_tx_arena_epoch();
         let results = executor
-            .execute_assertions(block_env, &fork_db, &forked_tx_result, &TxEnv::default())
+            .execute_assertions(
+                block_env,
+                &fork_db,
+                &forked_tx_result,
+                &TxEnv::default(),
+                tx_arena_epoch,
+            )
             .expect("assertion execution should succeed");
 
         assert!(!results.is_empty());

@@ -20,6 +20,7 @@ use alloy_primitives::{
 use revm::interpreter::CallScheme;
 
 use alloy_sol_types::SolType;
+use bumpalo::Bump;
 
 #[derive(thiserror::Error, Debug)]
 pub enum GetCallInputsError {
@@ -62,46 +63,52 @@ pub fn get_call_inputs(
         call_inputs.retain(|call_input| call_input.call_input.scheme == scheme_filter);
     }
 
-    let mut calldata_size: u64 = 0;
-    let mut sol_call_inputs = Vec::new();
-    for CallInputsWithId { call_input, id } in call_inputs {
-        if let Some(rax) = deduct_gas_and_check(&mut gas_left, BASE_CALL_COST, gas_limit) {
+    let encoded: Bytes = crate::arena::with_current_tx_arena(|arena| {
+        let mut calldata_size: u64 = 0;
+        let mut sol_call_inputs: Vec<PhEvmCallInputs, &Bump> = Vec::new_in(arena);
+        for CallInputsWithId { call_input, id } in call_inputs {
+            if let Some(rax) = deduct_gas_and_check(&mut gas_left, BASE_CALL_COST, gas_limit) {
+                return Err(GetCallInputsError::OutOfGas(rax));
+            }
+
+            let original_input_data = match &call_input.input {
+                revm::interpreter::CallInput::Bytes(bytes) => bytes.clone(),
+                revm::interpreter::CallInput::SharedBuffer(_) => {
+                    return Err(GetCallInputsError::ExpectedBytes);
+                }
+            };
+            let input_data_wo_selector = if original_input_data.len() >= 4 {
+                original_input_data.slice(4..)
+            } else {
+                Bytes::new()
+            };
+
+            calldata_size += input_data_wo_selector.len() as u64;
+
+            sol_call_inputs.push(PhEvmCallInputs {
+                input: input_data_wo_selector,
+                gas_limit: call_input.gas_limit,
+                bytecode_address: call_input.bytecode_address,
+                target_address: call_input.target_address,
+                caller: call_input.caller,
+                value: call_input.value.get(),
+                id: U256::from(id),
+            });
+        }
+
+        let calldata_words: u64 = calldata_size.div_ceil(32);
+        let calldata_cost = calldata_words * DYNAMIC_CALL_COST;
+        if let Some(rax) = deduct_gas_and_check(&mut gas_left, calldata_cost, gas_limit) {
             return Err(GetCallInputsError::OutOfGas(rax));
         }
 
-        let original_input_data = match &call_input.input {
-            revm::interpreter::CallInput::Bytes(bytes) => bytes.clone(),
-            revm::interpreter::CallInput::SharedBuffer(_) => {
-                return Err(GetCallInputsError::ExpectedBytes);
-            }
-        };
-        let input_data_wo_selector = if original_input_data.len() >= 4 {
-            original_input_data.slice(4..)
-        } else {
-            Bytes::new()
-        };
-
-        calldata_size += input_data_wo_selector.len() as u64;
-
-        sol_call_inputs.push(PhEvmCallInputs {
-            input: input_data_wo_selector,
-            gas_limit: call_input.gas_limit,
-            bytecode_address: call_input.bytecode_address,
-            target_address: call_input.target_address,
-            caller: call_input.caller,
-            value: call_input.value.get(),
-            id: U256::from(id),
-        });
-    }
-
-    let calldata_words: u64 = calldata_size.div_ceil(32);
-    let calldata_cost = calldata_words * DYNAMIC_CALL_COST;
-    if let Some(rax) = deduct_gas_and_check(&mut gas_left, calldata_cost, gas_limit) {
-        return Err(GetCallInputsError::OutOfGas(rax));
-    }
-
-    let encoded: Bytes =
-        <alloy_sol_types::sol_data::Array<PhEvmCallInputs>>::abi_encode(&sol_call_inputs).into();
+        Ok::<_, GetCallInputsError>(
+            <alloy_sol_types::sol_data::Array<PhEvmCallInputs>>::abi_encode(
+                sol_call_inputs.as_slice(),
+            )
+            .into(),
+        )
+    })?;
 
     Ok(PhevmOutcome::new(encoded, gas_limit - gas_left))
 }
