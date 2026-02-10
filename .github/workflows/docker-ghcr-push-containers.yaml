@@ -36,6 +36,8 @@ jobs:
           file: dockerfile/Dockerfile.base
           platforms: linux/amd64,linux/arm64
           push: true
+          cache-from: type=gha,scope=credible-base
+          cache-to: type=gha,mode=max,scope=credible-base
           tags: |
             ghcr.io/phylaxsystems/credible-sdk/credible-base:latest
             ghcr.io/phylaxsystems/credible-sdk/credible-base:sha-${{ github.sha }}
