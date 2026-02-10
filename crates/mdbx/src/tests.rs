@@ -1,9 +1,5 @@
 //! Integration tests for MDBX state storage.
 
-#![allow(clippy::cast_lossless)]
-#![allow(clippy::cast_possible_truncation)]
-#![allow(clippy::many_single_char_names)]
-
 use crate::{
     AccountState,
     AddressHash,
@@ -396,27 +392,46 @@ fn test_circular_buffer_rotation() {
 
 #[test]
 fn test_cumulative_state_reads() {
-    let (w, tmp) = writer_env(3);
-    let (a, b, c) = (addr(0xa1), addr(0xb1), addr(0xc1));
+    let (writer, temp_dir) = writer_env(3);
+    let (addr_a, addr_b, addr_c) = (addr(0xa1), addr(0xb1), addr(0xc1));
 
-    w.commit_block(&simple_update(0, a, 1000, 1)).unwrap();
-    w.commit_block(&simple_update(1, b, 2000, 2)).unwrap();
-    w.commit_block(&simple_update(2, c, 3000, 3)).unwrap();
-    w.commit_block(&block_update(3, vec![account_state(a, 1500, 5)]))
+    writer
+        .commit_block(&simple_update(0, addr_a, 1000, 1))
         .unwrap();
-    drop(w);
+    writer
+        .commit_block(&simple_update(1, addr_b, 2000, 2))
+        .unwrap();
+    writer
+        .commit_block(&simple_update(2, addr_c, 3000, 3))
+        .unwrap();
+    writer
+        .commit_block(&block_update(3, vec![account_state(addr_a, 1500, 5)]))
+        .unwrap();
+    drop(writer);
 
-    let r = reader_for(&tmp, 3);
+    let reader = reader_for(&temp_dir, 3);
     assert_eq!(
-        r.get_account(a.into(), 3).unwrap().unwrap().balance,
+        reader
+            .get_account(addr_a.into(), 3)
+            .unwrap()
+            .unwrap()
+            .balance,
         u256(1500)
     );
     assert_eq!(
-        r.get_account(b.into(), 3).unwrap().unwrap().balance,
+        reader
+            .get_account(addr_b.into(), 3)
+            .unwrap()
+            .unwrap()
+            .balance,
         u256(2000)
     );
     assert_eq!(
-        r.get_account(c.into(), 3).unwrap().unwrap().balance,
+        reader
+            .get_account(addr_c.into(), 3)
+            .unwrap()
+            .unwrap()
+            .balance,
         u256(3000)
     );
 }
@@ -427,10 +442,12 @@ fn test_block_metadata() {
     let a = addr(0xee);
 
     for b in 0..5u64 {
+        let block_hash_byte = u8::try_from(b * 10).expect("block hash byte fits in u8");
+        let state_root_byte = u8::try_from(b * 20).expect("state root byte fits in u8");
         w.commit_block(&BlockStateUpdate {
             block_number: b,
-            block_hash: B256::repeat_byte((b * 10) as u8),
-            state_root: B256::repeat_byte((b * 20) as u8),
+            block_hash: B256::repeat_byte(block_hash_byte),
+            state_root: B256::repeat_byte(state_root_byte),
             accounts: vec![account_state(a, b * 100, b)],
         })
         .unwrap();
@@ -440,8 +457,10 @@ fn test_block_metadata() {
     let r = reader_for(&tmp, 5);
     for b in 0..5u64 {
         let meta = r.get_block_metadata(b).unwrap().unwrap();
-        assert_eq!(meta.block_hash, B256::repeat_byte((b * 10) as u8));
-        assert_eq!(meta.state_root, B256::repeat_byte((b * 20) as u8));
+        let block_hash_byte = u8::try_from(b * 10).expect("block hash byte fits in u8");
+        let state_root_byte = u8::try_from(b * 20).expect("state root byte fits in u8");
+        assert_eq!(meta.block_hash, B256::repeat_byte(block_hash_byte));
+        assert_eq!(meta.state_root, B256::repeat_byte(state_root_byte));
     }
 }
 
@@ -506,7 +525,8 @@ fn test_available_block_range() {
     let (w, tmp) = writer_env(3);
 
     for b in 0..6 {
-        w.commit_block(&simple_update(b, addr(b as u8), 1000, 1))
+        let addr_byte = u8::try_from(b).expect("address byte fits in u8");
+        w.commit_block(&simple_update(b, addr(addr_byte), 1000, 1))
             .unwrap();
     }
     drop(w);
@@ -600,15 +620,17 @@ fn test_namespace_isolation() {
     let (w, tmp) = writer_env(3);
 
     for i in 0..3u64 {
-        w.commit_block(&simple_update(i, addr(i as u8), 1000 * (i + 1), 1))
+        let addr_byte = u8::try_from(i).expect("address byte fits in u8");
+        w.commit_block(&simple_update(i, addr(addr_byte), 1000 * (i + 1), 1))
             .unwrap();
     }
     drop(w);
 
     let r = reader_for(&tmp, 3);
     for i in 0..3u64 {
+        let addr_byte = u8::try_from(i).expect("address byte fits in u8");
         assert_eq!(
-            r.get_account(addr(i as u8).into(), i)
+            r.get_account(addr(addr_byte).into(), i)
                 .unwrap()
                 .unwrap()
                 .balance,
@@ -912,76 +934,80 @@ fn test_account_delete_then_recreate() {
 
 #[test]
 fn test_multiple_accounts_interleaved_updates() {
-    let (w, tmp) = writer_env(4);
-    let (a, b, c) = (addr(0x11), addr(0x22), addr(0x33));
+    let (writer, temp_dir) = writer_env(4);
+    let (addr_a, addr_b, addr_c) = (addr(0x11), addr(0x22), addr(0x33));
 
     // Block 0: Create A and B
-    w.commit_block(&block_update(
-        0,
-        vec![
-            account_state_with_storage(a, 1000, 0, [(1, 100)]),
-            account_state_with_storage(b, 2000, 0, [(1, 200)]),
-        ],
-    ))
-    .unwrap();
+    writer
+        .commit_block(&block_update(
+            0,
+            vec![
+                account_state_with_storage(addr_a, 1000, 0, [(1, 100)]),
+                account_state_with_storage(addr_b, 2000, 0, [(1, 200)]),
+            ],
+        ))
+        .unwrap();
 
     // Block 1: Update A, create C
-    w.commit_block(&block_update(
-        1,
-        vec![
-            account_state_with_storage(a, 1100, 1, [(2, 150)]),
-            account_state_with_storage(c, 3000, 0, [(1, 300)]),
-        ],
-    ))
-    .unwrap();
+    writer
+        .commit_block(&block_update(
+            1,
+            vec![
+                account_state_with_storage(addr_a, 1100, 1, [(2, 150)]),
+                account_state_with_storage(addr_c, 3000, 0, [(1, 300)]),
+            ],
+        ))
+        .unwrap();
 
     // Block 2: Delete B, update C
-    w.commit_block(&block_update(
-        2,
-        vec![
-            deleted_account(b),
-            account_state_with_storage(c, 3500, 1, [(2, 350)]),
-        ],
-    ))
-    .unwrap();
+    writer
+        .commit_block(&block_update(
+            2,
+            vec![
+                deleted_account(addr_b),
+                account_state_with_storage(addr_c, 3500, 1, [(2, 350)]),
+            ],
+        ))
+        .unwrap();
 
     // Block 3: Recreate B, update A
-    w.commit_block(&block_update(
-        3,
-        vec![
-            account_state_with_storage(a, 1200, 2, [(1, 120)]),
-            account_state_with_storage(b, 9000, 0, [(5, 500)]),
-        ],
-    ))
-    .unwrap();
+    writer
+        .commit_block(&block_update(
+            3,
+            vec![
+                account_state_with_storage(addr_a, 1200, 2, [(1, 120)]),
+                account_state_with_storage(addr_b, 9000, 0, [(5, 500)]),
+            ],
+        ))
+        .unwrap();
 
-    drop(w);
-    let r = reader_for(&tmp, 4);
+    drop(writer);
+    let reader = reader_for(&temp_dir, 4);
 
     // Verify final state at block 3
     // A: balance 1200, nonce 2, slots 1=120, 2=150
-    let acc_a = r.get_account(a.into(), 3).unwrap().unwrap();
+    let acc_a = reader.get_account(addr_a.into(), 3).unwrap().unwrap();
     assert_eq!(acc_a.balance, u256(1200));
     assert_eq!(acc_a.nonce, 2);
-    let s_a = r.get_all_storage(a.into(), 3).unwrap();
+    let s_a = reader.get_all_storage(addr_a.into(), 3).unwrap();
     assert_eq!(s_a.len(), 2);
     assert_eq!(s_a.get(&hash_slot(slot_b256(1))), Some(&u256(120)));
     assert_eq!(s_a.get(&hash_slot(slot_b256(2))), Some(&u256(150)));
 
     // B: recreated with balance 9000, nonce 0, slot 5=500
-    let acc_b = r.get_account(b.into(), 3).unwrap().unwrap();
+    let acc_b = reader.get_account(addr_b.into(), 3).unwrap().unwrap();
     assert_eq!(acc_b.balance, u256(9000));
     assert_eq!(acc_b.nonce, 0);
-    let s_b = r.get_all_storage(b.into(), 3).unwrap();
+    let s_b = reader.get_all_storage(addr_b.into(), 3).unwrap();
     assert_eq!(s_b.len(), 1);
     assert_eq!(s_b.get(&hash_slot(slot_b256(5))), Some(&u256(500)));
     // Old slot 1 should NOT exist
     assert_eq!(s_b.get(&hash_slot(slot_b256(1))), None);
 
     // C: balance 3500, nonce 1, slots 1=300, 2=350
-    let acc_c = r.get_account(c.into(), 3).unwrap().unwrap();
+    let acc_c = reader.get_account(addr_c.into(), 3).unwrap().unwrap();
     assert_eq!(acc_c.balance, u256(3500));
-    let s_c = r.get_all_storage(c.into(), 3).unwrap();
+    let s_c = reader.get_all_storage(addr_c.into(), 3).unwrap();
     assert_eq!(s_c.len(), 2);
     assert_eq!(s_c.get(&hash_slot(slot_b256(1))), Some(&u256(300)));
     assert_eq!(s_c.get(&hash_slot(slot_b256(2))), Some(&u256(350)));
@@ -1245,57 +1271,82 @@ fn test_same_slot_modified_every_block() {
 
 #[test]
 fn test_preserve_unmodified_accounts_across_rotation() {
-    let (w, tmp) = writer_env(3);
-    let (a, b, c) = (addr(0x10), addr(0x20), addr(0x30));
+    let (writer, temp_dir) = writer_env(3);
+    let (addr_a, addr_b, addr_c) = (addr(0x10), addr(0x20), addr(0x30));
 
     // Block 0: create all three accounts
-    w.commit_block(&block_update(
-        0,
-        vec![
-            account_state_with_storage(a, 1000, 0, [(1, 100)]),
-            account_state_with_storage(b, 2000, 0, [(2, 200)]),
-            account_state_with_storage(c, 3000, 0, [(3, 300)]),
-        ],
-    ))
-    .unwrap();
+    writer
+        .commit_block(&block_update(
+            0,
+            vec![
+                account_state_with_storage(addr_a, 1000, 0, [(1, 100)]),
+                account_state_with_storage(addr_b, 2000, 0, [(2, 200)]),
+                account_state_with_storage(addr_c, 3000, 0, [(3, 300)]),
+            ],
+        ))
+        .unwrap();
 
     // Block 1: only modify A
-    w.commit_block(&simple_update(1, a, 1100, 1)).unwrap();
+    writer
+        .commit_block(&simple_update(1, addr_a, 1100, 1))
+        .unwrap();
 
     // Block 2: only modify B
-    w.commit_block(&simple_update(2, b, 2200, 1)).unwrap();
+    writer
+        .commit_block(&simple_update(2, addr_b, 2200, 1))
+        .unwrap();
 
     // Block 3: rotation to ns 0, only modify C
-    w.commit_block(&simple_update(3, c, 3300, 1)).unwrap();
+    writer
+        .commit_block(&simple_update(3, addr_c, 3300, 1))
+        .unwrap();
 
-    drop(w);
-    let r = reader_for(&tmp, 3);
+    drop(writer);
+    let reader = reader_for(&temp_dir, 3);
 
     // All accounts should exist at block 3 with their latest state
     assert_eq!(
-        r.get_account(a.into(), 3).unwrap().unwrap().balance,
+        reader
+            .get_account(addr_a.into(), 3)
+            .unwrap()
+            .unwrap()
+            .balance,
         u256(1100)
     );
     assert_eq!(
-        r.get_account(b.into(), 3).unwrap().unwrap().balance,
+        reader
+            .get_account(addr_b.into(), 3)
+            .unwrap()
+            .unwrap()
+            .balance,
         u256(2200)
     );
     assert_eq!(
-        r.get_account(c.into(), 3).unwrap().unwrap().balance,
+        reader
+            .get_account(addr_c.into(), 3)
+            .unwrap()
+            .unwrap()
+            .balance,
         u256(3300)
     );
 
     // Storage should be preserved
     assert_eq!(
-        r.get_storage(a.into(), hash_slot(slot_b256(1)), 3).unwrap(),
+        reader
+            .get_storage(addr_a.into(), hash_slot(slot_b256(1)), 3)
+            .unwrap(),
         Some(u256(100))
     );
     assert_eq!(
-        r.get_storage(b.into(), hash_slot(slot_b256(2)), 3).unwrap(),
+        reader
+            .get_storage(addr_b.into(), hash_slot(slot_b256(2)), 3)
+            .unwrap(),
         Some(u256(200))
     );
     assert_eq!(
-        r.get_storage(c.into(), hash_slot(slot_b256(3)), 3).unwrap(),
+        reader
+            .get_storage(addr_c.into(), hash_slot(slot_b256(3)), 3)
+            .unwrap(),
         Some(u256(300))
     );
 }
@@ -1777,83 +1828,109 @@ fn test_dedup_keeps_last_occurrence_simple() {
 #[test]
 fn test_dedup_multiple_accounts_interleaved_updates() {
     // Multiple accounts updated in alternating pattern
-    let (w, tmp) = writer_env(10);
-    let (a, b, c) = (addr(0x0a), addr(0x0b), addr(0x0c));
+    let (writer, temp_dir) = writer_env(10);
+    let (addr_a, addr_b, addr_c) = (addr(0x0a), addr(0x0b), addr(0x0c));
 
-    w.commit_block(&block_update(
-        0,
-        vec![
-            account_state_with_storage(a, 100, 0, [(1, 10)]),
-            account_state_with_storage(b, 100, 0, [(1, 10)]),
-            account_state_with_storage(c, 100, 0, [(1, 10)]),
-        ],
-    ))
-    .unwrap();
+    writer
+        .commit_block(&block_update(
+            0,
+            vec![
+                account_state_with_storage(addr_a, 100, 0, [(1, 10)]),
+                account_state_with_storage(addr_b, 100, 0, [(1, 10)]),
+                account_state_with_storage(addr_c, 100, 0, [(1, 10)]),
+            ],
+        ))
+        .unwrap();
 
     // Interleaved updates - each account updated in different blocks
-    w.commit_block(&block_update(
-        1,
-        vec![account_state_with_storage(a, 111, 1, [(1, 11)])],
-    ))
-    .unwrap();
-    w.commit_block(&block_update(
-        2,
-        vec![account_state_with_storage(b, 222, 2, [(1, 22)])],
-    ))
-    .unwrap();
-    w.commit_block(&block_update(
-        3,
-        vec![account_state_with_storage(c, 333, 3, [(1, 33)])],
-    ))
-    .unwrap();
-    w.commit_block(&block_update(
-        4,
-        vec![account_state_with_storage(a, 444, 4, [(1, 44)])],
-    ))
-    .unwrap();
-    w.commit_block(&block_update(
-        5,
-        vec![account_state_with_storage(b, 555, 5, [(1, 55)])],
-    ))
-    .unwrap();
-    w.commit_block(&block_update(
-        6,
-        vec![account_state_with_storage(c, 666, 6, [(1, 66)])],
-    ))
-    .unwrap();
-    w.commit_block(&block_update(
-        7,
-        vec![account_state_with_storage(a, 777, 7, [(1, 77)])],
-    ))
-    .unwrap();
+    writer
+        .commit_block(&block_update(
+            1,
+            vec![account_state_with_storage(addr_a, 111, 1, [(1, 11)])],
+        ))
+        .unwrap();
+    writer
+        .commit_block(&block_update(
+            2,
+            vec![account_state_with_storage(addr_b, 222, 2, [(1, 22)])],
+        ))
+        .unwrap();
+    writer
+        .commit_block(&block_update(
+            3,
+            vec![account_state_with_storage(addr_c, 333, 3, [(1, 33)])],
+        ))
+        .unwrap();
+    writer
+        .commit_block(&block_update(
+            4,
+            vec![account_state_with_storage(addr_a, 444, 4, [(1, 44)])],
+        ))
+        .unwrap();
+    writer
+        .commit_block(&block_update(
+            5,
+            vec![account_state_with_storage(addr_b, 555, 5, [(1, 55)])],
+        ))
+        .unwrap();
+    writer
+        .commit_block(&block_update(
+            6,
+            vec![account_state_with_storage(addr_c, 666, 6, [(1, 66)])],
+        ))
+        .unwrap();
+    writer
+        .commit_block(&block_update(
+            7,
+            vec![account_state_with_storage(addr_a, 777, 7, [(1, 77)])],
+        ))
+        .unwrap();
 
-    drop(w);
-    let r = reader_for(&tmp, 10);
+    drop(writer);
+    let reader = reader_for(&temp_dir, 10);
 
     // Each account should have its LAST update
     assert_eq!(
-        r.get_account(a.into(), 7).unwrap().unwrap().balance,
+        reader
+            .get_account(addr_a.into(), 7)
+            .unwrap()
+            .unwrap()
+            .balance,
         u256(777)
     );
     assert_eq!(
-        r.get_account(b.into(), 7).unwrap().unwrap().balance,
+        reader
+            .get_account(addr_b.into(), 7)
+            .unwrap()
+            .unwrap()
+            .balance,
         u256(555)
     );
     assert_eq!(
-        r.get_account(c.into(), 7).unwrap().unwrap().balance,
+        reader
+            .get_account(addr_c.into(), 7)
+            .unwrap()
+            .unwrap()
+            .balance,
         u256(666)
     );
 
     assert_eq!(
-        r.get_storage(a.into(), hash_slot(slot_b256(1)), 7).unwrap(),
+        reader
+            .get_storage(addr_a.into(), hash_slot(slot_b256(1)), 7)
+            .unwrap(),
         Some(u256(77))
     );
     assert_eq!(
-        r.get_storage(b.into(), hash_slot(slot_b256(1)), 7).unwrap(),
+        reader
+            .get_storage(addr_b.into(), hash_slot(slot_b256(1)), 7)
+            .unwrap(),
         Some(u256(55))
     );
     assert_eq!(
-        r.get_storage(c.into(), hash_slot(slot_b256(1)), 7).unwrap(),
+        reader
+            .get_storage(addr_c.into(), hash_slot(slot_b256(1)), 7)
+            .unwrap(),
         Some(u256(66))
     );
 }
@@ -2183,7 +2260,7 @@ fn test_many_accounts_subset_deleted_each_block() {
 
     // Blocks 1-5: delete 2 accounts each
     for b in 1..=5u64 {
-        let idx1 = ((b - 1) * 2) as u8;
+        let idx1 = u8::try_from((b - 1) * 2).expect("account index fits in u8");
         let idx2 = idx1 + 1;
         w.commit_block(&block_update(
             b,
@@ -2605,100 +2682,110 @@ fn test_storage_slot_zero_vs_nonexistent() {
 #[test]
 fn test_concurrent_accounts_different_lifecycles() {
     // Multiple accounts with completely different lifecycle patterns
-    let (w, tmp) = writer_env(6);
-    let (a, b, c, d) = (addr(0x0a), addr(0x0b), addr(0x0c), addr(0x0d));
+    let (writer, temp_dir) = writer_env(6);
+    let (addr_a, addr_b, addr_c, addr_d) = (addr(0x0a), addr(0x0b), addr(0x0c), addr(0x0d));
 
     // A: exists throughout, constantly updated
     // B: created early, deleted mid-way, never recreated
     // C: created mid-way, exists to end
     // D: created, deleted, recreated, deleted, recreated
 
-    w.commit_block(&block_update(
-        0,
-        vec![
-            account_state_with_storage(a, 100, 0, [(1, 10)]),
-            account_state_with_storage(b, 100, 0, [(1, 10)]),
-        ],
-    ))
-    .unwrap();
+    writer
+        .commit_block(&block_update(
+            0,
+            vec![
+                account_state_with_storage(addr_a, 100, 0, [(1, 10)]),
+                account_state_with_storage(addr_b, 100, 0, [(1, 10)]),
+            ],
+        ))
+        .unwrap();
 
-    w.commit_block(&block_update(
-        1,
-        vec![
-            account_state_with_storage(a, 200, 1, [(1, 20)]),
-            account_state_with_storage(d, 100, 0, [(1, 10)]),
-        ],
-    ))
-    .unwrap();
+    writer
+        .commit_block(&block_update(
+            1,
+            vec![
+                account_state_with_storage(addr_a, 200, 1, [(1, 20)]),
+                account_state_with_storage(addr_d, 100, 0, [(1, 10)]),
+            ],
+        ))
+        .unwrap();
 
-    w.commit_block(&block_update(
-        2,
-        vec![
-            account_state_with_storage(a, 300, 2, [(1, 30)]),
-            deleted_account(b),
-            account_state_with_storage(c, 100, 0, [(1, 10)]),
-            deleted_account(d),
-        ],
-    ))
-    .unwrap();
+    writer
+        .commit_block(&block_update(
+            2,
+            vec![
+                account_state_with_storage(addr_a, 300, 2, [(1, 30)]),
+                deleted_account(addr_b),
+                account_state_with_storage(addr_c, 100, 0, [(1, 10)]),
+                deleted_account(addr_d),
+            ],
+        ))
+        .unwrap();
 
-    w.commit_block(&block_update(
-        3,
-        vec![
-            account_state_with_storage(a, 400, 3, [(1, 40)]),
-            account_state_with_storage(c, 200, 1, [(1, 20)]),
-            account_state_with_storage(d, 200, 0, [(2, 20)]),
-        ],
-    ))
-    .unwrap();
+    writer
+        .commit_block(&block_update(
+            3,
+            vec![
+                account_state_with_storage(addr_a, 400, 3, [(1, 40)]),
+                account_state_with_storage(addr_c, 200, 1, [(1, 20)]),
+                account_state_with_storage(addr_d, 200, 0, [(2, 20)]),
+            ],
+        ))
+        .unwrap();
 
-    w.commit_block(&block_update(
-        4,
-        vec![
-            account_state_with_storage(a, 500, 4, [(1, 50)]),
-            deleted_account(d),
-        ],
-    ))
-    .unwrap();
+    writer
+        .commit_block(&block_update(
+            4,
+            vec![
+                account_state_with_storage(addr_a, 500, 4, [(1, 50)]),
+                deleted_account(addr_d),
+            ],
+        ))
+        .unwrap();
 
-    w.commit_block(&block_update(
-        5,
-        vec![
-            account_state_with_storage(a, 600, 5, [(1, 60)]),
-            account_state_with_storage(c, 300, 2, [(1, 30)]),
-            account_state_with_storage(d, 300, 0, [(3, 30)]),
-        ],
-    ))
-    .unwrap();
+    writer
+        .commit_block(&block_update(
+            5,
+            vec![
+                account_state_with_storage(addr_a, 600, 5, [(1, 60)]),
+                account_state_with_storage(addr_c, 300, 2, [(1, 30)]),
+                account_state_with_storage(addr_d, 300, 0, [(3, 30)]),
+            ],
+        ))
+        .unwrap();
 
-    drop(w);
-    let r = reader_for(&tmp, 6);
+    drop(writer);
+    let reader = reader_for(&temp_dir, 6);
 
     // Block 5 final state:
     // A: balance 600, nonce 5, slot1=60
-    let acc_a = r.get_account(a.into(), 5).unwrap().unwrap();
+    let acc_a = reader.get_account(addr_a.into(), 5).unwrap().unwrap();
     assert_eq!(acc_a.balance, u256(600));
     assert_eq!(
-        r.get_storage(a.into(), hash_slot(slot_b256(1)), 5).unwrap(),
+        reader
+            .get_storage(addr_a.into(), hash_slot(slot_b256(1)), 5)
+            .unwrap(),
         Some(u256(60))
     );
 
     // B: deleted (since block 2)
-    assert!(r.get_account(b.into(), 5).unwrap().is_none());
+    assert!(reader.get_account(addr_b.into(), 5).unwrap().is_none());
 
     // C: balance 300, nonce 2, slot1=30
-    let acc_c = r.get_account(c.into(), 5).unwrap().unwrap();
+    let acc_c = reader.get_account(addr_c.into(), 5).unwrap().unwrap();
     assert_eq!(acc_c.balance, u256(300));
     assert_eq!(
-        r.get_storage(c.into(), hash_slot(slot_b256(1)), 5).unwrap(),
+        reader
+            .get_storage(addr_c.into(), hash_slot(slot_b256(1)), 5)
+            .unwrap(),
         Some(u256(30))
     );
 
     // D: balance 300, nonce 0, slot3=30 (recreated in block 5)
-    let acc_d = r.get_account(d.into(), 5).unwrap().unwrap();
+    let acc_d = reader.get_account(addr_d.into(), 5).unwrap().unwrap();
     assert_eq!(acc_d.balance, u256(300));
     assert_eq!(acc_d.nonce, 0);
-    let sd = r.get_all_storage(d.into(), 5).unwrap();
+    let sd = reader.get_all_storage(addr_d.into(), 5).unwrap();
     assert_eq!(sd.len(), 1);
     assert_eq!(sd.get(&hash_slot(slot_b256(3))), Some(&u256(30)));
     // Old slots should NOT exist
@@ -2711,70 +2798,96 @@ fn test_dedup_swap_indices_regression() {
     // This test creates a specific pattern that would fail if swap indices were stale
     // Pattern: 5 accounts, keep indices [1, 3, 4] after dedup
     // If the swap algorithm is broken, index 4 might contain wrong data after swaps
-    let (w, tmp) = writer_env(5);
-    let (a, b, c, d, e) = (addr(0xa1), addr(0xa2), addr(0xa3), addr(0xa4), addr(0xa5));
+    let (writer, temp_dir) = writer_env(5);
+    let (addr_a, addr_b, addr_c, addr_d, addr_e) =
+        (addr(0xa1), addr(0xa2), addr(0xa3), addr(0xa4), addr(0xa5));
 
     // Block 0: create all 5 accounts with distinct values
-    w.commit_block(&block_update(
-        0,
-        vec![
-            account_state_with_storage(a, 100, 0, [(1, 10)]),
-            account_state_with_storage(b, 200, 0, [(1, 20)]),
-            account_state_with_storage(c, 300, 0, [(1, 30)]),
-            account_state_with_storage(d, 400, 0, [(1, 40)]),
-            account_state_with_storage(e, 500, 0, [(1, 50)]),
-        ],
-    ))
-    .unwrap();
+    writer
+        .commit_block(&block_update(
+            0,
+            vec![
+                account_state_with_storage(addr_a, 100, 0, [(1, 10)]),
+                account_state_with_storage(addr_b, 200, 0, [(1, 20)]),
+                account_state_with_storage(addr_c, 300, 0, [(1, 30)]),
+                account_state_with_storage(addr_d, 400, 0, [(1, 40)]),
+                account_state_with_storage(addr_e, 500, 0, [(1, 50)]),
+            ],
+        ))
+        .unwrap();
 
     // Block 1: update A and C with new values
     // This creates duplicates for A and C in the batch
-    w.commit_block(&block_update(
-        1,
-        vec![
-            account_state_with_storage(a, 111, 1, [(1, 11)]),
-            account_state_with_storage(c, 333, 1, [(1, 33)]),
-        ],
-    ))
-    .unwrap();
+    writer
+        .commit_block(&block_update(
+            1,
+            vec![
+                account_state_with_storage(addr_a, 111, 1, [(1, 11)]),
+                account_state_with_storage(addr_c, 333, 1, [(1, 33)]),
+            ],
+        ))
+        .unwrap();
 
     // Block 2: update A again
-    w.commit_block(&block_update(
-        2,
-        vec![account_state_with_storage(a, 1111, 2, [(1, 111)])],
-    ))
-    .unwrap();
+    writer
+        .commit_block(&block_update(
+            2,
+            vec![account_state_with_storage(addr_a, 1111, 2, [(1, 111)])],
+        ))
+        .unwrap();
 
-    drop(w);
-    let r = reader_for(&tmp, 5);
+    drop(writer);
+    let reader = reader_for(&temp_dir, 5);
 
     // A should have LAST value
     assert_eq!(
-        r.get_account(a.into(), 2).unwrap().unwrap().balance,
+        reader
+            .get_account(addr_a.into(), 2)
+            .unwrap()
+            .unwrap()
+            .balance,
         u256(1111)
     );
     assert_eq!(
-        r.get_storage(a.into(), hash_slot(slot_b256(1)), 2).unwrap(),
+        reader
+            .get_storage(addr_a.into(), hash_slot(slot_b256(1)), 2)
+            .unwrap(),
         Some(u256(111))
     );
 
     // B, D, E should be unchanged from block 0
     assert_eq!(
-        r.get_account(b.into(), 2).unwrap().unwrap().balance,
+        reader
+            .get_account(addr_b.into(), 2)
+            .unwrap()
+            .unwrap()
+            .balance,
         u256(200)
     );
     assert_eq!(
-        r.get_account(d.into(), 2).unwrap().unwrap().balance,
+        reader
+            .get_account(addr_d.into(), 2)
+            .unwrap()
+            .unwrap()
+            .balance,
         u256(400)
     );
     assert_eq!(
-        r.get_account(e.into(), 2).unwrap().unwrap().balance,
+        reader
+            .get_account(addr_e.into(), 2)
+            .unwrap()
+            .unwrap()
+            .balance,
         u256(500)
     );
 
     // C should have value from block 1
     assert_eq!(
-        r.get_account(c.into(), 2).unwrap().unwrap().balance,
+        reader
+            .get_account(addr_c.into(), 2)
+            .unwrap()
+            .unwrap()
+            .balance,
         u256(333)
     );
 }
@@ -3744,72 +3857,76 @@ fn test_bootstrap_empty_accounts_list() {
 #[test]
 fn test_bootstrap_then_complex_rotation_scenario() {
     // Bootstrap, then do complex operations during rotations
-    let (w, tmp) = writer_env(3);
-    let (a, b, c) = (addr(0x0a), addr(0x0b), addr(0x0c));
+    let (writer, temp_dir) = writer_env(3);
+    let (addr_a, addr_b, addr_c) = (addr(0x0a), addr(0x0b), addr(0x0c));
 
     // Bootstrap with 3 accounts
-    w.bootstrap_from_snapshot(
-        vec![
-            account_state_with_storage(a, 1000, 0, [(1, 10)]),
-            account_state_with_storage(b, 2000, 0, [(1, 20)]),
-            account_state_with_storage(c, 3000, 0, [(1, 30)]),
-        ],
-        100,
-        B256::ZERO,
-        B256::ZERO,
-    )
-    .unwrap();
+    writer
+        .bootstrap_from_snapshot(
+            vec![
+                account_state_with_storage(addr_a, 1000, 0, [(1, 10)]),
+                account_state_with_storage(addr_b, 2000, 0, [(1, 20)]),
+                account_state_with_storage(addr_c, 3000, 0, [(1, 30)]),
+            ],
+            100,
+            B256::ZERO,
+            B256::ZERO,
+        )
+        .unwrap();
 
     // Block 101: update A, delete B
-    w.commit_block(&block_update(
-        101,
-        vec![
-            account_state_with_storage(a, 1100, 1, [(2, 110)]),
-            deleted_account(b),
-        ],
-    ))
-    .unwrap();
+    writer
+        .commit_block(&block_update(
+            101,
+            vec![
+                account_state_with_storage(addr_a, 1100, 1, [(2, 110)]),
+                deleted_account(addr_b),
+            ],
+        ))
+        .unwrap();
 
     // Block 102: update C, recreate B
-    w.commit_block(&block_update(
-        102,
-        vec![
-            account_state_with_storage(c, 3300, 1, [(2, 330)]),
-            account_state_with_storage(b, 5000, 0, [(5, 500)]),
-        ],
-    ))
-    .unwrap();
+    writer
+        .commit_block(&block_update(
+            102,
+            vec![
+                account_state_with_storage(addr_c, 3300, 1, [(2, 330)]),
+                account_state_with_storage(addr_b, 5000, 0, [(5, 500)]),
+            ],
+        ))
+        .unwrap();
 
     // Block 103: rotation - just update A
-    w.commit_block(&block_update(
-        103,
-        vec![account_state_with_storage(a, 1200, 2, [(3, 120)])],
-    ))
-    .unwrap();
+    writer
+        .commit_block(&block_update(
+            103,
+            vec![account_state_with_storage(addr_a, 1200, 2, [(3, 120)])],
+        ))
+        .unwrap();
 
-    drop(w);
-    let r = reader_for(&tmp, 3);
+    drop(writer);
+    let reader = reader_for(&temp_dir, 3);
 
     // Verify A at block 103
-    let acc_a = r.get_account(a.into(), 103).unwrap().unwrap();
+    let acc_a = reader.get_account(addr_a.into(), 103).unwrap().unwrap();
     assert_eq!(acc_a.balance, u256(1200));
-    let storage_a = r.get_all_storage(a.into(), 103).unwrap();
+    let storage_a = reader.get_all_storage(addr_a.into(), 103).unwrap();
     assert_eq!(storage_a.len(), 3); // slots 1, 2, 3
     assert_eq!(storage_a.get(&hash_slot(slot_b256(1))), Some(&u256(10)));
     assert_eq!(storage_a.get(&hash_slot(slot_b256(2))), Some(&u256(110)));
     assert_eq!(storage_a.get(&hash_slot(slot_b256(3))), Some(&u256(120)));
 
     // Verify B at block 103 (recreated)
-    let acc_b = r.get_account(b.into(), 103).unwrap().unwrap();
+    let acc_b = reader.get_account(addr_b.into(), 103).unwrap().unwrap();
     assert_eq!(acc_b.balance, u256(5000));
-    let storage_b = r.get_all_storage(b.into(), 103).unwrap();
+    let storage_b = reader.get_all_storage(addr_b.into(), 103).unwrap();
     assert_eq!(storage_b.len(), 1); // only slot 5 from recreation
     assert!(!storage_b.contains_key(&hash_slot(slot_b256(1)))); // old slot gone
 
     // Verify C at block 103
-    let acc_c = r.get_account(c.into(), 103).unwrap().unwrap();
+    let acc_c = reader.get_account(addr_c.into(), 103).unwrap().unwrap();
     assert_eq!(acc_c.balance, u256(3300));
-    let storage_c = r.get_all_storage(c.into(), 103).unwrap();
+    let storage_c = reader.get_all_storage(addr_c.into(), 103).unwrap();
     assert_eq!(storage_c.len(), 2); // slots 1, 2
 }
 

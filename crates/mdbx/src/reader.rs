@@ -441,6 +441,10 @@ impl Reader for StateReader {
 
 impl StateReader {
     /// Create a new reader with read-only database access.
+    ///
+    /// # Errors
+    ///
+    /// Returns any database error when opening the environment.
     pub fn new(path: impl AsRef<Path>, config: CircularBufferConfig) -> StateResult<Self> {
         let db = StateDb::open_read_only(path, config)?;
         Ok(Self { db })
@@ -457,6 +461,7 @@ impl StateReader {
     }
 
     /// Get the configured buffer size.
+    #[must_use]
     pub fn buffer_size(&self) -> u8 {
         self.db.buffer_size()
     }
@@ -464,6 +469,10 @@ impl StateReader {
     /// Get all storage slots for an account with statistics.
     ///
     /// Same as `get_all_storage` but returns additional timing information.
+    ///
+    /// # Errors
+    ///
+    /// Returns any backend read error.
     #[instrument(skip(self), level = "debug")]
     pub fn get_all_storage_with_stats(
         &self,

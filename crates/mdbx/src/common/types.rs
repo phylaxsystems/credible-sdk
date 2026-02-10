@@ -57,6 +57,7 @@ pub struct NamespacedAccountKey {
 }
 
 impl NamespacedAccountKey {
+    #[must_use]
     pub const fn new(namespace_idx: u8, address_hash: AddressHash) -> Self {
         Self {
             namespace_idx,
@@ -112,6 +113,7 @@ pub struct NamespacedStorageKey {
 }
 
 impl NamespacedStorageKey {
+    #[must_use]
     pub const fn new(namespace_idx: u8, address_hash: AddressHash, slot_hash: B256) -> Self {
         Self {
             namespace_idx,
@@ -121,6 +123,7 @@ impl NamespacedStorageKey {
     }
 
     /// Create the prefix key for iterating all slots of an account.
+    #[must_use]
     pub const fn account_prefix(
         namespace_idx: u8,
         address_hash: AddressHash,
@@ -177,6 +180,7 @@ pub struct NamespacedBytecodeKey {
 }
 
 impl NamespacedBytecodeKey {
+    #[must_use]
     pub const fn new(namespace_idx: u8, code_hash: B256) -> Self {
         Self {
             namespace_idx,
@@ -265,6 +269,10 @@ impl CircularBufferConfig {
     ///
     /// This is the core of the circular buffer: blocks are distributed
     /// across namespaces using modulo arithmetic.
+    ///
+    /// # Errors
+    ///
+    /// Returns `IntConversion` if the namespace index does not fit into a `u8`.
     #[inline]
     pub fn namespace_for_block(&self, block_number: u64) -> Result<u8, StateError> {
         u8::try_from(block_number % u64::from(self.buffer_size)).map_err(StateError::IntConversion)
@@ -325,6 +333,10 @@ impl BinaryStateDiff {
     /// Serialize to bytes.
     ///
     /// Pre-calculates the buffer size to avoid reallocations.
+    ///
+    /// # Errors
+    ///
+    /// Returns `IntConversion` if any length does not fit into a `u32`.
     pub fn to_bytes(&self) -> Result<Vec<u8>, StateError> {
         // Pre-calculate size to avoid reallocations
         let mut size = 8 + 32 + 32 + 4; // header: block_number + block_hash + state_root + account_count
@@ -380,6 +392,10 @@ impl BinaryStateDiff {
     }
 
     /// Deserialize from bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Codec` if the data is malformed or truncated.
     pub fn from_bytes(data: &[u8]) -> Result<Self, StateError> {
         let mut pos = 0;
 

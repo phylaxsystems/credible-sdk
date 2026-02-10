@@ -92,6 +92,10 @@ impl StateDb {
     /// Creates all required tables if they don't exist.
     ///
     /// Uses the default maximum size of 2TB.
+    ///
+    /// # Errors
+    ///
+    /// Returns any filesystem or database initialization error.
     pub fn open(path: impl AsRef<Path>, config: CircularBufferConfig) -> StateResult<Self> {
         Self::open_with_size(path, config, DEFAULT_MAX_DB_SIZE)
     }
@@ -106,6 +110,10 @@ impl StateDb {
     /// * `path` - Directory for the database files
     /// * `config` - Circular buffer configuration
     /// * `max_size` - Maximum database size in bytes
+    ///
+    /// # Errors
+    ///
+    /// Returns any filesystem or database initialization error.
     pub fn open_with_size(
         path: impl AsRef<Path>,
         config: CircularBufferConfig,
@@ -213,6 +221,7 @@ impl StateDb {
     /// Get reference to the inner database environment.
     ///
     /// Useful for advanced operations not exposed through the wrapper.
+    #[must_use]
     pub fn inner(&self) -> &DatabaseEnv {
         &self.inner
     }
@@ -224,6 +233,10 @@ impl StateDb {
     /// - Don't block writers
     /// - Are automatically rolled back on drop (no commit needed)
     /// - Can run concurrently with other read transactions
+    ///
+    /// # Errors
+    ///
+    /// Returns any database error when starting the transaction.
     pub fn tx(&self) -> StateResult<reth_db::mdbx::tx::Tx<reth_libmdbx::RO>> {
         self.inner.tx().map_err(StateError::Database)
     }
@@ -235,11 +248,19 @@ impl StateDb {
     /// - Are rolled back if dropped without commit
     /// - Only one can be active at a time (MDBX enforces this)
     /// - Don't block readers
+    ///
+    /// # Errors
+    ///
+    /// Returns any database error when starting the transaction.
     pub fn tx_mut(&self) -> StateResult<reth_db::mdbx::tx::Tx<reth_libmdbx::RW>> {
         self.inner.tx_mut().map_err(StateError::Database)
     }
 
     /// Get the namespace index for a block number.
+    ///
+    /// # Errors
+    ///
+    /// Returns `IntConversion` if the namespace index does not fit into a `u8`.
     #[inline]
     pub fn namespace_for_block(&self, block_number: u64) -> Result<u8, StateError> {
         self.config.namespace_for_block(block_number)
@@ -247,17 +268,17 @@ impl StateDb {
 
     /// Get the buffer size.
     #[inline]
+    #[must_use]
     pub fn buffer_size(&self) -> u8 {
         self.config.buffer_size
     }
 }
 
-#[allow(clippy::missing_fields_in_debug)]
 impl std::fmt::Debug for StateDb {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("StateDb")
             .field("config", &self.config)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 

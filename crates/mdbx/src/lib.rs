@@ -1,6 +1,3 @@
-#![allow(clippy::must_use_candidate)]
-#![allow(clippy::missing_errors_doc)]
-
 use alloy::primitives::{
     Address,
     B256,
@@ -97,16 +94,19 @@ impl AddressHash {
     }
 
     /// Create from an already-computed hash (no re-hashing).
+    #[must_use]
     pub fn from_hash(hash: B256) -> Self {
         Self(hash)
     }
 
     /// Get the underlying B256 hash.
+    #[must_use]
     pub fn as_b256(&self) -> &B256 {
         &self.0
     }
 
     /// Convert to owned B256.
+    #[must_use]
     pub fn into_b256(self) -> B256 {
         self.0
     }
@@ -204,6 +204,7 @@ pub struct BlockStateUpdate {
 }
 
 impl BlockStateUpdate {
+    #[must_use]
     pub fn new(block_number: u64, block_hash: B256, state_root: B256) -> Self {
         Self {
             block_number,
@@ -239,11 +240,19 @@ impl BlockStateUpdate {
     }
 
     /// Serialize to JSON for storage in `StateDiffs` table.
+    ///
+    /// # Errors
+    ///
+    /// Returns any serialization error from `serde_json`.
     pub fn to_json(&self) -> Result<Vec<u8>, serde_json::Error> {
         serde_json::to_vec(self)
     }
 
     /// Deserialize from JSON.
+    ///
+    /// # Errors
+    ///
+    /// Returns any deserialization error from `serde_json`.
     pub fn from_json(data: &[u8]) -> Result<Self, serde_json::Error> {
         serde_json::from_slice(data)
     }
@@ -313,11 +322,19 @@ pub trait Reader {
     /// Get the most recent block number.
     ///
     /// Returns `None` if no blocks have been written yet.
+    ///
+    /// # Errors
+    ///
+    /// Returns any backend read error.
     fn latest_block_number(&self) -> Result<Option<u64>, Self::Error>;
 
     /// Check if a block is available in the circular buffer.
     ///
     /// A block is available if its namespace currently contains that block.
+    ///
+    /// # Errors
+    ///
+    /// Returns any backend read error.
     fn is_block_available(&self, block_number: u64) -> Result<bool, Self::Error>;
 
     /// Get account info without storage slots (balance, nonce, code hash only).
@@ -325,6 +342,10 @@ pub trait Reader {
     /// Use `get_full_account` or `get_all_storage` separately if storage is needed.
     ///
     /// Returns an error if the namespace is locked for writing.
+    ///
+    /// # Errors
+    ///
+    /// Returns any backend read error.
     fn get_account(
         &self,
         address_hash: AddressHash,
@@ -334,6 +355,10 @@ pub trait Reader {
     /// Get a specific storage slot for an account at a block.
     ///
     /// Returns `None` if the slot doesn't exist or has value zero.
+    ///
+    /// # Errors
+    ///
+    /// Returns any backend read error.
     fn get_storage(
         &self,
         address_hash: AddressHash,
@@ -344,6 +369,10 @@ pub trait Reader {
     /// Get all storage slots for an account at a block.
     ///
     /// WARNING: This can be expensive for contracts with large storage.
+    ///
+    /// # Errors
+    ///
+    /// Returns any backend read error.
     fn get_all_storage(
         &self,
         address_hash: AddressHash,
@@ -351,11 +380,19 @@ pub trait Reader {
     ) -> Result<HashMap<B256, U256>, Self::Error>;
 
     /// Get contract bytecode by code hash.
+    ///
+    /// # Errors
+    ///
+    /// Returns any backend read error.
     fn get_code(&self, code_hash: B256, block_number: u64) -> Result<Option<Bytes>, Self::Error>;
 
     /// Get complete account state including storage.
     ///
     /// WARNING: This can transfer large amounts of data for contracts with many slots.
+    ///
+    /// # Errors
+    ///
+    /// Returns any backend read error.
     fn get_full_account(
         &self,
         address_hash: AddressHash,
@@ -363,17 +400,33 @@ pub trait Reader {
     ) -> Result<Option<AccountState>, Self::Error>;
 
     /// Get block hash for a specific block number.
+    ///
+    /// # Errors
+    ///
+    /// Returns any backend read error.
     fn get_block_hash(&self, block_number: u64) -> Result<Option<B256>, Self::Error>;
 
     /// Get state root for a specific block number.
+    ///
+    /// # Errors
+    ///
+    /// Returns any backend read error.
     fn get_state_root(&self, block_number: u64) -> Result<Option<B256>, Self::Error>;
 
     /// Get complete block metadata (hash and state root).
+    ///
+    /// # Errors
+    ///
+    /// Returns any backend read error.
     fn get_block_metadata(&self, block_number: u64) -> Result<Option<BlockMetadata>, Self::Error>;
 
     /// Get the range of available blocks [oldest, latest].
     ///
     /// Returns `None` if no blocks have been written.
+    ///
+    /// # Errors
+    ///
+    /// Returns any backend read error.
     fn get_available_block_range(&self) -> Result<Option<(u64, u64)>, Self::Error>;
 
     /// Scan all account hashes in the buffer for a specific block.
@@ -402,6 +455,10 @@ pub trait Writer {
     /// the entire operation is rolled back.
     ///
     /// Returns statistics about the commit operation for metrics tracking.
+    ///
+    /// # Errors
+    ///
+    /// Returns any backend write or validation error.
     fn commit_block(&self, update: &BlockStateUpdate) -> Result<CommitStats, Self::Error>;
 
     /// Bootstrap the circular buffer from a single state snapshot.
@@ -417,6 +474,10 @@ pub trait Writer {
     ///
     /// No state diffs are stored during bootstrap - they're not needed since
     /// all namespaces are initialized with identical state at the same block.
+    ///
+    /// # Errors
+    ///
+    /// Returns any backend write or validation error.
     fn bootstrap_from_snapshot(
         &self,
         accounts: Vec<AccountState>,
