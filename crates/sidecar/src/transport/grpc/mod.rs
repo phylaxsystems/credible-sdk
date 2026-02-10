@@ -45,6 +45,7 @@ use crate::{
     },
     utils::ErrorRecoverability,
 };
+use async_trait::async_trait;
 use std::{
     net::SocketAddr,
     sync::Arc,
@@ -134,6 +135,7 @@ pub struct GrpcTransport {
     event_id_buffer_capacity: usize,
 }
 
+#[async_trait]
 impl Transport for GrpcTransport {
     type Error = GrpcTransportError;
     type Config = config::GrpcTransportConfig;

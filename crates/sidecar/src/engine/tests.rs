@@ -5,7 +5,10 @@
 use super::*;
 use crate::{
     engine::system_calls::HISTORY_BUFFER_LENGTH,
-    utils::TestDbError,
+    utils::{
+        TestDbError,
+        local_instance_db::LocalInstanceDb,
+    },
 };
 use alloy::eips::{
     eip2935::{
@@ -24,13 +27,18 @@ use assertion_executor::{
         AccountInfo,
         ExecutionResult,
     },
-    store::AssertionStore,
+    store::{
+        AssertionState,
+        AssertionStore,
+        AssertionStoreError,
+    },
     test_utils::{
         bytecode,
         counter_call,
     },
 };
 use revm::{
+    DatabaseCommit,
     DatabaseRef,
     bytecode::Bytecode,
     context::{
@@ -206,13 +214,15 @@ async fn create_test_engine_with_timeout(
         tx_receiver,
         assertion_executor,
         state_results,
-        10,
-        timeout,
-        timeout / 2, // We divide by 2 to ensure we read the cache status before we timeout
-        false,
-        None,
-        #[cfg(feature = "cache_validation")]
-        None,
+        CoreEngineConfig {
+            transaction_results_max_capacity: 10,
+            state_sources_sync_timeout: timeout,
+            source_monitoring_period: timeout / 2,
+            overlay_cache_invalidation_every_block: false,
+            incident_sender: None,
+            #[cfg(feature = "cache_validation")]
+            provider_ws_url: None,
+        },
     )
     .await;
     (engine, tx_sender)
@@ -256,6 +266,122 @@ fn record_validation_result(
 /// Creates an `ExecutedTx::Invalid` entry for test setup.
 fn invalid_tx(id: TxExecutionId) -> ExecutedTx {
     ExecutedTx::Invalid(id)
+}
+
+fn execute_and_commit_create_tx(
+    engine: &mut CoreEngine<CacheDB<EmptyDBTyped<TestDbError>>>,
+    current_block_iteration_id: BlockIterationData<CacheDB<EmptyDBTyped<TestDbError>>>,
+    tx_hash: B256,
+    tx_env: &TxEnv,
+) -> TxExecutionId {
+    let tx_execution_id = TxExecutionId::from_hash(tx_hash);
+    engine
+        .current_block_iterations
+        .entry(tx_execution_id.as_block_execution_id())
+        .or_insert(current_block_iteration_id);
+
+    let result = engine.execute_transaction(tx_execution_id, tx_env);
+    assert!(result.is_ok(), "Transaction should execute successfully");
+    engine.finalize_previous_block(tx_execution_id.as_block_execution_id());
+    tx_execution_id
+}
+
+fn assert_caller_account_updated(
+    engine: &CoreEngine<CacheDB<EmptyDBTyped<TestDbError>>>,
+    tx_env: &TxEnv,
+) {
+    let caller_account = engine
+        .get_cache()
+        .basic_ref(tx_env.caller)
+        .expect("Should be able to read caller account");
+    assert!(
+        caller_account.is_some(),
+        "Caller account should exist after CREATE transaction"
+    );
+    let caller_info = caller_account.unwrap();
+    assert_eq!(
+        caller_info.nonce, 1,
+        "Caller nonce should be incremented from 0 to 1"
+    );
+    assert_eq!(
+        caller_info.balance,
+        uint!(0_U256),
+        "Caller balance should remain 0"
+    );
+}
+
+fn assert_contract_account_created(
+    engine: &CoreEngine<CacheDB<EmptyDBTyped<TestDbError>>>,
+    contract_address: Address,
+) {
+    let contract_account = engine
+        .get_cache()
+        .basic_ref(contract_address)
+        .expect("Should be able to read contract account");
+    assert!(
+        contract_account.is_some(),
+        "Contract account should exist at the expected address"
+    );
+    let contract_info = contract_account.unwrap();
+    assert_eq!(
+        contract_info.nonce, 1,
+        "Contract nonce should be 1 for CREATE transactions"
+    );
+    assert_eq!(
+        contract_info.balance,
+        uint!(0_U256),
+        "Contract balance should be 0"
+    );
+    assert_eq!(
+        contract_info.code_hash,
+        revm::primitives::KECCAK_EMPTY,
+        "Contract should have empty code hash"
+    );
+}
+
+fn assert_cache_committed(
+    engine: &CoreEngine<CacheDB<EmptyDBTyped<TestDbError>>>,
+    initial_cache_count: u64,
+) {
+    let final_cache_count = engine.get_cache().cache_entry_count();
+    assert!(
+        final_cache_count >= initial_cache_count,
+        "Transaction executed and state is readable - data was committed. Initial: {initial_cache_count}, Final: {final_cache_count}"
+    );
+}
+
+fn assert_storage_readable(
+    engine: &CoreEngine<CacheDB<EmptyDBTyped<TestDbError>>>,
+    tx_env: &TxEnv,
+) {
+    let state_result = engine.get_cache().storage_ref(tx_env.caller, U256::ZERO);
+    assert!(
+        state_result.is_ok(),
+        "Should be able to read from committed state"
+    );
+}
+
+fn assert_transaction_result_success(
+    engine: &CoreEngine<CacheDB<EmptyDBTyped<TestDbError>>>,
+    tx_execution_id: &TxExecutionId,
+) {
+    let tx_result = engine.get_transaction_result_cloned(tx_execution_id);
+    assert!(tx_result.is_some(), "Transaction result should be stored");
+    match tx_result.unwrap() {
+        TransactionResult::ValidationCompleted {
+            execution_result,
+            is_valid,
+        } => {
+            assert!(is_valid, "Transaction should pass assertions");
+            match execution_result {
+                ExecutionResult::Success { .. } => {}
+                other => panic!("Expected Success result, got {other:?}"),
+            }
+        }
+        TransactionResult::ValidationError(e) => {
+            panic!("Unexpected validation error: {e:?}");
+        }
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1447,9 +1573,8 @@ async fn test_execute_reorg_deep_with_alternating_success_failure() {
     assert_eq!(current_block_iteration.total_tx_count(), 1);
 }
 
-#[allow(clippy::too_many_lines)]
 #[tokio::test]
-async fn test_database_commit_and_block_env_requirements() {
+async fn test_database_commit_and_block_env_updates_state() {
     use revm::primitives::address;
 
     let (mut engine, _) = create_test_engine().await;
@@ -1481,104 +1606,21 @@ async fn test_database_commit_and_block_env_requirements() {
         block_env,
     };
 
-    // Execute the transaction
-    let tx_execution_id = TxExecutionId::from_hash(tx_hash);
-    engine
-        .current_block_iterations
-        .entry(tx_execution_id.as_block_execution_id())
-        .or_insert(current_block_iteration_id);
+    let tx_execution_id =
+        execute_and_commit_create_tx(&mut engine, current_block_iteration_id, tx_hash, &tx_env);
 
-    let result = engine.execute_transaction(tx_execution_id, &tx_env);
-    assert!(result.is_ok(), "Transaction should execute successfully");
-    // Commit the iteration fork into the underlying cache
-    engine.finalize_previous_block(tx_execution_id.as_block_execution_id());
+    assert_caller_account_updated(&engine, &tx_env);
+    assert_contract_account_created(
+        &engine,
+        address!("76cae8af66cb2488933e640ba08650a3a8e7ae19"),
+    );
+    assert_cache_committed(&engine, initial_cache_count);
+    assert_storage_readable(&engine, &tx_env);
+    assert_transaction_result_success(&engine, &tx_execution_id);
+}
 
-    // Verify the caller's account state was updated
-    let caller_account = engine
-        .get_cache()
-        .basic_ref(tx_env.caller)
-        .expect("Should be able to read caller account");
-    assert!(
-        caller_account.is_some(),
-        "Caller account should exist after CREATE transaction"
-    );
-    let caller_info = caller_account.unwrap();
-    assert_eq!(
-        caller_info.nonce, 1,
-        "Caller nonce should be incremented from 0 to 1"
-    );
-    assert_eq!(
-        caller_info.balance,
-        uint!(0_U256),
-        "Caller balance should remain 0"
-    );
-
-    // Verify the created contract exists at the expected address
-    // From the cache output, we know the contract was created at this address
-    let contract_address = address!("76cae8af66cb2488933e640ba08650a3a8e7ae19");
-
-    let contract_account = engine
-        .get_cache()
-        .basic_ref(contract_address)
-        .expect("Should be able to read contract account");
-    assert!(
-        contract_account.is_some(),
-        "Contract account should exist at the expected address"
-    );
-    let contract_info = contract_account.unwrap();
-    assert_eq!(
-        contract_info.nonce, 1,
-        "Contract nonce should be 1 for CREATE transactions"
-    );
-    assert_eq!(
-        contract_info.balance,
-        uint!(0_U256),
-        "Contract balance should be 0"
-    );
-
-    // Verify the code hash matches empty bytecode hash (keccak256 of empty bytes)
-    assert_eq!(
-        contract_info.code_hash,
-        revm::primitives::KECCAK_EMPTY,
-        "Contract should have empty code hash"
-    );
-
-    // Verify that data has been committed by checking the cache count increases when we read data
-    // (The overlay cache gets populated when data is read from the underlying database)
-    let final_cache_count = engine.get_cache().cache_entry_count();
-    assert!(
-        final_cache_count >= initial_cache_count,
-        "Transaction executed and state is readable - data was committed. Initial: {initial_cache_count}, Final: {final_cache_count}"
-    );
-
-    // Verify we can read storage from the state after commit
-    let state_result = engine.get_cache().storage_ref(tx_env.caller, U256::ZERO);
-    assert!(
-        state_result.is_ok(),
-        "Should be able to read from committed state"
-    );
-
-    // Verify transaction result is stored and succeeded
-    let tx_result = engine.get_transaction_result_cloned(&tx_execution_id);
-    assert!(tx_result.is_some(), "Transaction result should be stored");
-    match tx_result.unwrap() {
-        TransactionResult::ValidationCompleted {
-            execution_result,
-            is_valid,
-        } => {
-            assert!(is_valid, "Transaction should pass assertions");
-            match execution_result {
-                ExecutionResult::Success { .. } => {
-                    // Expected - transaction succeeded
-                }
-                other => panic!("Expected Success result, got {other:?}"),
-            }
-        }
-        TransactionResult::ValidationError(e) => {
-            panic!("Unexpected validation error: {e:?}");
-        }
-    }
-
+#[tokio::test]
+async fn test_engine_requires_block_env_before_tx() {
     // Test engine requires block env before tx
     let (mut engine, _) = create_test_engine().await;
     let tx_env = TxEnv {
@@ -1739,16 +1781,16 @@ impl crate::cache::sources::Source for NullSource {
     fn update_cache_status(&self, _min_synced_block: U256, _latest_head: U256) {}
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[allow(clippy::too_many_lines)]
-async fn test_canonical_db_nonce_committed_on_commit_head() {
-    use crate::utils::local_instance_db::LocalInstanceDb;
+struct CanonicalSetup {
+    engine: CoreEngine<LocalInstanceDb<CacheDB<Arc<Sources>>>>,
+    canonical: Arc<LocalInstanceDb<CacheDB<Arc<Sources>>>>,
+}
 
+async fn build_canonical_setup(caller: Address) -> CanonicalSetup {
     let sources: Vec<Arc<dyn crate::cache::sources::Source>> = vec![Arc::new(NullSource)];
     let sources = Arc::new(Sources::new(sources, 10));
     let mut canonical = CacheDB::new(sources.clone());
 
-    let caller = Address::from([0x03; 20]);
     canonical.insert_account_info(
         caller,
         AccountInfo {
@@ -1774,16 +1816,29 @@ async fn test_canonical_db_nonce_committed_on_commit_head() {
         tx_receiver,
         assertion_executor,
         state_results,
-        10,
-        Duration::from_millis(100),
-        Duration::from_millis(20),
-        false,
-        None,
-        #[cfg(feature = "cache_validation")]
-        None,
+        CoreEngineConfig {
+            transaction_results_max_capacity: 10,
+            state_sources_sync_timeout: Duration::from_millis(100),
+            source_monitoring_period: Duration::from_millis(20),
+            overlay_cache_invalidation_every_block: false,
+            incident_sender: None,
+            #[cfg(feature = "cache_validation")]
+            provider_ws_url: None,
+        },
     )
     .await;
     engine.set_canonical_db_for_tests(canonical.clone());
+
+    CanonicalSetup { engine, canonical }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_canonical_db_nonce_committed_on_commit_head() {
+    let caller = Address::from([0x03; 20]);
+    let CanonicalSetup {
+        mut engine,
+        canonical,
+    } = build_canonical_setup(caller).await;
 
     let block_env = BlockEnv {
         number: U256::from(1),
@@ -1881,50 +1936,12 @@ async fn test_canonical_db_nonce_committed_on_commit_head() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[allow(clippy::too_many_lines)]
 async fn test_canonical_db_nonce_committed_after_initial_empty_block() {
-    use crate::utils::local_instance_db::LocalInstanceDb;
-
-    let sources: Vec<Arc<dyn crate::cache::sources::Source>> = vec![Arc::new(NullSource)];
-    let sources = Arc::new(Sources::new(sources, 10));
-    let mut canonical = CacheDB::new(sources.clone());
-
     let caller = Address::from([0x03; 20]);
-    canonical.insert_account_info(
-        caller,
-        AccountInfo {
-            balance: U256::MAX,
-            nonce: 0,
-            ..Default::default()
-        },
-    );
-
-    let canonical = Arc::new(LocalInstanceDb::new(canonical));
-    let state = OverlayDb::new(Some(canonical.clone()));
-
-    let (tx_sender, tx_receiver) = flume::unbounded();
-    drop(tx_sender);
-
-    let assertion_executor =
-        AssertionExecutor::new(ExecutorConfig::default(), AssertionStore::new_ephemeral());
-    let state_results = TransactionsState::new();
-
-    let mut engine = CoreEngine::new(
-        state,
-        sources,
-        tx_receiver,
-        assertion_executor,
-        state_results,
-        10,
-        Duration::from_millis(100),
-        Duration::from_millis(20),
-        false,
-        None,
-        #[cfg(feature = "cache_validation")]
-        None,
-    )
-    .await;
-    engine.set_canonical_db_for_tests(canonical.clone());
+    let CanonicalSetup {
+        mut engine,
+        canonical,
+    } = build_canonical_setup(caller).await;
 
     // Commit block 1 without ever having created an iteration (matches `LocalInstance::new_block()` behavior).
     let commit_head_1 = CommitHead::new(

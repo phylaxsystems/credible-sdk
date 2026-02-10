@@ -102,6 +102,13 @@ pub struct IncidentReport {
 
 pub type IncidentReportSender = flume::Sender<IncidentReport>;
 pub type IncidentReportReceiver = flume::Receiver<IncidentReport>;
+pub type ObserverThreadResult = Result<
+    (
+        JoinHandle<Result<(), TransactionObserverError>>,
+        oneshot::Receiver<Result<(), TransactionObserverError>>,
+    ),
+    std::io::Error,
+>;
 
 #[derive(Clone)]
 pub struct TransactionObserverConfig {
@@ -196,17 +203,7 @@ impl TransactionObserver {
     }
 
     /// Spawns the transaction observer on a dedicated OS thread.
-    #[allow(clippy::type_complexity)]
-    pub fn spawn(
-        self,
-        shutdown: Arc<AtomicBool>,
-    ) -> Result<
-        (
-            JoinHandle<Result<(), TransactionObserverError>>,
-            oneshot::Receiver<Result<(), TransactionObserverError>>,
-        ),
-        std::io::Error,
-    > {
+    pub fn spawn(self, shutdown: Arc<AtomicBool>) -> ObserverThreadResult {
         let (tx, rx) = oneshot::channel();
 
         let handle = std::thread::Builder::new()
@@ -256,7 +253,6 @@ impl TransactionObserver {
         Ok(())
     }
 
-    #[allow(clippy::too_many_lines)]
     #[instrument(
         name = "transaction_observer::publish_invalidations",
         skip(self),
@@ -287,9 +283,21 @@ impl TransactionObserver {
             "Publishing incidents to dapp"
         );
 
+        let results = self.publish_incidents(dapp_client, incidents);
+        let (success_count, failure_count) = self.finalize_publish(results)?;
+        self.log_publish_outcome(success_count, failure_count);
+        Self::record_publish_metrics(success_count, failure_count, publish_started_at);
+        Ok(())
+    }
+
+    fn publish_incidents(
+        &self,
+        dapp_client: &Arc<DappClient>,
+        incidents: Vec<(Vec<u8>, IncidentReport)>,
+    ) -> Vec<(Vec<u8>, Result<(), String>)> {
         let auth_token = self.config.auth_token.trim().to_string();
         let dapp_client = Arc::clone(dapp_client);
-        let results = self.runtime.block_on(async move {
+        self.runtime.block_on(async move {
             let mut tasks = FuturesUnordered::new();
             for (key, report) in incidents {
                 let dapp_client = Arc::clone(&dapp_client);
@@ -333,9 +341,13 @@ impl TransactionObserver {
                 completed.push(result);
             }
             completed
-        });
+        })
+    }
 
-        let total_results = results.len();
+    fn finalize_publish(
+        &mut self,
+        results: Vec<(Vec<u8>, Result<(), String>)>,
+    ) -> Result<(usize, usize), TransactionObserverError> {
         let mut keys_to_delete = Vec::new();
         let mut failure_count = 0usize;
 
@@ -347,14 +359,14 @@ impl TransactionObserver {
         }
 
         self.db.delete_keys(&keys_to_delete)?;
-        let success_count = keys_to_delete.len();
+        Ok((keys_to_delete.len(), failure_count))
+    }
 
-        // Update consecutive failure tracking and log appropriately
+    fn log_publish_outcome(&mut self, success_count: usize, failure_count: usize) {
         if failure_count > 0 {
             let first_failure = self.consecutive_failures == 0;
             self.consecutive_failures += failure_count as u64;
 
-            // Log at warn level on first failure and every FAILURE_LOG_INTERVAL failures
             if first_failure
                 || self
                     .consecutive_failures
@@ -368,7 +380,6 @@ impl TransactionObserver {
                 );
             }
         } else if self.consecutive_failures > 0 {
-            // We had failures before but now succeeded - log recovery
             info!(
                 target = "transaction_observer",
                 previous_consecutive_failures = self.consecutive_failures,
@@ -377,17 +388,23 @@ impl TransactionObserver {
             self.consecutive_failures = 0;
         }
 
-        counter!("transaction_observer_publish_success_total").increment(success_count as u64);
-        counter!("transaction_observer_publish_failure_total").increment(failure_count as u64);
-        histogram!("transaction_observer_publish_duration_seconds")
-            .record(publish_started_at.elapsed());
         debug!(
             target = "transaction_observer",
             published = success_count,
             failed = failure_count,
             "Finished publishing incidents"
         );
-        Ok(())
+    }
+
+    fn record_publish_metrics(
+        success_count: usize,
+        failure_count: usize,
+        publish_started_at: Instant,
+    ) {
+        counter!("transaction_observer_publish_success_total").increment(success_count as u64);
+        counter!("transaction_observer_publish_failure_total").increment(failure_count as u64);
+        histogram!("transaction_observer_publish_duration_seconds")
+            .record(publish_started_at.elapsed());
     }
 }
 

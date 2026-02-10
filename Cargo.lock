@@ -11221,6 +11221,7 @@ dependencies = [
  "anyhow",
  "assertion-da-client 1.0.8",
  "assertion-executor 1.0.8",
+ "async-trait",
  "axum",
  "bincode",
  "chrono",
