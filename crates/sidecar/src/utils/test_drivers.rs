@@ -3,12 +3,14 @@ use super::{
     instance::{
         EngineThreadHandle,
         LocalInstance,
+        LocalInstanceInit,
         TestTransport,
     },
     local_instance_db::LocalInstanceDb,
 };
 use crate::{
     CoreEngine,
+    CoreEngineConfig,
     Sources,
     cache::sources::{
         Source,
@@ -74,6 +76,7 @@ use assertion_executor::{
         counter_call,
     },
 };
+use async_trait::async_trait;
 use futures::StreamExt;
 use int_test_utils::node_protocol_mock_server::DualProtocolMockServer;
 use revm::{
@@ -271,13 +274,15 @@ impl CommonSetup {
             core_engine_tx_receiver,
             assertion_executor,
             self.state_results.clone(),
-            10,
-            Duration::from_millis(100),
-            Duration::from_millis(20),
-            false,
-            incident_sender,
-            #[cfg(feature = "cache_validation")]
-            Some(&self.eth_rpc_source_http_mock.ws_url()),
+            CoreEngineConfig {
+                transaction_results_max_capacity: 10,
+                state_sources_sync_timeout: Duration::from_millis(100),
+                source_monitoring_period: Duration::from_millis(20),
+                overlay_cache_invalidation_every_block: false,
+                incident_sender,
+                #[cfg(feature = "cache_validation")]
+                provider_ws_url: Some(self.eth_rpc_source_http_mock.ws_url()),
+            },
         )
         .await;
         engine.set_canonical_db_for_tests(self.underlying_db.clone());
@@ -307,10 +312,8 @@ pub struct LocalInstanceMockDriver {
     /// pass `iteration_id` (e.g. `LocalInstance::send_block_with_hashes_internal`).
     current_block_by_iteration: HashMap<u64, U256>,
     override_n_transactions: Option<u64>,
-    #[allow(clippy::option_option)]
-    override_last_tx_hash: Option<Option<TxHash>>,
-    #[allow(clippy::option_option)]
-    override_prev_tx_hash: Option<Option<TxHash>>,
+    override_last_tx_hash: OptionalOverride<TxHash>,
+    override_prev_tx_hash: OptionalOverride<TxHash>,
     /// Tracks the last committed block hash so `NewIteration` can include its parent hash.
     last_committed_block_hash: B256,
     /// Tracks the last committed beacon block root so `NewIteration` can include it for EIP-4788.
@@ -345,30 +348,30 @@ impl LocalInstanceMockDriver {
             }
         });
 
-        Ok(LocalInstance::new_internal(
-            setup.underlying_db,
-            setup.sources.clone(),
-            setup.eth_rpc_source_http_mock,
-            setup.fallback_eth_rpc_source_http_mock,
-            setup.assertion_store,
-            Some(transport_handle),
-            Some(engine_handle),
-            U256::from(1),
-            setup.state_results,
-            setup.default_account,
-            None,
-            setup.list_of_sources,
-            LocalInstanceMockDriver {
+        Ok(LocalInstance::new_internal(LocalInstanceInit {
+            db: setup.underlying_db,
+            sources: setup.sources.clone(),
+            eth_rpc_source_http_mock: setup.eth_rpc_source_http_mock,
+            fallback_eth_rpc_source_http_mock: setup.fallback_eth_rpc_source_http_mock,
+            assertion_store: setup.assertion_store,
+            transport_handle: Some(transport_handle),
+            engine_handle: Some(engine_handle),
+            block_number: U256::from(1),
+            transaction_results: setup.state_results,
+            default_account: setup.default_account,
+            local_address: None,
+            list_of_sources: setup.list_of_sources,
+            transport: LocalInstanceMockDriver {
                 mock_sender: mock_tx,
                 block_tx_hashes: HashMap::new(),
                 current_block_by_iteration: HashMap::new(),
                 override_n_transactions: None,
-                override_last_tx_hash: None,
-                override_prev_tx_hash: None,
+                override_last_tx_hash: OptionalOverride::default(),
+                override_prev_tx_hash: OptionalOverride::default(),
                 last_committed_block_hash: B256::ZERO,
                 last_committed_beacon_root: None,
             },
-        ))
+        }))
     }
 
     pub async fn new_with_store(
@@ -391,6 +394,7 @@ impl LocalInstanceMockDriver {
     }
 }
 
+#[async_trait]
 impl TestTransport for LocalInstanceMockDriver {
     async fn new() -> Result<LocalInstance<Self>, String> {
         Self::create(None, None).await
@@ -411,7 +415,7 @@ impl TestTransport for LocalInstanceMockDriver {
                 .get(&block_id)
                 .map_or(0, |v| v.len() as u64)
         });
-        let last_tx_hash = self.override_last_tx_hash.unwrap_or_else(|| {
+        let last_tx_hash = self.override_last_tx_hash.resolve_or(|| {
             self.block_tx_hashes
                 .get(&block_id)
                 .and_then(|v| v.last().copied())
@@ -446,8 +450,8 @@ impl TestTransport for LocalInstanceMockDriver {
         self.block_tx_hashes
             .retain(|k, _| k.block_number != commit_head.block_number);
         self.override_n_transactions = None;
-        self.override_last_tx_hash = None;
-        self.override_prev_tx_hash = None;
+        self.override_last_tx_hash.reset();
+        self.override_prev_tx_hash.reset();
         self.last_committed_block_hash = commit_head.block_hash;
         self.last_committed_beacon_root = commit_head.parent_beacon_block_root;
 
@@ -465,7 +469,7 @@ impl TestTransport for LocalInstanceMockDriver {
         tx_env: TxEnv,
     ) -> Result<(), String> {
         let block_id = tx_execution_id.as_block_execution_id();
-        let prev_tx_hash = self.override_prev_tx_hash.take().unwrap_or_else(|| {
+        let prev_tx_hash = self.override_prev_tx_hash.take_or(|| {
             self.block_tx_hashes
                 .get(&block_id)
                 .and_then(|v| v.last().copied())
@@ -559,16 +563,16 @@ impl TestTransport for LocalInstanceMockDriver {
     }
 
     fn set_last_tx_hash(&mut self, tx_hash: Option<TxHash>) {
-        self.override_last_tx_hash = Some(tx_hash);
+        self.override_last_tx_hash.set(tx_hash);
     }
 
     fn set_prev_tx_hash(&mut self, tx_hash: Option<TxHash>) {
-        self.override_prev_tx_hash = Some(tx_hash);
+        self.override_prev_tx_hash.set(tx_hash);
     }
 
     fn get_last_tx_hash(&self, iteration_id: u64) -> Option<TxHash> {
-        if let Some(value) = &self.override_last_tx_hash {
-            return *value;
+        if self.override_last_tx_hash.is_set() {
+            return self.override_last_tx_hash.value();
         }
         let block_number = self
             .current_block_by_iteration
@@ -598,6 +602,51 @@ impl TestTransport for LocalInstanceMockDriver {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+enum OptionalOverride<T: Copy> {
+    #[default]
+    Unset,
+    Value(Option<T>),
+}
+
+impl<T: Copy> OptionalOverride<T> {
+    fn set(&mut self, value: Option<T>) {
+        *self = Self::Value(value);
+    }
+
+    fn is_set(&self) -> bool {
+        matches!(self, Self::Value(_))
+    }
+
+    fn reset(&mut self) {
+        *self = Self::Unset;
+    }
+
+    fn resolve_or(&self, fallback: impl FnOnce() -> Option<T>) -> Option<T> {
+        match *self {
+            Self::Value(value) => value,
+            Self::Unset => fallback(),
+        }
+    }
+
+    fn take_or(&mut self, fallback: impl FnOnce() -> Option<T>) -> Option<T> {
+        match *self {
+            Self::Value(value) => {
+                *self = Self::Unset;
+                value
+            }
+            Self::Unset => fallback(),
+        }
+    }
+
+    fn value(&self) -> Option<T> {
+        match *self {
+            Self::Value(value) => value,
+            Self::Unset => None,
+        }
+    }
+}
+
 pub struct LocalInstanceGrpcDriver {
     event_sender: mpsc::Sender<Event>,
     /// gRPC client for the transport
@@ -610,10 +659,8 @@ pub struct LocalInstanceGrpcDriver {
     current_block_by_iteration: HashMap<u64, U256>,
     /// Explicit override for the next `n_transactions` value
     override_n_transactions: Option<u64>,
-    #[allow(clippy::option_option)]
-    override_last_tx_hash: Option<Option<TxHash>>,
-    #[allow(clippy::option_option)]
-    override_prev_tx_hash: Option<Option<TxHash>>,
+    override_last_tx_hash: OptionalOverride<TxHash>,
+    override_prev_tx_hash: OptionalOverride<TxHash>,
     /// Tracks the last committed block hash so `NewIteration` can include its parent hash.
     last_committed_block_hash: Option<B256>,
     /// Tracks the last committed beacon block root so `NewIteration` can include it for EIP-4788.
@@ -836,31 +883,31 @@ impl LocalInstanceGrpcDriver {
             }
         });
 
-        Ok(LocalInstance::new_internal(
-            setup.underlying_db,
-            setup.sources.clone(),
-            setup.eth_rpc_source_http_mock,
-            setup.fallback_eth_rpc_source_http_mock,
-            setup.assertion_store,
-            Some(transport_handle),
-            Some(engine_handle),
-            U256::from(1),
-            setup.state_results,
-            setup.default_account,
-            Some(&address),
-            setup.list_of_sources,
-            LocalInstanceGrpcDriver {
+        Ok(LocalInstance::new_internal(LocalInstanceInit {
+            db: setup.underlying_db,
+            sources: setup.sources.clone(),
+            eth_rpc_source_http_mock: setup.eth_rpc_source_http_mock,
+            fallback_eth_rpc_source_http_mock: setup.fallback_eth_rpc_source_http_mock,
+            assertion_store: setup.assertion_store,
+            transport_handle: Some(transport_handle),
+            engine_handle: Some(engine_handle),
+            block_number: U256::from(1),
+            transaction_results: setup.state_results,
+            default_account: setup.default_account,
+            local_address: Some(address),
+            list_of_sources: setup.list_of_sources,
+            transport: LocalInstanceGrpcDriver {
                 event_sender: event_tx,
                 client,
                 block_tx_hashes: HashMap::new(),
                 current_block_by_iteration: HashMap::new(),
                 override_n_transactions: None,
-                override_last_tx_hash: None,
-                override_prev_tx_hash: None,
+                override_last_tx_hash: OptionalOverride::default(),
+                override_prev_tx_hash: OptionalOverride::default(),
                 last_committed_block_hash: None,
                 last_committed_beacon_root: None,
             },
-        ))
+        }))
     }
 
     pub async fn new_with_store(
@@ -877,6 +924,7 @@ impl LocalInstanceGrpcDriver {
     }
 }
 
+#[async_trait]
 impl TestTransport for LocalInstanceGrpcDriver {
     async fn new() -> Result<LocalInstance<Self>, String> {
         Self::create(None, None).await
@@ -897,7 +945,7 @@ impl TestTransport for LocalInstanceGrpcDriver {
                 .get(&block_id)
                 .map_or(0, |v| v.len() as u64)
         });
-        let last_tx_hash = self.override_last_tx_hash.unwrap_or_else(|| {
+        let last_tx_hash = self.override_last_tx_hash.resolve_or(|| {
             self.block_tx_hashes
                 .get(&block_id)
                 .and_then(|v| v.last().copied())
@@ -952,8 +1000,8 @@ impl TestTransport for LocalInstanceGrpcDriver {
         self.block_tx_hashes
             .retain(|k, _| k.block_number != commit_head.block_number);
         self.override_n_transactions = None;
-        self.override_last_tx_hash = None;
-        self.override_prev_tx_hash = None;
+        self.override_last_tx_hash.reset();
+        self.override_prev_tx_hash.reset();
         self.last_committed_block_hash = Some(commit_head.block_hash);
         self.last_committed_beacon_root = commit_head.parent_beacon_block_root;
 
@@ -972,7 +1020,7 @@ impl TestTransport for LocalInstanceGrpcDriver {
         }
 
         let block_id = tx_execution_id.as_block_execution_id();
-        let prev_tx_hash = self.override_prev_tx_hash.take().unwrap_or_else(|| {
+        let prev_tx_hash = self.override_prev_tx_hash.take_or(|| {
             self.block_tx_hashes
                 .get(&block_id)
                 .and_then(|v| v.last().copied())
@@ -1076,16 +1124,16 @@ impl TestTransport for LocalInstanceGrpcDriver {
     }
 
     fn set_last_tx_hash(&mut self, tx_hash: Option<TxHash>) {
-        self.override_last_tx_hash = Some(tx_hash);
+        self.override_last_tx_hash.set(tx_hash);
     }
 
     fn set_prev_tx_hash(&mut self, tx_hash: Option<TxHash>) {
-        self.override_prev_tx_hash = Some(tx_hash);
+        self.override_prev_tx_hash.set(tx_hash);
     }
 
     fn get_last_tx_hash(&self, iteration_id: u64) -> Option<TxHash> {
-        if let Some(value) = &self.override_last_tx_hash {
-            return *value;
+        if self.override_last_tx_hash.is_set() {
+            return self.override_last_tx_hash.value();
         }
         let block_number = self
             .current_block_by_iteration

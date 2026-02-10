@@ -6,6 +6,7 @@ use crate::{
     transactions_state::TransactionsState,
     transport::Transport,
 };
+use async_trait::async_trait;
 use std::sync::Arc;
 
 #[derive(thiserror::Error, Debug)]
@@ -44,6 +45,7 @@ impl MockTransport {
     }
 }
 
+#[async_trait]
 impl Transport for MockTransport {
     type Error = MockTransportError;
     type Config = ();

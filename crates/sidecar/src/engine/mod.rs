@@ -183,6 +183,24 @@ const RECV_TIMEOUT: Duration = Duration::from_millis(100);
 /// Max capacity for assertion failure cache.
 const ASSERTION_FAILURE_CACHE_SIZE: u64 = 2048;
 
+pub struct CoreEngineConfig {
+    pub transaction_results_max_capacity: usize,
+    pub state_sources_sync_timeout: Duration,
+    pub source_monitoring_period: Duration,
+    pub overlay_cache_invalidation_every_block: bool,
+    pub incident_sender: Option<IncidentReportSender>,
+    #[cfg(feature = "cache_validation")]
+    pub provider_ws_url: Option<String>,
+}
+
+pub type EngineThreadResult = Result<
+    (
+        std::thread::JoinHandle<Result<(), EngineError>>,
+        oneshot::Receiver<Result<(), EngineError>>,
+    ),
+    std::io::Error,
+>;
+
 /// Branch prediction hint for unlikely conditions
 #[inline]
 #[cold]
@@ -426,7 +444,6 @@ impl<DB> Drop for CoreEngine<DB> {
 }
 
 impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
-    #[allow(clippy::too_many_arguments)]
     #[instrument(name = "engine::new", skip_all, level = "debug")]
     pub async fn new(
         cache: OverlayDb<DB>,
@@ -434,18 +451,13 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         tx_receiver: TransactionQueueReceiver,
         assertion_executor: AssertionExecutor,
         state_results: Arc<TransactionsState>,
-        transaction_results_max_capacity: usize,
-        state_sources_sync_timeout: Duration,
-        source_monitoring_period: Duration,
-        overlay_cache_invalidation_every_block: bool,
-        incident_sender: Option<IncidentReportSender>,
-        #[cfg(feature = "cache_validation")] provider_ws_url: Option<&str>,
+        config: CoreEngineConfig,
     ) -> Self {
         #[cfg(feature = "cache_validation")]
         let (processed_transactions, cache_checker) = {
             let processed_transactions: ProcessedBlocksCache =
                 Arc::new(moka::sync::Cache::builder().max_capacity(128).build());
-            let handle = if let Some(provider_ws_url) = provider_ws_url
+            let handle = if let Some(provider_ws_url) = config.provider_ws_url.as_deref()
                 && let Ok(cache_checker) =
                     CacheChecker::try_new(provider_ws_url, processed_transactions.clone()).await
             {
@@ -472,20 +484,20 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             first_commit_head_processed: false,
             sources: sources.clone(),
             tx_receiver,
-            incident_sender,
+            incident_sender: config.incident_sender,
             assertion_executor,
             transaction_results: TransactionsResults::new(
                 state_results,
-                transaction_results_max_capacity,
+                config.transaction_results_max_capacity,
             ),
             block_metrics: BlockMetrics::new(),
-            state_sources_sync_timeout,
+            state_sources_sync_timeout: config.state_sources_sync_timeout,
             check_sources_available: true,
             sources_monitoring: monitoring::sources::Sources::new(
                 sources,
-                source_monitoring_period,
+                config.source_monitoring_period,
             ),
-            overlay_cache_invalidation_every_block,
+            overlay_cache_invalidation_every_block: config.overlay_cache_invalidation_every_block,
             system_calls: SystemCalls::new(),
             #[cfg(feature = "cache_validation")]
             processed_transactions,
@@ -974,24 +986,14 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
     }
 
     /// Spawns the engine on a dedicated OS thread with blocking receive.
-    #[allow(clippy::type_complexity)]
-    pub fn spawn(
-        self,
-        shutdown: Arc<AtomicBool>,
-    ) -> Result<
-        (
-            std::thread::JoinHandle<Result<(), EngineError>>,
-            oneshot::Receiver<Result<(), EngineError>>,
-        ),
-        std::io::Error,
-    > {
+    pub fn spawn(self, shutdown: Arc<AtomicBool>) -> EngineThreadResult {
         let (tx, rx) = oneshot::channel();
 
         let handle = std::thread::Builder::new()
             .name("sidecar-engine".into())
             .spawn(move || {
                 let mut engine = self;
-                let result = engine.run_blocking(shutdown);
+                let result = engine.run_blocking(&shutdown);
                 // Notify that we're exiting (ignore send error if receiver dropped)
                 let _ = tx.send(result.clone());
                 result
@@ -1001,8 +1003,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
     }
 
     /// Blocking run loop with shutdown support
-    #[allow(clippy::needless_pass_by_value)]
-    fn run_blocking(&mut self, shutdown: Arc<AtomicBool>) -> Result<(), EngineError> {
+    fn run_blocking(&mut self, shutdown: &Arc<AtomicBool>) -> Result<(), EngineError> {
         let mut processed_blocks = 0u64;
         let mut block_processing_time = Instant::now();
         let mut idle_start = Instant::now();
@@ -1050,7 +1051,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                     )
                 }
                 TxQueueContents::Tx(queue_transaction) => {
-                    self.verify_state_sources_synced_blocking(&shutdown)
+                    self.verify_state_sources_synced_blocking(shutdown)
                         .and_then(|()| self.process_transaction_event(queue_transaction))
                 }
                 TxQueueContents::Reorg(reorg) => self.execute_reorg(&reorg),
@@ -1577,7 +1578,6 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
     /// ## State Rollback
     /// Uses `VersionDb::rollback_to()` to restore state to before the reorged
     /// transactions.
-    #[allow(clippy::too_many_lines)]
     fn execute_reorg(&mut self, reorg: &ReorgRequest) -> Result<(), EngineError> {
         let tx_execution_id = reorg.tx_execution_id;
         // Depth is derived from tx_hashes length
@@ -1589,9 +1589,50 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             "Checking reorg validity for hash"
         );
 
-        // === Validation Phase ===
+        Self::validate_reorg_non_empty(tx_execution_id, depth)?;
+        Self::validate_reorg_tip_hash(tx_execution_id, reorg)?;
 
-        // Validation 1: tx_hashes must be non-empty (depth > 0)
+        let current_block_iteration = self
+            .current_block_iterations
+            .get_mut(&tx_execution_id.as_block_execution_id())
+            .ok_or_else(|| {
+                error!(
+                    target = "engine",
+                    tx_hash = %tx_execution_id.tx_hash,
+                    block_number = %tx_execution_id.block_number,
+                    iteration_id = tx_execution_id.iteration_id,
+                    "Received reorg without first receiving a BlockEnv"
+                );
+                EngineError::ReorgError
+            })?;
+
+        let start =
+            Self::validate_reorg_tail(tx_execution_id, depth, reorg, current_block_iteration)?;
+
+        let removed_txs =
+            Self::apply_reorg_data(current_block_iteration, start, depth, tx_execution_id)?;
+
+        for removed in removed_txs {
+            self.transaction_results.remove_transaction_result(removed);
+            #[cfg(feature = "cache_validation")]
+            if let Some(iteration) = self
+                .iteration_pending_processed_transactions
+                .get_mut(&removed.as_block_execution_id())
+            {
+                iteration.remove(&removed.tx_hash);
+            }
+        }
+
+        Ok(())
+    }
+}
+
+impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
+    // Validation: tx_hashes must be non-empty (depth > 0)
+    fn validate_reorg_non_empty(
+        tx_execution_id: TxExecutionId,
+        depth: usize,
+    ) -> Result<(), EngineError> {
         if depth == 0 {
             error!(
                 target = "engine",
@@ -1600,8 +1641,14 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             );
             return Err(EngineError::ReorgError);
         }
+        Ok(())
+    }
 
-        // Validation 2: last hash in tx_hashes must match the reorg's tx_execution_id
+    // Validation: last hash in tx_hashes must match the reorg's tx_execution_id
+    fn validate_reorg_tip_hash(
+        tx_execution_id: TxExecutionId,
+        reorg: &ReorgRequest,
+    ) -> Result<(), EngineError> {
         if reorg.tx_hashes.last() != Some(&tx_execution_id.tx_hash) {
             error!(
                 target = "engine",
@@ -1610,26 +1657,20 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             );
             return Err(EngineError::BadReorgHash);
         }
+        Ok(())
+    }
 
-        let Some(current_block_iteration) = self
-            .current_block_iterations
-            .get_mut(&tx_execution_id.as_block_execution_id())
-        else {
-            error!(
-                target = "engine",
-                tx_hash = %tx_execution_id.tx_hash,
-                block_number = %tx_execution_id.block_number,
-                iteration_id = tx_execution_id.iteration_id,
-                "Received reorg without first receiving a BlockEnv"
-            );
-            return Err(EngineError::ReorgError);
-        };
-
-        // Validation 4 & 5: verify the reorg target matches our state
+    // Validation: verify the reorg target matches our state
+    fn validate_reorg_tail(
+        tx_execution_id: TxExecutionId,
+        depth: usize,
+        reorg: &ReorgRequest,
+        current_block_iteration: &BlockIterationData<DB>,
+    ) -> Result<usize, EngineError> {
         if current_block_iteration.has_last_tx(tx_execution_id) {
             let executed_len = current_block_iteration.executed_txs.len();
 
-            // Validation 4: can't reorg more transactions than we've executed
+            // Validation: can't reorg more transactions than we've executed
             if depth > executed_len {
                 error!(
                     target = "engine",
@@ -1641,7 +1682,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 return Err(EngineError::BadReorgHash);
             }
 
-            // Validation 5: tx_hashes must match the tail of executed transactions
+            // Validation: tx_hashes must match the tail of executed transactions
             // This ensures the driver and engine agree on what's being reorged.
             // tx_hashes are in chronological order (oldest first).
             let start = executed_len.saturating_sub(depth);
@@ -1660,41 +1701,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 return Err(EngineError::BadReorgHash);
             }
 
-            // === Execution Phase ===
-
-            info!(
-                target = "engine",
-                tx_execution_id = %tx_execution_id.to_json_string(),
-                depth = depth,
-                "Executing reorg for hash"
-            );
-
-            let new_len = start;
-            let removed_txs = current_block_iteration.executed_txs.split_off(new_len);
-            #[cfg(any(test, feature = "bench-utils"))]
-            current_block_iteration
-                .executed_state_deltas
-                .truncate(new_len);
-            // Rollback the version database to the state before the removed transactions
-            // This handles both truncating the commit log and rebuilding state
-            current_block_iteration
-                .version_db
-                .rollback_to(new_len)
-                .map_err(|_| EngineError::ReorgError)?;
-
-            for removed in removed_txs {
-                let id = removed.id();
-                self.transaction_results.remove_transaction_result(id);
-                #[cfg(feature = "cache_validation")]
-                if let Some(iteration) = self
-                    .iteration_pending_processed_transactions
-                    .get_mut(&id.as_block_execution_id())
-                {
-                    iteration.remove(&id.tx_hash);
-                }
-            }
-
-            return Ok(());
+            return Ok(start);
         }
 
         error!(
@@ -1708,6 +1715,33 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         // If we received a reorg event before executing a tx,
         // or if the tx hashes dont match something bad happened and we need to exit
         Err(EngineError::BadReorgHash)
+    }
+
+    fn apply_reorg_data(
+        current_block_iteration: &mut BlockIterationData<DB>,
+        start: usize,
+        depth: usize,
+        tx_execution_id: TxExecutionId,
+    ) -> Result<Vec<TxExecutionId>, EngineError> {
+        info!(
+            target = "engine",
+            tx_execution_id = %tx_execution_id.to_json_string(),
+            depth = depth,
+            "Executing reorg for hash"
+        );
+
+        let new_len = start;
+        let removed_txs = current_block_iteration.executed_txs.split_off(new_len);
+        #[cfg(any(test, feature = "bench-utils"))]
+        current_block_iteration
+            .executed_state_deltas
+            .truncate(new_len);
+        current_block_iteration
+            .version_db
+            .rollback_to(new_len)
+            .map_err(|_| EngineError::ReorgError)?;
+
+        Ok(removed_txs.into_iter().map(|tx| tx.id()).collect())
     }
 }
 

@@ -36,6 +36,7 @@ use crate::{
     transactions_state::TransactionsState,
     utils::ErrorRecoverability,
 };
+use async_trait::async_trait;
 use std::sync::Arc;
 
 /// The `Transport` trait defines the interface for external communication adapters that
@@ -80,7 +81,7 @@ use std::sync::Arc;
 /// encounters an error it cannot trivially recover from. The sidecar is designed to recover
 /// from individual component crashes, so if the transport exits with an error, it will attempt
 /// to restart it.
-#[allow(async_fn_in_trait)]
+#[async_trait]
 pub trait Transport: Send + Sync {
     type Error: std::error::Error + Send;
     /// Optional config type. Intended to be used to configure the transport (i.e., ports, paths, etc...)
