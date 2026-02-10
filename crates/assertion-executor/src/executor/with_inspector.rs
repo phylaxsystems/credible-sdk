@@ -52,7 +52,6 @@ use tracing::{
 use super::{
     AssertionExecutor,
     ExecuteForkedTxResult,
-    ValidationLogStyle,
 };
 
 use crate::evm::build_evm::{
@@ -148,7 +147,6 @@ impl AssertionExecutor {
             results,
             assertion_execution_duration,
             true,
-            ValidationLogStyle::Verbose,
         );
         Ok(TxValidationResultWithInspectors {
             result,
@@ -284,7 +282,6 @@ impl AssertionExecutor {
                 block_env,
                 tx_fork_db,
                 context,
-                "Executing assertion contract with inspector",
                 |assertion_contract,
                  fn_selector,
                  block_env,

@@ -128,12 +128,6 @@ pub struct ExecuteForkedTxResult {
     pub result_and_state: ResultAndState,
 }
 
-#[derive(Debug, Clone, Copy)]
-enum ValidationLogStyle {
-    Verbose,
-    Trace,
-}
-
 /// Container type that stores aggregated assertion execution metrics for a transaction.
 #[derive(Debug, Default)]
 struct AssertionValidationSummary {
@@ -187,29 +181,19 @@ impl AssertionExecutor {
         results: Vec<AssertionContractExecution>,
         assertion_execution_duration: std::time::Duration,
         commit: bool,
-        log_style: ValidationLogStyle,
     ) -> TxValidationResult
     where
         Active: DatabaseRef + Sync + Send,
         Active::Error: Send,
     {
         if results.is_empty() {
-            match log_style {
-                ValidationLogStyle::Verbose => {
-                    debug!(target: "assertion-executor::validate_tx", "No assertions were executed");
-                }
-                ValidationLogStyle::Trace => {
-                    trace!(target: "assertion-executor::validate_tx", "No assertions were executed");
-                }
-            }
+            debug!(target: "assertion-executor::validate_tx", "No assertions were executed");
 
             if commit {
-                if let ValidationLogStyle::Verbose = log_style {
-                    trace!(
-                        target: "assertion-executor::validate_tx",
-                        "Committing state changes to fork db"
-                    );
-                }
+                trace!(
+                    target: "assertion-executor::validate_tx",
+                    "Committing state changes to fork db"
+                );
                 fork_db.commit(result_and_state.state.clone());
             }
 
@@ -223,55 +207,30 @@ impl AssertionExecutor {
         let valid = summary.invalid_assertions.is_empty();
 
         if valid {
-            match log_style {
-                ValidationLogStyle::Verbose => {
-                    debug!(
-                        target: "assertion-executor::validate_tx",
-                        gas_used = summary.total_assertion_gas,
-                        assertions_ran = summary.total_assertion_funcs_ran,
-                        "Tx validated"
-                    );
-                }
-                ValidationLogStyle::Trace => {
-                    trace!(
-                        target: "assertion-executor::validate_tx",
-                        gas_used = summary.total_assertion_gas,
-                        assertions_ran = summary.total_assertion_funcs_ran,
-                        "Tx validated"
-                    );
-                }
-            }
+            debug!(
+                target: "assertion-executor::validate_tx",
+                gas_used = summary.total_assertion_gas,
+                assertions_ran = summary.total_assertion_funcs_ran,
+                "Tx validated"
+            );
 
             if commit {
                 fork_db.commit(result_and_state.state.clone());
             }
         } else {
-            match log_style {
-                ValidationLogStyle::Verbose => {
-                    warn!(
-                        target: "assertion-executor::validate_tx",
-                        gas_used = summary.total_assertion_gas,
-                        assertions_ran = summary.total_assertion_funcs_ran,
-                        ?summary.invalid_assertions,
-                        "Tx invalidated by assertions"
-                    );
-                    debug!(
-                        target: "assertion-executor::validate_tx",
-                        tx_env = ?tx_env,
-                        result_and_state = ?result_and_state,
-                        "Tx invalidated by assertions details"
-                    );
-                }
-                ValidationLogStyle::Trace => {
-                    trace!(
-                        target: "assertion-executor::validate_tx",
-                        gas_used = summary.total_assertion_gas,
-                        assertions_ran = summary.total_assertion_funcs_ran,
-                        ?summary.invalid_assertions,
-                        "Tx invalidated by assertions"
-                    );
-                }
-            }
+            warn!(
+                target: "assertion-executor::validate_tx",
+                gas_used = summary.total_assertion_gas,
+                assertions_ran = summary.total_assertion_funcs_ran,
+                ?summary.invalid_assertions,
+                "Tx invalidated by assertions"
+            );
+            debug!(
+                target: "assertion-executor::validate_tx",
+                tx_env = ?tx_env,
+                result_and_state = ?result_and_state,
+                "Tx invalidated by assertions details"
+            );
         }
 
         TxValidationResult::new(
@@ -439,7 +398,6 @@ impl AssertionExecutor {
         block_env: &BlockEnv,
         mut tx_fork_db: ForkDb<Active>,
         context: &'ctx PhEvmContext,
-        execution_message: &'static str,
         execute_assertion_fn: F,
     ) -> (
         Vec<Result<T, AssertionExecutionError<<Active as DatabaseRef>::Error>>>,
@@ -469,7 +427,6 @@ impl AssertionExecutor {
             assertion_contract_id = ?id,
             selector_count = fn_selectors.len(),
             selectors = ?fn_selectors.iter().map(|s| format!("{s:x?}")).collect::<Vec<_>>(),
-            execution_message,
             "Executing assertion contract",
         );
 
@@ -567,7 +524,6 @@ impl AssertionExecutor {
             results,
             assertion_execution_duration,
             true,
-            ValidationLogStyle::Verbose,
         ))
     }
 
@@ -632,7 +588,6 @@ impl AssertionExecutor {
                 block_env,
                 tx_fork_db,
                 context,
-                "Executing assertion contract",
                 |assertion_contract,
                  fn_selector,
                  block_env,
@@ -756,7 +711,6 @@ impl AssertionExecutor {
             results,
             assertion_execution_duration,
             commit,
-            ValidationLogStyle::Trace,
         ))
     }
 
