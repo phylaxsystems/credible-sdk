@@ -29,11 +29,15 @@ use std::{
     io::{
         BufRead,
         BufReader,
+        Read,
         Write,
     },
     path::Path,
     process::{
+        Child,
+        ChildStdout,
         Command,
+        ExitStatus,
         Stdio,
     },
     sync::mpsc::{
@@ -701,7 +705,6 @@ where
     Ok(metadata)
 }
 
-#[allow(clippy::too_many_lines)]
 fn run_geth_dump<F>(
     args: &Args,
     mode: &str,
@@ -716,33 +719,59 @@ where
         eprintln!("Running: {cmd:?}");
     }
 
-    let mut child = cmd.spawn().map_err(|e| {
-        GethDumpError {
-            command: if mode == "snapshot" {
-                "snapshot dump".to_string()
-            } else {
-                "dump".to_string()
-            },
-            stderr: String::new(),
-            source: anyhow::anyhow!("Failed to spawn geth: {e}"),
-        }
-    })?;
+    // Start geth and wire up its output streams for structured parsing and error capture.
+    let mut child = spawn_geth_child(&mut cmd, mode)?;
+    // We only parse data from stdout; stderr is handled separately to avoid blocking.
+    let stdout = take_child_stdout(&mut child, mode)?;
+    // Spawn a background reader so stderr is drained while we parse stdout.
+    let stderr_handle = spawn_stderr_reader(&mut child);
+    // Parse the dump stream as it arrives, updating metadata via the callback.
+    let mut metadata = parse_dump_stream(args, mode, stdout, on_account)?;
+    // Collect any stderr output captured during parsing.
+    let stderr_lines = collect_stderr(stderr_handle);
+    let stderr_text = stderr_lines.join("\n");
+    // Wait for geth to exit and surface stderr if it failed.
+    let status = wait_for_geth(&mut child, mode, stderr_text.clone())?;
 
-    let stdout = child.stdout.take().ok_or_else(|| {
-        GethDumpError {
-            command: if mode == "snapshot" {
-                "snapshot dump".to_string()
-            } else {
-                "dump".to_string()
-            },
-            stderr: String::new(),
-            source: anyhow::anyhow!("No stdout"),
-        }
-    })?;
+    if !status.success() {
+        return Err(geth_dump_error(
+            mode,
+            stderr_text,
+            anyhow::anyhow!("geth {mode} dump failed with status: {status}"),
+        ));
+    }
 
-    // Spawn thread to read stderr
-    let stderr = child.stderr.take();
-    let stderr_handle = stderr.map(|s| {
+    // Extract block info from stderr
+    let info = extract_block_info(&stderr_lines);
+    if metadata.block_number.is_none() {
+        metadata.block_number = info.block_number;
+    }
+    if metadata.block_hash.is_none() {
+        metadata.block_hash = info.block_hash;
+    }
+
+    Ok(metadata)
+}
+
+fn spawn_geth_child(cmd: &mut Command, mode: &str) -> Result<Child, GethDumpError> {
+    cmd.spawn().map_err(|e| {
+        geth_dump_error(
+            mode,
+            String::new(),
+            anyhow::anyhow!("Failed to spawn geth: {e}"),
+        )
+    })
+}
+
+fn take_child_stdout(child: &mut Child, mode: &str) -> Result<ChildStdout, GethDumpError> {
+    child
+        .stdout
+        .take()
+        .ok_or_else(|| geth_dump_error(mode, String::new(), anyhow::anyhow!("No stdout")))
+}
+
+fn spawn_stderr_reader(child: &mut Child) -> Option<thread::JoinHandle<Vec<String>>> {
+    child.stderr.take().map(|s| {
         thread::spawn(move || {
             let reader = BufReader::new(s);
             reader
@@ -750,10 +779,20 @@ where
                 .map_while(std::result::Result::ok)
                 .collect::<Vec<_>>()
         })
-    });
+    })
+}
 
-    let reader = BufReader::with_capacity(256 * 1024, stdout);
-
+fn parse_dump_stream<F, R>(
+    args: &Args,
+    mode: &str,
+    reader: R,
+    on_account: &mut F,
+) -> std::result::Result<DumpMetadata, GethDumpError>
+where
+    F: FnMut(AccountState) -> Result<()>,
+    R: Read,
+{
+    let reader = BufReader::with_capacity(256 * 1024, reader);
     let mut metadata = DumpMetadata::default();
     let mut line_number: usize = 0;
 
@@ -762,15 +801,11 @@ where
         let line = match line {
             Ok(l) => l,
             Err(e) => {
-                return Err(GethDumpError {
-                    command: if mode == "snapshot" {
-                        "snapshot dump".to_string()
-                    } else {
-                        "dump".to_string()
-                    },
-                    stderr: String::new(),
-                    source: anyhow::anyhow!("Failed to read line {line_number}: {e}"),
-                });
+                return Err(geth_dump_error(
+                    mode,
+                    String::new(),
+                    anyhow::anyhow!("Failed to read line {line_number}: {e}"),
+                ));
             }
         };
 
@@ -795,14 +830,10 @@ where
         let raw: GethAccount = match serde_json::from_str(&line) {
             Ok(a) => a,
             Err(e) => {
-                return Err(GethDumpError {
-                    command: if mode == "snapshot" {
-                        "snapshot dump".to_string()
-                    } else {
-                        "dump".to_string()
-                    },
-                    stderr: String::new(),
-                    source: anyhow::anyhow!(
+                return Err(geth_dump_error(
+                    mode,
+                    String::new(),
+                    anyhow::anyhow!(
                         "FATAL: Failed to parse account JSON at line {}. State integrity compromised!\nError: {}\nLine content: {}",
                         line_number,
                         e,
@@ -812,21 +843,17 @@ where
                             &line
                         }
                     ),
-                });
+                ));
             }
         };
 
         let account = match parse_account(raw) {
             Ok(a) => a,
             Err(e) => {
-                return Err(GethDumpError {
-                    command: if mode == "snapshot" {
-                        "snapshot dump".to_string()
-                    } else {
-                        "dump".to_string()
-                    },
-                    stderr: String::new(),
-                    source: anyhow::anyhow!(
+                return Err(geth_dump_error(
+                    mode,
+                    String::new(),
+                    anyhow::anyhow!(
                         "FATAL: Failed to parse account data at line {}. State integrity compromised!\nError: {}\nLine content: {}",
                         line_number,
                         e,
@@ -836,21 +863,13 @@ where
                             &line
                         }
                     ),
-                });
+                ));
             }
         };
 
         // Stream account to callback immediately - memory is released after this
         if let Err(e) = on_account(account) {
-            return Err(GethDumpError {
-                command: if mode == "snapshot" {
-                    "snapshot dump".to_string()
-                } else {
-                    "dump".to_string()
-                },
-                stderr: String::new(),
-                source: e,
-            });
+            return Err(geth_dump_error(mode, String::new(), e));
         }
 
         metadata.total_accounts += 1;
@@ -860,46 +879,39 @@ where
         }
     }
 
-    // Collect stderr
-    let stderr_lines = stderr_handle
-        .map(|h| h.join().unwrap_or_default())
-        .unwrap_or_default();
-    let stderr_text = stderr_lines.join("\n");
-
-    let status = child.wait().map_err(|e| {
-        GethDumpError {
-            command: if mode == "snapshot" {
-                "snapshot dump".to_string()
-            } else {
-                "dump".to_string()
-            },
-            stderr: stderr_text.clone(),
-            source: anyhow::anyhow!("Failed to wait for geth: {e}"),
-        }
-    })?;
-
-    if !status.success() {
-        return Err(GethDumpError {
-            command: if mode == "snapshot" {
-                "snapshot dump".to_string()
-            } else {
-                "dump".to_string()
-            },
-            stderr: stderr_text,
-            source: anyhow::anyhow!("geth {mode} dump failed with status: {status}"),
-        });
-    }
-
-    // Extract block info from stderr
-    let info = extract_block_info(&stderr_lines);
-    if metadata.block_number.is_none() {
-        metadata.block_number = info.block_number;
-    }
-    if metadata.block_hash.is_none() {
-        metadata.block_hash = info.block_hash;
-    }
-
     Ok(metadata)
+}
+
+fn collect_stderr(stderr_handle: Option<thread::JoinHandle<Vec<String>>>) -> Vec<String> {
+    stderr_handle
+        .map(|h| h.join().unwrap_or_default())
+        .unwrap_or_default()
+}
+
+fn wait_for_geth(
+    child: &mut Child,
+    mode: &str,
+    stderr_text: String,
+) -> Result<ExitStatus, GethDumpError> {
+    child.wait().map_err(|e| {
+        geth_dump_error(
+            mode,
+            stderr_text,
+            anyhow::anyhow!("Failed to wait for geth: {e}"),
+        )
+    })
+}
+
+fn geth_dump_error(mode: &str, stderr: String, source: anyhow::Error) -> GethDumpError {
+    GethDumpError {
+        command: if mode == "snapshot" {
+            "snapshot dump".to_string()
+        } else {
+            "dump".to_string()
+        },
+        stderr,
+        source,
+    }
 }
 
 fn run_with_fallback<F>(args: &Args, on_account: &mut F) -> Result<DumpMetadata>
