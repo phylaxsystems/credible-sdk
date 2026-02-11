@@ -75,6 +75,16 @@ jobs:
       dockerfile-path: dockerfile/Dockerfile.sidecar
       version-tag: ${{ needs.get-version.outputs.version }}
 
+  docker-ghcr-push-sidecar-dhat:
+    needs: get-version
+    uses: phylaxsystems/actions/.github/workflows/release-docker-ghcr.yaml@main
+    with:
+      rust-binary-name: sidecar-debug
+      requires-private-deps: false
+      dockerfile-path: dockerfile/Dockerfile.sidecar-debug
+      build-flags: "--features dhat-heap"
+      version-tag: ${{ needs.get-version.outputs.version }}
+
   docker-ghcr-push-shadow-driver:
     needs: get-version
     uses: phylaxsystems/actions/.github/workflows/release-docker-ghcr.yaml@main
