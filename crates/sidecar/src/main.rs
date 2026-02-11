@@ -85,6 +85,10 @@ struct SidecarInfo {
     os_info: String,
 }
 
+#[cfg(feature = "dhat-heap")]
+#[global_allocator]
+static ALLOC: dhat::Alloc = dhat::Alloc;
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     rustls::crypto::aws_lc_rs::default_provider()
@@ -93,6 +97,15 @@ async fn main() -> anyhow::Result<()> {
 
     let _guard = rust_tracing::trace();
     let config = Config::load()?;
+
+    // Saves the dhat file on drop()
+    #[cfg(feature = "dhat-heap")]
+    let _dhat_profiler = if let Some(ref output_path) = config.dhat_output_path {
+        tracing::info!("Starting dhat memory profiler, output will be written to: {}", output_path.display());
+        Some(dhat::Profiler::builder().file_name(output_path).build())
+    } else {
+        None
+    };
 
     SidecarInfo::collect().log(&config);
 

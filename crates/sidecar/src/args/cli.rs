@@ -12,8 +12,4 @@ pub struct SidecarArgs {
     /// Path to the configuration file
     #[arg(long = "config-file-path", env = "CONFIG_FILE_PATH")]
     pub config_file_path: Option<PathBuf>,
-    /// Path to write dhat memory profile output (only available with dhat-heap feature)
-    #[cfg(feature = "dhat-heap")]
-    #[arg(long = "dhat-output-path", env = "DHAT_OUTPUT_PATH")]
-    pub dhat_output_path: Option<PathBuf>,
 }

@@ -96,6 +96,7 @@ pub struct ConfigFile {
     pub credible: Option<CredibleConfigFile>,
     pub transport: Option<TransportConfigFile>,
     pub state: Option<StateConfigFile>,
+    pub dhat_output_path: Option<PathBuf>,
 }
 
 impl ConfigFile {
@@ -134,6 +135,7 @@ pub struct Config {
     pub credible: CredibleConfig,
     pub transport: GrpcTransportConfig,
     pub state: StateConfig,
+    pub dhat_output_path: Option<PathBuf>,
 }
 
 impl Config {
@@ -397,6 +399,7 @@ fn resolve_config(file: ConfigFile) -> Result<Config, ConfigError> {
         credible,
         transport,
         state,
+        dhat_output_path: file.dhat_output_path,
     })
 }
 
