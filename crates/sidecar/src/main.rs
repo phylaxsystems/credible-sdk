@@ -101,7 +101,10 @@ async fn main() -> anyhow::Result<()> {
     // Saves the dhat file on drop()
     #[cfg(feature = "dhat-heap")]
     let _dhat_profiler = if let Some(ref output_path) = config.dhat_output_path {
-        tracing::info!("Starting dhat memory profiler, output will be written to: {}", output_path.display());
+        tracing::info!(
+            "Starting dhat memory profiler, output will be written to: {}",
+            output_path.display()
+        );
         Some(dhat::Profiler::builder().file_name(output_path).build())
     } else {
         None

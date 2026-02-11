@@ -25,7 +25,10 @@ use std::{
     env,
     fmt,
     fs,
-    path::{Path, PathBuf},
+    path::{
+        Path,
+        PathBuf,
+    },
     str::FromStr,
     time::Duration,
 };
