@@ -18,6 +18,7 @@ use mdbx::{
     StateReader,
     common::CircularBufferConfig,
 };
+use metrics::counter;
 use sidecar::{
     args::{
         Config,
@@ -131,6 +132,7 @@ async fn main() -> anyhow::Result<()> {
         if should_shutdown {
             break;
         }
+        counter!("sidecar_restarts_total").increment(1);
         tracing::warn!("Sidecar restarting...");
     }
 
@@ -440,9 +442,19 @@ async fn observer_exit_future(
     }
 }
 
+fn record_error_recoverability(recoverable: bool) {
+    if recoverable {
+        counter!("sidecar_recoverable_errors_total").increment(1);
+    } else {
+        counter!("sidecar_irrecoverable_errors_total").increment(1);
+    }
+}
+
 fn handle_transport_exit(result: Result<(), sidecar::transport::grpc::GrpcTransportError>) {
     if let Err(e) = result {
-        if ErrorRecoverability::from(&e).is_recoverable() {
+        let recoverable = ErrorRecoverability::from(&e).is_recoverable();
+        record_error_recoverability(recoverable);
+        if recoverable {
             tracing::error!(error = ?e, "Transport exited");
         } else {
             critical!(error = ?e, "Transport exited");
@@ -459,7 +471,9 @@ fn handle_engine_exit(
     match result {
         Ok(Ok(())) => tracing::warn!("Engine exited unexpectedly"),
         Ok(Err(e)) => {
-            if ErrorRecoverability::from(&e).is_recoverable() {
+            let recoverable = ErrorRecoverability::from(&e).is_recoverable();
+            record_error_recoverability(recoverable);
+            if recoverable {
                 tracing::error!(error = ?e, "Engine exited with recoverable error");
             } else {
                 critical!(error = ?e, "Engine exited with unrecoverable error");
@@ -478,7 +492,9 @@ fn handle_event_sequencing_exit(
     match result {
         Ok(Ok(())) => tracing::warn!("Event sequencing exited unexpectedly"),
         Ok(Err(e)) => {
-            if ErrorRecoverability::from(&e).is_recoverable() {
+            let recoverable = ErrorRecoverability::from(&e).is_recoverable();
+            record_error_recoverability(recoverable);
+            if recoverable {
                 tracing::error!(error = ?e, "Event sequencing exited with recoverable error");
             } else {
                 critical!(error = ?e, "Event sequencing exited with unrecoverable error");
@@ -494,7 +510,9 @@ fn handle_observer_exit(
     match result {
         Ok(()) => tracing::warn!("Transaction observer exited unexpectedly"),
         Err(e) => {
-            if ErrorRecoverability::from(&e).is_recoverable() {
+            let recoverable = ErrorRecoverability::from(&e).is_recoverable();
+            record_error_recoverability(recoverable);
+            if recoverable {
                 tracing::error!(error = ?e, "Transaction observer exited with recoverable error");
             } else {
                 critical!(error = ?e, "Transaction observer exited with unrecoverable error");
@@ -505,7 +523,9 @@ fn handle_observer_exit(
 
 fn handle_indexer_exit(result: Result<(), assertion_executor::store::IndexerError>) {
     if let Err(e) = result {
-        if ErrorRecoverability::from(&e).is_recoverable() {
+        let recoverable = ErrorRecoverability::from(&e).is_recoverable();
+        record_error_recoverability(recoverable);
+        if recoverable {
             tracing::error!(error = ?e, "Indexer exited");
         } else {
             critical!(error = ?e, "Indexer exited");
