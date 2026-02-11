@@ -111,6 +111,7 @@ int-test-utils = { path = "../int-test-utils" }
 tempfile = "3.23.0"
 criterion = { workspace = true }
 httpmock = "0.8"
+metrics-util = { version = "0.20.1", default-features = false, features = ["debugging"] }
 
 [profile.release]
 lto = "fat"
