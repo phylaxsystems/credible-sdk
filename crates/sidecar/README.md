@@ -40,6 +40,12 @@ The transports emit a few histograms so operators can distinguish between a slow
 
 All durations are reported in seconds to the configured metrics backend.
 
+#### Runtime metrics
+
+- `sidecar_recoverable_errors_total` - Count of recoverable runtime errors
+- `sidecar_irrecoverable_errors_total` - Count of irrecoverable runtime errors
+- `sidecar_restarts_total` - Count of sidecar restarts within the main loop
+
 ### Sidecar config
 
 The sidecar accepts configuration through a combination of command-line arguments (or environment variables) and a
