@@ -7,6 +7,10 @@
 use std::time::Instant;
 
 use crate::{
+    arena::{
+        next_tx_arena_epoch,
+        prepare_tx_arena_for_current_thread,
+    },
     db::{
         DatabaseRef,
         fork_db::ForkDb,
@@ -120,6 +124,7 @@ impl AssertionExecutor {
         }
         debug!(target: "assertion-executor::validate_tx", gas_used=exec_result.gas_used(), "Transaction execution succeeded.");
 
+        let tx_arena_epoch = next_tx_arena_epoch();
         let assertion_timer = Instant::now();
         let (results, assertion_inspectors) = self
             .execute_assertions_with_inspector(
@@ -128,6 +133,7 @@ impl AssertionExecutor {
                 &forked_tx_result,
                 tx_env,
                 inspector,
+                tx_arena_epoch,
             )
             .map_err(|e| {
                 ExecutorError::AssertionExecutionError(
@@ -210,6 +216,7 @@ impl AssertionExecutor {
         forked_tx_result: &ExecuteForkedTxResult,
         tx_env: &TxEnv,
         inspector: I,
+        tx_arena_epoch: u64,
     ) -> Result<
         (Vec<AssertionContractExecution>, Vec<I>),
         AssertionExecutionError<<Active as DatabaseRef>::Error>,
@@ -226,7 +233,8 @@ impl AssertionExecutor {
             tx_fork_db,
             forked_tx_result,
             tx_env,
-            |assertion_contract, fn_selectors, block_env, tx_fork_db, context| {
+            tx_arena_epoch,
+            |assertion_contract, fn_selectors, block_env, tx_fork_db, context, tx_arena_epoch| {
                 self.run_assertion_contract_with_inspector(
                     assertion_contract,
                     fn_selectors,
@@ -234,6 +242,7 @@ impl AssertionExecutor {
                     tx_fork_db,
                     context,
                     inspector.clone(),
+                    tx_arena_epoch,
                 )
             },
         )?;
@@ -269,6 +278,7 @@ impl AssertionExecutor {
         tx_fork_db: ForkDb<Active>,
         context: &PhEvmContext,
         inspector: I,
+        tx_arena_epoch: u64,
     ) -> Result<
         (AssertionContractExecution, Vec<I>),
         AssertionExecutionError<<Active as DatabaseRef>::Error>,
@@ -296,6 +306,7 @@ impl AssertionExecutor {
                             prepared.multi_fork_db.clone(),
                             prepared.inspector.clone(),
                             inspector.clone(),
+                            tx_arena_epoch,
                         )
                     })
                     .collect()
@@ -342,12 +353,15 @@ impl AssertionExecutor {
         mut multi_fork_db: MultiForkDb<ForkDb<Active>>,
         mut phevm_inspector: PhEvmInspector<'_>,
         mut inspector: I,
+        tx_arena_epoch: u64,
     ) -> Result<(AssertionFunctionResult, I), AssertionExecutionError<<Active as DatabaseRef>::Error>>
     where
         Active: DatabaseRef + Sync + Send,
         for<'db> I: Inspector<EthCtx<'db, MultiForkDb<ForkDb<Active>>>>,
         for<'db> I: Inspector<OpCtx<'db, MultiForkDb<ForkDb<Active>>>>,
     {
+        prepare_tx_arena_for_current_thread(tx_arena_epoch);
+
         // Compose inspector: (custom_inspector, phevm_inspector).
         let composed_inspector = (&mut inspector, &mut phevm_inspector);
         let result = self.execute_assertion_fn_call(

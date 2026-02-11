@@ -1602,6 +1602,7 @@ dependencies = [
  "assertion-executor 1.0.8",
  "benchmark-utils",
  "bincode",
+ "bumpalo",
  "clap",
  "criterion",
  "dashmap",

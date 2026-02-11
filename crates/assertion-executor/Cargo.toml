@@ -17,6 +17,7 @@ clap = { workspace = true, features = ["derive"] }
 metrics = { workspace = true }
 futures = { workspace = true }
 dashmap = { workspace = true }
+bumpalo = { version = "3.19.1", features = ["allocator_api"] }
 
 # ETH deps
 alloy = { workspace = true }

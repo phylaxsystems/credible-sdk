@@ -1,5 +1,6 @@
 #![feature(unsafe_cell_access)]
 #![feature(test)]
+#![feature(allocator_api)]
 #![allow(clippy::return_self_not_must_use)]
 #![allow(clippy::must_use_candidate)]
 #![allow(clippy::missing_errors_doc)]
@@ -19,6 +20,8 @@ pub use executor::{
     AssertionExecutor,
     config::ExecutorConfig,
 };
+
+mod arena;
 
 pub mod constants;
 

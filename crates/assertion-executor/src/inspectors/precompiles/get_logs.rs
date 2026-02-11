@@ -9,6 +9,7 @@ use crate::{
 };
 
 use alloy_sol_types::SolType;
+use bumpalo::Bump;
 use std::convert::Infallible;
 
 use super::BASE_COST;
@@ -31,33 +32,29 @@ pub fn get_logs(context: &PhEvmContext, gas: u64) -> Result<PhevmOutcome, Infall
         return Ok(rax);
     }
 
-    let mut vec_size_bytes: usize = 0;
-    let sol_logs: Vec<PhEvm::Log> = context
-        .logs_and_traces
-        .tx_logs
-        .iter()
-        .map(|log| {
-            let log = PhEvm::Log {
+    let encoded: Bytes = crate::arena::with_current_tx_arena(|arena| {
+        let mut vec_size_bytes: usize = 0;
+        let mut sol_logs: Vec<PhEvm::Log, &Bump> = Vec::new_in(arena);
+        for log in context.logs_and_traces.tx_logs {
+            let sol_log = PhEvm::Log {
                 topics: log.topics().to_vec(),
                 data: log.data.data.clone(),
                 emitter: log.address,
             };
             vec_size_bytes += 20; // emitter
-            vec_size_bytes += log.topics.len() * 32; // topics (bytes32)
-            vec_size_bytes += log.data.len(); // data (bytes)
+            vec_size_bytes += sol_log.topics.len() * 32; // topics (bytes32)
+            vec_size_bytes += sol_log.data.len(); // data (bytes)
+            sol_logs.push(sol_log);
+        }
 
-            log
-        })
-        .collect();
+        let sol_log_words: u64 = (vec_size_bytes as u64).div_ceil(32);
+        let sol_log_cost = sol_log_words * LOG_COST_PER_WORD;
+        if let Some(rax) = deduct_gas_and_check(&mut gas_left, sol_log_cost, gas_limit) {
+            return rax.into_bytes();
+        }
 
-    let sol_log_words: u64 = (vec_size_bytes as u64).div_ceil(32);
-    let sol_log_cost = sol_log_words * LOG_COST_PER_WORD;
-    if let Some(rax) = deduct_gas_and_check(&mut gas_left, sol_log_cost, gas_limit) {
-        return Ok(rax);
-    }
-
-    let encoded: Bytes =
-        <alloy_sol_types::sol_data::Array<PhEvm::Log>>::abi_encode(&sol_logs).into();
+        <alloy_sol_types::sol_data::Array<PhEvm::Log>>::abi_encode(sol_logs.as_slice()).into()
+    });
 
     let encoded_words: u64 = (encoded.len() as u64).div_ceil(32);
     let encoded_cost = encoded_words * ABI_ENCODE_COST;
