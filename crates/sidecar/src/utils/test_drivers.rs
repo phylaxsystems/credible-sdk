@@ -1,4 +1,3 @@
-#![allow(clippy::too_many_lines)]
 use super::{
     instance::{
         EngineThreadHandle,
@@ -783,105 +782,8 @@ impl LocalInstanceGrpcDriver {
         incident_sender: Option<IncidentReportSender>,
     ) -> Result<LocalInstance<Self>, String> {
         info!(target: "LocalInstanceGrpcDriver", "Creating LocalInstance with streaming GrpcTransport");
-
-        // Create result event channel for SubscribeResults streaming
-        let (result_event_tx, result_event_rx) = flume::bounded(4096);
-
-        // Pass the sender to CommonSetup so state_results broadcasts results
-        let setup = CommonSetup::new(assertion_store, Some(result_event_tx)).await?;
-
-        let (transport_tx_sender, event_sequencing_tx_receiver) = flume::unbounded();
-
-        let (engine_handle, _sequencing_handle) = setup
-            .spawn_engine_with_sequencing(event_sequencing_tx_receiver, incident_sender)
-            .await;
-
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .map_err(|e| format!("Failed to bind to available port: {e}"))?;
-        let address = listener
-            .local_addr()
-            .map_err(|e| format!("Failed to get local address: {e}"))?;
-
-        drop(listener);
-
-        let config = GrpcTransportConfig {
-            bind_addr: address.to_string(),
-            health_bind_addr: "127.0.0.1:0".to_string(),
-            event_id_buffer_capacity: setup.event_id_buffer_capacity,
-            pending_receive_ttl: Duration::from_secs(5),
-        };
-
-        // Use with_result_receiver to enable SubscribeResults streaming
-        let transport = GrpcTransport::with_result_receiver(
-            &config,
-            transport_tx_sender,
-            setup.state_results.clone(),
-            result_event_rx,
-        )
-        .map_err(|e| format!("Failed to create gRPC transport: {e}"))?;
-
-        let transport_handle = tokio::spawn(async move {
-            info!(target: "LocalInstanceGrpcDriver", "Transport task started");
-            info!(target: "LocalInstanceGrpcDriver", "Transport about to call run()");
-            let result = transport.run().await;
-            match result {
-                Ok(()) => {
-                    info!(target: "LocalInstanceGrpcDriver", "Transport run() completed successfully");
-                }
-                Err(e) => {
-                    warn!(target: "LocalInstanceGrpcDriver", "Transport stopped with error: {e}");
-                }
-            }
-            info!(target: "LocalInstanceGrpcDriver", "Transport task completed");
-        });
-
-        // Connect gRPC client with retries
-        let mut attempts = 0;
-        let client = loop {
-            attempts += 1;
-            match SidecarTransportClient::connect(format!("http://{address}")).await {
-                Ok(client) => break client,
-                Err(e) => {
-                    if attempts >= MAX_HTTP_RETRY_ATTEMPTS {
-                        return Err(format!(
-                            "Failed to connect to gRPC server after {MAX_HTTP_RETRY_ATTEMPTS} attempts: {e}"
-                        ));
-                    }
-                    debug!(target: "LocalInstanceGrpcDriver", "gRPC connection failed (attempt {}/{}), retrying...", attempts, MAX_HTTP_RETRY_ATTEMPTS);
-                    tokio::time::sleep(Duration::from_millis(HTTP_RETRY_DELAY_MS)).await;
-                }
-            }
-        };
-
-        // Use larger buffer to prevent blocking when running tests in parallel
-        // Tests can send bursts of events that need to be queued
-        let (event_tx, event_rx) = mpsc::channel(2048);
-        let stream = ReceiverStream::new(event_rx);
-
-        let mut client_clone = client.clone();
-        let mut response_stream = client_clone
-            .stream_events(stream)
-            .await
-            .map_err(|e| format!("Failed to start event stream: {e}"))?
-            .into_inner();
-
-        tokio::spawn(async move {
-            while let Some(result) = response_stream.next().await {
-                match result {
-                    Ok(ack) => {
-                        debug!(target: "LocalInstanceGrpcDriver", "Received ack: success={}, events_processed={}", ack.success, ack.events_processed);
-                        if !ack.success {
-                            error!(target: "LocalInstanceGrpcDriver", "Stream ack indicates failure: {}", ack.message);
-                        }
-                    }
-                    Err(e) => {
-                        warn!(target: "LocalInstanceGrpcDriver", "Stream error: {e}");
-                        break;
-                    }
-                }
-            }
-        });
+        let (setup, engine_handle, transport_handle, address, client, event_tx) =
+            Self::setup_transport_and_client(assertion_store, incident_sender).await?;
 
         Ok(LocalInstance::new_internal(LocalInstanceInit {
             db: setup.underlying_db,
@@ -908,6 +810,160 @@ impl LocalInstanceGrpcDriver {
                 last_committed_beacon_root: None,
             },
         }))
+    }
+
+    async fn setup_transport_and_client(
+        assertion_store: Option<AssertionStore>,
+        incident_sender: Option<IncidentReportSender>,
+    ) -> Result<
+        (
+            CommonSetup,
+            EngineThreadHandle,
+            tokio::task::JoinHandle<()>,
+            SocketAddr,
+            SidecarTransportClient<Channel>,
+            mpsc::Sender<Event>,
+        ),
+        String,
+    > {
+        let (result_event_tx, result_event_rx) = flume::bounded(4096);
+        let setup = CommonSetup::new(assertion_store, Some(result_event_tx)).await?;
+
+        let (transport_tx_sender, event_sequencing_tx_receiver) = flume::unbounded();
+        let (engine_handle, _sequencing_handle) = setup
+            .spawn_engine_with_sequencing(event_sequencing_tx_receiver, incident_sender)
+            .await;
+
+        let address = Self::bind_local_address().await?;
+        let config = Self::build_grpc_config(address, setup.event_id_buffer_capacity);
+        let transport = Self::create_grpc_transport(
+            &config,
+            transport_tx_sender,
+            setup.state_results.clone(),
+            result_event_rx,
+        )?;
+        let transport_handle = Self::spawn_transport_task(transport);
+
+        let client = Self::connect_client_with_retry(address).await?;
+        let event_tx = Self::spawn_event_stream(client.clone()).await?;
+
+        Ok((
+            setup,
+            engine_handle,
+            transport_handle,
+            address,
+            client,
+            event_tx,
+        ))
+    }
+
+    async fn bind_local_address() -> Result<SocketAddr, String> {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .map_err(|e| format!("Failed to bind to available port: {e}"))?;
+        let address = listener
+            .local_addr()
+            .map_err(|e| format!("Failed to get local address: {e}"))?;
+        drop(listener);
+        Ok(address)
+    }
+
+    fn build_grpc_config(
+        address: SocketAddr,
+        event_id_buffer_capacity: usize,
+    ) -> GrpcTransportConfig {
+        GrpcTransportConfig {
+            bind_addr: address.to_string(),
+            health_bind_addr: "127.0.0.1:0".to_string(),
+            event_id_buffer_capacity,
+            pending_receive_ttl: Duration::from_secs(5),
+        }
+    }
+
+    fn create_grpc_transport(
+        config: &GrpcTransportConfig,
+        transport_tx_sender: TransactionQueueSender,
+        state_results: Arc<crate::TransactionsState>,
+        result_event_rx: flume::Receiver<TransactionResultEvent>,
+    ) -> Result<GrpcTransport, String> {
+        GrpcTransport::with_result_receiver(
+            config,
+            transport_tx_sender,
+            state_results,
+            result_event_rx,
+        )
+        .map_err(|e| format!("Failed to create gRPC transport: {e}"))
+    }
+
+    fn spawn_transport_task(transport: GrpcTransport) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            info!(target: "LocalInstanceGrpcDriver", "Transport task started");
+            info!(target: "LocalInstanceGrpcDriver", "Transport about to call run()");
+            let result = transport.run().await;
+            match result {
+                Ok(()) => {
+                    info!(target: "LocalInstanceGrpcDriver", "Transport run() completed successfully");
+                }
+                Err(e) => {
+                    warn!(target: "LocalInstanceGrpcDriver", "Transport stopped with error: {e}");
+                }
+            }
+            info!(target: "LocalInstanceGrpcDriver", "Transport task completed");
+        })
+    }
+
+    async fn connect_client_with_retry(
+        address: SocketAddr,
+    ) -> Result<SidecarTransportClient<Channel>, String> {
+        let mut attempts = 0;
+        loop {
+            attempts += 1;
+            match SidecarTransportClient::connect(format!("http://{address}")).await {
+                Ok(client) => return Ok(client),
+                Err(e) => {
+                    if attempts >= MAX_HTTP_RETRY_ATTEMPTS {
+                        return Err(format!(
+                            "Failed to connect to gRPC server after {MAX_HTTP_RETRY_ATTEMPTS} attempts: {e}"
+                        ));
+                    }
+                    debug!(target: "LocalInstanceGrpcDriver", "gRPC connection failed (attempt {}/{}), retrying...", attempts, MAX_HTTP_RETRY_ATTEMPTS);
+                    tokio::time::sleep(Duration::from_millis(HTTP_RETRY_DELAY_MS)).await;
+                }
+            }
+        }
+    }
+
+    async fn spawn_event_stream(
+        client: SidecarTransportClient<Channel>,
+    ) -> Result<mpsc::Sender<Event>, String> {
+        let (event_tx, event_rx) = mpsc::channel(2048);
+        let stream = ReceiverStream::new(event_rx);
+
+        let mut client_clone = client;
+        let mut response_stream = client_clone
+            .stream_events(stream)
+            .await
+            .map_err(|e| format!("Failed to start event stream: {e}"))?
+            .into_inner();
+
+        tokio::spawn(async move {
+            while let Some(result) = response_stream.next().await {
+                match result {
+                    Ok(ack) => {
+                        debug!(target: "LocalInstanceGrpcDriver", "Received ack: success={}, events_processed={}", ack.success, ack.events_processed);
+                        if !ack.success {
+                            error!(target: "LocalInstanceGrpcDriver", "Stream ack indicates failure: {}", ack.message);
+                        }
+                    }
+                    Err(e) => {
+                        warn!(target: "LocalInstanceGrpcDriver", "Stream error: {e}");
+                        break;
+                    }
+                }
+            }
+        });
+
+        Ok(event_tx)
     }
 
     pub async fn new_with_store(

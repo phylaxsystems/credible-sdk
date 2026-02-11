@@ -66,11 +66,8 @@ async fn test_deploy_da() {
 
     assert_ne!(res.id, B256::ZERO);
 }
+const ASSERTION_SRC: &str = r#"
 
-// FIXME: Break it down to smaller pieces
-#[allow(clippy::too_many_lines)]
-pub fn assertion_src() -> String {
-    let assertion = r#"
         // SPDX-License-Identifier: UNLICENSED
         pragma solidity ^0.8.13 ^0.8.28;
 
@@ -496,5 +493,7 @@ pub fn assertion_src() -> String {
             }
         }
     "#;
-    assertion.to_string()
+
+pub fn assertion_src() -> String {
+    ASSERTION_SRC.to_string()
 }

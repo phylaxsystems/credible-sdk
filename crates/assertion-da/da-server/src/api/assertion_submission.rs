@@ -31,6 +31,7 @@ use alloy::{
         keccak256,
     },
     signers::{
+        Signature,
         Signer,
         local::PrivateKeySigner,
     },
@@ -51,39 +52,41 @@ use tracing::{
     warn,
 };
 
+pub struct SubmissionContext<'a> {
+    pub json_rpc: &'a Value,
+    pub db: &'a DbRequestSender,
+    pub signer: &'a PrivateKeySigner,
+    pub request_id: &'a Uuid,
+    pub json_rpc_id: &'a Value,
+    pub client_ip: &'a str,
+}
+
 /// Accepts, validates and stores a raw EVM bytecode assertion.
 #[cfg(feature = "debug_assertions")]
 #[instrument(
     skip_all,
     target = "assertion_submission::accept_bytecode_assertion",
     level = "debug",
-    fields(request_id = %request_id, client_ip = %client_ip)
+    fields(request_id = %ctx.request_id, client_ip = %ctx.client_ip)
 )]
-pub async fn accept_bytecode_assertion(
-    json_rpc: &Value,
-    db: &DbRequestSender,
-    signer: &PrivateKeySigner,
-    request_id: &Uuid,
-    json_rpc_id: &Value,
-    client_ip: &str,
-) -> Result<String> {
-    let Some(code) = json_rpc["params"][0].as_str() else {
-        warn!(target: "json_rpc", method = "da_submit_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, "Invalid params: missing or invalid bytecode parameter");
+pub async fn accept_bytecode_assertion(ctx: &SubmissionContext<'_>) -> Result<String> {
+    let Some(code) = ctx.json_rpc["params"][0].as_str() else {
+        warn!(target: "json_rpc", method = "da_submit_assertion", %ctx.request_id, %ctx.client_ip, json_rpc_id = %ctx.json_rpc_id, "Invalid params: missing or invalid bytecode parameter");
         return Ok(rpc_error_with_request_id(
-            json_rpc,
+            ctx.json_rpc,
             -32602,
             "Invalid params",
-            request_id,
+            ctx.request_id,
         ));
     };
 
     let clean_code = match sanitize_single_hex_prefix(code).map_err(|err| {
-        warn!(target: "json_rpc", method = "da_submit_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, code = code, error = ?err, "Invalid params: multiple 0x prefixes found in bytecode");
+        warn!(target: "json_rpc", method = "da_submit_assertion", %ctx.request_id, %ctx.client_ip, json_rpc_id = %ctx.json_rpc_id, code = code, error = ?err, "Invalid params: multiple 0x prefixes found in bytecode");
         rpc_error_with_request_id(
-            json_rpc,
+            ctx.json_rpc,
             400,
             "Failed to decode hex",
-            request_id,
+            ctx.request_id,
         )
     }) {
         Ok(code) => code,
@@ -92,12 +95,12 @@ pub async fn accept_bytecode_assertion(
 
     // Validate hex inputs
     let Ok(bytecode) = alloy::hex::decode(clean_code) else {
-        warn!(target: "json_rpc", method = "da_submit_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, code = code, "Failed to decode hex bytecode");
+        warn!(target: "json_rpc", method = "da_submit_assertion", %ctx.request_id, %ctx.client_ip, json_rpc_id = %ctx.json_rpc_id, code = code, "Failed to decode hex bytecode");
         return Ok(rpc_error_with_request_id(
-            json_rpc,
+            ctx.json_rpc,
             500,
             "Failed to decode hex",
-            request_id,
+            ctx.request_id,
         ));
     };
 
@@ -105,21 +108,21 @@ pub async fn accept_bytecode_assertion(
 
     // Hash to get ID
     let id = keccak256(&bytecode);
-    let signature = match signer.sign_hash(&id).await {
+    let signature = match ctx.signer.sign_hash(&id).await {
         Ok(sig) => sig,
         Err(err) => {
-            warn!(target: "json_rpc", method = "da_submit_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, error = ?err, "Failed to sign assertion");
+            warn!(target: "json_rpc", method = "da_submit_assertion", %ctx.request_id, %ctx.client_ip, json_rpc_id = %ctx.json_rpc_id, error = ?err, "Failed to sign assertion");
             return Ok(rpc_error_with_request_id(
-                json_rpc,
+                ctx.json_rpc,
                 -32604,
                 "Internal Error: Failed to sign Assertion",
-                request_id,
+                ctx.request_id,
             ));
         }
     };
 
     trace!(target: "json_rpc", ?id, ?signature, bytecode_hex = hex::encode(&bytecode), "Raw submitted bytecode");
-    debug!(target: "json_rpc", method = "da_submit_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, ?id, "Processed raw assertion submission, proceeding to database storage");
+    debug!(target: "json_rpc", method = "da_submit_assertion", %ctx.request_id, %ctx.client_ip, json_rpc_id = %ctx.json_rpc_id, ?id, "Processed raw assertion submission, proceeding to database storage");
 
     let stored_assertion = StoredAssertion::new(
         "NaN".to_string(),
@@ -131,23 +134,14 @@ pub async fn accept_bytecode_assertion(
         Bytes::new(),
     );
 
-    let res = process_add_assertion(
-        id,
-        stored_assertion,
-        db,
-        json_rpc,
-        *request_id,
-        client_ip,
-        json_rpc_id,
-    )
-    .await;
+    let res = process_add_assertion(id, stored_assertion, ctx).await;
 
     // Log success or failure based on response
     if let Ok(ref response) = res {
         if response.contains("\"error\"") {
-            warn!(target: "json_rpc", method = "da_submit_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, ?id, "Failed to process raw assertion submission");
+            warn!(target: "json_rpc", method = "da_submit_assertion", %ctx.request_id, %ctx.client_ip, json_rpc_id = %ctx.json_rpc_id, ?id, "Failed to process raw assertion submission");
         } else {
-            info!(target: "json_rpc", method = "da_submit_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, ?id, "Successfully processed raw assertion submission");
+            info!(target: "json_rpc", method = "da_submit_assertion", %ctx.request_id, %ctx.client_ip, json_rpc_id = %ctx.json_rpc_id, ?id, "Successfully processed raw assertion submission");
         }
     }
 
@@ -160,66 +154,27 @@ pub async fn accept_bytecode_assertion(
     skip_all,
     target = "assertion_submission::accept_solidity_assertion",
     level = "debug",
-    fields(request_id = %request_id, client_ip = %client_ip)
+    fields(request_id = %ctx.request_id, client_ip = %ctx.client_ip)
 )]
 pub async fn accept_solidity_assertion(
-    json_rpc: &Value,
-    db: &DbRequestSender,
-    signer: &PrivateKeySigner,
+    ctx: &SubmissionContext<'_>,
     docker: Arc<Docker>,
-    request_id: &Uuid,
-    json_rpc_id: &Value,
-    client_ip: &str,
 ) -> Result<String> {
-    let da_submission: DaSubmission = match serde_json::from_value(json_rpc["params"][0].clone()) {
+    let da_submission = match parse_da_submission(ctx) {
         Ok(da_submission) => da_submission,
-        Err(err) => {
-            warn!(target: "json_rpc", method = "da_submit_solidity_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, error = ?err, "Failed to parse DaSubmission payload");
-            return Ok(rpc_error_with_request_id(
-                json_rpc,
-                -32602,
-                format!("Invalid params: Failed to parse payload {err:?}").as_str(),
-                request_id,
-            ));
-        }
+        Err(err_response) => return Ok(err_response),
     };
 
     debug!(target: "json_rpc", compiler_version = da_submission.compiler_version, da_submission.solidity_source , "Compiling solidity source");
 
-    let bytecode = match compile_solidity(
-        da_submission.assertion_contract_name.as_str(),
-        da_submission.solidity_source.as_str(),
-        da_submission.compiler_version.as_str(),
-        docker,
-    )
-    .await
-    {
+    let bytecode = match compile_submission(&da_submission, docker, ctx).await {
         Ok(bytecode) => bytecode,
-        Err(err) => {
-            warn!(target: "json_rpc", method = "da_submit_solidity_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, error = ?err, compiler_version = da_submission.compiler_version, contract_name = da_submission.assertion_contract_name, "Solidity compilation failed");
-            return Ok(rpc_error_with_request_id(
-                json_rpc,
-                -32603,
-                &format!("Solidity Compilation Error: {err}"),
-                request_id,
-            ));
-        }
+        Err(err_response) => return Ok(err_response),
     };
 
-    let encoded_constructor_args = match encode_constructor_args(
-        &da_submission.constructor_abi_signature,
-        da_submission.constructor_args,
-    ) {
+    let encoded_constructor_args = match encode_submission_args(&da_submission, ctx) {
         Ok(encoded_args) => encoded_args,
-        Err(err) => {
-            warn!(target: "json_rpc", method = "da_submit_solidity_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, error = ?err, constructor_abi = da_submission.constructor_abi_signature, "Constructor args ABI encoding failed");
-            return Ok(rpc_error_with_request_id(
-                json_rpc,
-                -32603,
-                &format!("Constructor args ABI Encoding Error: {err}"),
-                request_id,
-            ));
-        }
+        Err(err_response) => return Ok(err_response),
     };
 
     let mut deployment_data = bytecode.clone();
@@ -227,17 +182,9 @@ pub async fn accept_solidity_assertion(
 
     // Hash to get ID
     let id = keccak256(&deployment_data);
-    let prover_signature = match signer.sign_hash(&id).await {
+    let prover_signature = match sign_assertion(&id, ctx).await {
         Ok(sig) => sig,
-        Err(err) => {
-            warn!(target: "json_rpc", method = "da_submit_solidity_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, error = ?err, "Failed to sign assertion");
-            return Ok(rpc_error_with_request_id(
-                json_rpc,
-                -32604,
-                "Internal Error: Failed to sign Assertion",
-                request_id,
-            ));
-        }
+        Err(err_response) => return Ok(err_response),
     };
     trace!(target: "json_rpc", ?id, ?prover_signature, bytecode_hex = ?deployment_data, "Compiled solidity source");
 
@@ -251,26 +198,83 @@ pub async fn accept_solidity_assertion(
         encoded_constructor_args,
     );
 
-    let res = process_add_assertion(
-        id,
-        stored_assertion,
-        db,
-        json_rpc,
-        *request_id,
-        client_ip,
-        json_rpc_id,
-    )
-    .await;
+    let res = process_add_assertion(id, stored_assertion, ctx).await;
 
     if let Ok(ref response) = res {
         if response.contains("\"error\"") {
-            warn!(target: "json_rpc", method = "da_submit_solidity_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, ?id, contract_name = da_submission.assertion_contract_name, compiler_version = da_submission.compiler_version, "Failed to process Solidity assertion");
+            warn!(target: "json_rpc", method = "da_submit_solidity_assertion", %ctx.request_id, %ctx.client_ip, json_rpc_id = %ctx.json_rpc_id, ?id, contract_name = da_submission.assertion_contract_name, compiler_version = da_submission.compiler_version, "Failed to process Solidity assertion");
         } else {
-            info!(target: "json_rpc", method = "da_submit_solidity_assertion", %request_id, %client_ip, json_rpc_id = %json_rpc_id, ?id, contract_name = da_submission.assertion_contract_name, compiler_version = da_submission.compiler_version, "Successfully compiled Solidity assertion");
+            info!(target: "json_rpc", method = "da_submit_solidity_assertion", %ctx.request_id, %ctx.client_ip, json_rpc_id = %ctx.json_rpc_id, ?id, contract_name = da_submission.assertion_contract_name, compiler_version = da_submission.compiler_version, "Successfully compiled Solidity assertion");
         }
     }
 
     res
+}
+
+fn parse_da_submission(ctx: &SubmissionContext<'_>) -> Result<DaSubmission, String> {
+    serde_json::from_value(ctx.json_rpc["params"][0].clone()).map_err(|err| {
+        warn!(target: "json_rpc", method = "da_submit_solidity_assertion", %ctx.request_id, %ctx.client_ip, json_rpc_id = %ctx.json_rpc_id, error = ?err, "Failed to parse DaSubmission payload");
+        rpc_error_with_request_id(
+            ctx.json_rpc,
+            -32602,
+            format!("Invalid params: Failed to parse payload {err:?}").as_str(),
+            ctx.request_id,
+        )
+    })
+}
+
+async fn compile_submission(
+    da_submission: &DaSubmission,
+    docker: Arc<Docker>,
+    ctx: &SubmissionContext<'_>,
+) -> Result<Vec<u8>, String> {
+    compile_solidity(
+        da_submission.assertion_contract_name.as_str(),
+        da_submission.solidity_source.as_str(),
+        da_submission.compiler_version.as_str(),
+        docker,
+    )
+    .await
+    .map_err(|err| {
+        warn!(target: "json_rpc", method = "da_submit_solidity_assertion", %ctx.request_id, %ctx.client_ip, json_rpc_id = %ctx.json_rpc_id, error = ?err, compiler_version = da_submission.compiler_version, contract_name = da_submission.assertion_contract_name, "Solidity compilation failed");
+        rpc_error_with_request_id(
+            ctx.json_rpc,
+            -32603,
+            &format!("Solidity Compilation Error: {err}"),
+            ctx.request_id,
+        )
+    })
+}
+
+fn encode_submission_args(
+    da_submission: &DaSubmission,
+    ctx: &SubmissionContext<'_>,
+) -> Result<Bytes, String> {
+    encode_constructor_args(
+        &da_submission.constructor_abi_signature,
+        da_submission.constructor_args.clone(),
+    )
+    .map_err(|err| {
+        warn!(target: "json_rpc", method = "da_submit_solidity_assertion", %ctx.request_id, %ctx.client_ip, json_rpc_id = %ctx.json_rpc_id, error = ?err, constructor_abi = da_submission.constructor_abi_signature, "Constructor args ABI encoding failed");
+        rpc_error_with_request_id(
+            ctx.json_rpc,
+            -32603,
+            &format!("Constructor args ABI Encoding Error: {err}"),
+            ctx.request_id,
+        )
+    })
+}
+
+async fn sign_assertion(id: &B256, ctx: &SubmissionContext<'_>) -> Result<Signature, String> {
+    ctx.signer.sign_hash(id).await.map_err(|err| {
+        warn!(target: "json_rpc", method = "da_submit_solidity_assertion", %ctx.request_id, %ctx.client_ip, json_rpc_id = %ctx.json_rpc_id, error = ?err, "Failed to sign assertion");
+        rpc_error_with_request_id(
+            ctx.json_rpc,
+            -32604,
+            "Internal Error: Failed to sign Assertion",
+            ctx.request_id,
+        )
+    })
 }
 
 /// Retrieves assertion from the database.
@@ -341,16 +345,12 @@ pub async fn retreive_assertion(
     skip_all,
     target = "assertion_submission::process_add_assertion",
     level = "debug",
-    fields(request_id = %request_id, client_ip = %client_ip, assertion_id = %id)
+    fields(request_id = %ctx.request_id, client_ip = %ctx.client_ip, assertion_id = %id)
 )]
 async fn process_add_assertion(
     id: B256,
     stored_assertion: StoredAssertion,
-    db: &DbRequestSender,
-    json_rpc: &Value,
-    request_id: Uuid,
-    client_ip: &str,
-    json_rpc_id: &Value,
+    ctx: &SubmissionContext<'_>,
 ) -> Result<String> {
     // Store in database
     let (tx, rx) = oneshot::channel();
@@ -358,12 +358,12 @@ async fn process_add_assertion(
     let ser_assertion = match bincode::serialize(&stored_assertion) {
         Ok(ser) => ser,
         Err(err) => {
-            error!(target: "json_rpc", %request_id, %client_ip, json_rpc_id = %json_rpc_id, error = ?err, "Failed to serialize assertion for database storage");
+            error!(target: "json_rpc", request_id = %ctx.request_id, client_ip = %ctx.client_ip, json_rpc_id = %ctx.json_rpc_id, error = ?err, "Failed to serialize assertion for database storage");
             return Ok(rpc_error_with_request_id(
-                json_rpc,
+                ctx.json_rpc,
                 -32603,
                 "Failed to deserialize assertion internally.",
-                &request_id,
+                ctx.request_id,
             ));
         }
     };
@@ -373,7 +373,7 @@ async fn process_add_assertion(
         response: tx,
     };
 
-    db.send(req)?;
+    ctx.db.send(req)?;
 
     let result = DaSubmissionResponse {
         id,
@@ -382,16 +382,16 @@ async fn process_add_assertion(
 
     match rx.await {
         Ok(_) => {
-            debug!(target: "json_rpc", %request_id, %client_ip, json_rpc_id = %json_rpc_id, ?id, "Successfully stored assertion in database");
-            Ok(rpc_response(json_rpc, result))
+            debug!(target: "json_rpc", request_id = %ctx.request_id, client_ip = %ctx.client_ip, json_rpc_id = %ctx.json_rpc_id, ?id, "Successfully stored assertion in database");
+            Ok(rpc_response(ctx.json_rpc, result))
         }
         Err(err) => {
-            error!(target: "json_rpc", %request_id, %client_ip, json_rpc_id = %json_rpc_id, error = ?err, "Database operation failed for assertion storage");
+            error!(target: "json_rpc", request_id = %ctx.request_id, client_ip = %ctx.client_ip, json_rpc_id = %ctx.json_rpc_id, error = ?err, "Database operation failed for assertion storage");
             Ok(rpc_error_with_request_id(
-                json_rpc,
+                ctx.json_rpc,
                 -32603,
                 "Failed to write to database. Please try again later.",
-                &request_id,
+                ctx.request_id,
             ))
         }
     }
