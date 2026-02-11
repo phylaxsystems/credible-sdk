@@ -16,10 +16,7 @@ use tokio::{
 use crate::{
     engine::queue::TxQueueContents,
     execution_ids::TxExecutionId,
-    metrics::{
-        TransportTransactionsResultMetrics,
-        set_transport_pending_receives_len_u64,
-    },
+    metrics::TransportTransactionsResultMetrics,
     transactions_state::{
         RequestTransactionResult,
         TransactionsState,
@@ -39,6 +36,7 @@ struct PendingReceive {
     sender: broadcast::Sender<bool>,
     created_at: Instant,
 }
+
 #[derive(Debug)]
 /// Represents the state of a transaction, we either have received a transaction
 /// in which case we return `Yes` or we haven't yet, in which case we return
@@ -96,7 +94,10 @@ impl QueryTransactionsResults {
         &self,
         tx_queue_contents: &TxQueueContents,
     ) -> QueryTransactionsResultsResult {
-        let TxQueueContents::Tx(tx, _) = tx_queue_contents else {
+        self.metrics
+            .set_transport_pending_receives_length(self.pending_receives.len());
+
+        let TxQueueContents::Tx(tx) = tx_queue_contents else {
             self.transactions_state.add_accepted_tx(tx_queue_contents);
             return Ok(());
         };
@@ -158,9 +159,6 @@ impl QueryTransactionsResults {
                     let age = sender.created_at.elapsed();
                     sender.sender.receiver_count() > 0 && age <= pending_receive_ttl
                 });
-                let len = pending_clone.len();
-                metrics.set_transport_pending_receives_length(len);
-                set_transport_pending_receives_len_u64(u64::try_from(len).unwrap_or(u64::MAX));
             }
         });
 
@@ -306,14 +304,11 @@ mod tests {
     }
 
     fn create_test_tx_queue_contents(tx_execution_id: TxExecutionId) -> TxQueueContents {
-        TxQueueContents::Tx(
-            QueueTransaction {
-                tx_execution_id,
-                tx_env: TxEnv::default(),
-                prev_tx_hash: None,
-            },
-            tracing::Span::current(),
-        )
+        TxQueueContents::Tx(QueueTransaction {
+            tx_execution_id,
+            tx_env: TxEnv::default(),
+            prev_tx_hash: None,
+        })
     }
 
     #[tokio::test]

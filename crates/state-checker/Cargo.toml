@@ -16,7 +16,7 @@ rayon = { workspace = true }
 revm = { workspace = true }
 rust-tracing = { workspace = true }
 tracing = { workspace = true }
-state-store = { path = "../state-store", features = ["writer"] }
+mdbx = { workspace = true, features = ["writer"] }
 rustls = { workspace = true }
 tokio = { workspace = true }
 hex = { workspace = true }

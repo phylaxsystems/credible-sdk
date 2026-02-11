@@ -26,8 +26,10 @@ impl MdbxTestDir {
         Ok(Self { path })
     }
 
-    pub fn path_str(&self) -> &str {
-        self.path.to_str().expect("Invalid UTF-8 in path")
+    pub fn path_str(&self) -> Result<&str, String> {
+        self.path
+            .to_str()
+            .ok_or_else(|| "Invalid UTF-8 in path".to_string())
     }
 }
 

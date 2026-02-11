@@ -7,12 +7,15 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+
+# internal 
+eip-system-calls.workspace = true
+
 anyhow = { workspace = true }
 async-trait.workspace = true
 clap = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
-redis = { workspace = true }
 alloy = { workspace = true }
 alloy-provider = { workspace = true }
 alloy-rpc-types-trace = { workspace = true }
@@ -23,15 +26,11 @@ rust-tracing = { workspace = true }
 rustls = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-state-store = { path = "../state-store", features = ["writer"] }
+mdbx = { workspace = true, features = ["writer"] }
 metrics = { workspace = true }
 
 [dev-dependencies]
 int-test-utils = { path = "../int-test-utils" }
 serde_json = { workspace = true }
 tracing-test = "0.2.5"
-testcontainers.workspace = true
-testcontainers-modules = { workspace = true, features = ["redis"] }
 uuid = "0.8.2"
-chrono = "0.4.42"
-state-worker-test-macros = { path = "src/integration_tests/macros" }

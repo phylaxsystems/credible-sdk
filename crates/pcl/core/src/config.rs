@@ -29,8 +29,10 @@ use std::{
     str::FromStr,
 };
 
-/// Directory name for storing PCL configuration
-pub const CONFIG_DIR: &str = ".pcl";
+/// Legacy directory name for storing PCL configuration (deprecated)
+const LEGACY_CONFIG_DIR: &str = ".pcl";
+/// Directory name for storing PCL configuration under XDG config home
+const CONFIG_DIR_NAME: &str = "pcl";
 /// Configuration file name
 pub const CONFIG_FILE: &str = "config.toml";
 
@@ -106,13 +108,52 @@ impl From<String> for AssertionKey {
             };
         }
 
-        let constructor_args = args.split(',').map(|arg| arg.trim().to_string()).collect();
+        let constructor_args = split_args_respecting_brackets(args);
 
         Self {
             assertion_name: cleaned_name,
             constructor_args,
         }
     }
+}
+
+/// Splits a string by commas, but respects square brackets `[]` so that
+/// commas inside arrays are not treated as separators.
+///
+/// # Arguments
+/// * `input` - The string to split (e.g., "arg1,[addr1,addr2],arg3")
+///
+/// # Returns
+/// A vector of trimmed argument strings
+fn split_args_respecting_brackets(input: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut bracket_depth: i32 = 0;
+
+    for ch in input.chars() {
+        match ch {
+            '[' => {
+                bracket_depth += 1;
+                current.push(ch);
+            }
+            ']' => {
+                if bracket_depth > 0 {
+                    bracket_depth -= 1;
+                }
+                current.push(ch);
+            }
+            ',' if bracket_depth == 0 => {
+                args.push(current.trim().to_string());
+                current.clear();
+            }
+            _ => current.push(ch),
+        }
+    }
+
+    // Always push the remaining content (handles trailing commas producing empty args)
+    args.push(current.trim().to_string());
+
+    args
 }
 impl FromStr for AssertionKey {
     type Err = String;
@@ -304,7 +345,23 @@ impl CliConfig {
         Ok(())
     }
 
+    /// Gets the legacy configuration directory path (~/.pcl)
+    ///
+    /// # Returns
+    /// * `PathBuf` - Path to the legacy config directory
+    ///
+    /// # Panics
+    ///
+    /// Will panic if it does not find the home directory
+    fn get_legacy_config_dir() -> PathBuf {
+        home_dir().unwrap().join(LEGACY_CONFIG_DIR)
+    }
+
     /// Gets the default configuration directory path
+    ///
+    /// Uses XDG Base Directory Specification:
+    /// - `$XDG_CONFIG_HOME/pcl` if `XDG_CONFIG_HOME` is set
+    /// - `~/.config/pcl` otherwise
     ///
     /// # Returns
     /// * `PathBuf` - Path to the config directory
@@ -313,7 +370,43 @@ impl CliConfig {
     ///
     /// Will panic if it does not find the home directory
     pub fn get_config_dir() -> PathBuf {
-        home_dir().unwrap().join(CONFIG_DIR)
+        std::env::var("XDG_CONFIG_HOME")
+            .map_or_else(|_| home_dir().unwrap().join(".config"), PathBuf::from)
+            .join(CONFIG_DIR_NAME)
+    }
+
+    /// Migrates configuration from the legacy location (`~/.pcl`) to the new
+    /// XDG-compliant location (`~/.config/pcl` or `$XDG_CONFIG_HOME/pcl`)
+    ///
+    /// Migration only occurs if:
+    /// - The legacy directory exists
+    /// - The new directory does not exist
+    ///
+    /// # Returns
+    /// * `Ok(true)` - Migration was performed
+    /// * `Ok(false)` - No migration needed
+    /// * `Err(ConfigError)` - Migration failed
+    pub fn migrate_legacy_config() -> Result<bool, ConfigError> {
+        let legacy_dir = Self::get_legacy_config_dir();
+        let new_dir = Self::get_config_dir();
+
+        // Only migrate if legacy exists and new doesn't
+        if legacy_dir.exists() && !new_dir.exists() {
+            // Create parent dirs if needed
+            if let Some(parent) = new_dir.parent() {
+                std::fs::create_dir_all(parent).map_err(ConfigError::WriteError)?;
+            }
+            // Move the directory
+            std::fs::rename(&legacy_dir, &new_dir).map_err(ConfigError::WriteError)?;
+            eprintln!(
+                "{}: Migrated PCL config from {} to {}",
+                "Warning".yellow().bold(),
+                legacy_dir.display(),
+                new_dir.display()
+            );
+            return Ok(true);
+        }
+        Ok(false)
     }
 
     /// Reads configuration from a specific directory
@@ -355,12 +448,22 @@ impl CliConfig {
 
     /// Reads configuration from the default config file, or a specific directory
     ///
+    /// If using the default config directory, this will first attempt to migrate
+    /// any existing configuration from the legacy location (~/.pcl) to the new
+    /// XDG-compliant location.
+    ///
     /// # Arguments
     /// * `cli_args` - Command line arguments
     ///
     /// # Returns
     /// * `Result<Self, ConfigError>` - Configuration or error
     pub fn read_from_file(cli_args: &CliArgs) -> Result<Self, ConfigError> {
+        // Only attempt migration when using default config dir
+        if cli_args.config_dir.is_none() {
+            // Attempt migration from legacy location (errors are non-fatal)
+            let _ = Self::migrate_legacy_config();
+        }
+
         Self::read_from_file_at_dir(
             &cli_args
                 .config_dir
@@ -488,8 +591,13 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         unsafe {
             env::set_var("HOME", temp_dir.path());
+            // Clear XDG_CONFIG_HOME to ensure we use ~/.config
+            env::remove_var("XDG_CONFIG_HOME");
         }
-        (temp_dir.path().join(CONFIG_DIR), temp_dir)
+        (
+            temp_dir.path().join(".config").join(CONFIG_DIR_NAME),
+            temp_dir,
+        )
     }
 
     /// Helper function to create a read-only directory
@@ -568,7 +676,7 @@ mod tests {
         // Check that all the important information is present
         assert!(formatted_cfg.contains("PCL Configuration"));
         assert!(formatted_cfg.contains("Config path:"));
-        assert!(formatted_cfg.contains(".pcl/config.toml"));
+        assert!(formatted_cfg.contains("pcl/config.toml"));
         assert!(formatted_cfg.contains("User Address: 0x0000000000000000000000000000000000000000"));
         assert!(formatted_cfg.contains("2022-12-31 16:00:00 UTC"));
         assert!(formatted_cfg.contains("Access Token: [Set]"));
@@ -882,5 +990,84 @@ mod tests {
         assert_eq!(assertion_key.assertion_name, "assertion_name");
         assert_eq!(assertion_key.constructor_args, <Vec<String>>::new());
         assert_eq!(assertion_key.to_string(), assertion_key_str);
+    }
+
+    #[test]
+    fn test_assertion_key_from_string_with_array_arg() {
+        // Single array argument
+        let assertion_key_str = "assertion_name([addr1,addr2])".to_string();
+        let assertion_key = AssertionKey::from(assertion_key_str);
+
+        assert_eq!(assertion_key.assertion_name, "assertion_name");
+        assert_eq!(assertion_key.constructor_args, vec!["[addr1,addr2]"]);
+    }
+
+    #[test]
+    fn test_assertion_key_from_string_with_array_and_other_args() {
+        // Array with other arguments
+        let assertion_key_str = "assertion_name(arg1,[addr1,addr2],arg3)".to_string();
+        let assertion_key = AssertionKey::from(assertion_key_str);
+
+        assert_eq!(assertion_key.assertion_name, "assertion_name");
+        assert_eq!(
+            assertion_key.constructor_args,
+            vec!["arg1", "[addr1,addr2]", "arg3"]
+        );
+    }
+
+    #[test]
+    fn test_assertion_key_from_string_with_multiple_arrays() {
+        // Multiple array arguments
+        let assertion_key_str = "assertion_name([a,b],[c,d])".to_string();
+        let assertion_key = AssertionKey::from(assertion_key_str);
+
+        assert_eq!(assertion_key.assertion_name, "assertion_name");
+        assert_eq!(assertion_key.constructor_args, vec!["[a,b]", "[c,d]"]);
+    }
+
+    #[test]
+    fn test_assertion_key_from_string_with_ethereum_addresses_array() {
+        // Array of Ethereum addresses (realistic use case)
+        let assertion_key_str =
+            "TokenAssertion([0x1234567890123456789012345678901234567890,0xabcdefabcdefabcdefabcdefabcdefabcdefabcd])"
+                .to_string();
+        let assertion_key = AssertionKey::from(assertion_key_str);
+
+        assert_eq!(assertion_key.assertion_name, "TokenAssertion");
+        assert_eq!(
+            assertion_key.constructor_args,
+            vec![
+                "[0x1234567890123456789012345678901234567890,0xabcdefabcdefabcdefabcdefabcdefabcdefabcd]"
+            ]
+        );
+    }
+
+    #[test]
+    fn test_assertion_key_from_string_with_uint_array() {
+        // Array of uints (like in Solidity: [uint(1), 2, 3])
+        let assertion_key_str = "NumberAssertion([1,2,3])".to_string();
+        let assertion_key = AssertionKey::from(assertion_key_str);
+
+        assert_eq!(assertion_key.assertion_name, "NumberAssertion");
+        assert_eq!(assertion_key.constructor_args, vec!["[1,2,3]"]);
+    }
+
+    #[test]
+    fn test_assertion_key_roundtrip_with_array() {
+        // Test that Display and From are consistent for arrays
+        let original = AssertionKey::new(
+            "TestAssertion".to_string(),
+            vec![
+                "arg1".to_string(),
+                "[addr1,addr2]".to_string(),
+                "arg3".to_string(),
+            ],
+        );
+        let displayed = original.to_string();
+        let parsed = AssertionKey::from(displayed.clone());
+
+        assert_eq!(original.assertion_name, parsed.assertion_name);
+        assert_eq!(original.constructor_args, parsed.constructor_args);
+        assert_eq!(displayed, "TestAssertion(arg1,[addr1,addr2],arg3)");
     }
 }

@@ -107,28 +107,28 @@ impl ReorgRequest {
 /// process it as a valid event if it matches.
 #[derive(Debug, Clone)]
 pub enum TxQueueContents {
-    Tx(QueueTransaction, tracing::Span),
-    Reorg(ReorgRequest, tracing::Span),
-    CommitHead(CommitHead, tracing::Span),
-    NewIteration(NewIteration, tracing::Span),
+    Tx(QueueTransaction),
+    Reorg(ReorgRequest),
+    CommitHead(CommitHead),
+    NewIteration(NewIteration),
 }
 
 impl TxQueueContents {
     pub fn block_number(&self) -> U256 {
         match self {
-            TxQueueContents::Tx(v, _) => v.tx_execution_id.block_number,
-            TxQueueContents::Reorg(v, _) => v.tx_execution_id.block_number,
-            TxQueueContents::CommitHead(v, _) => v.block_number,
-            TxQueueContents::NewIteration(v, _) => v.block_env.number,
+            TxQueueContents::Tx(v) => v.tx_execution_id.block_number,
+            TxQueueContents::Reorg(v) => v.tx_execution_id.block_number,
+            TxQueueContents::CommitHead(v) => v.block_number,
+            TxQueueContents::NewIteration(v) => v.block_env.number,
         }
     }
 
     pub fn iteration_id(&self) -> u64 {
         match self {
-            TxQueueContents::Tx(v, _) => v.tx_execution_id.iteration_id,
-            TxQueueContents::Reorg(v, _) => v.tx_execution_id.iteration_id,
-            TxQueueContents::CommitHead(v, _) => v.selected_iteration_id,
-            TxQueueContents::NewIteration(v, _) => v.iteration_id,
+            TxQueueContents::Tx(v) => v.tx_execution_id.iteration_id,
+            TxQueueContents::Reorg(v) => v.tx_execution_id.iteration_id,
+            TxQueueContents::CommitHead(v) => v.selected_iteration_id,
+            TxQueueContents::NewIteration(v) => v.iteration_id,
         }
     }
 }
@@ -148,9 +148,9 @@ pub struct CommitHead {
     pub(crate) last_tx_hash: Option<TxHash>,
     /// Number of txs included in the block.
     pub(crate) n_transactions: u64,
-    /// Block hash for EIP-2935 (Prague+)
-    /// Required for historical block hash storage
-    pub(crate) block_hash: Option<B256>,
+    /// Current block hash for BLOCKHASH opcode cache
+    /// EIP-2935 system call uses parent hash from `NewIteration`
+    pub(crate) block_hash: B256,
     /// Parent beacon block root for EIP-4788 (Cancun+)
     /// Required for beacon chain root storage
     pub(crate) parent_beacon_block_root: Option<B256>,
@@ -165,7 +165,7 @@ impl CommitHead {
         selected_iteration_id: u64,
         last_tx_hash: Option<TxHash>,
         n_transactions: u64,
-        block_hash: Option<B256>,
+        block_hash: B256,
         parent_beacon_block_root: Option<B256>,
         timestamp: U256,
     ) -> Self {
@@ -186,19 +186,34 @@ impl CommitHead {
     }
 }
 
-/// Creates a new iteration with a specific block env
+/// Creates a new iteration with a specific block env.
+///
+/// Contains all data needed to apply system calls - EIP-4788, EIP-2935
+/// It should be applied before the transaction execution
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct NewIteration {
     pub(crate) iteration_id: u64,
     pub(crate) block_env: BlockEnv,
+    /// Parent block hash for EIP-2935, stored at current block's slot.
+    pub(crate) parent_block_hash: Option<B256>,
+    /// Parent beacon block root for EIP-4788.
+    pub(crate) parent_beacon_block_root: Option<B256>,
 }
 
 impl NewIteration {
-    /// Construct a new iteration event.
-    pub fn new(iteration_id: u64, block_env: BlockEnv) -> Self {
+    /// Construct a new iteration event with all system call data.
+    pub fn new(
+        iteration_id: u64,
+        block_env: BlockEnv,
+        parent_block_hash: Option<B256>,
+        parent_beacon_block_root: Option<B256>,
+    ) -> Self {
         Self {
             iteration_id,
             block_env,
+            parent_block_hash,
+            parent_beacon_block_root,
         }
     }
 }

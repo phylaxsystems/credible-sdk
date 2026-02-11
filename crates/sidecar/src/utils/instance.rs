@@ -14,6 +14,7 @@
 //! - Create and send arbitrary transaction events over the transports,
 //! - Contains helper functions to validate transaction inclusion and assertion execution.
 
+use super::local_instance_db::LocalInstanceDb;
 use crate::{
     cache::{
         Sources,
@@ -62,9 +63,11 @@ use assertion_executor::{
         counter_call,
     },
 };
+use async_trait::async_trait;
 use int_test_utils::node_protocol_mock_server::DualProtocolMockServer;
 use rand::Rng;
 use revm::{
+    DatabaseRef,
     context::{
         transaction::AccessListItem,
         tx::TxEnvBuilder,
@@ -131,7 +134,7 @@ impl EngineThreadHandle {
     }
 }
 
-#[allow(async_fn_in_trait)]
+#[async_trait]
 pub trait TestTransport: Sized {
     /// Creates a `LocalInstance` with a specific transport
     async fn new() -> Result<LocalInstance<Self>, String>;
@@ -184,8 +187,17 @@ pub trait TestTransport: Sized {
     /// Set the number of transactions to be sent in the next blockEnv
     fn set_n_transactions(&mut self, n_transactions: u64);
 
-    /// Set the last tx hash to be sent in the next blockEnv
+    /// Set the last tx hash to be sent in the next `CommitHead`.
+    ///
+    /// This is used to intentionally create invalid `CommitHead` events in tests
+    /// (e.g. "wrong last tx hash" scenarios).
     fn set_last_tx_hash(&mut self, tx_hash: Option<TxHash>);
+
+    /// Override the `prev_tx_hash` used for the next transaction sent via `send_transaction`.
+    ///
+    /// Test drivers treat this as a one-shot override to model broken or non-linear chains
+    /// without affecting `CommitHead` construction.
+    fn set_prev_tx_hash(&mut self, tx_hash: Option<TxHash>);
 
     /// Get the last transaction hash for a given iteration
     fn get_last_tx_hash(&self, iteration_id: u64) -> Option<TxHash>;
@@ -209,7 +221,7 @@ pub trait TestTransport: Sized {
 /// manually sending/verifying because of this.
 pub struct LocalInstance<T: TestTransport> {
     /// The underlying database
-    db: Arc<CacheDB<Arc<Sources>>>,
+    db: Arc<LocalInstanceDb<CacheDB<Arc<Sources>>>>,
     /// Underlying cache
     sources: Arc<Sources>,
     /// List of cache sources
@@ -234,7 +246,7 @@ pub struct LocalInstance<T: TestTransport> {
     iteration_nonce: HashMap<(Address, u64), u64>,
     /// Container type that holds the transport and impls `TestTransport`
     pub transport: T,
-    /// Local address for the HTTP transport
+    /// Local address for the transport
     pub local_address: Option<SocketAddr>,
     /// Current iteration ID to be set in the transactions and `blockEnv`
     pub iteration_id: u64,
@@ -244,12 +256,31 @@ pub struct LocalInstance<T: TestTransport> {
     active_iterations: HashSet<u64>,
     /// Tracks the next committed nonce per address after the latest finalized block
     committed_nonce: HashMap<Address, u64>,
+    /// Optional per-block timestamp overrides for tests
+    block_timestamps: HashMap<u64, U256>,
+}
+
+pub(crate) struct LocalInstanceInit<T: TestTransport> {
+    pub db: Arc<LocalInstanceDb<CacheDB<Arc<Sources>>>>,
+    pub sources: Arc<Sources>,
+    pub eth_rpc_source_http_mock: DualProtocolMockServer,
+    pub fallback_eth_rpc_source_http_mock: DualProtocolMockServer,
+    pub assertion_store: Arc<AssertionStore>,
+    pub transport_handle: Option<JoinHandle<()>>,
+    pub engine_handle: Option<EngineThreadHandle>,
+    pub block_number: U256,
+    pub transaction_results: Arc<crate::TransactionsState>,
+    pub default_account: Address,
+    pub local_address: Option<SocketAddr>,
+    pub list_of_sources: Vec<Arc<dyn Source>>,
+    pub transport: T,
 }
 
 impl<T: TestTransport> LocalInstance<T> {
     const TRANSACTION_RESULT_TIMEOUT: Duration = Duration::from_millis(250);
     const CONDITION_TIMEOUT: Duration = Duration::from_secs(10);
     const CONDITION_POLL_INTERVAL: Duration = Duration::from_millis(20);
+    const BASE_BLOCK_TIMESTAMP: u64 = 1_234_567_890;
 
     /// Create a new local instance with mock transport
     pub async fn new() -> Result<LocalInstance<T>, String> {
@@ -257,47 +288,39 @@ impl<T: TestTransport> LocalInstance<T> {
     }
 
     /// Internal constructor for creating `LocalInstance` with all fields
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn new_internal(
-        db: Arc<CacheDB<Arc<Sources>>>,
-        sources: Arc<Sources>,
-        eth_rpc_source_http_mock: DualProtocolMockServer,
-        fallback_eth_rpc_source_http_mock: DualProtocolMockServer,
-        assertion_store: Arc<AssertionStore>,
-        transport_handle: Option<JoinHandle<()>>,
-        engine_handle: Option<EngineThreadHandle>,
-        block_number: U256,
-        transaction_results: Arc<crate::TransactionsState>,
-        default_account: Address,
-        local_address: Option<&SocketAddr>,
-        list_of_sources: Vec<Arc<dyn Source>>,
-        transport: T,
-    ) -> Self {
+    pub(crate) fn new_internal(init: LocalInstanceInit<T>) -> Self {
         Self {
-            db,
-            sources,
-            eth_rpc_source_http_mock,
-            fallback_eth_rpc_source_http_mock,
-            assertion_store,
-            transport_handle,
-            engine_handle,
-            block_number,
-            transaction_results,
-            default_account,
+            db: init.db,
+            sources: init.sources,
+            eth_rpc_source_http_mock: init.eth_rpc_source_http_mock,
+            fallback_eth_rpc_source_http_mock: init.fallback_eth_rpc_source_http_mock,
+            assertion_store: init.assertion_store,
+            transport_handle: init.transport_handle,
+            engine_handle: init.engine_handle,
+            block_number: init.block_number,
+            transaction_results: init.transaction_results,
+            default_account: init.default_account,
             iteration_nonce: HashMap::new(),
-            transport,
-            list_of_sources,
-            local_address: local_address.copied(),
+            transport: init.transport,
+            list_of_sources: init.list_of_sources,
+            local_address: init.local_address,
             iteration_id: 1,
             iteration_tx_map: HashMap::new(),
             active_iterations: HashSet::new(),
             committed_nonce: HashMap::new(),
+            block_timestamps: HashMap::new(),
         }
     }
 
     /// Sets the current iteration ID
     pub fn set_current_iteration_id(&mut self, iteration_id: u64) {
         self.iteration_id = iteration_id;
+    }
+
+    /// Override the timestamp used for a given block number.
+    pub fn set_block_timestamp(&mut self, block_number: U256, timestamp: U256) {
+        let block_number: u64 = block_number.saturating_to::<u64>();
+        self.block_timestamps.insert(block_number, timestamp);
     }
 
     /// Send a block with multiple transactions
@@ -325,7 +348,7 @@ impl<T: TestTransport> LocalInstance<T> {
     }
 
     /// Get a reference to the underlying database
-    pub fn db(&self) -> &Arc<CacheDB<Arc<Sources>>> {
+    pub fn db(&self) -> &Arc<LocalInstanceDb<CacheDB<Arc<Sources>>>> {
         &self.db
     }
 
@@ -378,6 +401,48 @@ impl<T: TestTransport> LocalInstance<T> {
     pub fn clear_nonce(&mut self) {
         self.iteration_nonce.clear();
         self.committed_nonce.clear();
+    }
+
+    fn resync_nonces_from_canonical_state(&mut self) -> Result<(), String> {
+        let mut addresses = HashSet::new();
+        addresses.insert(self.default_account);
+
+        for address in self.committed_nonce.keys() {
+            addresses.insert(*address);
+        }
+        for (address, _iteration_id) in self.iteration_nonce.keys() {
+            addresses.insert(*address);
+        }
+
+        // Pending state is invalid after a cache flush.
+        self.iteration_nonce.clear();
+        self.committed_nonce.clear();
+
+        for address in addresses {
+            let nonce = self
+                .db
+                .with_read(|db| db.basic_ref(address))
+                .map_err(|e| format!("Failed to read account nonce for {address}: {e:?}"))?
+                .map_or(0, |info| info.nonce);
+            self.committed_nonce.insert(address, nonce);
+        }
+
+        Ok(())
+    }
+
+    async fn wait_for_engine_head(&self, block_number: U256) -> Result<(), String> {
+        let start = Instant::now();
+        loop {
+            if self.sources.get_latest_head() >= block_number {
+                return Ok(());
+            }
+            if start.elapsed() > Self::CONDITION_TIMEOUT {
+                return Err(format!(
+                    "timed out waiting for engine to commit block {block_number}"
+                ));
+            }
+            tokio::time::sleep(Self::CONDITION_POLL_INTERVAL).await;
+        }
     }
 
     /// Wait for a short time to allow transaction processing
@@ -495,7 +560,7 @@ impl<T: TestTransport> LocalInstance<T> {
         let nonce = self.next_nonce(caller, block_execution_id);
         TxEnvBuilder::new()
             .caller(caller)
-            .gas_limit(100_000)
+            .gas_limit(5_000_000)
             .gas_price(0)
             .kind(TxKind::Create)
             .value(value)
@@ -523,23 +588,20 @@ impl<T: TestTransport> LocalInstance<T> {
 
     /// Prefund accounts with ETH for testing
     pub fn fund_accounts(&mut self, accounts: &[(Address, U256)]) -> Result<(), String> {
-        let db = Arc::get_mut(&mut self.db)
-            .ok_or_else(|| "Cannot get mutable reference to database".to_string())?;
-
-        for (address, balance) in accounts {
-            let account_info = AccountInfo {
-                balance: *balance,
-                ..Default::default()
-            };
-            db.insert_account_info(*address, account_info);
-        }
+        self.db.with_write(|db| {
+            for (address, balance) in accounts {
+                let account_info = AccountInfo {
+                    balance: *balance,
+                    ..Default::default()
+                };
+                db.insert_account_info(*address, account_info);
+            }
+        });
 
         Ok(())
     }
 
     /// Execute an async action and assert it results in a cache flush.
-    // TODO: because we do not commit state to underlying sources properly we lose all state
-    // made during tests when we flush, thus we have to set the nonce to 0
     pub async fn expect_cache_flush<F>(&mut self, action: F) -> Result<(), String>
     where
         for<'a> F: FnOnce(&'a mut Self) -> Pin<Box<dyn Future<Output = Result<(), String>> + 'a>>,
@@ -559,7 +621,7 @@ impl<T: TestTransport> LocalInstance<T> {
             }
             tokio::time::sleep(Self::CONDITION_POLL_INTERVAL).await;
         }
-        self.clear_nonce();
+        self.resync_nonces_from_canonical_state()?;
 
         Ok(())
     }
@@ -568,7 +630,7 @@ impl<T: TestTransport> LocalInstance<T> {
     async fn send_block(&mut self, block_number: U256, send_rpc_node: bool) -> Result<(), String> {
         // Always provide parent hashes for EIP-2935 and EIP-4788 system calls
         // These are required when running on Cancun+ specs
-        let block_hash = Some(Self::generate_random_tx_hash());
+        let block_hash = Self::generate_random_tx_hash();
         let beacon_block_root = if block_number == U256::ZERO {
             Some(B256::ZERO)
         } else {
@@ -587,7 +649,7 @@ impl<T: TestTransport> LocalInstance<T> {
     async fn send_block_with_hashes_internal(
         &mut self,
         block_number: U256,
-        block_hash: Option<B256>,
+        block_hash: B256,
         beacon_block_root: Option<B256>,
         send_rpc_node: bool,
     ) -> Result<(), String> {
@@ -601,7 +663,7 @@ impl<T: TestTransport> LocalInstance<T> {
             n_transactions,
             block_hash,
             beacon_block_root,
-            U256::from(1234567890),
+            self.block_timestamp(block_number),
         );
 
         if send_rpc_node {
@@ -610,6 +672,7 @@ impl<T: TestTransport> LocalInstance<T> {
         }
 
         self.transport.send_commit_head(commit_head).await?;
+        self.wait_for_engine_head(block_number).await?;
 
         // Update committed nonce snapshot using the iteration we just finalized.
         let selected_iteration_id = self.iteration_id;
@@ -623,7 +686,7 @@ impl<T: TestTransport> LocalInstance<T> {
         self.active_iterations.clear();
 
         let next_block_number = block_number + U256::from(1);
-        let block_env = Self::default_block_env(next_block_number);
+        let block_env = self.default_block_env(next_block_number);
         self.transport
             .new_iteration(self.iteration_id, block_env)
             .await?;
@@ -637,11 +700,9 @@ impl<T: TestTransport> LocalInstance<T> {
     /// Public method to create a new block with explicit parent hashes (EIP-2935 and EIP-4788)
     pub async fn new_block_with_hashes(
         &mut self,
-        block_hash: Option<B256>,
+        block_hash: B256,
         beacon_block_root: Option<B256>,
     ) -> Result<(), String> {
-        // If None provided, use random hashes as defaults for Cancun+ compatibility
-        let block_hash = block_hash.or_else(|| Some(Self::generate_random_tx_hash()));
         let beacon_block_root = beacon_block_root.or_else(|| Some(Self::generate_random_tx_hash()));
 
         self.send_block_with_hashes_internal(
@@ -708,7 +769,7 @@ impl<T: TestTransport> LocalInstance<T> {
         }
 
         let current_block_number = self.block_number;
-        let block_env = Self::default_block_env(current_block_number);
+        let block_env = self.default_block_env(current_block_number);
 
         self.transport
             .new_iteration(iteration_id, block_env)
@@ -736,7 +797,7 @@ impl<T: TestTransport> LocalInstance<T> {
         // Create transaction
         let tx_env = TxEnvBuilder::new()
             .caller(caller)
-            .gas_limit(100_000)
+            .gas_limit(5_000_000)
             .gas_price(0)
             .kind(TxKind::Create)
             .value(value)
@@ -969,14 +1030,24 @@ impl<T: TestTransport> LocalInstance<T> {
     /// # Panics
     ///
     /// Panics if the transaction builder fails to build any of the test transactions.
-    #[allow(clippy::too_many_lines)]
     pub async fn send_all_tx_types(&mut self) -> Result<(), String> {
-        // legacy tx
+        self.send_legacy_tx().await?;
+        self.send_eip2930_tx().await?;
+        self.send_eip1559_tx().await?;
+        self.send_eip4844_tx().await?;
+        self.send_eip7702_tx().await?;
+        Ok(())
+    }
+
+    async fn send_legacy_tx(&mut self) -> Result<(), String> {
         let legacy_tx = self
             .send_successful_create_tx(U256::default(), Bytes::default())
             .await?;
         let _ = self.wait_for_transaction_processed(&legacy_tx).await?;
+        Ok(())
+    }
 
+    async fn send_eip2930_tx(&mut self) -> Result<(), String> {
         // type 1, eip-2930 optional access lists
         // verify that we spend less gas on storage reads
         // interact with the pre-loaded counter contract so the access list actually matters
@@ -988,7 +1059,6 @@ impl<T: TestTransport> LocalInstance<T> {
 
         // Send transaction
         let tx_execution_id = self.build_tx_id(tx_hash);
-
         let nonce = self.next_nonce(
             self.default_account,
             tx_execution_id.as_block_execution_id(),
@@ -1015,7 +1085,7 @@ impl<T: TestTransport> LocalInstance<T> {
             .tx_type(Some(1))
             .build()
             .map_err(|e| format!("Failed to build TxEnv: {e:?}"))?;
-        let tx_id_eip2930 = tx_execution_id;
+        let tx_id = tx_execution_id;
         self.transport
             .send_transaction(tx_execution_id, tx_env)
             .await?;
@@ -1023,9 +1093,11 @@ impl<T: TestTransport> LocalInstance<T> {
             .entry(self.iteration_id)
             .and_modify(|x| *x += 1)
             .or_insert(1);
-        let _ = self.wait_for_transaction_processed(&tx_id_eip2930).await?;
+        let _ = self.wait_for_transaction_processed(&tx_id).await?;
+        Ok(())
+    }
 
-        // type2, eip-1559
+    async fn send_eip1559_tx(&mut self) -> Result<(), String> {
         // verify we correctly decrement gas for the account sending the tx
         // according to eip-1559 rules
         // TODO: send blockenv with base fee of 2 and verify we include the
@@ -1033,12 +1105,10 @@ impl<T: TestTransport> LocalInstance<T> {
         self.send_block(self.block_number, true).await?;
         self.block_number += U256::from(1);
 
-        // Generate transaction hash
         let tx_hash = Self::generate_random_tx_hash();
 
         // Send transaction
         let tx_execution_id = self.build_tx_id(tx_hash);
-
         let nonce = self.next_nonce(
             self.default_account,
             tx_execution_id.as_block_execution_id(),
@@ -1059,7 +1129,7 @@ impl<T: TestTransport> LocalInstance<T> {
             .build()
             .map_err(|e| format!("Failed to build TxEnv: {e:?}"))?;
 
-        let tx_id_eip1559 = tx_execution_id;
+        let tx_id = tx_execution_id;
         self.transport
             .send_transaction(tx_execution_id, tx_env)
             .await?;
@@ -1067,15 +1137,16 @@ impl<T: TestTransport> LocalInstance<T> {
             .entry(self.iteration_id)
             .and_modify(|x| *x += 1)
             .or_insert(1);
-        let _ = self.wait_for_transaction_processed(&tx_id_eip1559).await?;
+        let _ = self.wait_for_transaction_processed(&tx_id).await?;
+        Ok(())
+    }
 
-        // type3, eip-4844
+    async fn send_eip4844_tx(&mut self) -> Result<(), String> {
         self.send_block(self.block_number, true).await?;
         self.block_number += U256::from(1);
 
         let tx_hash = Self::generate_random_tx_hash();
         let tx_execution_id = self.build_tx_id(tx_hash);
-
         let nonce = self.next_nonce(
             self.default_account,
             tx_execution_id.as_block_execution_id(),
@@ -1099,7 +1170,7 @@ impl<T: TestTransport> LocalInstance<T> {
             .build()
             .unwrap();
         // FIXME: Propagate correctly the prev tx hash
-        let tx_id_eip4844 = tx_execution_id;
+        let tx_id = tx_execution_id;
         self.transport
             .send_transaction(tx_execution_id, tx_env)
             .await?;
@@ -1107,9 +1178,11 @@ impl<T: TestTransport> LocalInstance<T> {
             .entry(self.iteration_id)
             .and_modify(|x| *x += 1)
             .or_insert(1);
-        let _ = self.wait_for_transaction_processed(&tx_id_eip4844).await?;
+        let _ = self.wait_for_transaction_processed(&tx_id).await?;
+        Ok(())
+    }
 
-        // type4, eip-7702
+    async fn send_eip7702_tx(&mut self) -> Result<(), String> {
         // Authorization list present, should derive EIP-7702
         // TODO: check if the account has code
         self.send_block(self.block_number, true).await?;
@@ -1151,7 +1224,6 @@ impl<T: TestTransport> LocalInstance<T> {
         let _ = self
             .wait_for_transaction_processed(&tx_execution_id)
             .await?;
-
         Ok(())
     }
 
@@ -1244,10 +1316,11 @@ impl<T: TestTransport> LocalInstance<T> {
                 return Err("engine handle missing while checking transaction removal".to_string());
             }
 
-            #[allow(clippy::unnested_or_patterns)]
             let rax = match self.wait_for_transaction_result(tx_execution_id).await {
-                Ok(TransactionResult::ValidationCompleted { .. })
-                | Ok(TransactionResult::ValidationError(_)) => continue,
+                Ok(
+                    TransactionResult::ValidationCompleted { .. }
+                    | TransactionResult::ValidationError(_),
+                ) => continue,
                 Err(e) => Err(e),
             };
 
@@ -1430,9 +1503,18 @@ impl<T: TestTransport> LocalInstance<T> {
         Ok(())
     }
 
-    fn default_block_env(block_number: U256) -> BlockEnv {
+    fn block_timestamp(&self, block_number: U256) -> U256 {
+        let block_number: u64 = block_number.saturating_to::<u64>();
+        self.block_timestamps
+            .get(&block_number)
+            .copied()
+            .unwrap_or_else(|| U256::from(Self::BASE_BLOCK_TIMESTAMP + block_number))
+    }
+
+    fn default_block_env(&self, block_number: U256) -> BlockEnv {
         BlockEnv {
             number: block_number,
+            timestamp: self.block_timestamp(block_number),
             gas_limit: 50_000_000,
             blob_excess_gas_and_price: Some(BlobExcessGasAndPrice {
                 excess_blob_gas: 0,
@@ -1440,6 +1522,19 @@ impl<T: TestTransport> LocalInstance<T> {
             }),
             ..BlockEnv::default()
         }
+    }
+
+    /// # Panics
+    /// Panics if waiting for the transaction exceeds the 8-second timeout, or
+    /// if the underlying wait returns an error.
+    pub async fn wait_for_processed(&self, tx_execution_id: &TxExecutionId) {
+        tokio::time::timeout(
+            Duration::from_secs(8),
+            self.wait_for_transaction_processed(tx_execution_id),
+        )
+        .await
+        .expect("timeout waiting for tx")
+        .expect("wait for tx");
     }
 }
 

@@ -300,7 +300,6 @@ fn build_previous_transactions_payload(
         .collect()
 }
 
-#[allow(clippy::too_many_lines)]
 fn build_transaction_data_payload(
     transaction: &ReconstructableTx,
 ) -> Result<TransactionDataPayload, TransactionObserverError> {
@@ -311,104 +310,11 @@ fn build_transaction_data_payload(
         .map(|chain_id| chain_id.to_string());
     let common_fields = build_common_transaction_fields(tx_hash.as_slice(), tx_env, chain_id);
     match tx_env.tx_type {
-        0 => {
-            Ok(TransactionDataPayload::Legacy(
-                TransactionDataLegacyPayload {
-                    chain_id: common_fields.chain_id,
-                    data: common_fields.data,
-                    from_address: common_fields.from_address,
-                    gas_limit: common_fields.gas_limit,
-                    gas_price: tx_env.gas_price.to_string(),
-                    nonce: common_fields.nonce,
-                    to_address: common_fields.to_address,
-                    transaction_hash: common_fields.transaction_hash,
-                    tx_type: common_fields.tx_type,
-                    value: common_fields.value,
-                },
-            ))
-        }
-        1 => {
-            Ok(TransactionDataPayload::AccessList(
-                TransactionDataAccessListPayload {
-                    access_list: access_list_payload(&tx_env.access_list),
-                    chain_id: common_fields.chain_id,
-                    data: common_fields.data,
-                    from_address: common_fields.from_address,
-                    gas_limit: common_fields.gas_limit,
-                    gas_price: tx_env.gas_price.to_string(),
-                    nonce: common_fields.nonce,
-                    to_address: common_fields.to_address,
-                    transaction_hash: common_fields.transaction_hash,
-                    tx_type: common_fields.tx_type,
-                    value: common_fields.value,
-                },
-            ))
-        }
-        2 => {
-            Ok(TransactionDataPayload::FeeMarket(
-                TransactionDataFeeMarketPayload {
-                    access_list: access_list_payload(&tx_env.access_list),
-                    chain_id: common_fields.chain_id,
-                    data: common_fields.data,
-                    from_address: common_fields.from_address,
-                    gas_limit: common_fields.gas_limit,
-                    max_fee_per_gas: tx_env.gas_price.to_string(),
-                    max_priority_fee_per_gas: tx_env
-                        .gas_priority_fee
-                        .unwrap_or_default()
-                        .to_string(),
-                    nonce: common_fields.nonce,
-                    to_address: common_fields.to_address,
-                    transaction_hash: common_fields.transaction_hash,
-                    tx_type: common_fields.tx_type,
-                    value: common_fields.value,
-                },
-            ))
-        }
-        3 => {
-            Ok(TransactionDataPayload::Blob(TransactionDataBlobPayload {
-                access_list: access_list_payload(&tx_env.access_list),
-                blob_versioned_hashes: tx_env
-                    .blob_hashes
-                    .iter()
-                    .map(|hash| bytes_to_hex(hash.as_slice()))
-                    .collect(),
-                chain_id: common_fields.chain_id,
-                data: common_fields.data,
-                from_address: common_fields.from_address,
-                gas_limit: common_fields.gas_limit,
-                max_fee_per_blob_gas: tx_env.max_fee_per_blob_gas.to_string(),
-                max_fee_per_gas: tx_env.gas_price.to_string(),
-                max_priority_fee_per_gas: tx_env.gas_priority_fee.unwrap_or_default().to_string(),
-                nonce: common_fields.nonce,
-                to_address: common_fields.to_address,
-                transaction_hash: common_fields.transaction_hash,
-                tx_type: common_fields.tx_type,
-                value: common_fields.value,
-            }))
-        }
-        4 => {
-            Ok(TransactionDataPayload::Authorization(
-                TransactionDataAuthorizationPayload {
-                    access_list: access_list_payload(&tx_env.access_list),
-                    authorization_list: authorization_list_payload(&tx_env.authorization_list),
-                    chain_id: common_fields.chain_id,
-                    data: common_fields.data,
-                    from_address: common_fields.from_address,
-                    gas_limit: common_fields.gas_limit,
-                    max_fee_per_gas: tx_env.gas_price.to_string(),
-                    max_priority_fee_per_gas: tx_env
-                        .gas_priority_fee
-                        .unwrap_or_default()
-                        .to_string(),
-                    nonce: common_fields.nonce,
-                    to_address: common_fields.to_address,
-                    transaction_hash: common_fields.transaction_hash,
-                    tx_type: common_fields.tx_type,
-                    value: common_fields.value,
-                },
-            ))
-        }
+        0 => Ok(build_legacy_payload(common_fields, tx_env)),
+        1 => Ok(build_access_list_payload(common_fields, tx_env)),
+        2 => Ok(build_fee_market_payload(common_fields, tx_env)),
+        3 => Ok(build_blob_payload(common_fields, tx_env)),
+        4 => Ok(build_authorization_payload(common_fields, tx_env)),
         tx_type => {
             Err(TransactionObserverError::PublishFailed {
                 reason: format!("Unsupported transaction type: {tx_type}"),
@@ -433,6 +339,110 @@ fn build_common_transaction_fields(
         tx_type: u64::from(tx_env.tx_type),
         data: (!tx_env.data.is_empty()).then(|| bytes_to_hex(tx_env.data.as_ref())),
     }
+}
+
+fn build_legacy_payload(
+    common_fields: TransactionCommonFields,
+    tx_env: &TxEnv,
+) -> TransactionDataPayload {
+    TransactionDataPayload::Legacy(TransactionDataLegacyPayload {
+        chain_id: common_fields.chain_id,
+        data: common_fields.data,
+        from_address: common_fields.from_address,
+        gas_limit: common_fields.gas_limit,
+        gas_price: tx_env.gas_price.to_string(),
+        nonce: common_fields.nonce,
+        to_address: common_fields.to_address,
+        transaction_hash: common_fields.transaction_hash,
+        tx_type: common_fields.tx_type,
+        value: common_fields.value,
+    })
+}
+
+fn build_access_list_payload(
+    common_fields: TransactionCommonFields,
+    tx_env: &TxEnv,
+) -> TransactionDataPayload {
+    TransactionDataPayload::AccessList(TransactionDataAccessListPayload {
+        access_list: access_list_payload(&tx_env.access_list),
+        chain_id: common_fields.chain_id,
+        data: common_fields.data,
+        from_address: common_fields.from_address,
+        gas_limit: common_fields.gas_limit,
+        gas_price: tx_env.gas_price.to_string(),
+        nonce: common_fields.nonce,
+        to_address: common_fields.to_address,
+        transaction_hash: common_fields.transaction_hash,
+        tx_type: common_fields.tx_type,
+        value: common_fields.value,
+    })
+}
+
+fn build_fee_market_payload(
+    common_fields: TransactionCommonFields,
+    tx_env: &TxEnv,
+) -> TransactionDataPayload {
+    TransactionDataPayload::FeeMarket(TransactionDataFeeMarketPayload {
+        access_list: access_list_payload(&tx_env.access_list),
+        chain_id: common_fields.chain_id,
+        data: common_fields.data,
+        from_address: common_fields.from_address,
+        gas_limit: common_fields.gas_limit,
+        max_fee_per_gas: tx_env.gas_price.to_string(),
+        max_priority_fee_per_gas: tx_env.gas_priority_fee.unwrap_or_default().to_string(),
+        nonce: common_fields.nonce,
+        to_address: common_fields.to_address,
+        transaction_hash: common_fields.transaction_hash,
+        tx_type: common_fields.tx_type,
+        value: common_fields.value,
+    })
+}
+
+fn build_blob_payload(
+    common_fields: TransactionCommonFields,
+    tx_env: &TxEnv,
+) -> TransactionDataPayload {
+    TransactionDataPayload::Blob(TransactionDataBlobPayload {
+        access_list: access_list_payload(&tx_env.access_list),
+        blob_versioned_hashes: tx_env
+            .blob_hashes
+            .iter()
+            .map(|hash| bytes_to_hex(hash.as_slice()))
+            .collect(),
+        chain_id: common_fields.chain_id,
+        data: common_fields.data,
+        from_address: common_fields.from_address,
+        gas_limit: common_fields.gas_limit,
+        max_fee_per_blob_gas: tx_env.max_fee_per_blob_gas.to_string(),
+        max_fee_per_gas: tx_env.gas_price.to_string(),
+        max_priority_fee_per_gas: tx_env.gas_priority_fee.unwrap_or_default().to_string(),
+        nonce: common_fields.nonce,
+        to_address: common_fields.to_address,
+        transaction_hash: common_fields.transaction_hash,
+        tx_type: common_fields.tx_type,
+        value: common_fields.value,
+    })
+}
+
+fn build_authorization_payload(
+    common_fields: TransactionCommonFields,
+    tx_env: &TxEnv,
+) -> TransactionDataPayload {
+    TransactionDataPayload::Authorization(TransactionDataAuthorizationPayload {
+        access_list: access_list_payload(&tx_env.access_list),
+        authorization_list: authorization_list_payload(&tx_env.authorization_list),
+        chain_id: common_fields.chain_id,
+        data: common_fields.data,
+        from_address: common_fields.from_address,
+        gas_limit: common_fields.gas_limit,
+        max_fee_per_gas: tx_env.gas_price.to_string(),
+        max_priority_fee_per_gas: tx_env.gas_priority_fee.unwrap_or_default().to_string(),
+        nonce: common_fields.nonce,
+        to_address: common_fields.to_address,
+        transaction_hash: common_fields.transaction_hash,
+        tx_type: common_fields.tx_type,
+        value: common_fields.value,
+    })
 }
 
 fn access_list_payload(access_list: &AccessList) -> Vec<AccessListItemPayload> {

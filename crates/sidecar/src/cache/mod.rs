@@ -142,6 +142,15 @@ impl Sources {
         self.sources.iter().map(|s| s.name()).collect::<Vec<_>>()
     }
 
+    /// Returns an iterator over all configured sources (without filtering by sync status).
+    ///
+    /// Unlike `iter_synced_sources()`, this returns all sources regardless of their
+    /// synchronization status. Useful for monitoring/metrics that need to track
+    /// the sync status of every configured source.
+    pub fn iter_all_sources(&self) -> impl Iterator<Item = &Arc<dyn Source>> {
+        self.sources.iter()
+    }
+
     /// Returns whether parallel source querying is enabled.
     pub fn is_parallel_enabled(&self) -> bool {
         self.enable_parallel_sources
@@ -737,6 +746,22 @@ mod tests {
         Bytecode::new_raw(vec![0x60, 0x00, 0x60, 0x00].into())
     }
 
+    /// Helper to wait for a call count to reach the expected value.
+    /// This is needed for parallel tests where spawned threads may not have completed
+    /// by the time the main function returns (since `find_map` returns on first success).
+    fn wait_for_call_count(counter: &AtomicUsize, expected: usize, timeout: Duration) {
+        let start = Instant::now();
+        while counter.load(Ordering::Acquire) < expected {
+            assert!(
+                start.elapsed() <= timeout,
+                "Timeout waiting for call count: expected {}, got {}",
+                expected,
+                counter.load(Ordering::Acquire)
+            );
+            thread::sleep(Duration::from_millis(1));
+        }
+    }
+
     #[test]
     fn test_query_parallel_success_and_all_sources_called() {
         let account_info = create_test_account_info();
@@ -753,6 +778,10 @@ mod tests {
         assert_eq!(result, Some(account_info));
 
         // Both sources should have been exercised in parallel
+        // Wait for both threads to complete since `query_parallel` returns on first success
+        let timeout = Duration::from_secs(1);
+        wait_for_call_count(&failing.basic_ref_calls, 1, timeout);
+        wait_for_call_count(&succeeding.basic_ref_calls, 1, timeout);
         assert_eq!(failing.basic_ref_call_count(), 1);
         assert_eq!(succeeding.basic_ref_call_count(), 1);
     }
@@ -760,15 +789,9 @@ mod tests {
     #[test]
     fn test_query_parallel_cache_miss_then_success() {
         let account_info = create_test_account_info();
-        let cache_miss = Arc::new(
-            MockSource::new(SourceName::Other)
-                .with_cache_miss_for_account()
-                .with_delay(Duration::from_millis(5)), // Small delay ensures thread starts
-        );
+        let cache_miss = Arc::new(MockSource::new(SourceName::Other).with_cache_miss_for_account());
         let succeeding = Arc::new(
-            MockSource::new(SourceName::EthRpcSource)
-                .with_account_info(account_info.clone())
-                .with_delay(Duration::from_millis(5)), // Same delay to ensure both threads start
+            MockSource::new(SourceName::EthRpcSource).with_account_info(account_info.clone()),
         );
 
         let cache = Sources::new_parallel(vec![cache_miss.clone(), succeeding.clone()], 10);
@@ -777,6 +800,11 @@ mod tests {
 
         let result = cache.query_parallel(move |s| s.basic_ref(address)).unwrap();
         assert_eq!(result, Some(account_info));
+
+        // Wait for both threads to complete since `query_parallel` returns on first success
+        let timeout = Duration::from_secs(1);
+        wait_for_call_count(&cache_miss.basic_ref_calls, 1, timeout);
+        wait_for_call_count(&succeeding.basic_ref_calls, 1, timeout);
         assert_eq!(cache_miss.basic_ref_call_count(), 1);
         assert_eq!(succeeding.basic_ref_call_count(), 1);
     }

@@ -12,15 +12,15 @@ test-cleanup:
 
 # Run the rust tests for optimism (excluding state-worker packages which run separately)
 test-optimism: build-contracts
-	ASSERTION_DA_SOLC_DOCKER_PLATFORM=linux/amd64 cargo nextest run --workspace --exclude state-store --exclude state-worker --locked  --cargo-profile release --no-tests=warn --no-default-features --features optimism --features test
+	ASSERTION_DA_SOLC_DOCKER_PLATFORM=linux/amd64 cargo nextest run --workspace --exclude mdbx --exclude state-worker --locked  --cargo-profile release --no-tests=warn --no-default-features --features optimism --features test
 
 # Run the rust tests for default evm (excluding state-worker packages which run separately)
 test-default: build-contracts
-	ASSERTION_DA_SOLC_DOCKER_PLATFORM=linux/amd64 cargo nextest run --workspace --exclude state-store --exclude state-worker --locked  --cargo-profile release --no-tests=warn --no-default-features --features test
+	ASSERTION_DA_SOLC_DOCKER_PLATFORM=linux/amd64 cargo nextest run --workspace --exclude mdbx --exclude state-worker --locked  --cargo-profile release --no-tests=warn --no-default-features --features test
 
 # Run state worker tests (single-threaded to avoid race conditions)
 test-state-worker:
-	cargo nextest run --package state-store --package state-worker --locked --cargo-profile release --no-default-features --test-threads=2
+	cargo nextest run --package mdbx --package state-worker --locked --cargo-profile release --no-default-features --test-threads=2
 
 test: test-optimism test-default test-state-worker test-cleanup
 

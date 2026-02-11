@@ -34,9 +34,8 @@ name` resource key according to the OTEL conventions.
 
 The transports emit a few histograms so operators can distinguish between a slow client wait and slow engine fetch:
 
-- `sidecar_get_transaction_wait_duration` - Emitted when either transport waits for a tx to arrive (HTTP long-poll path
-  and the shared pending receiver helper)
-- `sidecar_fetch_transaction_result_duration` - HTTP/gRPC: time spent waiting on the result after the transaction has
+- `sidecar_get_transaction_wait_duration` - Emitted when the transport waits for a tx to arrive
+- `sidecar_fetch_transaction_result_duration` - Time spent waiting on the result after the transaction has
   been queued for being processed by the core engine
 
 All durations are reported in seconds to the configured metrics backend.
@@ -56,6 +55,74 @@ All configuration follows a structured naming pattern with the following prefixe
 Currently the binary only exposes the configuration file selector. Run `cargo run -p sidecar -- --help` to confirm the
 supported flags. To override individual settings, update the JSON configuration (either the embedded default or a custom
 file passed via `--config-file-path`).
+
+#### Env var fallback and precedence
+
+Each field is resolved independently with the following order:
+
+1. Environment variable (if present)
+2. File value (if the env var is not set)
+3. Error for required fields, or `None` for optional fields
+
+Defaults still apply to these fields if missing from both file and env:
+
+- `credible.transaction_results_pending_requests_ttl_ms`
+- `credible.accepted_txs_ttl_ms`
+- `transport.health_bind_addr`
+- `transport.event_id_buffer_capacity`
+- `transport.pending_receive_ttl_ms`
+
+The configuration file can now omit any field. If a required field is missing from the file and env, the sidecar will
+exit with a configuration error.
+
+#### Environment variables
+
+Format is `JSON field -> ENV VAR`.
+
+Chain:
+- `chain.spec_id` -> `SIDECAR_CHAIN_SPEC_ID`
+- `chain.chain_id` -> `SIDECAR_CHAIN_ID`
+
+Credible:
+- `credible.assertion_gas_limit` -> `SIDECAR_ASSERTION_GAS_LIMIT`
+- `credible.overlay_cache_invalidation_every_block` -> `SIDECAR_OVERLAY_CACHE_INVALIDATION_EVERY_BLOCK`
+- `credible.cache_capacity_bytes` -> `SIDECAR_CACHE_CAPACITY_BYTES`
+- `credible.flush_every_ms` -> `SIDECAR_FLUSH_EVERY_MS`
+- `credible.assertion_da_rpc_url` -> `SIDECAR_ASSERTION_DA_RPC_URL`
+- `credible.indexer_rpc_url` -> `SIDECAR_INDEXER_RPC_URL`
+- `credible.indexer_db_path` -> `SIDECAR_INDEXER_DB_PATH`
+- `credible.assertion_store_db_path` -> `SIDECAR_ASSERTION_STORE_DB_PATH`
+- `credible.transaction_observer_db_path` -> `SIDECAR_TRANSACTION_OBSERVER_DB_PATH`
+- `credible.transaction_observer_endpoint` -> `SIDECAR_TRANSACTION_OBSERVER_ENDPOINT`
+- `credible.transaction_observer_auth_token` -> `SIDECAR_TRANSACTION_OBSERVER_AUTH_TOKEN`
+- `credible.transaction_observer_endpoint_rps_max` -> `SIDECAR_TRANSACTION_OBSERVER_ENDPOINT_RPS_MAX`
+- `credible.transaction_observer_poll_interval_ms` -> `SIDECAR_TRANSACTION_OBSERVER_POLL_INTERVAL_MS`
+- `credible.block_tag` -> `SIDECAR_BLOCK_TAG`
+- `credible.state_oracle` -> `SIDECAR_STATE_ORACLE`
+- `credible.state_oracle_deployment_block` -> `SIDECAR_STATE_ORACLE_DEPLOYMENT_BLOCK`
+- `credible.transaction_results_max_capacity` -> `SIDECAR_TRANSACTION_RESULTS_MAX_CAPACITY`
+- `credible.transaction_results_pending_requests_ttl_ms` -> `SIDECAR_TRANSACTION_RESULTS_PENDING_REQUESTS_TTL_MS`
+- `credible.accepted_txs_ttl_ms` -> `SIDECAR_ACCEPTED_TXS_TTL_MS`
+- `credible.assertion_store_prune_config_interval_ms` -> `SIDECAR_ASSERTION_STORE_PRUNE_INTERVAL_MS`
+- `credible.assertion_store_prune_config_retention_blocks` -> `SIDECAR_ASSERTION_STORE_PRUNE_RETENTION_BLOCKS`
+- `credible.cache_checker_ws_url` -> `SIDECAR_CACHE_CHECKER_WS_URL` (required when `cache_validation` feature is enabled)
+
+Transport:
+- `transport.protocol` -> `SIDECAR_TRANSPORT_PROTOCOL`
+- `transport.bind_addr` -> `SIDECAR_TRANSPORT_BIND_ADDR`
+- `transport.health_bind_addr` -> `SIDECAR_HEALTH_BIND_ADDR`
+- `transport.event_id_buffer_capacity` -> `SIDECAR_EVENT_ID_BUFFER_CAPACITY`
+- `transport.pending_receive_ttl_ms` -> `SIDECAR_PENDING_RECEIVE_TTL_MS`
+
+State:
+- `state.sources` -> `SIDECAR_STATE_SOURCES` (JSON array)
+- `state.minimum_state_diff` -> `SIDECAR_STATE_MINIMUM_STATE_DIFF`
+- `state.sources_sync_timeout_ms` -> `SIDECAR_STATE_SOURCES_SYNC_TIMEOUT_MS`
+- `state.sources_monitoring_period_ms` -> `SIDECAR_STATE_SOURCES_MONITORING_PERIOD_MS`
+- `state.eth_rpc_source_ws_url` -> `SIDECAR_STATE_ETH_RPC_SOURCE_WS_URL`
+- `state.eth_rpc_source_http_url` -> `SIDECAR_STATE_ETH_RPC_SOURCE_HTTP_URL`
+- `state.state_worker_mdbx_path` -> `SIDECAR_STATE_WORKER_MDBX_PATH`
+- `state.state_worker_depth` -> `SIDECAR_STATE_WORKER_DEPTH`
 
 The configuration file is a JSON file with the following schema:
 
@@ -351,11 +418,10 @@ The configuration file is a JSON file with the following schema:
           "type": "string",
           "description": "Select which transport protocol to run",
           "enum": [
-            "http",
             "grpc"
           ],
           "examples": [
-            "http"
+            "grpc"
           ]
         },
         "bind_addr": {
@@ -398,51 +464,86 @@ The configuration file is a JSON file with the following schema:
       "type": "object",
       "description": "State source configuration",
       "required": [
-        "state_worker_mdbx_path",
-        "state_worker_depth",
+        "sources",
         "minimum_state_diff",
         "sources_sync_timeout_ms",
         "sources_monitoring_period_ms"
       ],
       "properties": {
-        "eth_rpc_source_ws_url": {
-          "type": "string",
-          "description": "Eth RPC source WebSocket bind address and port (optional)",
-          "format": "uri",
-          "pattern": "^wss?://",
-          "examples": [
-            "ws://localhost:8548",
-            "ws://besu-service:8548"
-          ]
-        },
-        "eth_rpc_source_http_url": {
-          "type": "string",
-          "description": "Eth RPC source client HTTP bind address and port (optional)",
-          "format": "uri",
-          "pattern": "^https?://",
-          "examples": [
-            "http://localhost:8548",
-            "http://besu-service:8548"
-          ]
-        },
-        "state_worker_mdbx_path": {
-          "type": "string",
-          "description": "State worker MDBX path (optional)",
-          "format": "path",
-          "examples": [
-            "/tmp"
-          ]
-        },
-        "state_worker_depth": {
-          "type": "integer",
-          "description": "State worker state depth - how many blocks behind head state worker will have the data from",
-          "minimum": 0,
-          "maximum": 9007199254740991,
-          "examples": [
-            100,
-            250,
-            500
-          ]
+        "sources": {
+          "type": "array",
+          "description": "State sources to enable (ordered by priority: first = highest)",
+          "items": {
+            "oneOf": [
+              {
+                "type": "object",
+                "required": [
+                  "type",
+                  "mdbx_path",
+                  "depth"
+                ],
+                "properties": {
+                  "type": {
+                    "const": "mdbx"
+                  },
+                  "mdbx_path": {
+                    "type": "string",
+                    "description": "State worker MDBX path",
+                    "format": "path",
+                    "examples": [
+                      "/tmp"
+                    ]
+                  },
+                  "depth": {
+                    "type": "integer",
+                    "description": "State worker state depth - how many blocks behind head state worker will have the data from",
+                    "minimum": 0,
+                    "maximum": 9007199254740991,
+                    "examples": [
+                      100,
+                      250,
+                      500
+                    ]
+                  }
+                },
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "required": [
+                  "type",
+                  "ws_url",
+                  "http_url"
+                ],
+                "properties": {
+                  "type": {
+                    "const": "eth-rpc"
+                  },
+                  "ws_url": {
+                    "type": "string",
+                    "description": "Eth RPC source WebSocket bind address and port",
+                    "format": "uri",
+                    "pattern": "^wss?://",
+                    "examples": [
+                      "ws://localhost:8548",
+                      "ws://besu-service:8548"
+                    ]
+                  },
+                  "http_url": {
+                    "type": "string",
+                    "description": "Eth RPC source client HTTP bind address and port",
+                    "format": "uri",
+                    "pattern": "^https?://",
+                    "examples": [
+                      "http://localhost:8548",
+                      "http://besu-service:8548"
+                    ]
+                  }
+                },
+                "additionalProperties": false
+              }
+            ]
+          }
         },
         "minimum_state_diff": {
           "type": "integer",
@@ -469,6 +570,15 @@ The configuration file is a JSON file with the following schema:
           "maximum": 9007199254740991,
           "examples": [
             1000
+          ]
+        },
+        "enable_parallel_sources": {
+          "type": "boolean",
+          "description": "When enabled, queries all synced state sources simultaneously and returns the first successful response. Useful when sources have variable latency. Spawns a thread per source per query.",
+          "default": false,
+          "examples": [
+            false,
+            true
           ]
         }
       },
@@ -514,13 +624,22 @@ The default configuration can be found in [default_config.json](default_config.j
     "pending_receive_ttl_ms": 5000
   },
   "state": {
-    "eth_rpc_source_ws_url": "ws://127.0.0.1:8546",
-    "eth_rpc_source_http_url": "http://127.0.0.1:8545",
-    "state_worker_mdbx_path": "/data/state_worker.mdbx",
-    "state_worker_depth": 3,
+    "sources": [
+      {
+        "type": "eth-rpc",
+        "ws_url": "ws://127.0.0.1:8546",
+        "http_url": "http://127.0.0.1:8545"
+      },
+      {
+        "type": "mdbx",
+        "mdbx_path": "/data/state_worker.mdbx",
+        "depth": 3
+      }
+    ],
     "minimum_state_diff": 100,
     "sources_sync_timeout_ms": 1000,
-    "sources_monitoring_period_ms": 500
+    "sources_monitoring_period_ms": 500,
+    "enable_parallel_sources": false
   }
 }
 ```

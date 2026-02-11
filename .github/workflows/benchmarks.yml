@@ -13,6 +13,10 @@ on:
 
 permissions: write-all
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   # Pin nightly to a specific version for consistent caching across workflow runs
   # Update this monthly or when new Rust features are needed

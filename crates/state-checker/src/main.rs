@@ -20,14 +20,12 @@ use anyhow::{
 };
 use clap::Parser;
 use log::error;
-use rust_tracing::trace;
-use state_store::{
+use mdbx::{
     Reader,
-    mdbx::{
-        StateReader,
-        common::CircularBufferConfig,
-    },
+    StateReader,
+    common::CircularBufferConfig,
 };
+use rust_tracing::trace;
 use tracing::info;
 
 mod cli;

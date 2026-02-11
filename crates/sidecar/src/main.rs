@@ -1,20 +1,12 @@
 //! # The credible layer sidecar
 #![doc = include_str!("../README.md")]
-#![allow(clippy::must_use_candidate)]
-#![allow(clippy::missing_errors_doc)]
-#![allow(clippy::unreadable_literal)]
-#![allow(clippy::similar_names)]
 #![deny(clippy::panic)]
 #![deny(clippy::unwrap_used)]
 #![deny(clippy::expect_used)]
 #![deny(clippy::unreachable)]
 #![deny(clippy::todo)]
 #![deny(clippy::unimplemented)]
-#![warn(clippy::indexing_slicing)]
-#![cfg_attr(test, allow(clippy::panic))]
-#![cfg_attr(test, allow(clippy::unwrap_used))]
-#![cfg_attr(test, allow(clippy::expect_used))]
-#![cfg_attr(test, allow(clippy::indexing_slicing))]
+#![deny(clippy::indexing_slicing)]
 
 use assertion_executor::{
     AssertionExecutor,
@@ -22,18 +14,21 @@ use assertion_executor::{
 };
 use credible_utils::shutdown::wait_for_sigterm;
 use flume::unbounded;
-use metrics::gauge;
+use mdbx::{
+    StateReader,
+    common::CircularBufferConfig,
+};
 use sidecar::{
     args::{
         Config,
-        TransportProtocol,
+        StateSourceConfig,
     },
     cache::{
         Sources,
         sources::{
             Source,
             eth_rpc_source::EthRpcSource,
-            state_worker::MdbxSource,
+            mdbx::MdbxSource,
         },
     },
     config::{
@@ -44,17 +39,12 @@ use sidecar::{
     critical,
     engine::{
         CoreEngine,
+        CoreEngineConfig,
         queue::TransactionQueueSender,
     },
     event_sequencing::EventSequencing,
     health::HealthServer,
     indexer,
-    metrics::{
-        EngineTransactionsResultMetrics,
-        get_grpc_result_subscribers,
-        get_transport_pending_receives_len,
-        u64_to_f64,
-    },
     transaction_observer::{
         TransactionObserver,
         TransactionObserverConfig,
@@ -64,22 +54,10 @@ use sidecar::{
         TransactionsState,
     },
     transport::{
-        AnyTransport,
         Transport,
-        grpc::{
-            GrpcTransport,
-            config::GrpcTransportConfig,
-        },
-        http::{
-            HttpTransport,
-            config::HttpTransportConfig,
-        },
+        grpc::GrpcTransport,
     },
     utils::ErrorRecoverability,
-};
-use state_store::mdbx::{
-    StateReader,
-    common::CircularBufferConfig,
 };
 use std::{
     net::SocketAddr,
@@ -95,97 +73,179 @@ use std::{
 };
 use tracing::{
     error,
-    log::info,
+    warn,
 };
 
-/// Create transport with optional result streaming support.
+struct SidecarInfo {
+    version: &'static str,
+    git_commit: &'static str,
+    rustc_version: &'static str,
+    cpu_cores: usize,
+    memory_available: String,
+    os_info: String,
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .map_err(|_| anyhow::anyhow!("Failed to install rustls crypto provider"))?;
+
+    let _guard = rust_tracing::trace();
+    let config = Config::load()?;
+
+    SidecarInfo::collect().log(&config);
+
+    let executor_config = init_executor_config(&config);
+    let assertion_store = init_assertion_store(&config)?;
+    let assertion_executor =
+        AssertionExecutor::new(executor_config.clone(), assertion_store.clone());
+    let health_bind_addr: SocketAddr = config.transport.health_bind_addr.parse()?;
+
+    loop {
+        let should_shutdown = Box::pin(run_sidecar_once(
+            &config,
+            &executor_config,
+            &assertion_store,
+            &assertion_executor,
+            health_bind_addr,
+        ))
+        .await?;
+
+        if should_shutdown {
+            break;
+        }
+        tracing::warn!("Sidecar restarting...");
+    }
+
+    tracing::info!("Sidecar shutdown complete.");
+    Ok(())
+}
+
+impl SidecarInfo {
+    fn collect() -> Self {
+        Self {
+            version: env!("CARGO_PKG_VERSION"),
+            git_commit: option_env!("SIDECAR_GIT_SHA").unwrap_or("unknown"),
+            rustc_version: option_env!("SIDECAR_RUSTC_VERSION").unwrap_or("unknown"),
+            cpu_cores: std::thread::available_parallelism()
+                .map(std::num::NonZeroUsize::get)
+                .unwrap_or(0),
+            memory_available: available_memory_info(),
+            os_info: run_command("uname", &["-a"])
+                .unwrap_or_else(|| format!("{} {}", std::env::consts::OS, std::env::consts::ARCH)),
+        }
+    }
+
+    fn log(&self, config: &Config) {
+        tracing::info!(
+            version = self.version,
+            git_commit = self.git_commit,
+            rustc_version = self.rustc_version,
+            "Sidecar build info"
+        );
+        tracing::info!(
+            cpu_cores = self.cpu_cores,
+            memory_available = %self.memory_available,
+            os_info = %self.os_info,
+            "Sidecar host info"
+        );
+        tracing::info!("Sidecar config: {config:?}");
+    }
+}
+
+fn run_command(command: &str, args: &[&str]) -> Option<String> {
+    let output = std::process::Command::new(command)
+        .args(args)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    let trimmed = stdout.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
+fn available_memory_info() -> String {
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(meminfo) = std::fs::read_to_string("/proc/meminfo") {
+            for line in meminfo.lines() {
+                if let Some(value) = line.strip_prefix("MemAvailable:") {
+                    return value.trim().to_string();
+                }
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(vm_stat) = run_command("vm_stat", &[])
+            && let Some(parsed) = parse_vm_stat_available(&vm_stat)
+        {
+            return parsed;
+        }
+    }
+
+    "unknown".to_string()
+}
+
+#[cfg(target_os = "macos")]
+fn parse_vm_stat_available(vm_stat: &str) -> Option<String> {
+    let page_size = parse_vm_stat_page_size(vm_stat)?;
+    let free = parse_vm_stat_pages(vm_stat, "Pages free:")?;
+    let inactive = parse_vm_stat_pages(vm_stat, "Pages inactive:").unwrap_or(0);
+    let speculative = parse_vm_stat_pages(vm_stat, "Pages speculative:").unwrap_or(0);
+
+    let available_pages = free.saturating_add(inactive).saturating_add(speculative);
+    let available_bytes = available_pages.saturating_mul(page_size);
+    let available_mib = available_bytes / (1024 * 1024);
+    Some(format!("{available_mib} MiB"))
+}
+
+#[cfg(target_os = "macos")]
+fn parse_vm_stat_page_size(vm_stat: &str) -> Option<u64> {
+    let first_line = vm_stat.lines().next()?;
+    let marker = "page size of ";
+    let start = first_line.find(marker)? + marker.len();
+    let rest = &first_line[start..];
+    let end = rest.find(" bytes")?;
+    rest[..end].trim().parse::<u64>().ok()
+}
+
+#[cfg(target_os = "macos")]
+fn parse_vm_stat_pages(vm_stat: &str, prefix: &str) -> Option<u64> {
+    let line = vm_stat
+        .lines()
+        .find(|line| line.trim_start().starts_with(prefix))?;
+    let value = line
+        .split(':')
+        .nth(1)?
+        .trim()
+        .trim_end_matches('.')
+        .replace('.', "");
+    value.parse::<u64>().ok()
+}
+
+/// Create gRPC transport with optional result streaming support.
 ///
-/// For gRPC transport with `result_event_rx`, enables `SubscribeResults` streaming.
+/// With `result_event_rx`, enables `SubscribeResults` streaming.
 fn create_transport_from_args(
     config: &Config,
     tx_sender: TransactionQueueSender,
     state_results: Arc<TransactionsState>,
     result_event_rx: Option<flume::Receiver<TransactionResultEvent>>,
-) -> anyhow::Result<AnyTransport> {
-    match config.transport.protocol {
-        TransportProtocol::Http => {
-            let cfg = HttpTransportConfig::try_from(config.transport.clone())?;
-            let t = HttpTransport::new(
-                cfg,
-                tx_sender,
-                state_results,
-                config.transport.event_id_buffer_capacity,
-            )?;
-            Ok(AnyTransport::Http(t))
-        }
-        TransportProtocol::Grpc => {
-            let cfg = GrpcTransportConfig::try_from(config.transport.clone())?;
-            let t = match result_event_rx {
-                Some(rx) => {
-                    GrpcTransport::with_result_receiver(
-                        &cfg,
-                        tx_sender,
-                        state_results,
-                        rx,
-                        config.transport.event_id_buffer_capacity,
-                    )?
-                }
-                None => {
-                    GrpcTransport::new(
-                        cfg,
-                        tx_sender,
-                        state_results,
-                        config.transport.event_id_buffer_capacity,
-                    )?
-                }
-            };
-            Ok(AnyTransport::Grpc(t))
-        }
-    }
-}
-
-fn spawn_queue_metrics_sampler(
-    transport_tx: TransactionQueueSender,
-    engine_tx: TransactionQueueSender,
-    incident_tx: Option<sidecar::transaction_observer::IncidentReportSender>,
-    result_event_tx: Option<flume::Sender<TransactionResultEvent>>,
-    transactions_state: Arc<TransactionsState>,
-    shutdown_flag: Arc<AtomicBool>,
-) {
-    let metrics = EngineTransactionsResultMetrics::default();
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(1));
-        loop {
-            interval.tick().await;
-            if shutdown_flag.load(Ordering::Relaxed) {
-                break;
-            }
-            gauge!("sidecar_transport_event_queue_len")
-                .set(sidecar::metrics::usize_to_f64(transport_tx.len()));
-            gauge!("sidecar_engine_event_queue_len")
-                .set(sidecar::metrics::usize_to_f64(engine_tx.len()));
-            if let Some(ref tx) = incident_tx {
-                gauge!("sidecar_transaction_observer_queue_len")
-                    .set(sidecar::metrics::usize_to_f64(tx.len()));
-            }
-            if let Some(ref tx) = result_event_tx {
-                gauge!("sidecar_grpc_result_event_queue_len")
-                    .set(sidecar::metrics::usize_to_f64(tx.len()));
-                metrics.set_engine_result_event_queue_len(tx.len());
-            }
-            gauge!("sidecar_grpc_result_subscribers")
-                .set(u64_to_f64(get_grpc_result_subscribers()));
-            gauge!("sidecar_transport_transactions_result_pending_receives_length")
-                .set(u64_to_f64(get_transport_pending_receives_len()));
-
-            let (accepted_len, pending_len, results_len) = transactions_state.get_all_lengths();
-            metrics.set_engine_transactions_state_accepted_txs_length(accepted_len);
-            metrics.set_engine_transactions_state_transaction_results_pending_requests_length(
-                pending_len,
-            );
-            metrics.set_engine_transactions_state_transaction_results_length(results_len);
-        }
-    });
+) -> anyhow::Result<GrpcTransport> {
+    let config = config.transport.clone();
+    let transport = match result_event_rx {
+        Some(rx) => GrpcTransport::with_result_receiver(&config, tx_sender, state_results, rx)?,
+        None => GrpcTransport::new(config, tx_sender, state_results)?,
+    };
+    Ok(transport)
 }
 
 /// Holds handles to spawned threads for graceful shutdown
@@ -235,49 +295,43 @@ impl ThreadHandles {
     }
 }
 
-#[cfg(feature = "dhat-heap")]
-#[global_allocator]
-static ALLOC: dhat::Alloc = dhat::Alloc;
+fn transaction_observer_config_from(config: &Config) -> Option<TransactionObserverConfig> {
+    match (
+        &config.credible.transaction_observer_db_path,
+        &config.credible.transaction_observer_endpoint,
+        &config.credible.transaction_observer_auth_token,
+        config.credible.transaction_observer_endpoint_rps_max,
+        config.credible.transaction_observer_poll_interval_ms,
+    ) {
+        (
+            Some(db_path),
+            Some(endpoint),
+            Some(auth_token),
+            Some(endpoint_rps_max),
+            Some(poll_interval_ms),
+        ) => {
+            Some(TransactionObserverConfig {
+                db_path: db_path.clone(),
+                endpoint: endpoint.clone(),
+                auth_token: auth_token.expose().to_string(),
+                endpoint_rps_max,
+                poll_interval: Duration::from_millis(poll_interval_ms),
+            })
+        }
+        _ => None,
+    }
+}
 
-#[allow(clippy::too_many_lines)]
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    rustls::crypto::aws_lc_rs::default_provider()
-        .install_default()
-        .map_err(|_| anyhow::anyhow!("Failed to install rustls crypto provider"))?;
+async fn build_sources_from_config(config: &Config) -> anyhow::Result<Vec<Arc<dyn Source>>> {
+    let mut sources: Vec<Arc<dyn Source>> = Vec::new();
 
-    let _guard = rust_tracing::trace();
-    let config = Config::load()?;
-
-    // Initialize dhat profiler if feature is enabled
-    #[cfg(feature = "dhat-heap")]
-    let _dhat_profiler = if let Some(ref output_path) = config.dhat_output_path {
-        info!("Starting dhat memory profiler, output will be written to: {}", output_path.display());
-        Some(dhat::Profiler::builder().file_name(output_path).build())
-    } else {
-        None
-    };
-
-    info!("Starting sidecar with config: {config:?}");
-
-    let executor_config = init_executor_config(&config);
-    let assertion_store = init_assertion_store(&config)?;
-    let assertion_executor =
-        AssertionExecutor::new(executor_config.clone(), assertion_store.clone());
-    let health_bind_addr: SocketAddr = config.transport.health_bind_addr.parse()?;
-
-    let mut should_shutdown = false;
-
-    while !should_shutdown {
-        let mut thread_handles = ThreadHandles::new();
-
-        // Shared shutdown flag for this iteration
-        let shutdown_flag = Arc::new(AtomicBool::new(false));
-
-        let mut sources: Vec<Arc<dyn Source>> = vec![];
+    if config.state.sources.is_empty() {
+        if config.state.legacy.has_any() {
+            warn!("Using legacy state source configuration; migrate to state.sources.");
+        }
         if let (Some(state_worker_path), Some(state_worker_depth)) = (
-            config.state.state_worker_mdbx_path.as_ref(),
-            config.state.state_worker_depth,
+            config.state.legacy.state_worker_mdbx_path.as_ref(),
+            config.state.legacy.state_worker_depth,
         ) {
             match StateReader::new(
                 state_worker_path,
@@ -293,8 +347,8 @@ async fn main() -> anyhow::Result<()> {
         }
 
         if let (Some(eth_rpc_source_ws_url), Some(eth_rpc_source_http_url)) = (
-            &config.state.eth_rpc_source_ws_url,
-            &config.state.eth_rpc_source_http_url,
+            &config.state.legacy.eth_rpc_source_ws_url,
+            &config.state.legacy.eth_rpc_source_http_url,
         ) && let Ok(eth_rpc_source) = EthRpcSource::try_build(
             eth_rpc_source_ws_url.as_str(),
             eth_rpc_source_http_url.as_str(),
@@ -303,264 +357,313 @@ async fn main() -> anyhow::Result<()> {
         {
             sources.push(eth_rpc_source);
         }
-
-        let state = Arc::new(Sources::new(sources, config.state.minimum_state_diff));
-        let cache: OverlayDb<Sources> = OverlayDb::new(Some(state.clone()));
-
-        let transaction_observer_config = match (
-            &config.credible.transaction_observer_db_path,
-            &config.credible.transaction_observer_endpoint,
-            &config.credible.transaction_observer_auth_token,
-            config.credible.transaction_observer_endpoint_rps_max,
-            config.credible.transaction_observer_poll_interval_ms,
-        ) {
-            (
-                Some(db_path),
-                Some(endpoint),
-                Some(auth_token),
-                Some(endpoint_rps_max),
-                Some(poll_interval_ms),
-            ) => {
-                Some(TransactionObserverConfig {
-                    db_path: db_path.clone(),
-                    endpoint: endpoint.clone(),
-                    auth_token: auth_token.clone(),
-                    endpoint_rps_max,
-                    poll_interval: Duration::from_millis(poll_interval_ms),
-                })
-            }
-            _ => None,
-        };
-
-        // Channel: Transport -> EventSequencing
-        let (transport_tx_sender, event_sequencing_rx) = unbounded();
-        // Channel: EventSequencing -> CoreEngine
-        let (event_sequencing_tx, engine_rx) = unbounded();
-        // Channel: CoreEngine -> TransactionObserver
-        let (incident_report_tx, incident_report_rx) = if transaction_observer_config.is_some() {
-            let (tx, rx) = unbounded();
-            (Some(tx), Some(rx))
-        } else {
-            (None, None)
-        };
-
-        let (engine_state_results, result_event_rx, result_event_tx) =
-            match config.transport.protocol {
-                TransportProtocol::Grpc => {
-                    let (tx, rx) = unbounded();
-                    let pending_requests_ttl = if config
-                        .credible
-                        .transaction_results_pending_requests_ttl_ms
-                        .is_zero()
-                    {
-                        Duration::from_secs(2)
-                    } else {
-                        config.credible.transaction_results_pending_requests_ttl_ms
-                    };
-                    let accepted_txs_ttl = if config.credible.accepted_txs_ttl_ms.is_zero() {
-                        Duration::from_secs(2)
-                    } else {
-                        config.credible.accepted_txs_ttl_ms
-                    };
-                    (
-                        TransactionsState::with_result_sender_and_ttls(
-                            tx.clone(),
-                            pending_requests_ttl,
-                            accepted_txs_ttl,
-                        ),
-                        Some(rx),
-                        Some(tx),
-                    )
-                }
-                TransportProtocol::Http => {
-                    let pending_requests_ttl = if config
-                        .credible
-                        .transaction_results_pending_requests_ttl_ms
-                        .is_zero()
-                    {
-                        Duration::from_secs(2)
-                    } else {
-                        config.credible.transaction_results_pending_requests_ttl_ms
-                    };
-                    let accepted_txs_ttl = if config.credible.accepted_txs_ttl_ms.is_zero() {
-                        Duration::from_secs(2)
-                    } else {
-                        config.credible.accepted_txs_ttl_ms
-                    };
-                    (
-                        TransactionsState::new_with_ttls(pending_requests_ttl, accepted_txs_ttl),
-                        None,
-                        None,
-                    )
-                }
-            };
-
-        let mut transport = create_transport_from_args(
-            &config,
-            transport_tx_sender.clone(),
-            engine_state_results.clone(),
-            result_event_rx,
-        )?;
-
-        spawn_queue_metrics_sampler(
-            transport_tx_sender.clone(),
-            event_sequencing_tx.clone(),
-            incident_report_tx.clone(),
-            result_event_tx,
-            engine_state_results.clone(),
-            Arc::clone(&shutdown_flag),
-        );
-
-        // Spawn EventSequencing on a dedicated OS thread
-        let event_sequencing = EventSequencing::new(event_sequencing_rx, event_sequencing_tx);
-        let (seq_handle, seq_exited) = event_sequencing.spawn(Arc::clone(&shutdown_flag))?;
-        thread_handles.event_sequencing = Some(seq_handle);
-
-        // Spawn CoreEngine on a dedicated OS thread
-        let engine = CoreEngine::new(
-            cache,
-            state,
-            engine_rx,
-            assertion_executor.clone(),
-            engine_state_results.clone(),
-            config.credible.transaction_results_max_capacity,
-            Duration::from_millis(config.state.sources_sync_timeout_ms),
-            Duration::from_millis(config.state.sources_monitoring_period_ms),
-            config
-                .credible
-                .overlay_cache_invalidation_every_block
-                .unwrap_or(false),
-            config.chain.cancun_time,
-            config.chain.prague_time,
-            incident_report_tx,
-            #[cfg(feature = "cache_validation")]
-            Some(&config.credible.cache_checker_ws_url),
-        )
-        .await;
-        let (engine_handle, engine_exited) = engine.spawn(Arc::clone(&shutdown_flag))?;
-        thread_handles.engine = Some(engine_handle);
-
-        let observer_exited_rx =
-            if let (Some(transaction_observer_config), Some(incident_report_rx)) =
-                (transaction_observer_config, incident_report_rx)
-            {
-                let transaction_observer =
-                    TransactionObserver::new(transaction_observer_config, incident_report_rx)?;
-                let (observer_handle, observer_exited) =
-                    transaction_observer.spawn(Arc::clone(&shutdown_flag))?;
-                thread_handles.transaction_observer = Some(observer_handle);
-                Some(observer_exited)
-            } else {
-                tracing::info!("Transaction observer disabled: missing config");
-                None
-            };
-
-        let mut health_server = HealthServer::new(health_bind_addr);
-
-        let indexer_cfg =
-            init_indexer_config(&config, assertion_store.clone(), &executor_config).await?;
-
-        let observer_exited = async {
-            if let Some(observer_exited) = observer_exited_rx {
-                observer_exited.await
-            } else {
-                std::future::pending().await
-            }
-        };
-
-        // Only async components run in tokio::select!
-        // Transport, health server, and indexer need async for network I/O
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => {
-                tracing::info!("Received Ctrl+C, shutting down...");
-                should_shutdown = true;
-            }
-            _ = wait_for_sigterm() => {
-                tracing::info!("Received SIGTERM, shutting down...");
-                should_shutdown = true;
-            }
-            result = transport.run() => {
-                if let Err(e) = result {
-                    if ErrorRecoverability::from(&e).is_recoverable() {
-                        tracing::error!(error = ?e, "Transport exited");
-                    } else {
-                        critical!(error = ?e, "Transport exited");
-                    }
-                }
-            }
-            result = engine_exited => {
-                match result {
-                    Ok(Ok(())) => tracing::warn!("Engine exited unexpectedly"),
-                    Ok(Err(e)) => {
-                        if ErrorRecoverability::from(&e).is_recoverable() {
-                            tracing::error!(error = ?e, "Engine exited with recoverable error");
-                        } else {
-                            critical!(error = ?e, "Engine exited with unrecoverable error");
-                        }
-                    }
-                    Err(_) => tracing::error!("Engine notification channel dropped"),
-                }
-            }
-            result = seq_exited => {
-                match result {
-                    Ok(Ok(())) => tracing::warn!("Event sequencing exited unexpectedly"),
-                    Ok(Err(e)) => {
-                        if ErrorRecoverability::from(&e).is_recoverable() {
-                            tracing::error!(error = ?e, "Event sequencing exited with recoverable error");
-                        } else {
-                            critical!(error = ?e, "Event sequencing exited with unrecoverable error");
-                        }
-                    }
-                    Err(_) => tracing::error!("Event sequencing notification channel dropped"),
-                }
-            }
-            result = observer_exited => {
-                match result {
-                    Ok(Ok(())) => tracing::warn!("Transaction observer exited unexpectedly"),
-                    Ok(Err(e)) => {
-                        if ErrorRecoverability::from(&e).is_recoverable() {
-                            tracing::error!(error = ?e, "Transaction observer exited with recoverable error");
-                        } else {
-                            critical!(error = ?e, "Transaction observer exited with unrecoverable error");
-                        }
-                    }
-                    Err(_) => tracing::error!("Transaction observer notification channel dropped"),
-                }
-            }
-            result = health_server.run() => {
-                if let Err(e) = result {
-                    critical!(error = ?e, "Health server exited");
-                }
-            }
-            result = indexer::run_indexer(indexer_cfg) => {
-                if let Err(e) = result {
-                    if ErrorRecoverability::from(&e).is_recoverable() {
-                        tracing::error!(error = ?e, "Indexer exited");
-                    } else {
-                        critical!(error = ?e, "Indexer exited");
-                    }
-                }
-            }
+    } else {
+        if config.state.legacy.has_any() {
+            warn!("Ignoring legacy state source configuration; state.sources is set.");
         }
-
-        // Signal threads to stop
-        tracing::info!("Signaling threads to shutdown...");
-        shutdown_flag.store(true, Ordering::Relaxed);
-
-        // Cleanup async components
-        transport.stop();
-        health_server.stop();
-        drop(transport);
-        drop(health_server);
-
-        // Wait for threads
-        thread_handles.join_all();
-
-        if !should_shutdown {
-            tracing::warn!("Sidecar restarting...");
+        for source_config in &config.state.sources {
+            match source_config {
+                StateSourceConfig::Mdbx { mdbx_path, depth } => {
+                    match StateReader::new(
+                        mdbx_path,
+                        CircularBufferConfig::new(u8::try_from(*depth)?)?,
+                    ) {
+                        Ok(state_worker_client) => {
+                            sources.push(Arc::new(MdbxSource::new(state_worker_client)));
+                        }
+                        Err(e) => {
+                            error!(error = ?e, "Failed to connect MDBX");
+                        }
+                    }
+                }
+                StateSourceConfig::EthRpc { ws_url, http_url } => {
+                    if let Ok(eth_rpc_source) =
+                        EthRpcSource::try_build(ws_url.as_str(), http_url.as_str()).await
+                    {
+                        sources.push(eth_rpc_source);
+                    }
+                }
+            }
         }
     }
 
-    tracing::info!("Sidecar shutdown complete.");
-    Ok(())
+    Ok(sources)
+}
+
+fn result_ttls(config: &Config) -> (Duration, Duration) {
+    let pending_requests_ttl = if config
+        .credible
+        .transaction_results_pending_requests_ttl_ms
+        .is_zero()
+    {
+        Duration::from_secs(2)
+    } else {
+        config.credible.transaction_results_pending_requests_ttl_ms
+    };
+    let accepted_txs_ttl = if config.credible.accepted_txs_ttl_ms.is_zero() {
+        Duration::from_secs(2)
+    } else {
+        config.credible.accepted_txs_ttl_ms
+    };
+    (pending_requests_ttl, accepted_txs_ttl)
+}
+
+async fn observer_exit_future(
+    observer_exited_rx: Option<
+        tokio::sync::oneshot::Receiver<
+            Result<(), sidecar::transaction_observer::TransactionObserverError>,
+        >,
+    >,
+) -> Result<(), sidecar::transaction_observer::TransactionObserverError> {
+    if let Some(observer_exited) = observer_exited_rx {
+        observer_exited
+            .await
+            .map_err(|_| sidecar::transaction_observer::TransactionObserverError::ChannelClosed)?
+    } else {
+        std::future::pending().await
+    }
+}
+
+fn handle_transport_exit(result: Result<(), sidecar::transport::grpc::GrpcTransportError>) {
+    if let Err(e) = result {
+        if ErrorRecoverability::from(&e).is_recoverable() {
+            tracing::error!(error = ?e, "Transport exited");
+        } else {
+            critical!(error = ?e, "Transport exited");
+        }
+    }
+}
+
+fn handle_engine_exit(
+    result: Result<
+        Result<(), sidecar::engine::EngineError>,
+        tokio::sync::oneshot::error::RecvError,
+    >,
+) {
+    match result {
+        Ok(Ok(())) => tracing::warn!("Engine exited unexpectedly"),
+        Ok(Err(e)) => {
+            if ErrorRecoverability::from(&e).is_recoverable() {
+                tracing::error!(error = ?e, "Engine exited with recoverable error");
+            } else {
+                critical!(error = ?e, "Engine exited with unrecoverable error");
+            }
+        }
+        Err(_) => tracing::error!("Engine notification channel dropped"),
+    }
+}
+
+fn handle_event_sequencing_exit(
+    result: Result<
+        Result<(), sidecar::event_sequencing::EventSequencingError>,
+        tokio::sync::oneshot::error::RecvError,
+    >,
+) {
+    match result {
+        Ok(Ok(())) => tracing::warn!("Event sequencing exited unexpectedly"),
+        Ok(Err(e)) => {
+            if ErrorRecoverability::from(&e).is_recoverable() {
+                tracing::error!(error = ?e, "Event sequencing exited with recoverable error");
+            } else {
+                critical!(error = ?e, "Event sequencing exited with unrecoverable error");
+            }
+        }
+        Err(_) => tracing::error!("Event sequencing notification channel dropped"),
+    }
+}
+
+fn handle_observer_exit(
+    result: Result<(), sidecar::transaction_observer::TransactionObserverError>,
+) {
+    match result {
+        Ok(()) => tracing::warn!("Transaction observer exited unexpectedly"),
+        Err(e) => {
+            if ErrorRecoverability::from(&e).is_recoverable() {
+                tracing::error!(error = ?e, "Transaction observer exited with recoverable error");
+            } else {
+                critical!(error = ?e, "Transaction observer exited with unrecoverable error");
+            }
+        }
+    }
+}
+
+fn handle_indexer_exit(result: Result<(), assertion_executor::store::IndexerError>) {
+    if let Err(e) = result {
+        if ErrorRecoverability::from(&e).is_recoverable() {
+            tracing::error!(error = ?e, "Indexer exited");
+        } else {
+            critical!(error = ?e, "Indexer exited");
+        }
+    }
+}
+
+async fn run_async_components(
+    transport: &mut GrpcTransport,
+    health_server: &mut HealthServer,
+    indexer_cfg: assertion_executor::store::IndexerCfg,
+    engine_exited: tokio::sync::oneshot::Receiver<Result<(), sidecar::engine::EngineError>>,
+    seq_exited: tokio::sync::oneshot::Receiver<
+        Result<(), sidecar::event_sequencing::EventSequencingError>,
+    >,
+    observer_exited_rx: Option<
+        tokio::sync::oneshot::Receiver<
+            Result<(), sidecar::transaction_observer::TransactionObserverError>,
+        >,
+    >,
+) -> bool {
+    let mut should_shutdown = false;
+    let observer_exited = observer_exit_future(observer_exited_rx);
+
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {
+            tracing::info!("Received Ctrl+C, shutting down...");
+            should_shutdown = true;
+        }
+        _ = wait_for_sigterm() => {
+            tracing::info!("Received SIGTERM, shutting down...");
+            should_shutdown = true;
+        }
+        result = transport.run() => {
+            handle_transport_exit(result);
+        }
+        result = engine_exited => {
+            handle_engine_exit(result);
+        }
+        result = seq_exited => {
+            handle_event_sequencing_exit(result);
+        }
+        result = observer_exited => {
+            handle_observer_exit(result);
+        }
+        result = health_server.run() => {
+            if let Err(e) = result {
+                critical!(error = ?e, "Health server exited");
+            }
+        }
+        result = indexer::run_indexer(indexer_cfg) => {
+            handle_indexer_exit(result);
+        }
+    }
+
+    should_shutdown
+}
+
+async fn run_sidecar_once(
+    config: &Config,
+    executor_config: &assertion_executor::ExecutorConfig,
+    assertion_store: &assertion_executor::store::AssertionStore,
+    assertion_executor: &AssertionExecutor,
+    health_bind_addr: SocketAddr,
+) -> anyhow::Result<bool> {
+    let mut thread_handles = ThreadHandles::new();
+
+    // Shared shutdown flag for this iteration
+    let shutdown_flag = Arc::new(AtomicBool::new(false));
+
+    let sources = build_sources_from_config(config).await?;
+    let state = Arc::new(Sources::new(sources, config.state.minimum_state_diff));
+    let cache: OverlayDb<Sources> = OverlayDb::new(Some(state.clone()));
+
+    let transaction_observer_config = transaction_observer_config_from(config);
+
+    // Channel: Transport -> EventSequencing
+    let (transport_tx_sender, event_sequencing_rx) = unbounded();
+    // Channel: EventSequencing -> CoreEngine
+    let (event_sequencing_tx, engine_rx) = unbounded();
+    // Channel: CoreEngine -> TransactionObserver
+    let (incident_report_tx, incident_report_rx) = if transaction_observer_config.is_some() {
+        let (tx, rx) = unbounded();
+        (Some(tx), Some(rx))
+    } else {
+        (None, None)
+    };
+
+    let (result_tx, result_rx) = unbounded();
+    let (pending_requests_ttl, accepted_txs_ttl) = result_ttls(config);
+    let engine_state_results = TransactionsState::with_result_sender_and_ttls(
+        result_tx,
+        pending_requests_ttl,
+        accepted_txs_ttl,
+    );
+    let result_event_rx = Some(result_rx);
+
+    let mut transport = create_transport_from_args(
+        config,
+        transport_tx_sender,
+        engine_state_results.clone(),
+        result_event_rx,
+    )?;
+
+    // Spawn EventSequencing on a dedicated OS thread
+    let event_sequencing = EventSequencing::new(event_sequencing_rx, event_sequencing_tx);
+    let (seq_handle, seq_exited) = event_sequencing.spawn(Arc::clone(&shutdown_flag))?;
+    thread_handles.event_sequencing = Some(seq_handle);
+
+    // Spawn CoreEngine on a dedicated OS thread
+    let engine_config = CoreEngineConfig {
+        transaction_results_max_capacity: config.credible.transaction_results_max_capacity,
+        state_sources_sync_timeout: Duration::from_millis(config.state.sources_sync_timeout_ms),
+        source_monitoring_period: Duration::from_millis(config.state.sources_monitoring_period_ms),
+        overlay_cache_invalidation_every_block: config
+            .credible
+            .overlay_cache_invalidation_every_block
+            .unwrap_or(false),
+        incident_sender: incident_report_tx,
+        #[cfg(feature = "cache_validation")]
+        provider_ws_url: Some(config.credible.cache_checker_ws_url.clone()),
+    };
+    let engine = CoreEngine::new(
+        cache,
+        state,
+        engine_rx,
+        assertion_executor.clone(),
+        engine_state_results.clone(),
+        engine_config,
+    )
+    .await;
+    let (engine_handle, engine_exited) = engine.spawn(Arc::clone(&shutdown_flag))?;
+    thread_handles.engine = Some(engine_handle);
+
+    let observer_exited_rx = if let (Some(transaction_observer_config), Some(incident_report_rx)) =
+        (transaction_observer_config, incident_report_rx)
+    {
+        let transaction_observer =
+            TransactionObserver::new(transaction_observer_config, incident_report_rx)?;
+        let (observer_handle, observer_exited) =
+            transaction_observer.spawn(Arc::clone(&shutdown_flag))?;
+        thread_handles.transaction_observer = Some(observer_handle);
+        Some(observer_exited)
+    } else {
+        tracing::info!("Transaction observer disabled: missing config");
+        None
+    };
+
+    let mut health_server = HealthServer::new(health_bind_addr);
+
+    let indexer_cfg = init_indexer_config(config, assertion_store.clone(), executor_config).await?;
+
+    let should_shutdown = Box::pin(run_async_components(
+        &mut transport,
+        &mut health_server,
+        indexer_cfg,
+        engine_exited,
+        seq_exited,
+        observer_exited_rx,
+    ))
+    .await;
+
+    // Signal threads to stop
+    tracing::info!("Signaling threads to shutdown...");
+    shutdown_flag.store(true, Ordering::Relaxed);
+
+    // Cleanup async components
+    transport.stop();
+    health_server.stop();
+    drop(transport);
+    drop(health_server);
+
+    // Wait for threads
+    thread_handles.join_all();
+
+    Ok(should_shutdown)
 }

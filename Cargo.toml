@@ -16,9 +16,11 @@ members = [
     "crates/sidecar/src/utils/test-macros",
     "crates/state-worker",
     "crates/shadow-driver",
-    "crates/state-store",
+    "crates/mdbx",
+    "crates/benchmark-utils",
     "crates/state-checker",
     "crates/credible-utils",
+    "crates/eip-system-calls",
     "scripts/geth_snapshot",
 ]
 exclude = ["fuzz"]
@@ -26,7 +28,7 @@ resolver = "2"
 
 
 [workspace.package]
-version = "0.10.1"
+version = "1.0.8"
 edition = "2024"
 authors = ["Phylax Systems"]
 license = "BSL 1.1"
@@ -56,8 +58,12 @@ int-test-utils = { path = "crates/int-test-utils" }
 # assertion-executor
 assertion-executor = { path = "crates/assertion-executor", default-features = false }
 
+# common eip system calls
+eip-system-calls = { path = "crates/eip-system-calls" }
+
 sidecar = { path = "crates/sidecar" }
-state-store = { path = "crates/state-store", features = ["reader"] }
+mdbx = { path = "crates/mdbx", features = ["reader"] }
+benchmark-utils = { path = "crates/benchmark-utils", features = [] }
 
 # misc
 anyhow = "1.0.100"
@@ -155,6 +161,8 @@ reth-db = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
 reth-db-api = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
 reth-libmdbx = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
 
+[workspace.metadata.cargo-shear]
+ignored = ["benchmark-utils"]
 
 # Maxperf profile for absolute maximum performance
 # Only use for builds that are going to get used by end users

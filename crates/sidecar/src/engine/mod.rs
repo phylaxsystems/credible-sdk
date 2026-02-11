@@ -62,6 +62,8 @@ use self::{
         SystemCallsConfig,
     },
 };
+#[cfg(any(test, feature = "bench-utils"))]
+use crate::utils::local_instance_db::LocalInstanceDb;
 use crate::{
     TransactionsState,
     critical,
@@ -76,10 +78,22 @@ use crate::{
         ReconstructableTx,
     },
 };
-use assertion_executor::primitives::{
-    EVMError,
-    TxValidationResult,
+use assertion_executor::{
+    AssertionExecutor,
+    ExecutorConfig,
+    db::overlay::OverlayDb,
+    primitives::{
+        EVMError,
+        ExecutionResult,
+        TxValidationResult,
+    },
+    store::{
+        AssertionState,
+        AssertionStore,
+        AssertionStoreError,
+    },
 };
+use revm::state::EvmState;
 use std::{
     fmt::Debug,
     sync::{
@@ -96,19 +110,12 @@ use std::{
 };
 use tokio::sync::oneshot;
 
-#[allow(unused_imports)]
-use assertion_executor::{
-    AssertionExecutor,
-    ExecutorConfig,
-    db::overlay::OverlayDb,
-    primitives::ExecutionResult,
-    store::{
-        AssertionState,
-        AssertionStore,
-        AssertionStoreError,
-    },
-};
-use revm::state::EvmState;
+#[derive(Debug)]
+struct FailedAssertionLog {
+    adopter: assertion_executor::primitives::Address,
+    assertion_id: assertion_executor::primitives::B256,
+    fn_selector: assertion_executor::primitives::FixedBytes<4>,
+}
 
 use crate::{
     cache::Sources,
@@ -134,10 +141,9 @@ use assertion_executor::{
     },
 };
 use dashmap::DashMap;
+use metrics::counter;
 #[cfg(feature = "cache_validation")]
 use monitoring::cache::CacheChecker;
-use revm::primitives::hardfork::SpecId;
-#[allow(unused_imports)]
 use revm::{
     DatabaseCommit,
     DatabaseRef,
@@ -148,6 +154,7 @@ use revm::{
     primitives::{
         Address,
         B256,
+        hardfork::SpecId,
     },
 };
 use std::collections::HashMap;
@@ -163,8 +170,36 @@ use tracing::{
     warn,
 };
 
+#[cfg(feature = "cache_validation")]
+type TxStateMap = HashMap<TxHash, Option<EvmState>>;
+#[cfg(feature = "cache_validation")]
+type BlockTxStateMap = Arc<TxStateMap>;
+#[cfg(feature = "cache_validation")]
+type ProcessedBlocksCache = Arc<moka::sync::Cache<u64, BlockTxStateMap>>;
+
 /// Timeout for recv - threads will check for the shutdown flag at this interval
 const RECV_TIMEOUT: Duration = Duration::from_millis(100);
+
+/// Max capacity for assertion failure cache.
+const ASSERTION_FAILURE_CACHE_SIZE: u64 = 2048;
+
+pub struct CoreEngineConfig {
+    pub transaction_results_max_capacity: usize,
+    pub state_sources_sync_timeout: Duration,
+    pub source_monitoring_period: Duration,
+    pub overlay_cache_invalidation_every_block: bool,
+    pub incident_sender: Option<IncidentReportSender>,
+    #[cfg(feature = "cache_validation")]
+    pub provider_ws_url: Option<String>,
+}
+
+pub type EngineThreadResult = Result<
+    (
+        std::thread::JoinHandle<Result<(), EngineError>>,
+        oneshot::Receiver<Result<(), EngineError>>,
+    ),
+    std::io::Error,
+>;
 
 /// Branch prediction hint for unlikely conditions
 #[inline]
@@ -249,27 +284,84 @@ struct BlockIterationData<DB> {
     /// Versioned database managing state with rollback capability.
     /// Handles base state, current state, and commit log internally.
     version_db: VersionDb<OverlayDb<DB>>,
-    /// How many transactions we have seen for each iteration in the `blockEnv` we are currently working on
-    n_transactions: u64,
-    /// Ordered list of executed transactions for this iteration (used for rollback).
-    executed_txs: Vec<TxExecutionId>,
-    /// Stores executed transactions for incident reporting (full tx data).
-    incident_txs: Vec<ReconstructableTx>,
+    /// List of ordered executed transactions for this iteration, used for rollback.
+    executed_txs: Vec<ExecutedTx>,
     /// Iteration `BlockEnv`
     block_env: BlockEnv,
+    /// State deltas for executed transactions, used to persist canonical state in tests.
+    #[cfg(any(test, feature = "bench-utils"))]
+    executed_state_deltas: Vec<Option<EvmState>>,
+}
+
+/// A single executed transaction entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ExecutedTx {
+    /// Carries full reconstruction data for incident reporting.
+    Valid(TxExecutionId, Box<ReconstructableTx>),
+    /// Pre-execution validation errors ie. bad nonce, insufficient funds, etc.
+    Invalid(TxExecutionId),
+}
+
+impl ExecutedTx {
+    /// Creates a valid executed transaction entry.
+    #[inline]
+    fn valid(id: TxExecutionId, tx_data: ReconstructableTx) -> Self {
+        Self::Valid(id, Box::new(tx_data))
+    }
+
+    #[inline]
+    fn id(&self) -> TxExecutionId {
+        match self {
+            Self::Valid(id, _) | Self::Invalid(id) => *id,
+        }
+    }
+
+    #[inline]
+    fn tx_hash(&self) -> TxHash {
+        self.id().tx_hash
+    }
 }
 
 impl<DB> BlockIterationData<DB> {
+    /// Returns the number of executed transactions in this iteration, including validation errors.
+    #[inline]
+    fn total_tx_count(&self) -> u64 {
+        self.executed_txs.len() as u64
+    }
+
+    /// Returns the number of successfully validated transactions (excludes validation errors).
+    #[inline]
+    fn valid_count(&self) -> u64 {
+        self.executed_txs
+            .iter()
+            .filter(|tx| matches!(tx, ExecutedTx::Valid(..)))
+            .count() as u64
+    }
+
     /// Checks if the last executed transaction matches the given transaction ID
     #[inline]
     fn has_last_tx(&self, tx_id: TxExecutionId) -> bool {
-        self.executed_txs.last().is_some_and(|id| *id == tx_id)
+        self.executed_txs.last().is_some_and(|tx| tx.id() == tx_id)
     }
 
     /// Gets the transaction ID of the last executed transaction, if any
     #[inline]
     fn last_tx_id(&self) -> Option<TxExecutionId> {
-        self.executed_txs.last().copied()
+        self.executed_txs.last().map(ExecutedTx::id)
+    }
+
+    /// Collects `(TxHash, TxEnv)` reconstruction data from successfully executed transactions,
+    /// filtering out pre-execution validation failures (`Invalid` entries).
+    fn executed_tx_data(&self) -> Vec<ReconstructableTx> {
+        self.executed_txs
+            .iter()
+            .filter_map(|tx| {
+                match tx {
+                    ExecutedTx::Valid(_, data) => Some(data.as_ref().clone()),
+                    ExecutedTx::Invalid(_) => None,
+                }
+            })
+            .collect()
     }
 
     /// Returns the current depth (number of commits) in the version database.
@@ -288,10 +380,19 @@ pub struct CoreEngine<DB> {
     ///
     /// This is the state the `CoreEngine` is executing transactions against.
     cache: OverlayDb<DB>,
+    /// Optional canonical backing store (tests only).
+    ///
+    /// In production, canonical state lives in external sources and is fetched on demand.
+    /// In tests, we use a mutable in-memory database so cache invalidations behave like
+    /// production (i.e. state falls back to the latest committed state).
+    #[cfg(any(test, feature = "bench-utils"))]
+    canonical_db: Option<Arc<LocalInstanceDb<revm::database::CacheDB<Arc<Sources>>>>>,
     /// Current block iteration data per block execution id.
     current_block_iterations: HashMap<BlockExecutionId, BlockIterationData<DB>>,
     /// Current head: last committed block.
     current_head: U256,
+    /// Whether at least one commit head event has been processed.
+    first_commit_head_processed: bool,
     /// External providers of state we use when we do not have a piece of state cached in our in memory db.
     /// External state providers implement a trait that we use to query databaseref-like data and populate `state: OverlayDb<DB>`
     /// for execution with it.
@@ -302,8 +403,6 @@ pub struct CoreEngine<DB> {
     tx_receiver: TransactionQueueReceiver,
     /// Channel on which the core engine sends invalidation reports.
     incident_sender: Option<IncidentReportSender>,
-    /// Cache whether incident reporting is enabled.
-    report_incidents: bool,
     /// Core engines instance of the assertion executor, executes transactions and assertions
     assertion_executor: AssertionExecutor,
     /// Stores results of executed transactions
@@ -320,13 +419,16 @@ pub struct CoreEngine<DB> {
     /// System calls handler for EIP-2935 and EIP-4788.
     system_calls: SystemCalls,
     #[cfg(feature = "cache_validation")]
-    processed_transactions: Arc<moka::sync::Cache<TxHash, Option<EvmState>>>,
+    processed_transactions: ProcessedBlocksCache,
     #[cfg(feature = "cache_validation")]
     iteration_pending_processed_transactions:
         HashMap<BlockExecutionId, HashMap<TxHash, Option<EvmState>>>,
     #[cfg(feature = "cache_validation")]
     cache_checker: Option<AbortHandle>,
     cache_metrics_handle: Option<JoinHandle<()>>,
+    /// Cache of tx hashes that triggered assertion failures.
+    /// Prevents duplicate logging/metrics on re-execution.
+    assertion_failure_cache: moka::sync::Cache<TxHash, ()>,
 }
 
 #[cfg(feature = "cache_validation")]
@@ -342,7 +444,6 @@ impl<DB> Drop for CoreEngine<DB> {
 }
 
 impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
-    #[allow(clippy::too_many_arguments)]
     #[instrument(name = "engine::new", skip_all, level = "debug")]
     pub async fn new(
         cache: OverlayDb<DB>,
@@ -350,21 +451,13 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         tx_receiver: TransactionQueueReceiver,
         assertion_executor: AssertionExecutor,
         state_results: Arc<TransactionsState>,
-        transaction_results_max_capacity: usize,
-        state_sources_sync_timeout: Duration,
-        source_monitoring_period: Duration,
-        overlay_cache_invalidation_every_block: bool,
-        cancun_time: Option<u64>,
-        prague_time: Option<u64>,
-        incident_sender: Option<IncidentReportSender>,
-        #[cfg(feature = "cache_validation")] provider_ws_url: Option<&str>,
+        config: CoreEngineConfig,
     ) -> Self {
-        let report_incidents = incident_sender.is_some();
         #[cfg(feature = "cache_validation")]
         let (processed_transactions, cache_checker) = {
-            let processed_transactions: Arc<moka::sync::Cache<TxHash, Option<EvmState>>> =
-                Arc::new(moka::sync::Cache::builder().max_capacity(100).build());
-            let handle = if let Some(provider_ws_url) = provider_ws_url
+            let processed_transactions: ProcessedBlocksCache =
+                Arc::new(moka::sync::Cache::builder().max_capacity(128).build());
+            let handle = if let Some(provider_ws_url) = config.provider_ws_url.as_deref()
                 && let Ok(cache_checker) =
                     CacheChecker::try_new(provider_ws_url, processed_transactions.clone()).await
             {
@@ -377,36 +470,51 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             (processed_transactions, handle)
         };
 
+        let assertion_failure_cache = moka::sync::Cache::builder()
+            .max_capacity(ASSERTION_FAILURE_CACHE_SIZE)
+            .build();
+
         Self {
             cache_metrics_handle: Some(cache.spawn_monitoring_thread()),
             cache,
+            #[cfg(any(test, feature = "bench-utils"))]
+            canonical_db: None,
             current_block_iterations: HashMap::new(),
             current_head: U256::ZERO,
+            first_commit_head_processed: false,
             sources: sources.clone(),
             tx_receiver,
-            incident_sender,
-            report_incidents,
+            incident_sender: config.incident_sender,
             assertion_executor,
             transaction_results: TransactionsResults::new(
                 state_results,
-                transaction_results_max_capacity,
+                config.transaction_results_max_capacity,
             ),
             block_metrics: BlockMetrics::new(),
-            state_sources_sync_timeout,
+            state_sources_sync_timeout: config.state_sources_sync_timeout,
             check_sources_available: true,
             sources_monitoring: monitoring::sources::Sources::new(
                 sources,
-                source_monitoring_period,
+                config.source_monitoring_period,
             ),
-            overlay_cache_invalidation_every_block,
-            system_calls: SystemCalls::new(cancun_time, prague_time),
+            overlay_cache_invalidation_every_block: config.overlay_cache_invalidation_every_block,
+            system_calls: SystemCalls::new(),
             #[cfg(feature = "cache_validation")]
             processed_transactions,
             #[cfg(feature = "cache_validation")]
             iteration_pending_processed_transactions: HashMap::new(),
             #[cfg(feature = "cache_validation")]
             cache_checker,
+            assertion_failure_cache,
         }
+    }
+
+    #[cfg(any(test, feature = "bench-utils"))]
+    pub fn set_canonical_db_for_tests(
+        &mut self,
+        canonical_db: Arc<LocalInstanceDb<revm::database::CacheDB<Arc<Sources>>>>,
+    ) {
+        self.canonical_db = Some(canonical_db);
     }
 
     /// Returns the current spec ID from the executor configuration.
@@ -448,7 +556,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 );
 
                 self.add_transaction_result(
-                    tx_execution_id,
+                    ExecutedTx::Invalid(tx_execution_id),
                     &TransactionResult::ValidationError(format!("{e:?}")),
                     None,
                 )?;
@@ -465,7 +573,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                     "Fatal assertion execution error occurred"
                 );
                 self.add_transaction_result(
-                    tx_execution_id,
+                    ExecutedTx::Invalid(tx_execution_id),
                     &TransactionResult::ValidationError(format!("{e:?}")),
                     Some(state.clone()),
                 )?;
@@ -479,10 +587,11 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
     /// the executed transaction for reorg validation.
     fn add_transaction_result(
         &mut self,
-        tx_execution_id: TxExecutionId,
+        executed_tx: ExecutedTx,
         result: &TransactionResult,
         state: Option<EvmState>,
     ) -> Result<(), EngineError> {
+        let tx_execution_id = executed_tx.id();
         let block_id = tx_execution_id.as_block_execution_id();
 
         let current_block_iteration = self
@@ -498,7 +607,11 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 .insert(tx_execution_id.tx_hash, state.clone());
         }
 
-        current_block_iteration.executed_txs.push(tx_execution_id);
+        current_block_iteration.executed_txs.push(executed_tx);
+        #[cfg(any(test, feature = "bench-utils"))]
+        current_block_iteration
+            .executed_state_deltas
+            .push(state.clone());
         current_block_iteration.version_db.commit_opt(state);
         self.transaction_results
             .add_transaction_result(tx_execution_id, result);
@@ -512,6 +625,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         tx_execution_id: TxExecutionId,
         tx_env: &TxEnv,
         rax: &TxValidationResult,
+        processing_duration: std::time::Duration,
     ) {
         let tx_hash = tx_execution_id.tx_hash;
         let is_valid = rax.is_valid();
@@ -530,6 +644,8 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             is_valid,
             status,
             gas_used = execution_result.gas_used(),
+            processing_duration = ?processing_duration,
+            assertion_execution_duration = ?rax.assertion_execution_duration,
             "Transaction processed"
         );
 
@@ -548,13 +664,45 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 self.block_metrics.transactions_simulated_failure += 1;
             }
         } else {
+            let failed_assertions: Vec<_> = rax
+                .assertions_executions
+                .iter()
+                .flat_map(|assertion_execution| {
+                    assertion_execution
+                        .assertion_fns_results
+                        .iter()
+                        .filter(|fn_result| !fn_result.is_success())
+                        .map(move |fn_result| {
+                            FailedAssertionLog {
+                                adopter: assertion_execution.adopter,
+                                assertion_id: fn_result.id.assertion_contract_id,
+                                fn_selector: fn_result.id.fn_selector,
+                            }
+                        })
+                })
+                .collect();
+
+            let span = tracing::Span::current();
+            span.record("assertion_failure_count", failed_assertions.len());
+            span.record(
+                "failed_assertions",
+                tracing::field::debug(&failed_assertions),
+            );
+
+            // Only count if not already cached (avoid duplicate noise on re-execution)
+            let not_cached = self.assertion_failure_cache.get(&tx_hash).is_none();
+            if not_cached {
+                self.block_metrics.invalidated_transactions += 1;
+                self.assertion_failure_cache.insert(tx_hash, ());
+            }
+
             warn!(
                 target = "engine",
                 tx_hash = %tx_hash,
+                failed_assertions = ?failed_assertions,
+                not_seen = not_cached,
                 "Transaction failed assertion validation"
             );
-
-            self.block_metrics.invalidated_transactions += 1;
         }
     }
 
@@ -620,8 +768,11 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         skip(self, tx_env),
         fields(
             tx_execution_id = %tx_execution_id.to_json_string(),
+            tx_hash = %tx_execution_id.tx_hash,
             caller = %tx_env.caller,
-            gas_limit = tx_env.gas_limit
+            gas_limit = tx_env.gas_limit,
+            failed_assertions = tracing::field::Empty,
+            assertion_failure_count = tracing::field::Empty
         ),
         level = "debug"
     )]
@@ -631,7 +782,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         tx_env: &TxEnv,
     ) -> Result<(), EngineError> {
         let block_id = tx_execution_id.as_block_execution_id();
-        let should_report = self.report_incidents;
+        let should_report = self.incident_sender.is_some();
 
         let current_block_iteration = self
             .current_block_iterations
@@ -673,7 +824,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
 
         let is_valid = rax.is_valid();
         let prev_txs = if should_report && !is_valid {
-            Some(current_block_iteration.incident_txs.clone())
+            Some(current_block_iteration.executed_tx_data())
         } else {
             None
         };
@@ -682,18 +833,26 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         let assertions_ran = rax.total_assertion_funcs_ran();
         let assertions_gas = rax.total_assertions_gas();
 
-        self.block_metrics.assertions_per_block += assertions_ran;
-        self.block_metrics.assertion_gas_per_block += assertions_gas;
+        // Only count assertion metrics if TX not already cached (failed assertion dedup)
+        if self
+            .assertion_failure_cache
+            .get(&tx_execution_id.tx_hash)
+            .is_none()
+        {
+            self.block_metrics.assertions_per_block += assertions_ran;
+            self.block_metrics.assertion_gas_per_block += assertions_gas;
+        }
         self.block_metrics.transactions_simulated += 1;
 
         // Commit transaction metrics
         let mut tx_metrics = TransactionMetrics::new();
         tx_metrics.transaction_processing_duration = processing_duration;
+        tx_metrics.assertion_execution_duration = rax.assertion_execution_duration;
         tx_metrics.assertions_per_transaction = assertions_ran;
         tx_metrics.assertion_gas_per_transaction = assertions_gas;
         tx_metrics.commit();
 
-        self.trace_execute_transaction_result(tx_execution_id, tx_env, &rax);
+        self.trace_execute_transaction_result(tx_execution_id, tx_env, &rax, processing_duration);
 
         let tx_data: ReconstructableTx = (tx_execution_id.tx_hash, tx_env.clone());
         if let Some(prev_txs) = prev_txs {
@@ -702,7 +861,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
 
         let result_and_state = rax.result_and_state;
         self.add_transaction_result(
-            tx_execution_id,
+            ExecutedTx::valid(tx_execution_id, tx_data),
             &TransactionResult::ValidationCompleted {
                 is_valid,
                 execution_result: result_and_state.result,
@@ -710,25 +869,30 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             Some(result_and_state.state),
         )?;
 
-        let current_block_iteration = self
-            .current_block_iterations
-            .get_mut(&block_id)
-            .ok_or(EngineError::TransactionError)?;
-        current_block_iteration.incident_txs.push(tx_data);
-        // Only count transactions that pass validation (is_valid == true).
-        // Invalid transactions (failed assertions) are not counted as they
-        // won't be included in the block.
-        if is_valid {
-            current_block_iteration.n_transactions += 1;
-        }
-
         Ok(())
     }
 
     /// Invalidates the state and cache for all block iterations
     fn invalidate_all(&mut self, commit_head: &CommitHead) {
-        self.sources
-            .reset_latest_unprocessed_block(commit_head.block_number);
+        self.invalidate_all_at_block(commit_head.block_number);
+    }
+
+    /// Invalidates all in-memory state and clears any in-flight transaction tracking.
+    ///
+    /// This is used when we detect that our cached state is no longer safe to use.
+    fn invalidate_all_at_block(&mut self, reset_to_block: U256) {
+        self.sources.reset_latest_unprocessed_block(reset_to_block);
+
+        // Flush any transactions that were executed for the iterations we're about to drop,
+        // otherwise we can retain leftover tx state/results across invalidations.
+        let tx_ids = self
+            .current_block_iterations
+            .values()
+            .flat_map(|iteration| iteration.executed_txs.iter().map(ExecutedTx::id))
+            .collect::<Vec<_>>();
+        self.transaction_results.invalidate_tx_ids(tx_ids);
+        #[cfg(feature = "cache_validation")]
+        self.iteration_pending_processed_transactions.clear();
 
         // Measure cache invalidation time and set its new min required driver height
         let instant = Instant::now();
@@ -736,29 +900,51 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         self.cache.invalidate_all();
         self.current_block_iterations.clear();
         self.block_metrics
-            .increment_cache_invalidation(instant.elapsed(), commit_head.block_number);
+            .increment_cache_invalidation(instant.elapsed(), reset_to_block);
     }
 
     /// Checks if the cache should be cleared and clears it.
-    fn check_cache(&mut self, commit_head: &CommitHead, block_execution_id: &BlockExecutionId) {
+    /// Returns `true` if processing should continue, `false` if cache was invalidated.
+    fn check_cache(
+        &mut self,
+        commit_head: &CommitHead,
+        block_execution_id: &BlockExecutionId,
+    ) -> bool {
         // Single HashMap lookup instead of multiple
-        let (last_tx_id, n_transactions) =
-            match self.current_block_iterations.get(block_execution_id) {
-                Some(data) => (data.last_tx_id(), data.n_transactions),
-                None => (None, 0),
-            };
+        let Some(data) = self.current_block_iterations.get(block_execution_id) else {
+            // CommitHead without prior NewIteration - invalidate cache
+            warn!(
+                target = "engine",
+                current_head = %self.current_head,
+                commit_head_block_number = %commit_head.block_number,
+                commit_head_n_transactions = commit_head.n_transactions,
+                commit_head_last_tx_hash = ?commit_head.last_tx_hash,
+                "Invalidating cache: CommitHead without NewIteration"
+            );
+            self.invalidate_all(commit_head);
+            return false;
+        };
+
+        let last_tx_id = data.last_tx_id();
+        let n_transactions = data.valid_count();
 
         // Check cheapest conditions first
         let head_mismatch =
             self.current_head != commit_head.block_number.saturating_sub(U256::from(1));
+        let sidecar_last_tx_hash = last_tx_id.map(|id| id.tx_hash);
+        let commit_head_last_tx_hash = commit_head.last_tx_hash;
         let tx_hash_mismatch =
-            last_tx_id.is_some() && last_tx_id.map(|id| id.tx_hash) != commit_head.last_tx_hash;
+            sidecar_last_tx_hash.is_some() && sidecar_last_tx_hash != commit_head_last_tx_hash;
         let count_mismatch = n_transactions != commit_head.n_transactions;
 
         trace!(
             head_mismatch = head_mismatch,
             tx_hash_mismatch = tx_hash_mismatch,
             count_mismatch = count_mismatch,
+            sidecar_n_transactions = n_transactions,
+            commit_head_n_transactions = commit_head.n_transactions,
+            sidecar_last_tx_hash = ?sidecar_last_tx_hash,
+            commit_head_last_tx_hash = ?commit_head_last_tx_hash,
             "Checking cache conditions"
         );
 
@@ -766,47 +952,48 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             warn!(
                 current_head = %self.current_head,
                 commit_head = %commit_head.block_number,
+                sidecar_n_transactions = n_transactions,
+                commit_head_n_transactions = commit_head.n_transactions,
+                sidecar_last_tx_hash = ?sidecar_last_tx_hash,
+                commit_head_last_tx_hash = ?commit_head_last_tx_hash,
                 "Invalidating cache: CommitHead not +1 from current head"
             );
             self.invalidate_all(commit_head);
+            return false;
         } else if tx_hash_mismatch {
-            if let Some(prev_id) = last_tx_id {
-                warn!(
-                    prev_tx_hash = %prev_id.tx_hash,
-                    current_tx_hash = ?commit_head.last_tx_hash,
-                    "Invalidating cache: Last transaction hash mismatch"
-                );
-            }
+            warn!(
+                sidecar_last_tx_hash = ?sidecar_last_tx_hash,
+                commit_head_last_tx_hash = ?commit_head_last_tx_hash,
+                sidecar_n_transactions = n_transactions,
+                commit_head_n_transactions = commit_head.n_transactions,
+                "Invalidating cache: Last transaction hash mismatch"
+            );
             self.invalidate_all(commit_head);
+            return false;
         } else if count_mismatch {
             warn!(
                 sidecar_n_transactions = n_transactions,
                 block_env_n_transactions = commit_head.n_transactions,
+                sidecar_last_tx_hash = ?sidecar_last_tx_hash,
+                commit_head_last_tx_hash = ?commit_head_last_tx_hash,
                 "Invalidating cache: Transaction count mismatch"
             );
             self.invalidate_all(commit_head);
+            return false;
         }
+
+        true
     }
 
     /// Spawns the engine on a dedicated OS thread with blocking receive.
-    #[allow(clippy::type_complexity)]
-    pub fn spawn(
-        self,
-        shutdown: Arc<AtomicBool>,
-    ) -> Result<
-        (
-            std::thread::JoinHandle<Result<(), EngineError>>,
-            oneshot::Receiver<Result<(), EngineError>>,
-        ),
-        std::io::Error,
-    > {
+    pub fn spawn(self, shutdown: Arc<AtomicBool>) -> EngineThreadResult {
         let (tx, rx) = oneshot::channel();
 
         let handle = std::thread::Builder::new()
             .name("sidecar-engine".into())
             .spawn(move || {
                 let mut engine = self;
-                let result = engine.run_blocking(shutdown);
+                let result = engine.run_blocking(&shutdown);
                 // Notify that we're exiting (ignore send error if receiver dropped)
                 let _ = tx.send(result.clone());
                 result
@@ -816,8 +1003,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
     }
 
     /// Blocking run loop with shutdown support
-    #[allow(clippy::needless_pass_by_value)]
-    fn run_blocking(&mut self, shutdown: Arc<AtomicBool>) -> Result<(), EngineError> {
+    fn run_blocking(&mut self, shutdown: &Arc<AtomicBool>) -> Result<(), EngineError> {
         let mut processed_blocks = 0u64;
         let mut block_processing_time = Instant::now();
         let mut idle_start = Instant::now();
@@ -854,27 +1040,21 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             let event_start = Instant::now();
 
             let result = match event {
-                TxQueueContents::NewIteration(new_iteration, current_span) => {
-                    let _guard = current_span.enter();
+                TxQueueContents::NewIteration(new_iteration) => {
                     self.process_iteration(&new_iteration)
                 }
-                TxQueueContents::CommitHead(commit_head, current_span) => {
-                    let _guard = current_span.enter();
+                TxQueueContents::CommitHead(commit_head) => {
                     self.process_commit_head(
                         &commit_head,
                         &mut processed_blocks,
                         &mut block_processing_time,
                     )
                 }
-                TxQueueContents::Tx(queue_transaction, current_span) => {
-                    let _guard = current_span.enter();
-                    self.verify_state_sources_synced_blocking(&shutdown)
+                TxQueueContents::Tx(queue_transaction) => {
+                    self.verify_state_sources_synced_blocking(shutdown)
                         .and_then(|()| self.process_transaction_event(queue_transaction))
                 }
-                TxQueueContents::Reorg(reorg, current_span) => {
-                    let _guard = current_span.enter();
-                    self.execute_reorg(&reorg)
-                }
+                TxQueueContents::Reorg(reorg) => self.execute_reorg(&reorg),
             };
 
             if let Err(error) = result {
@@ -885,10 +1065,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                             error = ?error,
                             "Recoverable error occurred during event processing, continuing"
                         );
-                        self.cache.invalidate_all();
-                        self.sources
-                            .reset_latest_unprocessed_block(self.current_head);
-                        self.current_block_iterations.clear();
+                        self.invalidate_all_at_block(self.current_head);
                     }
                     ErrorRecoverability::Unrecoverable => {
                         critical!(
@@ -915,6 +1092,12 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         if !self.check_sources_available {
             return Ok(());
         }
+
+        // Return early until the first commit head has been processed
+        if !self.first_commit_head_processed {
+            return Ok(());
+        }
+
         self.check_sources_available = false;
 
         let start = Instant::now();
@@ -989,27 +1172,21 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
 
             // Process event and handle errors appropriately
             let result = match event {
-                TxQueueContents::NewIteration(new_iteration, current_span) => {
-                    let _guard = current_span.enter();
+                TxQueueContents::NewIteration(new_iteration) => {
                     self.process_iteration(&new_iteration)
                 }
-                TxQueueContents::CommitHead(commit_head, current_span) => {
-                    let _guard = current_span.enter();
+                TxQueueContents::CommitHead(commit_head) => {
                     self.process_commit_head(
                         &commit_head,
                         &mut processed_blocks,
                         &mut block_processing_time,
                     )
                 }
-                TxQueueContents::Tx(queue_transaction, current_span) => {
-                    let _guard = current_span.enter();
+                TxQueueContents::Tx(queue_transaction) => {
                     // In test mode, skip state source sync verification
                     self.process_transaction_event(queue_transaction)
                 }
-                TxQueueContents::Reorg(reorg, current_span) => {
-                    let _guard = current_span.enter();
-                    self.execute_reorg(&reorg)
-                }
+                TxQueueContents::Reorg(reorg) => self.execute_reorg(&reorg),
             };
 
             // Handle the result of event processing
@@ -1022,11 +1199,8 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                             error = ?error,
                             "Recoverable error occurred during event processing, continuing"
                         );
-                        // Invalid the cache and reset the latest unprocessed block
-                        self.cache.invalidate_all();
-                        self.sources
-                            .reset_latest_unprocessed_block(self.current_head);
-                        self.current_block_iterations.clear();
+                        // Invalidate the cache and reset the latest unprocessed block
+                        self.invalidate_all_at_block(self.current_head);
                     }
                     ErrorRecoverability::Unrecoverable => {
                         // Log the critical error and break the loop
@@ -1082,13 +1256,28 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         let block_execution_id = BlockExecutionId::from(new_iteration);
 
         // Create a VersionDb with a clone of the cache - VersionDb will create its own ForkDb internally
-        let block_iteration_data = BlockIterationData {
+        let mut block_iteration_data = BlockIterationData {
             version_db: VersionDb::new(self.cache.clone()),
-            n_transactions: 0,
             executed_txs: Vec::new(),
-            incident_txs: Vec::new(),
+            #[cfg(any(test, feature = "bench-utils"))]
+            executed_state_deltas: Vec::new(),
             block_env: block_env.clone(),
         };
+
+        // Apply eips system calls to the ForkDb before any transaction.
+        // Ensure transactions can query beacon roots and block hashes from system contracts.
+        let spec_id = self.get_spec_id();
+        let config = SystemCallsConfig::new(
+            spec_id,
+            block_env.number,
+            block_env.timestamp,
+            new_iteration.parent_block_hash,
+            new_iteration.parent_beacon_block_root,
+        );
+
+        self.system_calls
+            .apply_pre_tx_system_calls(&config, block_iteration_data.version_db.state_mut())
+            .map_err(EngineError::SystemCallError)?;
 
         // NOTE: If the sidecar receives the same iteration twice, the last one prevails
         self.current_block_iterations
@@ -1101,7 +1290,9 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             gas_limit = block_env.gas_limit,
             base_fee = ?block_env.basefee,
             iteration_id = block_execution_id.iteration_id,
-            "Iteration successfully created"
+            parent_block_hash = ?new_iteration.parent_block_hash,
+            parent_beacon_block_root = ?new_iteration.parent_beacon_block_root,
+            "Iteration successfully created with system calls applied"
         );
 
         Ok(())
@@ -1123,23 +1314,34 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             target = "engine",
             commit_head = ?commit_head,
             processed_blocks = *processed_blocks,
-            has_block_hash = commit_head.block_hash.is_some(),
+            has_block_hash = ?commit_head.block_hash,
             has_parent_beacon_block_root = commit_head.parent_beacon_block_root.is_some(),
+            processing_duration = ?block_processing_time.elapsed(),
             "Processing CommitHead",
         );
 
         let block_execution_id = BlockExecutionId::from(commit_head);
 
-        // If it is configured to invalidate the cache every block, do so
-        if self.overlay_cache_invalidation_every_block {
+        // Check if cache should be invalidated
+        let is_valid_state = if self.overlay_cache_invalidation_every_block {
             self.invalidate_all(commit_head);
+            false
         } else {
-            // If not, check if the cache should be invalidated.
-            self.check_cache(commit_head, &block_execution_id);
-        }
+            self.check_cache(commit_head, &block_execution_id)
+        };
 
-        let spec_id = self.get_spec_id();
-        let system_calls = self.system_calls.clone();
+        if !is_valid_state {
+            // Cache was invalidated (missing iteration, head/hash/count mismatch).
+            // Skip block finalization since there's no valid cached state to commit,
+            // we only update metrics and head tracking.
+            self.finalize_block_metrics(
+                commit_head.block_number,
+                processed_blocks,
+                block_processing_time,
+            );
+            self.first_commit_head_processed = true;
+            return Ok(());
+        }
 
         if let Some(iteration) = self.current_block_iterations.get(&block_execution_id)
             && iteration.version_db.last_commit_was_empty()
@@ -1147,7 +1349,8 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             return Err(EngineError::NothingToCommit);
         }
 
-        // Finalize the previous block by committing its fork to the underlying state
+        // Finalize the previous block by committing its fork to the underlying state.
+        // This merges the ForkDb (which already has system calls applied) into the OverlayDb.
         if self
             .current_block_iterations
             .contains_key(&block_execution_id)
@@ -1155,20 +1358,35 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             self.finalize_previous_block(block_execution_id);
         }
 
-        // Apply EIP-2935 and EIP-4788 system calls before finalizing
-        let config = SystemCallsConfig::new(
-            spec_id,
+        // Cache block hash for BLOCKHASH opcode lookups on future blocks.
+        // EIP-4788 and EIP-2935 were already applied to the ForkDb at iteration time.
+        self.system_calls.cache_block_hash(
             commit_head.block_number,
-            commit_head.timestamp,
             commit_head.block_hash,
-            commit_head.parent_beacon_block_root,
+            &self.cache,
         );
 
-        system_calls
-            .apply_system_calls(&config, &mut self.cache)
-            .map_err(EngineError::SystemCallError)?;
+        #[cfg(any(test, feature = "bench-utils"))]
+        if let Some(canonical_db) = self.canonical_db.as_ref() {
+            if let Some(iteration) = self.current_block_iterations.get_mut(&block_execution_id) {
+                for changes in iteration.executed_state_deltas.drain(..).flatten() {
+                    canonical_db.with_write(|db| db.commit(changes));
+                }
+            }
 
-        *processed_blocks += 1;
+            // For canonical_db, test only, apply full system calls since it's a separate DB
+            let spec_id = self.get_spec_id();
+            let config = SystemCallsConfig::new(
+                spec_id,
+                commit_head.block_number,
+                commit_head.timestamp,
+                Some(commit_head.block_hash),
+                commit_head.parent_beacon_block_root,
+            );
+            canonical_db
+                .apply_system_calls_canonical(&self.system_calls, &config)
+                .map_err(EngineError::SystemCallError)?;
+        }
 
         #[cfg(feature = "cache_validation")]
         {
@@ -1177,26 +1395,20 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 .iteration_pending_processed_transactions
                 .remove(&block_execution_id)
             {
-                for (tx_hash, state) in iteration {
-                    self.processed_transactions.insert(tx_hash, state);
-                }
+                let block_number = commit_head.block_number.saturating_to::<u64>();
+                self.processed_transactions
+                    .insert(block_number, Arc::new(iteration));
             }
             self.iteration_pending_processed_transactions.clear();
         }
 
-        // Set the block number to the latest applied head
-        self.sources.set_block_number(commit_head.block_number);
-        self.current_head = commit_head.block_number;
-
-        self.block_metrics.block_processing_duration = block_processing_time.elapsed();
-        self.block_metrics.current_height = commit_head.block_number;
-        // Commit all values inside of `block_metrics` to prometheus collector
-        self.block_metrics.commit();
-        // Reset the values inside to their defaults
-        self.block_metrics.reset();
-        *block_processing_time = Instant::now();
-
+        self.finalize_block_metrics(
+            commit_head.block_number,
+            processed_blocks,
+            block_processing_time,
+        );
         self.current_block_iterations.clear();
+        self.first_commit_head_processed = true;
 
         debug!(
             target = "engine",
@@ -1221,6 +1433,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         let tx_hash = tx_execution_id.tx_hash;
         let tx_env = queue_transaction.tx_env;
         self.block_metrics.transactions_considered += 1;
+        counter!("sidecar_transactions_considered_total").increment(1);
 
         info!(
             target = "engine",
@@ -1228,6 +1441,17 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             tx_hash = ?tx_hash,
             "Processing a new transaction",
         );
+
+        if !self.first_commit_head_processed {
+            debug!(
+                target = "engine",
+                tx_hash = %tx_hash,
+                block_number = %tx_execution_id.block_number,
+                iteration_id = tx_execution_id.iteration_id,
+                "Ignoring transaction before first CommitHead is processed"
+            );
+            return Ok(());
+        }
 
         let block_id = tx_execution_id.as_block_execution_id();
 
@@ -1260,7 +1484,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 tx_execution_id.block_number, expected_block_number, self.current_head
             );
             self.add_transaction_result(
-                tx_execution_id,
+                ExecutedTx::Invalid(tx_execution_id),
                 &TransactionResult::ValidationError(message),
                 None,
             )?;
@@ -1306,6 +1530,29 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             .commit_overlay_fork_db(current_block_iteration.version_db.state().clone());
     }
 
+    // Finalize block metrics and reset timing for next block.
+    #[inline]
+    fn finalize_block_metrics(
+        &mut self,
+        block_number: U256,
+        processed_blocks: &mut u64,
+        block_processing_time: &mut Instant,
+    ) {
+        // Set the block number to the latest applied head
+        self.sources.set_block_number(block_number);
+        self.current_head = block_number;
+
+        self.block_metrics.block_processing_duration = block_processing_time.elapsed();
+        self.block_metrics.current_height = block_number;
+        // Commit all values inside of `block_metrics` to prometheus collector
+        self.block_metrics.commit();
+        // Reset the values inside to their defaults for the next block
+        self.block_metrics.reset();
+
+        *block_processing_time = Instant::now();
+        *processed_blocks += 1;
+    }
+
     /// Processes a reorg event by validating the tail of executed transactions.
     /// If valid, roll back the last `depth` transactions for the iteration.
     #[instrument(
@@ -1330,10 +1577,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
     ///
     /// ## State Rollback
     /// Uses `VersionDb::rollback_to()` to restore state to before the reorged
-    /// transactions. Only decrements `n_transactions` by the count of VALID
-    /// transactions being removed (invalid transactions don't count toward
-    /// the block's transaction count).
-    #[allow(clippy::too_many_lines)]
+    /// transactions.
     fn execute_reorg(&mut self, reorg: &ReorgRequest) -> Result<(), EngineError> {
         let tx_execution_id = reorg.tx_execution_id;
         // Depth is derived from tx_hashes length
@@ -1345,9 +1589,50 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             "Checking reorg validity for hash"
         );
 
-        // === Validation Phase ===
+        Self::validate_reorg_non_empty(tx_execution_id, depth)?;
+        Self::validate_reorg_tip_hash(tx_execution_id, reorg)?;
 
-        // Validation 1: tx_hashes must be non-empty (depth > 0)
+        let current_block_iteration = self
+            .current_block_iterations
+            .get_mut(&tx_execution_id.as_block_execution_id())
+            .ok_or_else(|| {
+                error!(
+                    target = "engine",
+                    tx_hash = %tx_execution_id.tx_hash,
+                    block_number = %tx_execution_id.block_number,
+                    iteration_id = tx_execution_id.iteration_id,
+                    "Received reorg without first receiving a BlockEnv"
+                );
+                EngineError::ReorgError
+            })?;
+
+        let start =
+            Self::validate_reorg_tail(tx_execution_id, depth, reorg, current_block_iteration)?;
+
+        let removed_txs =
+            Self::apply_reorg_data(current_block_iteration, start, depth, tx_execution_id)?;
+
+        for removed in removed_txs {
+            self.transaction_results.remove_transaction_result(removed);
+            #[cfg(feature = "cache_validation")]
+            if let Some(iteration) = self
+                .iteration_pending_processed_transactions
+                .get_mut(&removed.as_block_execution_id())
+            {
+                iteration.remove(&removed.tx_hash);
+            }
+        }
+
+        Ok(())
+    }
+}
+
+impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
+    // Validation: tx_hashes must be non-empty (depth > 0)
+    fn validate_reorg_non_empty(
+        tx_execution_id: TxExecutionId,
+        depth: usize,
+    ) -> Result<(), EngineError> {
         if depth == 0 {
             error!(
                 target = "engine",
@@ -1356,8 +1641,14 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             );
             return Err(EngineError::ReorgError);
         }
+        Ok(())
+    }
 
-        // Validation 2: last hash in tx_hashes must match the reorg's tx_execution_id
+    // Validation: last hash in tx_hashes must match the reorg's tx_execution_id
+    fn validate_reorg_tip_hash(
+        tx_execution_id: TxExecutionId,
+        reorg: &ReorgRequest,
+    ) -> Result<(), EngineError> {
         if reorg.tx_hashes.last() != Some(&tx_execution_id.tx_hash) {
             error!(
                 target = "engine",
@@ -1366,26 +1657,20 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             );
             return Err(EngineError::BadReorgHash);
         }
+        Ok(())
+    }
 
-        let Some(current_block_iteration) = self
-            .current_block_iterations
-            .get_mut(&tx_execution_id.as_block_execution_id())
-        else {
-            error!(
-                target = "engine",
-                tx_hash = %tx_execution_id.tx_hash,
-                block_number = %tx_execution_id.block_number,
-                iteration_id = tx_execution_id.iteration_id,
-                "Received reorg without first receiving a BlockEnv"
-            );
-            return Err(EngineError::ReorgError);
-        };
-
-        // Validation 4 & 5: verify the reorg target matches our state
+    // Validation: verify the reorg target matches our state
+    fn validate_reorg_tail(
+        tx_execution_id: TxExecutionId,
+        depth: usize,
+        reorg: &ReorgRequest,
+        current_block_iteration: &BlockIterationData<DB>,
+    ) -> Result<usize, EngineError> {
         if current_block_iteration.has_last_tx(tx_execution_id) {
             let executed_len = current_block_iteration.executed_txs.len();
 
-            // Validation 4: can't reorg more transactions than we've executed
+            // Validation: can't reorg more transactions than we've executed
             if depth > executed_len {
                 error!(
                     target = "engine",
@@ -1397,7 +1682,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 return Err(EngineError::BadReorgHash);
             }
 
-            // Validation 5: tx_hashes must match the tail of executed transactions
+            // Validation: tx_hashes must match the tail of executed transactions
             // This ensures the driver and engine agree on what's being reorged.
             // tx_hashes are in chronological order (oldest first).
             let start = executed_len.saturating_sub(depth);
@@ -1406,7 +1691,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 .get(start..)
                 .ok_or(EngineError::BadReorgHash)?
                 .iter()
-                .map(|id| id.tx_hash);
+                .map(ExecutedTx::tx_hash);
             if !expected_hashes.eq(reorg.tx_hashes.iter().copied()) {
                 error!(
                     target = "engine",
@@ -1416,63 +1701,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 return Err(EngineError::BadReorgHash);
             }
 
-            // === Execution Phase ===
-
-            info!(
-                target = "engine",
-                tx_execution_id = %tx_execution_id.to_json_string(),
-                depth = depth,
-                "Executing reorg for hash"
-            );
-
-            let new_len = start;
-            let removed_txs = current_block_iteration.executed_txs.split_off(new_len);
-            // Also truncate incident_txs to match
-            current_block_iteration.incident_txs.truncate(new_len);
-            // Rollback the version database to the state before the removed transactions
-            // This handles both truncating the commit log and rebuilding state
-            current_block_iteration
-                .version_db
-                .rollback_to(new_len)
-                .map_err(|_| EngineError::ReorgError)?;
-
-            // Count how many of the removed transactions were valid.
-            // Only valid transactions contribute to `n_transactions` (the count used
-            // in CommitHead validation), so we only decrement by the valid count.
-            // Invalid transactions (failed assertions) are tracked in executed_txs
-            // but don't affect n_transactions.
-            let mut valid_tx_count = 0u64;
-            for removed in removed_txs {
-                let is_valid = self
-                    .transaction_results
-                    .get_transaction_result(&removed)
-                    .is_some_and(|result_ref| {
-                        matches!(
-                            &*result_ref,
-                            TransactionResult::ValidationCompleted { is_valid: true, .. }
-                        )
-                    });
-
-                if is_valid {
-                    valid_tx_count += 1;
-                }
-
-                self.transaction_results.remove_transaction_result(removed);
-                #[cfg(feature = "cache_validation")]
-                if let Some(iteration) = self
-                    .iteration_pending_processed_transactions
-                    .get_mut(&removed.as_block_execution_id())
-                {
-                    iteration.remove(&removed.tx_hash);
-                }
-            }
-
-            // Decrement n_transactions by valid count only (saturating to handle edge cases)
-            current_block_iteration.n_transactions = current_block_iteration
-                .n_transactions
-                .saturating_sub(valid_tx_count);
-
-            return Ok(());
+            return Ok(start);
         }
 
         error!(
@@ -1486,6 +1715,33 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         // If we received a reorg event before executing a tx,
         // or if the tx hashes dont match something bad happened and we need to exit
         Err(EngineError::BadReorgHash)
+    }
+
+    fn apply_reorg_data(
+        current_block_iteration: &mut BlockIterationData<DB>,
+        start: usize,
+        depth: usize,
+        tx_execution_id: TxExecutionId,
+    ) -> Result<Vec<TxExecutionId>, EngineError> {
+        info!(
+            target = "engine",
+            tx_execution_id = %tx_execution_id.to_json_string(),
+            depth = depth,
+            "Executing reorg for hash"
+        );
+
+        let new_len = start;
+        let removed_txs = current_block_iteration.executed_txs.split_off(new_len);
+        #[cfg(any(test, feature = "bench-utils"))]
+        current_block_iteration
+            .executed_state_deltas
+            .truncate(new_len);
+        current_block_iteration
+            .version_db
+            .rollback_to(new_len)
+            .map_err(|_| EngineError::ReorgError)?;
+
+        Ok(removed_txs.into_iter().map(|tx| tx.id()).collect())
     }
 }
 

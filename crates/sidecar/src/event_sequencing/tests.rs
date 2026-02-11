@@ -14,6 +14,7 @@ use crate::{
 };
 use alloy::primitives::TxHash;
 use assertion_executor::primitives::{
+    B256,
     Bytes,
     U256,
 };
@@ -33,15 +34,15 @@ use std::sync::{
 impl PartialEq for TxQueueContents {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (TxQueueContents::Tx(tx1, _), TxQueueContents::Tx(tx2, _)) => tx1 == tx2,
-            (TxQueueContents::Reorg(id1, _), TxQueueContents::Reorg(id2, _)) => id1 == id2,
-            (TxQueueContents::CommitHead(c1, _), TxQueueContents::CommitHead(c2, _)) => {
+            (TxQueueContents::Tx(tx1), TxQueueContents::Tx(tx2)) => tx1 == tx2,
+            (TxQueueContents::Reorg(id1), TxQueueContents::Reorg(id2)) => id1 == id2,
+            (TxQueueContents::CommitHead(c1), TxQueueContents::CommitHead(c2)) => {
                 c1.block_number == c2.block_number
                     && c1.selected_iteration_id == c2.selected_iteration_id
                     && c1.last_tx_hash == c2.last_tx_hash
                     && c1.n_transactions == c2.n_transactions
             }
-            (TxQueueContents::NewIteration(n1, _), TxQueueContents::NewIteration(n2, _)) => {
+            (TxQueueContents::NewIteration(n1), TxQueueContents::NewIteration(n2)) => {
                 n1.iteration_id == n2.iteration_id && n1.block_env == n2.block_env
             }
             _ => false,
@@ -102,18 +103,18 @@ fn build_dependency_graph_from_events(
         let mut sorted_events = block_events.clone();
         sorted_events.sort_by_key(|e| {
             match e {
-                TxQueueContents::NewIteration(ni, _) => (0, ni.iteration_id, 0u64),
-                TxQueueContents::Tx(tx, _) => {
+                TxQueueContents::NewIteration(ni) => (0, ni.iteration_id, 0u64),
+                TxQueueContents::Tx(tx) => {
                     (1, tx.tx_execution_id.iteration_id, tx.tx_execution_id.index)
                 }
-                TxQueueContents::Reorg(reorg, _) => {
+                TxQueueContents::Reorg(reorg) => {
                     (
                         1,
                         reorg.tx_execution_id.iteration_id,
                         reorg.tx_execution_id.index,
                     )
                 }
-                TxQueueContents::CommitHead(ch, _) => (2, ch.selected_iteration_id, 0u64),
+                TxQueueContents::CommitHead(ch) => (2, ch.selected_iteration_id, 0u64),
             }
         });
 
@@ -145,18 +146,18 @@ fn build_dependency_graph_from_events(
             let mut sorted_next = next_block_events.clone();
             sorted_next.sort_by_key(|e| {
                 match e {
-                    TxQueueContents::NewIteration(ni, _) => (0, ni.iteration_id, 0u64),
-                    TxQueueContents::Tx(tx, _) => {
+                    TxQueueContents::NewIteration(ni) => (0, ni.iteration_id, 0u64),
+                    TxQueueContents::Tx(tx) => {
                         (1, tx.tx_execution_id.iteration_id, tx.tx_execution_id.index)
                     }
-                    TxQueueContents::Reorg(reorg, _) => {
+                    TxQueueContents::Reorg(reorg) => {
                         (
                             1,
                             reorg.tx_execution_id.iteration_id,
                             reorg.tx_execution_id.index,
                         )
                     }
-                    TxQueueContents::CommitHead(ch, _) => (2, ch.selected_iteration_id, 0u64),
+                    TxQueueContents::CommitHead(ch) => (2, ch.selected_iteration_id, 0u64),
                 }
             });
 
@@ -193,10 +194,12 @@ fn create_new_iteration(block: u64, iteration: u64) -> TxQueueContents {
     let mut block_env = BlockEnv::default();
     block_env.number = U256::from(block);
 
-    TxQueueContents::NewIteration(
-        NewIteration::new(iteration, block_env),
-        tracing::Span::none(),
-    )
+    TxQueueContents::NewIteration(NewIteration::new(
+        iteration,
+        block_env,
+        Some(B256::ZERO),
+        Some(B256::ZERO),
+    ))
 }
 
 fn create_transaction(
@@ -213,14 +216,11 @@ fn create_transaction(
         index,
     };
 
-    TxQueueContents::Tx(
-        QueueTransaction {
-            tx_execution_id,
-            tx_env: TxEnv::default(),
-            prev_tx_hash,
-        },
-        tracing::Span::none(),
-    )
+    TxQueueContents::Tx(QueueTransaction {
+        tx_execution_id,
+        tx_env: TxEnv::default(),
+        prev_tx_hash,
+    })
 }
 
 fn create_reorg_with_hashes(
@@ -239,13 +239,10 @@ fn create_reorg_with_hashes(
         index,
     };
 
-    TxQueueContents::Reorg(
-        ReorgRequest {
-            tx_execution_id,
-            tx_hashes,
-        },
-        tracing::Span::none(),
-    )
+    TxQueueContents::Reorg(ReorgRequest {
+        tx_execution_id,
+        tx_hashes,
+    })
 }
 
 fn create_reorg(block: u64, iteration: u64, index: u64, tx_hash: TxHash) -> TxQueueContents {
@@ -258,18 +255,15 @@ fn create_commit_head(
     n_txs: u64,
     last_tx_hash: Option<TxHash>,
 ) -> TxQueueContents {
-    TxQueueContents::CommitHead(
-        CommitHead::new(
-            U256::from(block),
-            iteration,
-            last_tx_hash,
-            n_txs,
-            None,
-            None,
-            U256::ZERO,
-        ),
-        tracing::Span::none(),
-    )
+    TxQueueContents::CommitHead(CommitHead::new(
+        U256::from(block),
+        iteration,
+        last_tx_hash,
+        n_txs,
+        B256::ZERO,
+        None,
+        U256::ZERO,
+    ))
 }
 
 #[test]
@@ -2197,7 +2191,7 @@ async fn test_future_block_transaction_queuing(mut instance: LocalInstance<_>) {
         .nonce(0)
         .build()
         .unwrap();
-    instance.transport.set_last_tx_hash(None);
+    instance.transport.set_prev_tx_hash(None);
 
     instance
         .transport
@@ -2374,7 +2368,7 @@ async fn test_future_block_out_of_order_transactions(mut instance: LocalInstance
         .send_transaction(tx3_id, tx3_env)
         .await
         .unwrap();
-    instance.transport.set_last_tx_hash(None);
+    instance.transport.set_prev_tx_hash(None);
     instance
         .transport
         .send_transaction(tx1_id, tx1_env)
@@ -2505,7 +2499,9 @@ async fn test_multiple_future_blocks_interleaved(mut instance: LocalInstance<_>)
         .kind(TxKind::Create)
         .value(U256::ZERO)
         .data(Bytes::default())
-        .nonce(0)
+        // Nonces are per-sender and must be valid at *execution time*.
+        // tx3 executes first (nonce 0), then tx5 (nonce 1), then tx7 (nonce 2).
+        .nonce(2)
         .build()
         .unwrap();
     instance
@@ -2514,7 +2510,7 @@ async fn test_multiple_future_blocks_interleaved(mut instance: LocalInstance<_>)
         .await
         .unwrap();
 
-    instance.transport.set_last_tx_hash(None);
+    instance.transport.set_prev_tx_hash(None);
     let tx3_env = TxEnvBuilder::new()
         .caller(instance.default_account)
         .gas_limit(100_000)
@@ -2531,7 +2527,7 @@ async fn test_multiple_future_blocks_interleaved(mut instance: LocalInstance<_>)
         .await
         .unwrap();
 
-    instance.transport.set_last_tx_hash(None);
+    instance.transport.set_prev_tx_hash(None);
     let tx5_env = TxEnvBuilder::new()
         .caller(instance.default_account)
         .gas_limit(100_000)
@@ -2539,7 +2535,7 @@ async fn test_multiple_future_blocks_interleaved(mut instance: LocalInstance<_>)
         .kind(TxKind::Create)
         .value(U256::ZERO)
         .data(Bytes::default())
-        .nonce(0)
+        .nonce(1)
         .build()
         .unwrap();
     instance
@@ -2685,8 +2681,13 @@ async fn test_partial_transaction_chain_backwards(mut instance: LocalInstance<_>
         .collect();
 
     // Send in this order: tx1, tx3, tx2, tx0
-    // tx1 with prev = None
-    instance.transport.set_last_tx_hash(None);
+    //
+    // The chain we want is: tx0 -> tx1 -> tx2 -> tx3.
+    // Since we're sending backwards/interleaved, we manually set `prev_tx_hash`
+    // to the expected predecessor hash for each tx.
+    //
+    // tx1 depends on tx0
+    instance.transport.set_prev_tx_hash(Some(tx_hashes[0]));
     let tx1_env = TxEnvBuilder::new()
         .caller(instance.default_account)
         .gas_limit(100_000)
@@ -2703,7 +2704,8 @@ async fn test_partial_transaction_chain_backwards(mut instance: LocalInstance<_>
         .await
         .unwrap();
 
-    // tx3 with prev = tx1 (automatic)
+    // tx3 depends on tx2 (even though tx2 hasn't been sent yet)
+    instance.transport.set_prev_tx_hash(Some(tx_hashes[2]));
     let tx3_env = TxEnvBuilder::new()
         .caller(instance.default_account)
         .gas_limit(100_000)
@@ -2721,7 +2723,7 @@ async fn test_partial_transaction_chain_backwards(mut instance: LocalInstance<_>
         .unwrap();
 
     // tx2 with prev = tx1 (override to tx1)
-    instance.transport.set_last_tx_hash(Some(tx_hashes[1]));
+    instance.transport.set_prev_tx_hash(Some(tx_hashes[1]));
     let tx2_env = TxEnvBuilder::new()
         .caller(instance.default_account)
         .gas_limit(100_000)
@@ -2739,7 +2741,7 @@ async fn test_partial_transaction_chain_backwards(mut instance: LocalInstance<_>
         .unwrap();
 
     // tx0 with prev = None
-    instance.transport.set_last_tx_hash(None);
+    instance.transport.set_prev_tx_hash(None);
     let tx0_env = TxEnvBuilder::new()
         .caller(instance.default_account)
         .gas_limit(100_000)
@@ -3013,7 +3015,7 @@ async fn test_future_block_reorg_basic(mut instance: LocalInstance<_>) {
         index: 0,
     };
 
-    instance.transport.set_last_tx_hash(None);
+    instance.transport.set_prev_tx_hash(None);
     let tx_env = TxEnvBuilder::new()
         .caller(instance.default_account)
         .gas_limit(100_000)
@@ -3101,7 +3103,7 @@ async fn test_future_block_reorg_with_one_replacement(mut instance: LocalInstanc
         index: 0,
     };
 
-    instance.transport.set_last_tx_hash(None);
+    instance.transport.set_prev_tx_hash(None);
     let tx1_env = TxEnvBuilder::new()
         .caller(instance.default_account)
         .gas_limit(100_000)
@@ -3137,7 +3139,7 @@ async fn test_future_block_reorg_with_one_replacement(mut instance: LocalInstanc
         index: 0,
     };
 
-    instance.transport.set_last_tx_hash(None);
+    instance.transport.set_prev_tx_hash(None);
     let tx2_env = TxEnvBuilder::new()
         .caller(instance.default_account)
         .gas_limit(100_000)
@@ -3166,7 +3168,7 @@ async fn test_future_block_reorg_with_one_replacement(mut instance: LocalInstanc
         instance
             .eth_rpc_source_http_mock
             .send_new_head_with_block_number(block);
-        instance.transport.set_last_tx_hash(None);
+        instance.transport.set_prev_tx_hash(None);
         instance.transport.set_n_transactions(0);
         instance
             .transport
@@ -3251,7 +3253,7 @@ async fn test_future_block_reorg_with_replacement_and_redundant_reorgs(
     instance.transport.reorg(tx2_id).await.unwrap();
 
     // Send the transaction to be replaced
-    instance.transport.set_last_tx_hash(None);
+    instance.transport.set_prev_tx_hash(None);
     let tx1_env = TxEnvBuilder::new()
         .caller(instance.default_account)
         .gas_limit(100_000)
@@ -3277,7 +3279,7 @@ async fn test_future_block_reorg_with_replacement_and_redundant_reorgs(
         index: 0,
     };
 
-    instance.transport.set_last_tx_hash(None);
+    instance.transport.set_prev_tx_hash(None);
     let tx3_env = TxEnvBuilder::new()
         .caller(instance.default_account)
         .gas_limit(100_000)
@@ -3302,12 +3304,25 @@ async fn test_future_block_reorg_with_replacement_and_redundant_reorgs(
     assert!(instance.get_transaction_result(&tx2_id).is_none());
     assert!(instance.get_transaction_result(&tx3_id).is_none());
 
-    // Advance to block 4
-    for block in 1..4 {
+    // Advance to block 4 - each block needs NewIteration for the next block
+    for block in 1..=3 {
+        // NewIteration for the block we're about to build
+        let block_env = BlockEnv {
+            number: U256::from(block),
+            gas_limit: 50_000_000,
+            ..Default::default()
+        };
+        instance
+            .transport
+            .new_iteration(1, block_env)
+            .await
+            .unwrap();
+
+        // Finalize the block
         instance
             .eth_rpc_source_http_mock
             .send_new_head_with_block_number(block);
-        instance.transport.set_last_tx_hash(None);
+        instance.transport.set_prev_tx_hash(None);
         instance.transport.set_n_transactions(0);
         instance
             .transport
@@ -3316,6 +3331,7 @@ async fn test_future_block_reorg_with_replacement_and_redundant_reorgs(
             .unwrap();
     }
 
+    // NewIteration for block 4
     let next_block_env = BlockEnv {
         number: U256::from(4),
         gas_limit: 50_000_000,
@@ -3383,7 +3399,7 @@ async fn test_old_reorg_for_current_block_same_hash(mut instance: LocalInstance<
         index: 0,
     };
 
-    instance.transport.set_last_tx_hash(None);
+    instance.transport.set_prev_tx_hash(None);
     let tx1_env = TxEnvBuilder::new()
         .caller(instance.default_account)
         .gas_limit(100_000)
@@ -3409,7 +3425,7 @@ async fn test_old_reorg_for_current_block_same_hash(mut instance: LocalInstance<
         index: 1,
     };
 
-    instance.transport.set_last_tx_hash(Some(tx1_hash));
+    instance.transport.set_prev_tx_hash(Some(tx1_hash));
     let tx2_env = TxEnvBuilder::new()
         .caller(instance.default_account)
         .gas_limit(100_000)
@@ -3497,7 +3513,7 @@ async fn test_old_reorg_for_current_block_different_hash(mut instance: LocalInst
         index: 0,
     };
 
-    instance.transport.set_last_tx_hash(None);
+    instance.transport.set_prev_tx_hash(None);
     let tx1_env = TxEnvBuilder::new()
         .caller(instance.default_account)
         .gas_limit(100_000)
@@ -3523,7 +3539,7 @@ async fn test_old_reorg_for_current_block_different_hash(mut instance: LocalInst
         index: 1,
     };
 
-    instance.transport.set_last_tx_hash(Some(tx1_hash));
+    instance.transport.set_prev_tx_hash(Some(tx1_hash));
     let tx2_env = TxEnvBuilder::new()
         .caller(instance.default_account)
         .gas_limit(100_000)
@@ -3627,7 +3643,7 @@ async fn test_old_reorg_for_future_block_breaks_chain(mut instance: LocalInstanc
         .collect();
 
     // Send tx1
-    instance.transport.set_last_tx_hash(None);
+    instance.transport.set_prev_tx_hash(None);
     let tx1_env = TxEnvBuilder::new()
         .caller(instance.default_account)
         .gas_limit(100_000)
@@ -3784,7 +3800,7 @@ async fn test_old_reorg_future_block_with_replacement_when_current(mut instance:
     };
 
     // Send tx1
-    instance.transport.set_last_tx_hash(None);
+    instance.transport.set_prev_tx_hash(None);
     let tx1_env = TxEnvBuilder::new()
         .caller(instance.default_account)
         .gas_limit(100_000)
@@ -3802,7 +3818,7 @@ async fn test_old_reorg_future_block_with_replacement_when_current(mut instance:
         .unwrap();
 
     // Send tx2 (old version, will be reorged)
-    instance.transport.set_last_tx_hash(Some(tx1_hash));
+    instance.transport.set_prev_tx_hash(Some(tx1_hash));
     let tx2_env_old = TxEnvBuilder::new()
         .caller(instance.default_account)
         .gas_limit(100_000)
@@ -3820,7 +3836,7 @@ async fn test_old_reorg_future_block_with_replacement_when_current(mut instance:
         .unwrap();
 
     // Send tx3 (depends on old tx2)
-    instance.transport.set_last_tx_hash(Some(tx2_hash_old));
+    instance.transport.set_prev_tx_hash(Some(tx2_hash_old));
     let tx3_env = TxEnvBuilder::new()
         .caller(instance.default_account)
         .gas_limit(100_000)
@@ -3849,7 +3865,7 @@ async fn test_old_reorg_future_block_with_replacement_when_current(mut instance:
         index: 1,
     };
 
-    instance.transport.set_last_tx_hash(Some(tx1_hash));
+    instance.transport.set_prev_tx_hash(Some(tx1_hash));
     let tx2_env_new = TxEnvBuilder::new()
         .caller(instance.default_account)
         .gas_limit(100_000)
@@ -3972,7 +3988,7 @@ async fn test_old_reorg_future_block_two_chains(mut instance: LocalInstance<_>) 
     };
 
     // Send the first chain
-    instance.transport.set_last_tx_hash(None);
+    instance.transport.set_prev_tx_hash(None);
     let tx1_1_env = TxEnvBuilder::new()
         .caller(instance.default_account)
         .gas_limit(100_000)
@@ -3989,7 +4005,7 @@ async fn test_old_reorg_future_block_two_chains(mut instance: LocalInstance<_>) 
         .await
         .unwrap();
 
-    instance.transport.set_last_tx_hash(Some(tx1_1_id.tx_hash));
+    instance.transport.set_prev_tx_hash(Some(tx1_1_id.tx_hash));
     let tx1_2_env = TxEnvBuilder::new()
         .caller(instance.default_account)
         .gas_limit(100_000)
@@ -4006,7 +4022,7 @@ async fn test_old_reorg_future_block_two_chains(mut instance: LocalInstance<_>) 
         .await
         .unwrap();
 
-    instance.transport.set_last_tx_hash(Some(tx1_2_id.tx_hash));
+    instance.transport.set_prev_tx_hash(Some(tx1_2_id.tx_hash));
     let tx1_3_env = TxEnvBuilder::new()
         .caller(instance.default_account)
         .gas_limit(100_000)
@@ -4049,7 +4065,7 @@ async fn test_old_reorg_future_block_two_chains(mut instance: LocalInstance<_>) 
     };
 
     // Send replacement chain (starts from tx1.1)
-    instance.transport.set_last_tx_hash(Some(tx1_1_hash));
+    instance.transport.set_prev_tx_hash(Some(tx1_1_hash));
     let tx2_2_env = TxEnvBuilder::new()
         .caller(instance.default_account)
         .gas_limit(100_000)
@@ -4066,7 +4082,7 @@ async fn test_old_reorg_future_block_two_chains(mut instance: LocalInstance<_>) 
         .await
         .unwrap();
 
-    instance.transport.set_last_tx_hash(Some(tx2_2_hash));
+    instance.transport.set_prev_tx_hash(Some(tx2_2_hash));
     let tx2_3_env = TxEnvBuilder::new()
         .caller(instance.default_account)
         .gas_limit(100_000)
@@ -4083,7 +4099,7 @@ async fn test_old_reorg_future_block_two_chains(mut instance: LocalInstance<_>) 
         .await
         .unwrap();
 
-    instance.transport.set_last_tx_hash(Some(tx2_3_hash));
+    instance.transport.set_prev_tx_hash(Some(tx2_3_hash));
     let tx2_4_env = TxEnvBuilder::new()
         .caller(instance.default_account)
         .gas_limit(100_000)
@@ -4258,7 +4274,7 @@ async fn test_non_sequential_prev_tx_hash_skips_transaction(mut instance: LocalI
     };
 
     // Send tx1
-    instance.transport.set_last_tx_hash(None);
+    instance.transport.set_prev_tx_hash(None);
     let tx1_env = TxEnvBuilder::new()
         .caller(instance.default_account)
         .gas_limit(100_000)
@@ -4276,7 +4292,7 @@ async fn test_non_sequential_prev_tx_hash_skips_transaction(mut instance: LocalI
         .unwrap();
 
     // Send tx2 (independent, prev_tx_hash = None)
-    instance.transport.set_last_tx_hash(None);
+    instance.transport.set_prev_tx_hash(None);
     let tx2_env = TxEnvBuilder::new()
         .caller(instance.default_account)
         .gas_limit(100_000)
@@ -4294,7 +4310,7 @@ async fn test_non_sequential_prev_tx_hash_skips_transaction(mut instance: LocalI
         .unwrap();
 
     // Send tx3 (depends on tx1, skipping tx2)
-    instance.transport.set_last_tx_hash(Some(tx1_hash));
+    instance.transport.set_prev_tx_hash(Some(tx1_hash));
     let tx3_env = TxEnvBuilder::new()
         .caller(instance.default_account)
         .gas_limit(100_000)
@@ -4396,7 +4412,7 @@ async fn test_invalid_prev_tx_hash_skips_transaction(mut instance: LocalInstance
     };
 
     // Send tx0
-    instance.transport.set_last_tx_hash(None);
+    instance.transport.set_prev_tx_hash(None);
     let tx0_env = TxEnvBuilder::new()
         .caller(instance.default_account)
         .gas_limit(100_000)
@@ -4414,7 +4430,7 @@ async fn test_invalid_prev_tx_hash_skips_transaction(mut instance: LocalInstance
         .unwrap();
 
     // Send tx1 with WRONG prev_tx_hash
-    instance.transport.set_last_tx_hash(Some(wrong_hash));
+    instance.transport.set_prev_tx_hash(Some(wrong_hash));
     let tx1_env = TxEnvBuilder::new()
         .caller(instance.default_account)
         .gas_limit(100_000)
@@ -4432,7 +4448,7 @@ async fn test_invalid_prev_tx_hash_skips_transaction(mut instance: LocalInstance
         .unwrap();
 
     // Send tx2 with the correct prev_tx_hash pointing to tx0
-    instance.transport.set_last_tx_hash(Some(tx0_hash));
+    instance.transport.set_prev_tx_hash(Some(tx0_hash));
     let tx2_env = TxEnvBuilder::new()
         .caller(instance.default_account)
         .gas_limit(100_000)
@@ -4533,7 +4549,7 @@ async fn test_chain_with_invalid_middle_link(mut instance: LocalInstance<_>) {
     };
 
     // Send all out of order
-    instance.transport.set_last_tx_hash(Some(tx0_hash));
+    instance.transport.set_prev_tx_hash(Some(tx0_hash));
     let tx2_env = TxEnvBuilder::new()
         .caller(instance.default_account)
         .gas_limit(100_000)
@@ -4550,7 +4566,7 @@ async fn test_chain_with_invalid_middle_link(mut instance: LocalInstance<_>) {
         .await
         .unwrap();
 
-    instance.transport.set_last_tx_hash(Some(tx0_hash));
+    instance.transport.set_prev_tx_hash(Some(tx0_hash));
     let tx1_env = TxEnvBuilder::new()
         .caller(instance.default_account)
         .gas_limit(100_000)
@@ -4567,7 +4583,7 @@ async fn test_chain_with_invalid_middle_link(mut instance: LocalInstance<_>) {
         .await
         .unwrap();
 
-    instance.transport.set_last_tx_hash(None);
+    instance.transport.set_prev_tx_hash(None);
     let tx0_env = TxEnvBuilder::new()
         .caller(instance.default_account)
         .gas_limit(100_000)
@@ -4661,7 +4677,7 @@ async fn test_dependency_arrives_with_wrong_hash(mut instance: LocalInstance<_>)
     };
 
     // Send tx1 first, expecting a specific prev_tx_hash
-    instance.transport.set_last_tx_hash(Some(expected_tx0_hash));
+    instance.transport.set_prev_tx_hash(Some(expected_tx0_hash));
     let tx1_env = TxEnvBuilder::new()
         .caller(instance.default_account)
         .gas_limit(100_000)
@@ -4679,7 +4695,7 @@ async fn test_dependency_arrives_with_wrong_hash(mut instance: LocalInstance<_>)
         .unwrap();
 
     // Now send tx0 with a different hash
-    instance.transport.set_last_tx_hash(None);
+    instance.transport.set_prev_tx_hash(None);
     let tx0_env = TxEnvBuilder::new()
         .caller(instance.default_account)
         .gas_limit(100_000)
@@ -4754,7 +4770,7 @@ async fn test_reorg_and_replacement_current_block(mut instance: LocalInstance<_>
         index: 0,
     };
 
-    instance.transport.set_last_tx_hash(None);
+    instance.transport.set_prev_tx_hash(None);
     let tx1_env = TxEnvBuilder::new()
         .caller(instance.default_account)
         .gas_limit(100_000)
@@ -4796,7 +4812,7 @@ async fn test_reorg_and_replacement_current_block(mut instance: LocalInstance<_>
         index: 0,
     };
 
-    instance.transport.set_last_tx_hash(None);
+    instance.transport.set_prev_tx_hash(None);
     let tx1_replacement_env = TxEnvBuilder::new()
         .caller(instance.default_account)
         .gas_limit(100_000)
@@ -4869,7 +4885,7 @@ async fn test_reorg_enables_replacement_transaction(mut instance: LocalInstance<
         index: 0,
     };
 
-    instance.transport.set_last_tx_hash(None);
+    instance.transport.set_prev_tx_hash(None);
     let tx1_env = TxEnvBuilder::new()
         .caller(instance.default_account)
         .gas_limit(100_000)
@@ -4905,7 +4921,7 @@ async fn test_reorg_enables_replacement_transaction(mut instance: LocalInstance<
         index: 0,
     };
 
-    instance.transport.set_last_tx_hash(None);
+    instance.transport.set_prev_tx_hash(None);
     let tx1_1_env = TxEnvBuilder::new()
         .caller(instance.default_account)
         .gas_limit(100_000)
@@ -5006,7 +5022,7 @@ async fn test_reorg_enables_replacement_transaction_with_reorg_first(
         .wait_for_processing(Duration::from_millis(20))
         .await;
 
-    instance.transport.set_last_tx_hash(None);
+    instance.transport.set_prev_tx_hash(None);
     let tx1_env = TxEnvBuilder::new()
         .caller(instance.default_account)
         .gas_limit(100_000)
@@ -5036,7 +5052,7 @@ async fn test_reorg_enables_replacement_transaction_with_reorg_first(
         index: 0,
     };
 
-    instance.transport.set_last_tx_hash(None);
+    instance.transport.set_prev_tx_hash(None);
     let tx1_1_env = TxEnvBuilder::new()
         .caller(instance.default_account)
         .gas_limit(100_000)
@@ -5116,15 +5132,15 @@ fn test_reorg_arrives_before_tx_it_cancels_is_not_dropped_future_block() {
 
     // Basic ordering checks
     match &sent[0] {
-        TxQueueContents::CommitHead(q, _) => assert_eq!(q.block_number, U256::from(9)),
+        TxQueueContents::CommitHead(q) => assert_eq!(q.block_number, U256::from(9)),
         other => panic!("expected CommitHead first, got: {other:?}"),
     }
     match &sent[1] {
-        TxQueueContents::NewIteration(q, _) => assert_eq!(q.block_env.number, U256::from(10)),
+        TxQueueContents::NewIteration(q) => assert_eq!(q.block_env.number, U256::from(10)),
         other => panic!("expected NewIteration second, got: {other:?}"),
     }
     match &sent[2] {
-        TxQueueContents::Tx(q, _) => {
+        TxQueueContents::Tx(q) => {
             assert_eq!(q.tx_execution_id.block_number, U256::from(10));
             assert_eq!(q.tx_execution_id.iteration_id, 1);
             assert_eq!(q.tx_execution_id.index, 0);

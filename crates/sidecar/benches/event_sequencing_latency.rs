@@ -4,6 +4,7 @@
 //! to receiving the corresponding output events on the engine channel.
 
 use alloy::primitives::{
+    B256,
     TxHash,
     U256,
 };
@@ -61,10 +62,12 @@ fn create_new_iteration(block: u64, iteration: u64) -> TxQueueContents {
         number: U256::from(block),
         ..Default::default()
     };
-    TxQueueContents::NewIteration(
-        NewIteration::new(iteration, block_env),
-        tracing::Span::none(),
-    )
+    TxQueueContents::NewIteration(NewIteration::new(
+        iteration,
+        block_env,
+        Some(B256::ZERO),
+        Some(B256::ZERO),
+    ))
 }
 
 fn create_transaction(
@@ -75,25 +78,19 @@ fn create_transaction(
     prev_tx_hash: Option<TxHash>,
 ) -> TxQueueContents {
     let tx_execution_id = TxExecutionId::new(U256::from(block), iteration, tx_hash, index);
-    TxQueueContents::Tx(
-        QueueTransaction {
-            tx_execution_id,
-            tx_env: TxEnv::default(),
-            prev_tx_hash,
-        },
-        tracing::Span::none(),
-    )
+    TxQueueContents::Tx(QueueTransaction {
+        tx_execution_id,
+        tx_env: TxEnv::default(),
+        prev_tx_hash,
+    })
 }
 
 fn create_reorg(block: u64, iteration: u64, index: u64, tx_hash: TxHash) -> TxQueueContents {
     let tx_execution_id = TxExecutionId::new(U256::from(block), iteration, tx_hash, index);
-    TxQueueContents::Reorg(
-        ReorgRequest {
-            tx_execution_id,
-            tx_hashes: vec![tx_hash],
-        },
-        tracing::Span::none(),
-    )
+    TxQueueContents::Reorg(ReorgRequest {
+        tx_execution_id,
+        tx_hashes: vec![tx_hash],
+    })
 }
 
 fn create_commit_head(
@@ -102,18 +99,15 @@ fn create_commit_head(
     n_txs: u64,
     last_tx_hash: Option<TxHash>,
 ) -> TxQueueContents {
-    TxQueueContents::CommitHead(
-        CommitHead::new(
-            U256::from(block),
-            iteration,
-            last_tx_hash,
-            n_txs,
-            None,
-            None,
-            U256::ZERO,
-        ),
-        tracing::Span::none(),
-    )
+    TxQueueContents::CommitHead(CommitHead::new(
+        U256::from(block),
+        iteration,
+        last_tx_hash,
+        n_txs,
+        B256::ZERO,
+        None,
+        U256::ZERO,
+    ))
 }
 
 struct Scenario {

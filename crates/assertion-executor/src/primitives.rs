@@ -83,6 +83,8 @@ pub struct TxValidationResult {
     pub result_and_state: ResultAndState,
     /// Results of the assertions executions
     pub assertions_executions: Vec<AssertionContractExecution>,
+    /// Duration spent executing assertions for the transaction
+    pub assertion_execution_duration: std::time::Duration,
 }
 
 impl TxValidationResult {
@@ -91,11 +93,13 @@ impl TxValidationResult {
         transaction_valid: bool,
         result_and_state: ResultAndState,
         assertions_executions: Vec<AssertionContractExecution>,
+        assertion_execution_duration: std::time::Duration,
     ) -> Self {
         Self {
             transaction_valid,
             result_and_state,
             assertions_executions,
+            assertion_execution_duration,
         }
     }
     /// Whether the transaction is valid
@@ -167,6 +171,35 @@ impl AssertionFunctionResult {
         match &self.result {
             AssertionFunctionExecutionResult::AssertionContractDeployFailure(result)
             | AssertionFunctionExecutionResult::AssertionExecutionResult(result) => result,
+        }
+    }
+}
+
+/// Result of a transaction validation against a set of assertions, with inspectors
+/// that observed both transaction execution and assertion execution.
+#[cfg(feature = "phoundry")]
+#[derive(Debug)]
+pub struct TxValidationResultWithInspectors<I> {
+    /// The validation result
+    pub result: TxValidationResult,
+    /// Inspector from transaction execution (first element)
+    /// followed by inspectors from each assertion function execution
+    pub inspectors: Vec<I>,
+}
+
+#[cfg(feature = "phoundry")]
+impl<I> TxValidationResultWithInspectors<I> {
+    /// Returns the inspector from transaction execution
+    pub fn tx_inspector(&self) -> Option<&I> {
+        self.inspectors.first()
+    }
+
+    /// Returns the inspectors from assertion function executions
+    pub fn assertion_inspectors(&self) -> &[I] {
+        if self.inspectors.len() > 1 {
+            &self.inspectors[1..]
+        } else {
+            &[]
         }
     }
 }

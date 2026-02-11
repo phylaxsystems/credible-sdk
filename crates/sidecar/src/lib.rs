@@ -28,5 +28,8 @@ pub use cache::{
         SourceError,
     },
 };
-pub use engine::CoreEngine;
+pub use engine::{
+    CoreEngine,
+    CoreEngineConfig,
+};
 pub use transactions_state::TransactionsState;

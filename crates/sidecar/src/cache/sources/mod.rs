@@ -1,7 +1,7 @@
+use ::mdbx::common::error::StateError;
 use alloy::primitives::U256;
 use assertion_executor::db::DatabaseRef;
 use revm::context::DBErrorMarker;
-use state_store::mdbx::common::error::StateError;
 use std::fmt::{
     Debug,
     Display,
@@ -10,7 +10,7 @@ use thiserror::Error;
 
 pub mod eth_rpc_source;
 mod json_rpc_db;
-pub mod state_worker;
+pub mod mdbx;
 
 /// A data source that provides blockchain state information.
 ///

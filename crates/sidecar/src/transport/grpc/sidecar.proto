@@ -83,15 +83,18 @@ message CommitHead {
   uint64 n_transactions = 2;                              // number of transactions in previous iteration
   bytes block_number = 3;                                 // 32 bytes - block number as U256 big-endian
   uint64 selected_iteration_id = 4;                       // selected iteration ID
-  optional bytes block_hash = 5;                          // 32 bytes - block hash for EIP-2935
+  bytes block_hash = 5;                                   // 32 bytes - block hash for EIP-2935
   optional bytes parent_beacon_block_root = 6;            // 32 bytes - parent beacon block root for EIP-4788
   bytes timestamp = 7;                                    // 32 bytes - timestamp as U256 big-endian
 }
 
 // New iteration event - initializes building for an iteration ID.
+// Contains all data needed to apply system calls (EIP-4788, EIP-2935) before transaction execution.
 message NewIteration {
   BlockEnv block_env = 1;                                 // block environment
   uint64 iteration_id = 2;                                // iteration ID
+  optional bytes parent_block_hash = 3;                   // 32 bytes - parent block hash for EIP-2935
+  optional bytes parent_beacon_block_root = 4;            // 32 bytes - parent beacon block root for EIP-4788
 }
 
 // Reorg event - signals a chain reorganization.

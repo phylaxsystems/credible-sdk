@@ -1,9 +1,7 @@
 {
   "chain": {
     "spec_id": "CANCUN",
-    "chain_id": 1337,
-    "cancun_time": null,
-    "prague_time": null
+    "chain_id": 1337
   },
   "credible": {
     "assertion_gas_limit": 3000000,
@@ -28,16 +26,23 @@
     "assertion_store_prune_config_retention_blocks": 0
   },
   "transport": {
-    "protocol": "grpc",
     "bind_addr": "0.0.0.0:50051",
     "health_bind_addr": "0.0.0.0:9547",
     "pending_receive_ttl_ms": 5000
   },
   "state": {
-    "eth_rpc_source_ws_url": "ws://127.0.0.1:8546",
-    "eth_rpc_source_http_url": "http://127.0.0.1:8545",
-    "state_worker_mdbx_path": "/data/state_worker.mdbx",
-    "state_worker_depth": 3,
+    "sources": [
+      {
+        "type": "eth-rpc",
+        "ws_url": "ws://127.0.0.1:8546",
+        "http_url": "http://127.0.0.1:8545"
+      },
+      {
+        "type": "mdbx",
+        "mdbx_path": "/data/state_worker.mdbx",
+        "depth": 3
+      }
+    ],
     "minimum_state_diff": 100,
     "sources_sync_timeout_ms": 1000,
     "sources_monitoring_period_ms": 500,

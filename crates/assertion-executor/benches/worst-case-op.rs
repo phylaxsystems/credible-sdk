@@ -105,7 +105,8 @@ fn register_op<M: Measurement>(
         tx_logs: &[],
         call_traces: &call_tracer,
     };
-    let phevm_context = PhEvmContext::new(&logs_and_traces, Address::ZERO);
+    let default_tx_env = TxEnv::default();
+    let phevm_context = PhEvmContext::new(&logs_and_traces, Address::ZERO, &default_tx_env);
     let inspector = PhEvmInspector::new(phevm_context);
     let env = evm_env(1, SpecId::default(), BlockEnv::default());
     let mut multi_fork_db = MultiForkDb::new(fork, &JournalInner::new());
@@ -243,7 +244,8 @@ fn test_ecrecover() {
         tx_logs: &[],
         call_traces: &call_tracer,
     };
-    let phevm_context = PhEvmContext::new(&logs_and_traces, addr);
+    let default_tx_env = TxEnv::default();
+    let phevm_context = PhEvmContext::new(&logs_and_traces, addr, &default_tx_env);
     let inspector = PhEvmInspector::new(phevm_context);
     let env = evm_env(1, SpecId::default(), BlockEnv::default());
     let mut evm = build_optimism_evm(&mut multi_fork_db, &env, inspector);

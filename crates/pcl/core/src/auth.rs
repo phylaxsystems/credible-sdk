@@ -29,35 +29,6 @@ const POLL_INTERVAL: Duration = Duration::from_secs(2);
 /// Maximum number of retry attempts (5 minutes worth of 2-second intervals)
 const MAX_RETRIES: u32 = 150;
 
-/// ASCII art logo displayed after successful authentication
-const PHYLAX_ASCII: &str = r#"
-@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
-@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
-@@@@@@@@@@@@@@@@@@BD>"            "<8@@@@@@@@@@@@@@@@@@@
-@@@@@@@@@@@@@@BP"     _.               '4@@@@@@@@@@@@@@@
-@@@@@@@@@@@@D    _e@@B  ,_,   __  t@g_    `G@@@@@@@@@@@@
-@@@@@@@@@@P   _g@@@@P  /@@@  [@@@  \@@@@_    %@@@@@@@@@@
-@@@@@@@@B   _B@@@@@W  {@@@@  [@@@@  T@@@@@a   `@@@@@@@@@
-@@@@@@@P   g@@@@@@@  ;@@@@@  [@@@@A  @@@@@@@_   f@@@@@@@
-@@@@@@P  ,@@@@@@@@F  @@@@@@  g@@@@@  !@@@@@@@L   V@@@@@@
-@@@@@B   @@@@@@@@@  ;@@@@@@  B@@@@@|  @@@@@@@@L   @@@@@@
-@@@@@'  [@@@@@@@@@  g@@BBD>  <4B@@@@  @@@@@@@@@   '@@@@@
-@@@@@   @@@@@@@@@@  BW  __    __ `8@  B@@@@@@@@j   @@@@@
-@@@@@                 ;@@@@  B@@@;                 @@@@@
-@@@@@   qgg@@@@@@g  __ "B@@  @BB" __  g@@@@@@gq;   @@@@@
-@@@@@   @@@@@@@@@@  @@@q___  ___g@@B  @@@@@@@@@   .@@@@@
-@@@@@@   @@@@@@@@@  [@@@@@@  @@@@@@|  @@@@@@@@P   g@@@@@
-@@@@@@\  '@@@@@@@@,  @@@@@@  @@@@@@  |@@@@@@@W   /@@@@@@
-@@@@@@@L  `@@@@@@@@  0@@@@g  @@@@@F  @@@@@@@P   /@@@@@@@
-@@@@@@@@p   \@@@@@@,  @@@@8  @@@@W  A@@@@@B    j@@@@@@@@
-@@@@@@@@@@_   "@@@@@,  @@@]  @@@D  /@@@@D    _@@@@@@@@@@
-@@@@@@@@@@@@_    <B@@_  <=   "8"  /@BP"    _@@@@@@@@@@@@
-@@@@@@@@@@@@@@@_     ""          "      _g@@@@@@@@@@@@@@
-@@@@@@@@@@@@@@@@@@g__              __g@@@@@@@@@@@@@@@@@@
-@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
-@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
-"#;
-
 /// Response from the initial authentication request
 #[derive(Deserialize)]
 struct AuthResponse {
@@ -172,17 +143,28 @@ impl AuthCommand {
             .map_err(AuthError::AuthRequestInvalidResponse)
     }
 
-    /// Display login URL and code to the user
+    /// Display login URL and code to the user, attempting to open the browser automatically
     fn display_login_instructions(&self, auth_response: &AuthResponse) {
         let url = format!(
             "{}/device?session_id={}",
             self.auth_url, auth_response.session_id
         );
-        println!(
-            "\nTo authenticate, please visit:\n\n🔗 {}\n📝 {}\n",
-            url.white(),
-            format!("Code: {}", auth_response.code).green().bold()
-        );
+
+        // Try to open the URL in the default browser
+        if open::that(&url).is_ok() {
+            println!(
+                "\n{} Opening browser for authentication...\n\n🔗 {}\n📝 {}\n",
+                "🌐".green(),
+                url.white(),
+                format!("Code: {}", auth_response.code).green().bold()
+            );
+        } else {
+            println!(
+                "\nTo authenticate, please visit:\n\n🔗 {}\n📝 {}\n",
+                url.white(),
+                format!("Code: {}", auth_response.code).green().bold()
+            );
+        }
     }
 
     async fn wait_for_verification(
@@ -269,10 +251,8 @@ impl AuthCommand {
     /// Display success message after authentication
     fn display_success_message(config: &CliConfig) {
         println!(
-            "\n{}\n\n{} {}\n🔗 {}\n",
-            PHYLAX_ASCII.white(),
-            "🎉".green(),
-            "Authentication successful!".green().bold(),
+            "{}\n🔗 {}\n",
+            "Authentication successful! 🎉".green().bold(),
             format!(
                 "Connected wallet: {}",
                 config.auth.as_ref().unwrap().user_address

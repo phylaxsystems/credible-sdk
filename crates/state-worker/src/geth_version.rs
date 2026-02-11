@@ -93,6 +93,10 @@ pub fn parse_geth_version(client_version: &str) -> Option<GethVersion> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::{
+        Context,
+        Result,
+    };
 
     #[test]
     fn test_parse_geth_version_standard() {
@@ -170,13 +174,17 @@ mod tests {
     }
 
     #[test]
-    fn test_parsed_version_comparison() {
-        let old = parse_geth_version("Geth/v1.16.5-stable-abc/linux-amd64/go1.23").unwrap();
-        let exact = parse_geth_version("Geth/v1.16.6-stable-abc/linux-amd64/go1.23").unwrap();
-        let new = parse_geth_version("Geth/v1.17.0-stable-abc/linux-amd64/go1.23").unwrap();
+    fn test_parsed_version_comparison() -> Result<()> {
+        let old = parse_geth_version("Geth/v1.16.5-stable-abc/linux-amd64/go1.23")
+            .context("missing old version")?;
+        let exact = parse_geth_version("Geth/v1.16.6-stable-abc/linux-amd64/go1.23")
+            .context("missing exact version")?;
+        let new = parse_geth_version("Geth/v1.17.0-stable-abc/linux-amd64/go1.23")
+            .context("missing new version")?;
 
         assert!(old < MIN_GETH_VERSION);
         assert!(exact >= MIN_GETH_VERSION);
         assert!(new >= MIN_GETH_VERSION);
+        Ok(())
     }
 }
