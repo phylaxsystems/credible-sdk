@@ -1,13 +1,6 @@
 #![feature(unsafe_cell_access)]
 #![feature(test)]
 #![feature(allocator_api)]
-#![allow(clippy::return_self_not_must_use)]
-#![allow(clippy::must_use_candidate)]
-#![allow(clippy::missing_errors_doc)]
-#![allow(clippy::similar_names)]
-#![allow(clippy::ignore_without_reason)]
-#![allow(clippy::unreadable_literal)]
-
 mod error;
 pub use error::{
     ExecutorError,

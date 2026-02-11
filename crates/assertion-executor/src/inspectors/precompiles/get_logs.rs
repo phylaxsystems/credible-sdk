@@ -21,6 +21,10 @@ pub enum GetLogsError {
 }
 
 /// Get the log outputs.
+///
+/// # Errors
+///
+/// This function returns `Infallible` and does not error.
 pub fn get_logs(context: &PhEvmContext, gas: u64) -> Result<PhevmOutcome, Infallible> {
     const RESULT_ENCODING: u64 = 15;
     const LOG_COST_PER_WORD: u64 = 8;
@@ -121,14 +125,13 @@ mod test {
             + ABI_ENCODE_COST * (encoded.len() as u64).div_ceil(32)
     }
 
-    #[allow(clippy::needless_pass_by_value)]
-    fn with_logs_context<F, R>(logs: Vec<Log>, f: F) -> R
+    fn with_logs_context<F, R>(logs: &[Log], f: F) -> R
     where
         F: FnOnce(&PhEvmContext) -> R,
     {
         let call_tracer = CallTracer::default();
         let logs_and_traces = LogsAndTraces {
-            tx_logs: &logs,
+            tx_logs: logs,
             call_traces: &call_tracer,
         };
         let tx_env = crate::primitives::TxEnv::default();
@@ -143,7 +146,7 @@ mod test {
 
     #[test]
     fn test_get_logs_empty() {
-        let result = with_logs_context(vec![], |context| get_logs(context, u64::MAX));
+        let result = with_logs_context(&[], |context| get_logs(context, u64::MAX));
         assert!(result.is_ok());
 
         let encoded = result.unwrap().into_bytes();
@@ -161,7 +164,7 @@ mod test {
         let logs = vec![];
         let expected_gas = expected_gas_for_logs(&logs);
 
-        let outcome = with_logs_context(logs, |context| get_logs(context, u64::MAX)).unwrap();
+        let outcome = with_logs_context(&logs, |context| get_logs(context, u64::MAX)).unwrap();
 
         assert_eq!(outcome.gas(), expected_gas);
     }
@@ -178,7 +181,7 @@ mod test {
         };
 
         let expected_gas = expected_gas_for_logs(std::slice::from_ref(&log));
-        let outcome = with_logs_context(vec![log], |context| get_logs(context, u64::MAX)).unwrap();
+        let outcome = with_logs_context(&[log], |context| get_logs(context, u64::MAX)).unwrap();
 
         assert_eq!(outcome.gas(), expected_gas);
     }
@@ -197,7 +200,7 @@ mod test {
         let expected_gas = expected_gas_for_logs(std::slice::from_ref(&log));
         let gas_limit = expected_gas - 1;
 
-        let outcome = with_logs_context(vec![log], |context| get_logs(context, gas_limit)).unwrap();
+        let outcome = with_logs_context(&[log], |context| get_logs(context, gas_limit)).unwrap();
         assert_eq!(outcome.gas(), gas_limit);
         assert!(outcome.bytes().is_empty());
     }
@@ -213,7 +216,9 @@ mod test {
             data: LogData::new(vec![topic], Bytes::from(data)).unwrap(),
         };
 
-        let result = with_logs_context(vec![log.clone()], |context| get_logs(context, u64::MAX));
+        let result = with_logs_context(std::slice::from_ref(&log), |context| {
+            get_logs(context, u64::MAX)
+        });
         assert!(result.is_ok());
 
         let encoded = result.unwrap().into_bytes();
@@ -251,7 +256,7 @@ mod test {
             },
         ];
 
-        let result = with_logs_context(logs, |context| get_logs(context, u64::MAX));
+        let result = with_logs_context(&logs, |context| get_logs(context, u64::MAX));
         assert!(result.is_ok());
 
         let encoded = result.unwrap().into_bytes();
@@ -290,7 +295,7 @@ mod test {
             data: LogData::new(vec![topic1, topic2, topic3], Bytes::from(data)).unwrap(),
         };
 
-        let result = with_logs_context(vec![log], |context| get_logs(context, u64::MAX));
+        let result = with_logs_context(&[log], |context| get_logs(context, u64::MAX));
         assert!(result.is_ok());
 
         let encoded = result.unwrap().into_bytes();
@@ -320,7 +325,7 @@ mod test {
             data: LogData::new(vec![], Bytes::from(data)).unwrap(),
         };
 
-        let result = with_logs_context(vec![log], |context| get_logs(context, u64::MAX));
+        let result = with_logs_context(&[log], |context| get_logs(context, u64::MAX));
         assert!(result.is_ok());
 
         let encoded = result.unwrap().into_bytes();
@@ -347,7 +352,7 @@ mod test {
             data: LogData::new(vec![topic], Bytes::new()).unwrap(),
         };
 
-        let result = with_logs_context(vec![log], |context| get_logs(context, u64::MAX));
+        let result = with_logs_context(&[log], |context| get_logs(context, u64::MAX));
         assert!(result.is_ok());
 
         let encoded = result.unwrap().into_bytes();
@@ -376,7 +381,7 @@ mod test {
             data: LogData::new(vec![topic], Bytes::from(large_data)).unwrap(),
         };
 
-        let result = with_logs_context(vec![log], |context| get_logs(context, u64::MAX));
+        let result = with_logs_context(&[log], |context| get_logs(context, u64::MAX));
         assert!(result.is_ok());
 
         let encoded = result.unwrap().into_bytes();
@@ -406,7 +411,7 @@ mod test {
         ];
 
         for logs in test_cases {
-            let result = with_logs_context(logs, |context| get_logs(context, u64::MAX));
+            let result = with_logs_context(&logs, |context| get_logs(context, u64::MAX));
             assert!(result.is_ok(), "get_logs should never fail");
         }
     }

@@ -80,6 +80,10 @@ pub enum RecordError {
 
 impl TriggerRecorder {
     /// Records a trigger call made to the trigger recorder address.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if decoding fails or the selector is missing.
     pub fn record_trigger(&mut self, input_bytes: &[u8]) -> Result<Bytes, RecordError> {
         match input_bytes
             .get(0..4)

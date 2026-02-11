@@ -117,6 +117,7 @@ pub struct PhEvmContext<'a> {
 }
 
 impl<'a> PhEvmContext<'a> {
+    #[must_use]
     pub fn new(
         logs_and_traces: &'a LogsAndTraces<'a>,
         adopter: Address,
@@ -131,6 +132,7 @@ impl<'a> PhEvmContext<'a> {
     }
 
     #[inline]
+    #[must_use]
     pub fn post_tx_journal(&self) -> &JournalInner<JournalEntry> {
         &self.logs_and_traces.call_traces.journal
     }
@@ -162,12 +164,16 @@ pub struct PhEvmInspector<'a> {
 
 impl<'a> PhEvmInspector<'a> {
     /// Create a new `PhEvmInspector`.
+    #[must_use]
     pub fn new(context: PhEvmContext<'a>) -> Self {
         PhEvmInspector { context }
     }
 
     /// Execute precompile functions for the `PhEvm`.
-    #[allow(clippy::too_many_lines)]
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the precompile selector is unknown or a precompile execution fails.
     pub fn execute_precompile<'db, ExtDb: DatabaseRef + Clone + DatabaseCommit + 'db, CTX>(
         &mut self,
         context: &mut CTX,
@@ -180,12 +186,51 @@ impl<'a> PhEvmInspector<'a> {
             >,
     {
         let input_bytes = inputs.input.bytes(context);
-        let outcome = match input_bytes
+        let selector = input_bytes
             .get(0..4)
             .unwrap_or_default()
             .try_into()
-            .unwrap_or_default()
+            .unwrap_or_default();
+
+        if let Some(outcome) =
+            self.execute_fork_precompile::<ExtDb, CTX>(selector, context, inputs, &input_bytes)?
         {
+            return Ok(outcome);
+        }
+
+        if let Some(outcome) = self.execute_call_inputs_precompile::<ExtDb, CTX>(
+            selector,
+            context,
+            inputs,
+            &input_bytes,
+        )? {
+            return Ok(outcome);
+        }
+
+        if let Some(outcome) =
+            self.execute_misc_precompile::<ExtDb, CTX>(selector, context, inputs, &input_bytes)?
+        {
+            return Ok(outcome);
+        }
+
+        Err(PrecompileError::SelectorNotFound(selector.into()))
+    }
+
+    fn execute_fork_precompile<'db, ExtDb, CTX>(
+        &mut self,
+        selector: [u8; 4],
+        context: &mut CTX,
+        inputs: &mut CallInputs,
+        input_bytes: &Bytes,
+    ) -> Result<Option<PhevmOutcome>, PrecompileError<ExtDb>>
+    where
+        ExtDb: DatabaseRef + Clone + DatabaseCommit + 'db,
+        CTX: ContextTr<
+                Db = &'db mut MultiForkDb<ExtDb>,
+                Journal = Journal<&'db mut MultiForkDb<ExtDb>>,
+            >,
+    {
+        let outcome = match selector {
             PhEvm::forkPreTxCall::SELECTOR => {
                 fork_pre_tx(
                     context,
@@ -206,7 +251,7 @@ impl<'a> PhEvmInspector<'a> {
                 fork_pre_call(
                     context,
                     self.context.logs_and_traces.call_traces,
-                    &input_bytes,
+                    input_bytes,
                     inputs.gas_limit,
                 )
                 .map_err(PrecompileError::ForkError)?
@@ -215,11 +260,102 @@ impl<'a> PhEvmInspector<'a> {
                 fork_post_call(
                     context,
                     self.context.logs_and_traces.call_traces,
-                    &input_bytes,
+                    input_bytes,
                     inputs.gas_limit,
                 )
                 .map_err(PrecompileError::ForkError)?
             }
+            _ => return Ok(None),
+        };
+
+        Ok(Some(outcome))
+    }
+
+    fn execute_call_inputs_precompile<'db, ExtDb, CTX>(
+        &self,
+        selector: [u8; 4],
+        context: &mut CTX,
+        inputs: &mut CallInputs,
+        input_bytes: &Bytes,
+    ) -> Result<Option<PhevmOutcome>, PrecompileError<ExtDb>>
+    where
+        ExtDb: DatabaseRef + Clone + DatabaseCommit + 'db,
+        CTX: ContextTr<
+                Db = &'db mut MultiForkDb<ExtDb>,
+                Journal = Journal<&'db mut MultiForkDb<ExtDb>>,
+            >,
+    {
+        let gas_limit = inputs.gas_limit;
+        let outcome = match selector {
+            PhEvm::getAllCallInputsCall::SELECTOR => {
+                let call_inputs = Self::decode_call_inputs::<PhEvm::getAllCallInputsCall, ExtDb>(
+                    &inputs.input.bytes(context),
+                )?;
+                self.run_get_call_inputs(call_inputs.target, call_inputs.selector, None, gas_limit)?
+            }
+            PhEvm::getCallInputsCall::SELECTOR => {
+                let call_inputs =
+                    Self::decode_call_inputs::<PhEvm::getCallInputsCall, ExtDb>(input_bytes)?;
+                self.run_get_call_inputs(
+                    call_inputs.target,
+                    call_inputs.selector,
+                    Some(CallScheme::Call),
+                    gas_limit,
+                )?
+            }
+            PhEvm::getStaticCallInputsCall::SELECTOR => {
+                let call_inputs =
+                    Self::decode_call_inputs::<PhEvm::getStaticCallInputsCall, ExtDb>(input_bytes)?;
+                self.run_get_call_inputs(
+                    call_inputs.target,
+                    call_inputs.selector,
+                    Some(CallScheme::StaticCall),
+                    gas_limit,
+                )?
+            }
+            PhEvm::getDelegateCallInputsCall::SELECTOR => {
+                let call_inputs = Self::decode_call_inputs::<
+                    PhEvm::getDelegateCallInputsCall,
+                    ExtDb,
+                >(input_bytes)?;
+                self.run_get_call_inputs(
+                    call_inputs.target,
+                    call_inputs.selector,
+                    Some(CallScheme::DelegateCall),
+                    gas_limit,
+                )?
+            }
+            PhEvm::getCallCodeInputsCall::SELECTOR => {
+                let call_inputs =
+                    Self::decode_call_inputs::<PhEvm::getCallCodeInputsCall, ExtDb>(input_bytes)?;
+                self.run_get_call_inputs(
+                    call_inputs.target,
+                    call_inputs.selector,
+                    Some(CallScheme::CallCode),
+                    gas_limit,
+                )?
+            }
+            _ => return Ok(None),
+        };
+
+        Ok(Some(outcome))
+    }
+
+    fn execute_misc_precompile<'db, ExtDb, CTX>(
+        &mut self,
+        selector: [u8; 4],
+        context: &mut CTX,
+        inputs: &mut CallInputs,
+        input_bytes: &Bytes,
+    ) -> Result<Option<PhevmOutcome>, PrecompileError<ExtDb>>
+    where
+        ExtDb: DatabaseRef + Clone + DatabaseCommit + 'db,
+        CTX: ContextTr<
+                Db = &'db mut MultiForkDb<ExtDb>,
+                Journal = Journal<&'db mut MultiForkDb<ExtDb>>,
+            >,
+    {
+        let outcome = match selector {
             PhEvm::loadCall::SELECTOR => {
                 load_external_slot(context, inputs)
                     .map_err(PrecompileError::LoadExternalSlotError)?
@@ -228,108 +364,8 @@ impl<'a> PhEvmInspector<'a> {
                 get_logs(&self.context, inputs.gas_limit)
                     .map_err(PrecompileError::UnexpectedError)?
             }
-            PhEvm::getAllCallInputsCall::SELECTOR => {
-                let call_inputs = PhEvm::getAllCallInputsCall::abi_decode(
-                    &inputs.input.bytes(context),
-                )
-                .map_err(|err| {
-                    PrecompileError::GetCallInputsError(
-                        GetCallInputsError::FailedToDecodeGetCallInputsCall(err),
-                    )
-                })?;
-                match get_call_inputs(
-                    &self.context,
-                    call_inputs.target,
-                    call_inputs.selector,
-                    None,
-                    inputs.gas_limit,
-                ) {
-                    Ok(rax) | Err(GetCallInputsError::OutOfGas(rax)) => rax,
-                    Err(err) => return Err(PrecompileError::GetCallInputsError(err)),
-                }
-            }
-            PhEvm::getCallInputsCall::SELECTOR => {
-                let call_inputs = PhEvm::getCallInputsCall::abi_decode(
-                    &inputs.input.bytes(context),
-                )
-                .map_err(|err| {
-                    PrecompileError::GetCallInputsError(
-                        GetCallInputsError::FailedToDecodeGetCallInputsCall(err),
-                    )
-                })?;
-                match get_call_inputs(
-                    &self.context,
-                    call_inputs.target,
-                    call_inputs.selector,
-                    Some(CallScheme::Call),
-                    inputs.gas_limit,
-                ) {
-                    Ok(rax) | Err(GetCallInputsError::OutOfGas(rax)) => rax,
-                    Err(err) => return Err(PrecompileError::GetCallInputsError(err)),
-                }
-            }
-            PhEvm::getStaticCallInputsCall::SELECTOR => {
-                let call_inputs =
-                    PhEvm::getStaticCallInputsCall::abi_decode(&inputs.input.bytes(context))
-                        .map_err(|err| {
-                            PrecompileError::GetCallInputsError(
-                                GetCallInputsError::FailedToDecodeGetCallInputsCall(err),
-                            )
-                        })?;
-                match get_call_inputs(
-                    &self.context,
-                    call_inputs.target,
-                    call_inputs.selector,
-                    Some(CallScheme::StaticCall),
-                    inputs.gas_limit,
-                ) {
-                    Ok(rax) | Err(GetCallInputsError::OutOfGas(rax)) => rax,
-                    Err(err) => return Err(PrecompileError::GetCallInputsError(err)),
-                }
-            }
-            PhEvm::getDelegateCallInputsCall::SELECTOR => {
-                let call_inputs =
-                    PhEvm::getDelegateCallInputsCall::abi_decode(&inputs.input.bytes(context))
-                        .map_err(|err| {
-                            PrecompileError::GetCallInputsError(
-                                GetCallInputsError::FailedToDecodeGetCallInputsCall(err),
-                            )
-                        })?;
-                match get_call_inputs(
-                    &self.context,
-                    call_inputs.target,
-                    call_inputs.selector,
-                    Some(CallScheme::DelegateCall),
-                    inputs.gas_limit,
-                ) {
-                    Ok(rax) | Err(GetCallInputsError::OutOfGas(rax)) => rax,
-                    Err(err) => return Err(PrecompileError::GetCallInputsError(err)),
-                }
-            }
-            PhEvm::getCallCodeInputsCall::SELECTOR => {
-                let call_inputs =
-                    PhEvm::getCallCodeInputsCall::abi_decode(&inputs.input.bytes(context))
-                        .map_err(|err| {
-                            PrecompileError::GetCallInputsError(
-                                GetCallInputsError::FailedToDecodeGetCallInputsCall(err),
-                            )
-                        })?;
-                match get_call_inputs(
-                    &self.context,
-                    call_inputs.target,
-                    call_inputs.selector,
-                    Some(CallScheme::CallCode),
-                    inputs.gas_limit,
-                ) {
-                    Ok(rax) | Err(GetCallInputsError::OutOfGas(rax)) => rax,
-                    Err(err) => return Err(PrecompileError::GetCallInputsError(err)),
-                }
-            }
             PhEvm::getStateChangesCall::SELECTOR => {
-                match get_state_changes(&input_bytes, &self.context, inputs.gas_limit) {
-                    Ok(rax) | Err(GetStateChangesError::OutOfGas(rax)) => rax,
-                    Err(err) => return Err(PrecompileError::GetStateChangesError(err)),
-                }
+                self.run_get_state_changes::<ExtDb>(input_bytes, inputs.gas_limit)?
             }
             PhEvm::getAssertionAdopterCall::SELECTOR => {
                 get_assertion_adopter(&self.context).map_err(PrecompileError::UnexpectedError)?
@@ -337,20 +373,59 @@ impl<'a> PhEvmInspector<'a> {
             PhEvm::getTxObjectCall::SELECTOR => load_tx_object(&self.context, inputs.gas_limit),
             console::logCall::SELECTOR => {
                 #[cfg(feature = "phoundry")]
-                return crate::inspectors::precompiles::console_log::console_log(
-                    &input_bytes,
-                    &mut self.context,
-                )
-                .map(PhevmOutcome::from)
-                .map_err(PrecompileError::ConsoleLogError);
+                return Ok(Some(
+                    crate::inspectors::precompiles::console_log::console_log(
+                        input_bytes,
+                        &mut self.context,
+                    )
+                    .map(PhevmOutcome::from)
+                    .map_err(PrecompileError::ConsoleLogError),
+                )?);
 
                 #[cfg(not(feature = "phoundry"))]
-                return Ok(PhevmOutcome::from(Bytes::default()));
+                return Ok(Some(PhevmOutcome::from(Bytes::default())));
             }
-            selector => Err(PrecompileError::SelectorNotFound(selector.into()))?,
+            _ => return Ok(None),
         };
 
-        Ok(outcome)
+        Ok(Some(outcome))
+    }
+
+    fn decode_call_inputs<Call, ExtDb: DatabaseRef>(
+        input_bytes: &Bytes,
+    ) -> Result<Call, PrecompileError<ExtDb>>
+    where
+        Call: SolCall,
+    {
+        Call::abi_decode(input_bytes).map_err(|err| {
+            PrecompileError::GetCallInputsError(
+                GetCallInputsError::FailedToDecodeGetCallInputsCall(err),
+            )
+        })
+    }
+
+    fn run_get_call_inputs<ExtDb: DatabaseRef + Clone + DatabaseCommit>(
+        &self,
+        target: Address,
+        selector: FixedBytes<4>,
+        scheme: Option<CallScheme>,
+        gas_limit: u64,
+    ) -> Result<PhevmOutcome, PrecompileError<ExtDb>> {
+        match get_call_inputs(&self.context, target, selector, scheme, gas_limit) {
+            Ok(rax) | Err(GetCallInputsError::OutOfGas(rax)) => Ok(rax),
+            Err(err) => Err(PrecompileError::GetCallInputsError(err)),
+        }
+    }
+
+    fn run_get_state_changes<ExtDb: DatabaseRef + Clone + DatabaseCommit>(
+        &self,
+        input_bytes: &Bytes,
+        gas_limit: u64,
+    ) -> Result<PhevmOutcome, PrecompileError<ExtDb>> {
+        match get_state_changes(input_bytes, &self.context, gas_limit) {
+            Ok(rax) | Err(GetStateChangesError::OutOfGas(rax)) => Ok(rax),
+            Err(err) => Err(PrecompileError::GetStateChangesError(err)),
+        }
     }
 }
 

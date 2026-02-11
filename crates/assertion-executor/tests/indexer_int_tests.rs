@@ -1,5 +1,4 @@
 #![allow(unused_imports)]
-#![allow(clippy::cast_sign_loss)]
 
 mod common;
 
@@ -102,7 +101,10 @@ mod tests {
 
         // Mine  additional blocks
         let results = test_harness(&mut test_ctx, txs, Some(65)).await;
-        assert_eq!(results.len(), count as usize);
+        assert_eq!(
+            results.len(),
+            usize::try_from(count).expect("count should be non-negative"),
+        );
         for (contract_address_act, assertions) in results {
             assert!(contract_addresses.contains(&contract_address_act));
             assert_eq!(assertions.len(), 1);
@@ -139,8 +141,7 @@ mod tests {
 
     #[tokio::test]
     #[cfg(feature = "full-test")]
-    #[allow(clippy::ignore_without_reason)]
-    #[ignore]
+    #[ignore = "requires long-running node; not suitable for CI"]
     // NOTE: Op talos bug not reproducible with anvil
     async fn test_indexer_over_100k_blocks() {
         let time_lock_blocks = 1;

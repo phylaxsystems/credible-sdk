@@ -25,6 +25,7 @@ const DYNAMIC_WORD_COST: u64 = 3;
 ///
 /// Has a fixed cost of `BASE_COST` + 96 bytes (size of fixed values) + dynamic cost
 /// of the original calldata.
+#[must_use]
 pub fn load_tx_object(context: &PhEvmContext, gas: u64) -> PhevmOutcome {
     let gas_limit = gas;
     let mut gas_left = gas;

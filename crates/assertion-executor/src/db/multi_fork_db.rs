@@ -116,6 +116,10 @@ impl<ExtDb> MultiForkDb<ExtDb> {
 
 impl<ExtDb: DatabaseRef> MultiForkDb<ExtDb> {
     /// Switch the fork to the requested fork id.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the requested fork cannot be created or activated.
     pub fn switch_fork(
         &mut self,
         fork_id: ForkId,
@@ -231,6 +235,10 @@ impl<ExtDb: DatabaseRef> MultiForkDb<ExtDb> {
     ///
     /// Esitmating fork gas does the same work it would do in `switch_fork`. We cannot commit
     /// the output of this fn because we might OOG and mutate on state we shouldnt.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the fork journal cannot be prepared.
     pub fn estimated_create_fork_bytes(
         &self,
         fork_id: ForkId,

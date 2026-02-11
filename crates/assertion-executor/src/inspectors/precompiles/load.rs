@@ -38,6 +38,10 @@ pub struct LoadExternalSlotError<ExtDb: DatabaseRef>(pub ExtDb::Error);
 /// Returns a storage slot for a given address. Will return `0x0` if slot empty.
 ///
 /// Deducts cold sload cost + base phevm cost gas cost. Only base cost if invalid input.
+///
+/// # Errors
+///
+/// Returns an error if loading account data from the external DB fails.
 pub fn load_external_slot<'db, ExtDb: DatabaseRef + 'db, CTX>(
     context: &mut CTX,
     call_inputs: &CallInputs,

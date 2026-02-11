@@ -1,4 +1,3 @@
-#![allow(clippy::cast_possible_truncation)]
 use super::{
     harness::{
         execute_txs,
@@ -96,7 +95,7 @@ pub async fn setup_int_test_indexer(block_tag: BlockTag, time_lock_blocks: u64) 
         &anvil,
         &da_signer.clone(),
         &std::path::PathBuf::from("../../lib/credible-layer-contracts"),
-        time_lock_blocks as usize,
+        usize::try_from(time_lock_blocks).expect("time_lock_blocks exceeds usize"),
     )
     .unwrap();
     let state_oracle = contracts.state_oracle;

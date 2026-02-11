@@ -23,6 +23,10 @@ pub enum CheckIfReorgedError {
 }
 
 /// Checks if the new block is part of the same chain as the last indexed block.
+///
+/// # Errors
+///
+/// Returns an error if the parent block cannot be found or the provider fails.
 #[instrument(skip(provider))]
 pub async fn check_if_reorged(
     provider: &RootProvider,

@@ -1,5 +1,4 @@
 #![cfg(any(test, feature = "test"))]
-#![allow(clippy::missing_panics_doc)]
 
 use crate::{
     ExecutorConfig,
@@ -66,6 +65,7 @@ use alloy_transport_ws::WsConnect;
 pub const COUNTER: &str = "SimpleCounterAssertion.sol:Counter";
 pub const COUNTER_ADDRESS: Address = Address::new([1u8; 20]);
 
+#[must_use]
 pub fn counter_call() -> TxEnv {
     TxEnv {
         kind: TxKind::Call(COUNTER_ADDRESS),
@@ -74,6 +74,7 @@ pub fn counter_call() -> TxEnv {
     }
 }
 
+#[must_use]
 pub fn counter_acct_info() -> AccountInfo {
     let code = deployed_bytecode(COUNTER);
     let code_hash = keccak256(&code);
@@ -87,6 +88,7 @@ pub fn counter_acct_info() -> AccountInfo {
 
 pub const SIMPLE_ASSERTION_COUNTER: &str = "SimpleCounterAssertion.sol:SimpleCounterAssertion";
 
+#[must_use]
 pub fn counter_assertion() -> AssertionContract {
     get_assertion_contract(SIMPLE_ASSERTION_COUNTER).0
 }
@@ -97,11 +99,13 @@ fn get_assertion_contract(artifact: &str) -> (AssertionContract, TriggerRecorder
     extract_assertion_contract(&bytecode(artifact), &ExecutorConfig::default()).unwrap()
 }
 
+#[must_use]
 pub fn selector_assertion() -> (AssertionContract, TriggerRecorder) {
     get_assertion_contract(FN_SELECTOR)
 }
 
 /// Returns a random `FixedBytes` of length N
+#[must_use]
 pub fn random_bytes<const N: usize>() -> FixedBytes<N> {
     let mut value = [0u8; N];
     for x in &mut value {
@@ -110,18 +114,22 @@ pub fn random_bytes<const N: usize>() -> FixedBytes<N> {
     FixedBytes::new(value)
 }
 
+#[must_use]
 pub fn random_address() -> Address {
     random_bytes::<20>().into()
 }
 
+#[must_use]
 pub fn random_u256() -> U256 {
     random_bytes::<32>().into()
 }
 
+#[must_use]
 pub fn random_selector() -> FixedBytes<4> {
     random_bytes::<4>()
 }
 
+#[must_use]
 pub fn random_bytes32() -> FixedBytes<32> {
     random_bytes::<32>()
 }
@@ -156,6 +164,11 @@ fn read_artifact(input: &str) -> serde_json::Value {
 ///
 /// # Arguments
 /// * `input` - ${`file_name`}:${`contract_name`}
+///
+/// # Panics
+///
+/// Panics if the artifact cannot be read or decoded.
+#[must_use]
 pub fn bytecode(input: &str) -> Bytes {
     let value = read_artifact(input);
     let bytecode = value["bytecode"]["object"]
@@ -170,6 +183,11 @@ pub fn bytecode(input: &str) -> Bytes {
 ///
 /// # Arguments
 /// * `input` - ${`file_name`}:${`contract_name`}
+///
+/// # Panics
+///
+/// Panics if the artifact cannot be read or decoded.
+#[must_use]
 pub fn deployed_bytecode(input: &str) -> Bytes {
     let value = read_artifact(input);
     let bytecode = value["deployedBytecode"]["object"]
@@ -180,6 +198,10 @@ pub fn deployed_bytecode(input: &str) -> Bytes {
         .into()
 }
 
+/// # Panics
+///
+/// Panics if test setup fails or assertion insertion fails.
+#[must_use]
 pub fn run_precompile_test(artifact: &str) -> TxValidationResult {
     let caller = address!("5fdcca53617f4d2b9134b29090c87d01058e27e9");
     let target = address!("118dd24a3b0d02f90d8896e242d3838b4d37c181");
@@ -231,7 +253,12 @@ pub fn run_precompile_test(artifact: &str) -> TxValidationResult {
         .validate_transaction_ext_db(BlockEnv::default(), &trigger_tx, &mut fork_db, &mut mock_db)
         .unwrap()
 }
-/// Mines a block from an anvil provider, returning the block header
+
+/// Mines a block from an anvil provider, returning the block header.
+///
+/// # Panics
+///
+/// Panics if the provider fails to return the latest block.
 pub async fn mine_block(provider: &RootProvider<alloy_network::Ethereum>) -> Header {
     let _ = provider.evm_mine(None).await;
     let block = provider
@@ -243,7 +270,11 @@ pub async fn mine_block(provider: &RootProvider<alloy_network::Ethereum>) -> Hea
     block.header
 }
 
-/// Get anvil provider
+/// Get an anvil provider.
+///
+/// # Panics
+///
+/// Panics if the websocket provider cannot be initialized.
 pub async fn anvil_provider() -> (RootProvider<alloy_network::Ethereum>, AnvilInstance) {
     let anvil = Anvil::new().spawn();
     let provider = ProviderBuilder::new()

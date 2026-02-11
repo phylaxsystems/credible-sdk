@@ -1,7 +1,5 @@
 //! Prometheus metrics for the assertion-executor indexer.
 
-#![allow(clippy::cast_precision_loss)]
-
 use metrics::{
     counter,
     gauge,
@@ -19,16 +17,16 @@ impl IndexerMetrics {
     /// Record the latest head block the indexer is aware of.
     ///
     /// Committed as a `Gauge`: `assertion_executor_indexer_head_block`
-    #[allow(clippy::unused_self)]
     pub fn set_head_block(&self, block_number: u64) {
-        gauge!("assertion_executor_indexer_head_block").set(block_number as f64);
+        let _ = self;
+        gauge!("assertion_executor_indexer_head_block").set(lossy_u64_to_f64(block_number));
     }
 
     /// Record how many assertions the indexer has seen.
     ///
     /// Committed as a `Counter`: `assertion_executor_indexer_assertions_seen_total`
-    #[allow(clippy::unused_self)]
     pub fn record_assertions_seen(&self, count: u64) {
+        let _ = self;
         if count > 0 {
             counter!("assertion_executor_indexer_assertions_seen_total").increment(count);
         }
@@ -37,10 +35,20 @@ impl IndexerMetrics {
     /// Record how many assertions the indexer has moved into the store.
     ///
     /// Committed as a `Counter`: `assertion_executor_indexer_assertions_moved_total`
-    #[allow(clippy::unused_self)]
     pub fn record_assertions_moved(&self, count: u64) {
+        let _ = self;
         if count > 0 {
             counter!("assertion_executor_indexer_assertions_moved_total").increment(count);
         }
     }
+}
+
+fn lossy_u64_to_f64(value: u64) -> f64 {
+    u64_to_f64_lossy(value)
+}
+
+fn u64_to_f64_lossy(value: u64) -> f64 {
+    let high = u32::try_from(value >> 32).unwrap_or(0);
+    let low = u32::try_from(value & 0xFFFF_FFFF).unwrap_or(0);
+    f64::from(high) * 4_294_967_296.0 + f64::from(low)
 }

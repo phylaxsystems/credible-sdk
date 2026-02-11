@@ -71,11 +71,13 @@ impl<Db> ActiveOverlay<Db> {
     }
 
     /// Creates a new `forkdb` from the current overlay.
+    #[must_use]
     pub fn fork(&self) -> ForkDb<ActiveOverlay<Db>> {
         ForkDb::new(self.clone())
     }
 
     // Helper for tests to check cache presence
+    #[must_use]
     pub fn is_cached(&self, key: &TableKey) -> bool {
         self.overlay.get(key).is_some()
     }
@@ -383,6 +385,8 @@ impl<Db: Database> Database for ActiveOverlay<Db> {
 
 #[cfg(test)]
 mod active_overlay_tests {
+    #![allow(clippy::arc_with_non_send_sync)]
+
     use super::*;
     use crate::db::overlay::test_utils::{
         MockDb,
@@ -402,6 +406,8 @@ mod active_overlay_tests {
             AccountInfo,
             AccountStatus,
             Bytecode,
+            Bytes,
+            EvmState,
             EvmStorage,
             EvmStorageSlot,
         },
@@ -416,6 +422,121 @@ mod active_overlay_tests {
         };
     }
 
+    fn build_commit_state(
+        code: &Bytecode,
+        code_hash: B256,
+    ) -> (EvmState, Address, Address, Address) {
+        use crate::primitives::{
+            Account,
+            AccountStatus,
+            EvmStorageSlot,
+        };
+        use std::collections::HashMap;
+
+        let addr1 = address!("0000000000000000000000000000000000000001");
+        let addr2 = address!("0000000000000000000000000000000000000002");
+        let addr3 = address!("0000000000000000000000000000000000000003");
+
+        let account1 = Account {
+            info: AccountInfo {
+                balance: U256::from(1500),
+                nonce: 3,
+                code_hash,
+                code: Some(code.clone()),
+            },
+            transaction_id: 0,
+            storage: HashMap::from_iter([
+                (U256::from(5), EvmStorageSlot::new(U256::from(500), 0)),
+                (U256::from(6), EvmStorageSlot::new(U256::from(600), 0)),
+            ]),
+            status: AccountStatus::Touched,
+        };
+
+        let account2 = Account {
+            info: AccountInfo {
+                balance: U256::from(2500),
+                nonce: 4,
+                code_hash: b256!(
+                    "0000000000000000000000000000000000000000000000000000000000000000"
+                ),
+                code: None,
+            },
+            transaction_id: 0,
+            storage: HashMap::from_iter([(
+                U256::from(20),
+                EvmStorageSlot::new(U256::from(2000), 0),
+            )]),
+            status: AccountStatus::Touched,
+        };
+
+        let account3 = Account {
+            info: AccountInfo {
+                balance: U256::from(3500),
+                nonce: 5,
+                code_hash: b256!(
+                    "0000000000000000000000000000000000000000000000000000000000000000"
+                ),
+                code: None,
+            },
+            transaction_id: 0,
+            storage: HashMap::default(),
+            status: AccountStatus::default(), // Not touched
+        };
+
+        let evm_state: EvmState =
+            HashMap::from_iter([(addr1, account1), (addr2, account2), (addr3, account3)]);
+
+        (evm_state, addr1, addr2, addr3)
+    }
+
+    fn assert_active_overlay_commit(
+        active_overlay: &ActiveOverlay<MockDb>,
+        addr1: Address,
+        addr2: Address,
+        addr3: Address,
+        code_hash: B256,
+        code_bytes: &Bytes,
+    ) {
+        assert!(active_overlay.is_cached(&TableKey::Basic(addr1)));
+        assert_eq!(
+            active_overlay.basic_ref(addr1).unwrap().unwrap().balance,
+            U256::from(1500)
+        );
+        assert_eq!(active_overlay.basic_ref(addr1).unwrap().unwrap().nonce, 3);
+
+        assert!(active_overlay.is_cached(&TableKey::CodeByHash(code_hash)));
+        assert_eq!(
+            active_overlay
+                .code_by_hash_ref(code_hash)
+                .unwrap()
+                .original_bytes(),
+            code_bytes.clone()
+        );
+
+        assert!(active_overlay.is_cached(&TableKey::Storage(addr1)));
+        assert_eq!(
+            active_overlay.storage_ref(addr1, U256::from(5)).unwrap(),
+            U256::from(500)
+        );
+        assert_eq!(
+            active_overlay.storage_ref(addr1, U256::from(6)).unwrap(),
+            U256::from(600)
+        );
+
+        assert!(active_overlay.is_cached(&TableKey::Basic(addr2)));
+        assert_eq!(
+            active_overlay.basic_ref(addr2).unwrap().unwrap().balance,
+            U256::from(2500)
+        );
+        assert!(active_overlay.is_cached(&TableKey::Storage(addr2)));
+        assert_eq!(
+            active_overlay.storage_ref(addr2, U256::from(20)).unwrap(),
+            U256::from(2000)
+        );
+
+        assert!(!active_overlay.is_cached(&TableKey::Basic(addr3)));
+    }
+
     // Test basic account fetching with cache interaction
     #[test]
     fn test_active_basic_hit_miss() {
@@ -425,7 +546,6 @@ mod active_overlay_tests {
 
         let mut mock_db = MockDb::new();
         mock_db.insert_account(addr1, info1.clone());
-        #[allow(clippy::arc_with_non_send_sync)]
         let mock_db_arc = Arc::new(UnsafeCell::new(mock_db));
 
         // Create a cache instance (e.g., count-based)
@@ -489,7 +609,6 @@ mod active_overlay_tests {
 
         let mut mock_db = MockDb::new();
         mock_db.insert_storage(addr1, slot1, value1);
-        #[allow(clippy::arc_with_non_send_sync)]
         let mock_db_arc = Arc::new(UnsafeCell::new(mock_db));
         let overlay_cache = Arc::new(DashMap::new());
         let active_overlay = ActiveOverlay::new(mock_db_arc.clone(), overlay_cache);
@@ -540,7 +659,6 @@ mod active_overlay_tests {
 
         let mut mock_db = MockDb::new();
         mock_db.insert_account(addr1, info1);
-        #[allow(clippy::arc_with_non_send_sync)]
         let mock_db_arc = Arc::new(UnsafeCell::new(mock_db));
         let overlay_cache = Arc::new(DashMap::new());
         let active_overlay = ActiveOverlay::new(mock_db_arc.clone(), overlay_cache);
@@ -580,7 +698,6 @@ mod active_overlay_tests {
 
         let mut mock_db = MockDb::new();
         mock_db.insert_block_hash(num1, hash1);
-        #[allow(clippy::arc_with_non_send_sync)]
         let mock_db_arc = Arc::new(UnsafeCell::new(mock_db));
         let overlay_cache = Arc::new(DashMap::new());
         let active_overlay = ActiveOverlay::new(mock_db_arc.clone(), overlay_cache);
@@ -619,7 +736,6 @@ mod active_overlay_tests {
 
         let mut mock_db = MockDb::new();
         mock_db.insert_storage(non_created_addr, fallback_slot, fallback_value);
-        #[allow(clippy::arc_with_non_send_sync)]
         let mock_db_arc = Arc::new(UnsafeCell::new(mock_db));
         let overlay_cache = Arc::new(DashMap::new());
         let mut active_overlay = ActiveOverlay::new(mock_db_arc.clone(), overlay_cache.clone());
@@ -711,13 +827,11 @@ mod active_overlay_tests {
         // Underlying DB 1
         let mut mock_db1 = MockDb::new();
         mock_db1.insert_account(addr1, info1.clone());
-        #[allow(clippy::arc_with_non_send_sync)]
         let mock_db1_arc = Arc::new(UnsafeCell::new(mock_db1));
 
         // Underlying DB 2
         let mut mock_db2 = MockDb::new();
         mock_db2.insert_account(addr2, info2.clone());
-        #[allow(clippy::arc_with_non_send_sync)]
         let mock_db2_arc = Arc::new(UnsafeCell::new(mock_db2));
 
         // THE shared cache instance
@@ -769,27 +883,14 @@ mod active_overlay_tests {
     }
 
     // Test DatabaseCommit implementation
-    #[allow(clippy::too_many_lines)]
     #[test]
     fn test_active_database_commit() {
-        use crate::primitives::{
-            Account,
-            AccountStatus,
-            EvmState,
-            EvmStorageSlot,
-        };
-        use std::collections::HashMap;
-
-        let addr1 = address!("0000000000000000000000000000000000000001");
-        let addr2 = address!("0000000000000000000000000000000000000002");
-
         let code_bytes = bytes!("608060405260aa8060106000396000f3fe");
         let code = Bytecode::new_raw(code_bytes.clone());
         let code_hash = code.hash_slow();
 
         // Create a mock database
         let mock_db = MockDb::new();
-        #[allow(clippy::arc_with_non_send_sync)]
         let mock_db_arc = Arc::new(UnsafeCell::new(mock_db));
 
         // Create a cache
@@ -798,58 +899,7 @@ mod active_overlay_tests {
         // Create the active overlay
         let mut active_overlay = ActiveOverlay::new(mock_db_arc.clone(), cache.clone());
 
-        // Create accounts with different states
-        let account1 = Account {
-            info: AccountInfo {
-                balance: U256::from(1500),
-                nonce: 3,
-                code_hash,
-                code: Some(code.clone()),
-            },
-            transaction_id: 0,
-            storage: HashMap::from_iter([
-                (U256::from(5), EvmStorageSlot::new(U256::from(500), 0)),
-                (U256::from(6), EvmStorageSlot::new(U256::from(600), 0)),
-            ]),
-            status: AccountStatus::Touched,
-        };
-
-        let account2 = Account {
-            info: AccountInfo {
-                balance: U256::from(2500),
-                nonce: 4,
-                code_hash: b256!(
-                    "0000000000000000000000000000000000000000000000000000000000000000"
-                ),
-                code: None,
-            },
-            transaction_id: 0,
-            storage: HashMap::from_iter([(
-                U256::from(20),
-                EvmStorageSlot::new(U256::from(2000), 0),
-            )]),
-            status: AccountStatus::Touched,
-        };
-
-        // Create an untouched account that should be ignored
-        let account3 = Account {
-            info: AccountInfo {
-                balance: U256::from(3500),
-                nonce: 5,
-                code_hash: b256!(
-                    "0000000000000000000000000000000000000000000000000000000000000000"
-                ),
-                code: None,
-            },
-            transaction_id: 0,
-            storage: HashMap::default(),
-            status: AccountStatus::default(), // Not touched
-        };
-
-        let addr3 = address!("0000000000000000000000000000000000000003");
-
-        let evm_state: EvmState =
-            HashMap::from_iter([(addr1, account1), (addr2, account2), (addr3, account3)]);
+        let (evm_state, addr1, addr2, addr3) = build_commit_state(&code, code_hash);
 
         // Initial cache should be empty
         assert_eq!(cache.iter().count(), 0);
@@ -857,49 +907,7 @@ mod active_overlay_tests {
         // Commit the state changes
         active_overlay.commit(evm_state);
 
-        // Verify account1's data was committed
-        assert!(active_overlay.is_cached(&TableKey::Basic(addr1)));
-        assert_eq!(
-            active_overlay.basic_ref(addr1).unwrap().unwrap().balance,
-            U256::from(1500)
-        );
-        assert_eq!(active_overlay.basic_ref(addr1).unwrap().unwrap().nonce, 3);
-
-        // Verify code was committed
-        assert!(active_overlay.is_cached(&TableKey::CodeByHash(code_hash)));
-        assert_eq!(
-            active_overlay
-                .code_by_hash_ref(code_hash)
-                .unwrap()
-                .original_bytes(),
-            code_bytes
-        );
-
-        // Verify storage was committed
-        assert!(active_overlay.is_cached(&TableKey::Storage(addr1)));
-        assert_eq!(
-            active_overlay.storage_ref(addr1, U256::from(5)).unwrap(),
-            U256::from(500)
-        );
-        assert_eq!(
-            active_overlay.storage_ref(addr1, U256::from(6)).unwrap(),
-            U256::from(600)
-        );
-
-        // Verify account2's data was committed
-        assert!(active_overlay.is_cached(&TableKey::Basic(addr2)));
-        assert_eq!(
-            active_overlay.basic_ref(addr2).unwrap().unwrap().balance,
-            U256::from(2500)
-        );
-        assert!(active_overlay.is_cached(&TableKey::Storage(addr2)));
-        assert_eq!(
-            active_overlay.storage_ref(addr2, U256::from(20)).unwrap(),
-            U256::from(2000)
-        );
-
-        // Verify account3 (untouched) was NOT committed
-        assert!(!active_overlay.is_cached(&TableKey::Basic(addr3)));
+        assert_active_overlay_commit(&active_overlay, addr1, addr2, addr3, code_hash, &code_bytes);
 
         // Verify no underlying DB calls were made
         assert_eq!(get_mock_db_field!(mock_db_arc, get_basic_calls), 0);
@@ -926,9 +934,7 @@ mod active_overlay_tests {
         // Create two mock databases
         let mock_db1 = MockDb::new();
         let mock_db2 = MockDb::new();
-        #[allow(clippy::arc_with_non_send_sync)]
         let mock_db1_arc = Arc::new(UnsafeCell::new(mock_db1));
-        #[allow(clippy::arc_with_non_send_sync)]
         let mock_db2_arc = Arc::new(UnsafeCell::new(mock_db2));
 
         // Create a shared cache

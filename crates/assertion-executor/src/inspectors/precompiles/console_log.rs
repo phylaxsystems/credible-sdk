@@ -17,7 +17,11 @@ impl std::fmt::Display for ConsoleLogError {
     }
 }
 
-/// Inserts console log into [`PhEvmContext`]
+/// Inserts console log into [`PhEvmContext`].
+///
+/// # Errors
+///
+/// Returns an error if the log input cannot be decoded or run out of gas
 pub fn console_log(
     input_bytes: &Bytes,
     context: &mut PhEvmContext,

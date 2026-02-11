@@ -38,6 +38,10 @@ pub trait RollbackDb {
 
     /// Roll back to a specific commit depth (0-based).
     /// Depth of 0 resets to the base snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the rollback cannot be performed.
     fn rollback_to(&mut self, depth: usize) -> Result<(), Self::Err>;
     /// Drops the changelog while keeping the latest state as the new base
     fn collapse_log(&mut self);
