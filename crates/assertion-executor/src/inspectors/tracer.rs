@@ -88,6 +88,7 @@ impl Default for CallTracer {
 }
 
 impl CallTracer {
+    #[must_use]
     pub fn new(assertion_store: AssertionStore) -> Self {
         Self {
             call_records: Vec::new(),
@@ -283,6 +284,7 @@ impl CallTracer {
         self.call_records.truncate(index);
     }
 
+    #[must_use]
     pub fn calls(&self) -> HashSet<Address> {
         // TODO: Think about storing the call targets in a set in addition to the call inputs
         // to see if it improves performance
@@ -293,6 +295,7 @@ impl CallTracer {
             .collect()
     }
 
+    #[must_use]
     pub fn get_call_inputs(
         &self,
         target: Address,
@@ -320,6 +323,7 @@ impl CallTracer {
 
     /// Check if a call is valid for forking (not inside a reverted subtree)
     #[inline]
+    #[must_use]
     pub fn is_call_forkable(&self, call_id: usize) -> bool {
         call_id < self.call_records.len()
     }
@@ -335,17 +339,20 @@ impl CallTracer {
     }
 
     /// Returns a reference to the call records.
+    #[must_use]
     pub fn call_records(&self) -> &[CallRecord] {
         &self.call_records
     }
 
     /// Returns the pre-call checkpoint for a specific call index.
+    #[must_use]
     pub fn get_pre_call_checkpoint(&self, index: usize) -> Option<JournalCheckpoint> {
         self.call_records.get(index).map(|r| r.pre_call_checkpoint)
     }
 
     /// Returns the post-call checkpoint for a specific call index.
     /// Returns `None` if index is out of bounds or if the call hasn't ended yet.
+    #[must_use]
     pub fn get_post_call_checkpoint(&self, index: usize) -> Option<JournalCheckpoint> {
         self.call_records
             .get(index)
@@ -394,6 +401,7 @@ impl CallTracer {
     }
 
     /// Returns all trigger events (calls, balance changes, storage changes) grouped by address.
+    #[must_use]
     pub fn triggers(&self) -> HashMap<Address, HashSet<TriggerType>> {
         let mut result: HashMap<Address, HashSet<TriggerType>> = HashMap::new();
         let journal = &self.journal;

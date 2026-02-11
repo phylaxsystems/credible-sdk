@@ -11,8 +11,6 @@
 //! be committed manually or when it becomes full. It is recommended to clear the buffer during
 //! downtime, i.e., when calculating the state root.
 
-#![allow(clippy::double_parens)]
-
 use super::fork_db::{
     ForkDb,
     ForkStorageMap,
@@ -112,6 +110,7 @@ impl<Db> Default for OverlayDb<Db> {
 
 impl<Db> OverlayDb<Db> {
     /// Creates a new `OverlayDB` with the max cache size in bytes.
+    #[must_use]
     pub fn new(underlying_db: Option<Arc<Db>>) -> Self {
         Self {
             underlying_db,
@@ -121,6 +120,7 @@ impl<Db> OverlayDb<Db> {
 
     /// Creates a new `OverlayDb` with the max capacity being determined by the number
     /// of elements inside of the cache instead of the size.
+    #[must_use]
     pub fn new_with_len(underlying_db: Option<Arc<Db>>) -> Self {
         Self {
             underlying_db,
@@ -140,6 +140,7 @@ impl<Db> OverlayDb<Db> {
     }
 
     /// Creates a new forkdb from the current overlay.
+    #[must_use]
     pub fn fork(&self) -> ForkDb<OverlayDb<Db>> {
         ForkDb::new(self.clone())
     }
@@ -175,16 +176,18 @@ impl<Db> OverlayDb<Db> {
 
     /// Check if a value is present inside of the cache.
     /// Does not trigger a cache hit.
+    #[must_use]
     pub fn is_cached(&self, key: &TableKey) -> bool {
         self.overlay.contains_key(key)
     }
 
     /// Returns the number of entries inside the cache.
+    #[must_use]
     pub fn cache_entry_count(&self) -> u64 {
         self.overlay.len() as u64
     }
 
-    #[allow(clippy::cast_precision_loss)]
+    #[must_use]
     pub fn spawn_monitoring_thread(&self) -> JoinHandle<()> {
         const MONITORING_INTERVAL: Duration = Duration::from_secs(10);
 
@@ -196,7 +199,7 @@ impl<Db> OverlayDb<Db> {
 
                 // Total count
                 let total = overlay_db.len();
-                gauge!("overlay_db_cache_total_entries").set(total as f64);
+                gauge!("overlay_db_cache_total_entries").set(lossy_usize_to_f64(total));
 
                 let mut basic_count = 0u64;
                 let mut storage_count = 0u64;
@@ -212,13 +215,28 @@ impl<Db> OverlayDb<Db> {
                     }
                 }
 
-                gauge!("overlay_db_cache_basic_entries").set(basic_count as f64);
-                gauge!("overlay_db_cache_storage_entries").set(storage_count as f64);
-                gauge!("overlay_db_cache_code_entries").set(code_count as f64);
-                gauge!("overlay_db_cache_block_hash_entries").set(block_hash_count as f64);
+                gauge!("overlay_db_cache_basic_entries").set(lossy_u64_to_f64(basic_count));
+                gauge!("overlay_db_cache_storage_entries").set(lossy_u64_to_f64(storage_count));
+                gauge!("overlay_db_cache_code_entries").set(lossy_u64_to_f64(code_count));
+                gauge!("overlay_db_cache_block_hash_entries")
+                    .set(lossy_u64_to_f64(block_hash_count));
             }
         })
     }
+}
+
+fn lossy_usize_to_f64(value: usize) -> f64 {
+    u64_to_f64_lossy(u64::try_from(value).unwrap_or(u64::MAX))
+}
+
+fn lossy_u64_to_f64(value: u64) -> f64 {
+    u64_to_f64_lossy(value)
+}
+
+fn u64_to_f64_lossy(value: u64) -> f64 {
+    let high = u32::try_from(value >> 32).unwrap_or(0);
+    let low = u32::try_from(value & 0xFFFF_FFFF).unwrap_or(0);
+    f64::from(high) * 4_294_967_296.0 + f64::from(low)
 }
 
 impl<Db: DatabaseRef> DatabaseRef for OverlayDb<Db> {
@@ -592,6 +610,8 @@ impl<Db: DatabaseRef> Database for OverlayDb<Db> {
 
 #[cfg(test)]
 mod overlay_db_tests {
+    #![allow(clippy::arc_with_non_send_sync)]
+
     use super::*;
     use crate::{
         db::overlay::test_utils::{
@@ -602,7 +622,10 @@ mod overlay_db_tests {
             Account,
             AccountStatus,
             Bytecode,
+            Bytes,
+            EvmState,
             EvmStorage,
+            EvmStorageSlot,
         },
     };
     use alloy_primitives::{
@@ -612,6 +635,105 @@ mod overlay_db_tests {
     };
 
     use std::collections::HashMap;
+
+    fn build_commit_state(
+        addr1: Address,
+        addr2: Address,
+        code: &Bytecode,
+        code_hash: B256,
+    ) -> EvmState {
+        let account1 = Account {
+            info: AccountInfo {
+                balance: U256::from(5000),
+                nonce: 10,
+                code_hash,
+                code: Some(code.clone()),
+            },
+            transaction_id: 0,
+            storage: HashMap::from_iter([
+                (U256::from(100), EvmStorageSlot::new(U256::from(1000), 0)),
+                (U256::from(200), EvmStorageSlot::new(U256::from(2000), 0)),
+            ]),
+            status: AccountStatus::Touched,
+        };
+
+        let account2 = Account {
+            info: AccountInfo {
+                balance: U256::from(7500),
+                nonce: 15,
+                code_hash: b256!(
+                    "0000000000000000000000000000000000000000000000000000000000000000"
+                ),
+                code: None,
+            },
+            transaction_id: 0,
+            storage: HashMap::from_iter([(
+                U256::from(300),
+                EvmStorageSlot::new(U256::from(3000), 0),
+            )]),
+            status: AccountStatus::Touched,
+        };
+
+        HashMap::from_iter([(addr1, account1), (addr2, account2)])
+    }
+
+    fn assert_parent_overlay_state(
+        parent_overlay_db: &OverlayDb<MockDb>,
+        addr1: Address,
+        addr2: Address,
+        code_hash: B256,
+        code_bytes: &Bytes,
+    ) {
+        assert!(parent_overlay_db.is_cached(&TableKey::Basic(addr1)));
+        assert!(parent_overlay_db.is_cached(&TableKey::Basic(addr2)));
+        assert!(parent_overlay_db.is_cached(&TableKey::CodeByHash(code_hash)));
+        assert!(parent_overlay_db.is_cached(&TableKey::Storage(addr1)));
+        assert!(parent_overlay_db.is_cached(&TableKey::Storage(addr2)));
+
+        assert_eq!(
+            parent_overlay_db.basic_ref(addr1).unwrap().unwrap().balance,
+            U256::from(5000)
+        );
+        assert_eq!(
+            parent_overlay_db.basic_ref(addr1).unwrap().unwrap().nonce,
+            10
+        );
+        assert_eq!(
+            parent_overlay_db.basic_ref(addr2).unwrap().unwrap().balance,
+            U256::from(7500)
+        );
+        assert_eq!(
+            parent_overlay_db.basic_ref(addr2).unwrap().unwrap().nonce,
+            15
+        );
+
+        assert_eq!(
+            parent_overlay_db
+                .code_by_hash_ref(code_hash)
+                .unwrap()
+                .original_bytes(),
+            code_bytes.clone()
+        );
+
+        assert_eq!(
+            parent_overlay_db
+                .storage_ref(addr1, U256::from(100))
+                .unwrap(),
+            U256::from(1000)
+        );
+        assert_eq!(
+            parent_overlay_db
+                .storage_ref(addr1, U256::from(200))
+                .unwrap(),
+            U256::from(2000)
+        );
+        assert_eq!(
+            parent_overlay_db
+                .storage_ref(addr2, U256::from(300))
+                .unwrap(),
+            U256::from(3000)
+        );
+    }
 
     #[test]
     fn test_basic_hit_miss() {
@@ -963,7 +1085,6 @@ mod overlay_db_tests {
     #[test]
     fn test_active_overlay_creation() {
         let overlay_db: OverlayDb<MockDb> = OverlayDb::default();
-        #[allow(clippy::arc_with_non_send_sync)]
         let mock_db_arc = Arc::new(UnsafeCell::new(MockDb::new()));
         let _active_overlay = overlay_db.create_overlay(mock_db_arc);
     }
@@ -1091,17 +1212,8 @@ mod overlay_db_tests {
         assert_eq!(overlay_db.cache_entry_count(), 5); // 2 accounts + 1 code + 2 storage maps
     }
 
-    #[allow(clippy::too_many_lines)]
     #[test]
     fn test_active_overlay_commit_propagates_to_parent() {
-        use crate::primitives::{
-            Account,
-            AccountStatus,
-            EvmState,
-            EvmStorageSlot,
-        };
-        use std::cell::UnsafeCell;
-
         let addr1 = address!("0000000000000000000000000000000000000010");
         let addr2 = address!("0000000000000000000000000000000000000020");
 
@@ -1119,101 +1231,12 @@ mod overlay_db_tests {
 
         // Create an ActiveOverlay from the parent
         let mock_db = MockDb::new();
-        #[allow(clippy::arc_with_non_send_sync)]
         let mock_db_arc = Arc::new(UnsafeCell::new(mock_db));
         let mut active_overlay = parent_overlay_db.create_overlay(mock_db_arc);
 
-        // Create accounts to commit
-        let account1 = Account {
-            info: AccountInfo {
-                balance: U256::from(5000),
-                nonce: 10,
-                code_hash,
-                code: Some(code.clone()),
-            },
-            transaction_id: 0,
-            storage: HashMap::from_iter([
-                (U256::from(100), EvmStorageSlot::new(U256::from(1000), 0)),
-                (U256::from(200), EvmStorageSlot::new(U256::from(2000), 0)),
-            ]),
-            status: AccountStatus::Touched,
-        };
-
-        let account2 = Account {
-            info: AccountInfo {
-                balance: U256::from(7500),
-                nonce: 15,
-                code_hash: b256!(
-                    "0000000000000000000000000000000000000000000000000000000000000000"
-                ),
-                code: None,
-            },
-            transaction_id: 0,
-            storage: HashMap::from_iter([(
-                U256::from(300),
-                EvmStorageSlot::new(U256::from(3000), 0),
-            )]),
-            status: AccountStatus::Touched,
-        };
-
-        let evm_state: EvmState = HashMap::from_iter([(addr1, account1), (addr2, account2)]);
-
-        // Commit to the ActiveOverlay
+        let evm_state = build_commit_state(addr1, addr2, &code, code_hash);
         active_overlay.commit(evm_state);
-
-        // Verify that changes are now visible in the PARENT OverlayDb
-        assert!(parent_overlay_db.is_cached(&TableKey::Basic(addr1)));
-        assert!(parent_overlay_db.is_cached(&TableKey::Basic(addr2)));
-        assert!(parent_overlay_db.is_cached(&TableKey::CodeByHash(code_hash)));
-        assert!(parent_overlay_db.is_cached(&TableKey::Storage(addr1)));
-        assert!(parent_overlay_db.is_cached(&TableKey::Storage(addr2)));
-
-        // Verify account data is accessible through parent OverlayDb
-        assert_eq!(
-            parent_overlay_db.basic_ref(addr1).unwrap().unwrap().balance,
-            U256::from(5000)
-        );
-        assert_eq!(
-            parent_overlay_db.basic_ref(addr1).unwrap().unwrap().nonce,
-            10
-        );
-        assert_eq!(
-            parent_overlay_db.basic_ref(addr2).unwrap().unwrap().balance,
-            U256::from(7500)
-        );
-        assert_eq!(
-            parent_overlay_db.basic_ref(addr2).unwrap().unwrap().nonce,
-            15
-        );
-
-        // Verify code is accessible
-        assert_eq!(
-            parent_overlay_db
-                .code_by_hash_ref(code_hash)
-                .unwrap()
-                .original_bytes(),
-            code_bytes
-        );
-
-        // Verify storage is accessible
-        assert_eq!(
-            parent_overlay_db
-                .storage_ref(addr1, U256::from(100))
-                .unwrap(),
-            U256::from(1000)
-        );
-        assert_eq!(
-            parent_overlay_db
-                .storage_ref(addr1, U256::from(200))
-                .unwrap(),
-            U256::from(2000)
-        );
-        assert_eq!(
-            parent_overlay_db
-                .storage_ref(addr2, U256::from(300))
-                .unwrap(),
-            U256::from(3000)
-        );
+        assert_parent_overlay_state(&parent_overlay_db, addr1, addr2, code_hash, &code_bytes);
 
         // Verify cache entry count matches expectations
         // 2 accounts + 1 code + 2 storage maps = 5 entries
@@ -1222,9 +1245,8 @@ mod overlay_db_tests {
         // Also verify that another ActiveOverlay created from the same parent
         // can see these committed changes
         let mock_db2 = MockDb::new();
-        #[allow(clippy::arc_with_non_send_sync)]
-        let mock_db2_arc = Arc::new(UnsafeCell::new(mock_db2));
-        let active_overlay2 = parent_overlay_db.create_overlay(mock_db2_arc);
+        let mock_db_two_arc = Arc::new(UnsafeCell::new(mock_db2));
+        let active_overlay2 = parent_overlay_db.create_overlay(mock_db_two_arc);
 
         assert_eq!(
             active_overlay2.basic_ref(addr1).unwrap().unwrap().balance,

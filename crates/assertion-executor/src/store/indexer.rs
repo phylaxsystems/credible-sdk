@@ -8,6 +8,7 @@ use alloy_rpc_types::{
     BlockNumHash,
     BlockNumberOrTag,
     Filter,
+    Log,
 };
 use alloy_transport::TransportError;
 use futures::StreamExt;
@@ -295,14 +296,22 @@ impl Indexer {
         self.db.open_tree("pending_modifications")
     }
 
-    /// Create a new Indexer and sync it to the latest block
+    /// Create a new Indexer and sync it to the latest block.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the indexer cannot sync to the head.
     pub async fn new_synced(cfg: IndexerCfg) -> IndexerResult<Self> {
         let mut indexer = Self::new(cfg);
         indexer.sync_to_head().await?;
         Ok(indexer)
     }
 
-    /// Run the indexer
+    /// Run the indexer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the indexer is not synced or if the provider stream fails.
     #[instrument(skip(self))]
     pub async fn run(&self) -> IndexerResult {
         if !self.is_synced {
@@ -337,7 +346,11 @@ impl Indexer {
         Ok(())
     }
 
-    /// Sync the indexer to the latest block
+    /// Sync the indexer to the latest block.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if fetching or indexing blocks fails.
     #[instrument(skip(self))]
     pub async fn sync_to_head(&mut self) -> IndexerResult {
         debug!(
@@ -468,8 +481,12 @@ impl Indexer {
         }
     }
 
-    /// Handle the latest block, sync the indexer to the latest block, and moving
-    /// pending modifications to the store
+    /// Handle the latest block, sync the indexer to the latest block, and move
+    /// pending modifications to the store.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if syncing fails.
     pub async fn handle_latest_block(
         &self,
         header: impl HeaderResponse + std::fmt::Debug,
@@ -487,7 +504,7 @@ impl Indexer {
         Ok(())
     }
 
-    /// Sync the indexer to the latest block
+    /// Sync the indexer to the latest block.
     /// If no block has been indexed, indexes from block 0.
     ///
     /// Otherwise checks for reorg.
@@ -500,6 +517,10 @@ impl Indexer {
     /// If we try to get logs from too many blocks at once, calls might fail.
     /// This can happen if op-talos was out of sync for a while or if it is syncing
     /// an existing chain from scratch.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if fetching or indexing blocks fails.
     #[instrument(skip(self))]
     pub async fn sync(&self, update_block: UpdateBlock, max_blocks_per_call: u64) -> IndexerResult {
         self.metrics.set_head_block(update_block.block_number);
@@ -599,29 +620,56 @@ impl Indexer {
 
     /// Fetch the events from the `State Oracle` contract.
     /// Store the events in the `pending_modifications` tree for the indexed blocks.
-    #[allow(clippy::too_many_lines)]
     async fn index_range(&self, from: u64, to: u64) -> IndexerResult {
         debug!(
             target = "assertion_executor::indexer",
             from, to, "Indexing range"
         );
 
+        let logs = self.fetch_logs(from, to).await?;
+        let pending_modifications = self.collect_pending_modifications(&logs).await?;
+        self.write_pending_modifications_batch(&pending_modifications)?;
+
+        let block_hashes = self.build_block_hashes(&logs, from, to).await?;
+        self.update_last_indexed_block(&block_hashes)?;
+        self.write_block_num_hash_batch(block_hashes)?;
+        trace!(
+            target = "assertion_executor::indexer",
+            from, to, "Block hashes batch applied"
+        );
+
+        self.maybe_move_pending_modifications().await?;
+        debug!(
+            target = "assertion_executor::indexer",
+            from,
+            to,
+            logs_count = logs.len(),
+            "Fetched logs from provider"
+        );
+        Ok(())
+    }
+
+    async fn fetch_logs(&self, from: u64, to: u64) -> IndexerResult<Vec<Log>> {
         let filter = Filter::new()
             .address(self.state_oracle)
             .from_block(BlockNumberOrTag::Number(from))
             .to_block(BlockNumberOrTag::Number(to));
 
-        let logs = self
-            .provider
+        self.provider
             .get_logs(&filter)
             .await
-            .map_err(IndexerError::TransportError)?;
+            .map_err(IndexerError::TransportError)
+    }
 
+    async fn collect_pending_modifications(
+        &self,
+        logs: &[Log],
+    ) -> IndexerResult<BTreeMap<u64, BTreeMap<u64, PendingModification>>> {
         // For ordered insertion of pending modifications
         let mut pending_modifications: BTreeMap<u64, BTreeMap<u64, PendingModification>> =
             BTreeMap::new();
 
-        for log in &logs {
+        for log in logs {
             let log_index = log.log_index.ok_or(IndexerError::LogIndexMissing)?;
             let block_number = log.block_number.ok_or(IndexerError::BlockNumberMissing)?;
 
@@ -638,9 +686,16 @@ impl Indexer {
             }
         }
 
+        Ok(pending_modifications)
+    }
+
+    fn write_pending_modifications_batch(
+        &self,
+        pending_modifications: &BTreeMap<u64, BTreeMap<u64, PendingModification>>,
+    ) -> IndexerResult {
         let mut pending_mods_batch = sled::Batch::default();
 
-        for (block, log_map) in &pending_modifications {
+        for (block, log_map) in pending_modifications {
             let block_mods = log_map
                 .values()
                 .cloned()
@@ -658,6 +713,15 @@ impl Indexer {
             .apply_batch(pending_mods_batch)
             .map_err(IndexerError::SledError)?;
 
+        Ok(())
+    }
+
+    async fn build_block_hashes(
+        &self,
+        logs: &[Log],
+        from: u64,
+        to: u64,
+    ) -> IndexerResult<Vec<BlockNumHash>> {
         trace!(
             target = "assertion_executor::indexer",
             from, to, "Building block hashes batch"
@@ -707,6 +771,10 @@ impl Indexer {
             .collect();
         block_hashes.sort_unstable_by_key(|b| b.number);
 
+        Ok(block_hashes)
+    }
+
+    fn update_last_indexed_block(&self, block_hashes: &[BlockNumHash]) -> IndexerResult {
         if let Some(last_indexed_block_num_hash) = block_hashes.last() {
             trace!(
                 target = "assertion_executor::indexer",
@@ -720,13 +788,10 @@ impl Indexer {
                 "Last indexed block number hash not updated"
             );
         }
+        Ok(())
+    }
 
-        self.write_block_num_hash_batch(block_hashes)?;
-        trace!(
-            target = "assertion_executor::indexer",
-            from, to, "Block hashes batch applied"
-        );
-
+    async fn maybe_move_pending_modifications(&self) -> IndexerResult {
         let block_response = self
             .provider
             .get_block_by_number(self.await_tag.into())
@@ -751,13 +816,7 @@ impl Indexer {
                 "No block to move, skipping"
             );
         }
-        debug!(
-            target = "assertion_executor::indexer",
-            from,
-            to,
-            logs_count = logs.len(),
-            "Fetched logs from provider"
-        );
+
         Ok(())
     }
 

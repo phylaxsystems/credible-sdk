@@ -88,6 +88,10 @@ pub enum ForkError {
 }
 
 /// Fork to the state before the transaction.
+///
+/// # Errors
+///
+/// Returns an error if gas is exhausted or the fork operation fails.
 pub fn fork_pre_tx<'db, ExtDb: DatabaseRef + Clone + DatabaseCommit + 'db, CTX>(
     context: &mut CTX,
     call_tracer: &CallTracer,
@@ -134,6 +138,10 @@ where
 }
 
 /// Fork to the state after the transaction.
+///
+/// # Errors
+///
+/// Returns an error if gas is exhausted or the fork operation fails.
 pub fn fork_post_tx<'db, ExtDb: DatabaseRef + Clone + DatabaseCommit + 'db, CTX>(
     context: &mut CTX,
     call_tracer: &CallTracer,
@@ -180,6 +188,10 @@ where
 }
 
 /// Fork to the state before the call.
+///
+/// # Errors
+///
+/// Returns an error if gas is exhausted, decoding fails, or the fork operation fails.
 pub fn fork_pre_call<'db, ExtDb: DatabaseRef + Clone + DatabaseCommit + 'db, CTX>(
     context: &mut CTX,
     call_tracer: &CallTracer,
@@ -243,6 +255,10 @@ where
 }
 
 /// Fork to the state after the call.
+///
+/// # Errors
+///
+/// Returns an error if gas is exhausted, decoding fails, or the fork operation fails.
 pub fn fork_post_call<'db, ExtDb: DatabaseRef + Clone + DatabaseCommit + 'db, CTX>(
     context: &mut CTX,
     call_tracer: &CallTracer,

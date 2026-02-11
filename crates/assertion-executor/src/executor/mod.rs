@@ -109,6 +109,7 @@ pub struct AssertionExecutor {
 
 impl AssertionExecutor {
     /// Creates a new assertion executor.
+    #[must_use]
     pub fn new(config: ExecutorConfig, store: AssertionStore) -> Self {
         Self { config, store }
     }
@@ -441,6 +442,10 @@ impl AssertionExecutor {
     ///
     /// Returns the results of the assertions, as well as the state changes that should be
     /// committed if the assertions pass. Errors if the tx execution encounters an internal error.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if executing the transaction or assertions fails.
     #[instrument(level = "debug", skip_all, target = "executor::validate_tx")]
     pub fn validate_transaction_ext_db<ExtDb, Active>(
         &mut self,
@@ -644,6 +649,9 @@ impl AssertionExecutor {
         ))
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if executing the transaction or assertions fails.
     #[instrument(level = "debug", skip_all, target = "executor::validate_tx")]
     pub fn validate_transaction<Active>(
         &mut self,
@@ -739,6 +747,10 @@ impl AssertionExecutor {
     }
 
     /// Commits a transaction against a fork of the current state using an external DB.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the transaction execution fails or the call tracer reports an error.
     #[instrument(level = "trace", skip_all, target = "assertion-executor::execute_tx")]
     pub fn execute_forked_tx_ext_db<ExtDb>(
         &self,

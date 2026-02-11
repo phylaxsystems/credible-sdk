@@ -77,11 +77,13 @@ impl<Db> VersionDb<Db> {
     /// Returns true if the last commit was empty (a failed transaction).
     /// This is useful for checking if processing should be paused due to
     /// a pending failed transaction state.
+    #[must_use]
     pub fn last_commit_was_empty(&self) -> bool {
         matches!(self.commit_log.last(), Some(None))
     }
 
     /// Provides read-only access to the underlying state `ForkDb`.
+    #[must_use]
     pub fn state(&self) -> &ForkDb<Db> {
         &self.state
     }
@@ -95,6 +97,7 @@ impl<Db> VersionDb<Db> {
     }
 
     /// Provides read-only access to the base state `ForkDb`.
+    #[must_use]
     pub fn base_state(&self) -> &ForkDb<Db> {
         &self.base_state
     }

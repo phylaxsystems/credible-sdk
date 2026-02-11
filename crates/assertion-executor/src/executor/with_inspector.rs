@@ -208,7 +208,6 @@ impl AssertionExecutor {
 
     /// Execute assertions with a custom inspector.
     /// Returns the assertion results and a vector of inspectors (one per assertion function).
-    #[allow(clippy::type_complexity)]
     fn execute_assertions_with_inspector<Active, I>(
         &self,
         block_env: BlockEnv,
@@ -344,7 +343,6 @@ impl AssertionExecutor {
         level = "debug",
         target = "assertion-executor::execute_assertions"
     )]
-    #[allow(clippy::too_many_arguments)]
     fn execute_assertion_fn_with_inspector<Active, I>(
         &self,
         assertion_contract: &AssertionContract,

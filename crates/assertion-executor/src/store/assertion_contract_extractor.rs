@@ -54,11 +54,11 @@ pub enum FnSelectorExtractorError {
     #[error("Failed to call triggers function: {0}")]
     TriggersCallError(EVMError<Infallible>),
     #[error("Failed to call triggers function: {0:?}")]
-    TriggersCallFailed(ResultAndState),
+    TriggersCallFailed(Box<ResultAndState>),
     #[error("Error with assertion contract deployment: {0}")]
     AssertionContractDeployError(EVMError<Infallible>),
     #[error("Assertion contract deployment failed: {0:?}")]
-    AssertionContractDeployFailed(ResultAndState),
+    AssertionContractDeployFailed(Box<ResultAndState>),
     #[error("No triggers recorded in assertion contract")]
     NoTriggersRecorded,
     #[error("Assertion Contract not found at expected address.")]
@@ -69,8 +69,11 @@ pub enum FnSelectorExtractorError {
 
 const DEPLOYMENT_GAS_LIMIT: u64 = eip7825::TX_GAS_LIMIT_CAP;
 
-/// Extracts [`AssertionContract`] and [`TriggerRecorder`] from a given assertion contract's deployment bytecode
-#[allow(clippy::result_large_err)]
+/// Extracts [`AssertionContract`] and [`TriggerRecorder`] from a given assertion contract's deployment bytecode.
+///
+/// # Errors
+///
+/// Returns an error if deployment or trigger extraction fails.
 pub fn extract_assertion_contract(
     assertion_code: &Bytes,
     config: &ExecutorConfig,
@@ -113,7 +116,7 @@ pub fn extract_assertion_contract(
             "Assertion contract deployment failed",
         );
         return Err(FnSelectorExtractorError::AssertionContractDeployFailed(
-            result_and_state,
+            Box::new(result_and_state),
         ));
     }
 
@@ -147,9 +150,9 @@ pub fn extract_assertion_contract(
         .map_err(FnSelectorExtractorError::TriggersCallError)?;
 
     if !trigger_call_result.result.is_success() {
-        return Err(FnSelectorExtractorError::TriggersCallFailed(
+        return Err(FnSelectorExtractorError::TriggersCallFailed(Box::new(
             trigger_call_result,
-        ));
+        )));
     }
 
     std::mem::drop(evm);

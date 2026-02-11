@@ -1,4 +1,3 @@
-#![allow(clippy::missing_panics_doc)]
 use super::OverlayDb;
 use crate::{
     db::{
@@ -28,6 +27,7 @@ use std::{
 };
 
 impl<Db> OverlayDb<Db> {
+    #[must_use]
     pub fn new_test() -> OverlayDb<InMemoryDB> {
         OverlayDb {
             underlying_db: Some(Arc::new(InMemoryDB::default())),
@@ -57,6 +57,7 @@ pub struct MockDb {
 }
 
 impl MockDb {
+    #[must_use]
     pub fn new() -> Self {
         MockDb::default()
     }
@@ -78,15 +79,31 @@ impl MockDb {
     }
 
     // Methods to check call counts
+    #[must_use]
+    /// # Panics
+    ///
+    /// Panics if the mutex is poisoned.
     pub fn get_basic_calls(&self) -> u64 {
         *self.basic_calls.lock().unwrap()
     }
+    #[must_use]
+    /// # Panics
+    ///
+    /// Panics if the mutex is poisoned.
     pub fn get_code_calls(&self) -> u64 {
         *self.code_calls.lock().unwrap()
     }
+    #[must_use]
+    /// # Panics
+    ///
+    /// Panics if the mutex is poisoned.
     pub fn get_storage_calls(&self) -> u64 {
         *self.storage_calls.lock().unwrap()
     }
+    #[must_use]
+    /// # Panics
+    ///
+    /// Panics if the mutex is poisoned.
     pub fn get_block_hash_calls(&self) -> u64 {
         *self.block_hash_calls.lock().unwrap()
     }
@@ -197,7 +214,6 @@ impl Database for MockDb {
 }
 
 // Helper function to create a simple AccountInfo
-#[allow(dead_code)]
 pub fn mock_account_info(balance: U256, nonce: u64, code: Option<Bytecode>) -> AccountInfo {
     AccountInfo {
         balance,

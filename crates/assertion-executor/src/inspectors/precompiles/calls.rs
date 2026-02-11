@@ -41,6 +41,10 @@ const DYNAMIC_CALL_COST: u64 = 3;
 ///
 /// Gas for this fn is calculated as follows:
 /// `gas = BASE_COST + (CALLS_PROCESSED * BASE_CALL_COST) + (ceil(CALLDATA_SIZE / 32) * DYNAMIC_CALL_COST)`
+///
+/// # Errors
+///
+/// Returns an error if decoding fails, the input type is unexpected, or gas is exhausted.
 pub fn get_call_inputs(
     ph_context: &PhEvmContext,
     target: Address,

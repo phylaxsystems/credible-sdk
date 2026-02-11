@@ -261,15 +261,21 @@ pub struct AssertionsForExecution {
     pub adopter: Address,
 }
 
-/// Used to represent important tracing information
-#[derive(Debug)]
+/// Used to represent important tracing information.
 struct AssertionsForExecutionMetadata<'a> {
-    #[allow(dead_code)]
     assertion_id: &'a B256,
-    #[allow(dead_code)]
     selectors: &'a Vec<FixedBytes<4>>,
-    #[allow(dead_code)]
     adopter: &'a Address,
+}
+
+impl std::fmt::Debug for AssertionsForExecutionMetadata<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AssertionsForExecutionMetadata")
+            .field("assertion_id", &self.assertion_id)
+            .field("selectors", &self.selectors)
+            .field("adopter", &self.adopter)
+            .finish()
+    }
 }
 
 /// Struct representing a pending assertion modification that has not passed the timelock.
@@ -281,23 +287,39 @@ pub struct AssertionState {
     pub trigger_recorder: TriggerRecorder,
 }
 
+#[derive(Default)]
+struct ExpiryUpdates {
+    additions: Vec<(u64, B256)>,
+    removals: Vec<(u64, B256)>,
+}
+
 /// Used to represent important tracing information.
-#[derive(Debug)]
 struct AssertionStateMetadata<'a> {
-    #[allow(dead_code)]
     activation_block: u64,
-    #[allow(dead_code)]
     inactivation_block: Option<u64>,
-    #[allow(dead_code)]
     assertion_id: &'a B256,
-    #[allow(dead_code)]
     recorded_triggers: &'a std::collections::HashMap<TriggerType, HashSet<FixedBytes<4>>>,
+}
+
+impl std::fmt::Debug for AssertionStateMetadata<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AssertionStateMetadata")
+            .field("activation_block", &self.activation_block)
+            .field("inactivation_block", &self.inactivation_block)
+            .field("assertion_id", &self.assertion_id)
+            .field("recorded_triggers", &self.recorded_triggers)
+            .finish()
+    }
 }
 
 impl AssertionState {
     /// Creates a new active assertion state.
     /// Will be active across all blocks.
-    #[allow(clippy::result_large_err)]
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the assertion contract cannot be deployed or its triggers cannot be
+    /// extracted.
     pub fn new_active(
         bytecode: &Bytes,
         executor_config: &ExecutorConfig,
@@ -312,7 +334,9 @@ impl AssertionState {
     }
 
     #[cfg(any(test, feature = "test"))]
-    #[allow(clippy::missing_panics_doc)]
+    /// # Panics
+    ///
+    /// Panics if the assertion contract cannot be initialized.
     pub fn new_test(bytecode: &Bytes) -> Self {
         Self::new_active(bytecode, &ExecutorConfig::default()).unwrap()
     }
@@ -371,17 +395,29 @@ struct AssertionStoreInner {
     backend: StoreBackend,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AssertionStore {
     inner: Arc<Mutex<AssertionStoreInner>>,
     /// Shutdown signal sender - when dropped, signals the background task to stop
-    _shutdown_tx: Arc<watch::Sender<bool>>,
+    shutdown_tx: Arc<watch::Sender<bool>>,
     /// Handle to the background pruning task
-    _prune_task: Arc<tokio::task::JoinHandle<()>>,
+    prune_task: Arc<tokio::task::JoinHandle<()>>,
     /// Current block number (updated externally for pruning reference)
     current_block: Arc<std::sync::atomic::AtomicU64>,
     /// Prune configuration
     prune_config: PruneConfig,
+}
+
+impl std::fmt::Debug for AssertionStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let _ = &self.prune_task;
+        f.debug_struct("AssertionStore")
+            .field("inner", &self.inner)
+            .field("shutdown_tx", &self.shutdown_tx)
+            .field("current_block", &self.current_block)
+            .field("prune_config", &self.prune_config)
+            .finish()
+    }
 }
 
 impl std::fmt::Debug for AssertionStoreInner {
@@ -408,11 +444,13 @@ impl AssertionStore {
     }
 
     /// Creates a new assertion store without persistence (in-memory).
+    #[must_use]
     pub fn new_ephemeral() -> Self {
         Self::new_ephemeral_with_config(PruneConfig::default())
     }
 
     /// Creates a new assertion store without persistence (in-memory) with custom prune config.
+    #[must_use]
     pub fn new_ephemeral_with_config(prune_config: PruneConfig) -> Self {
         let backend = StoreBackend::new_in_memory();
         Self::with_backend(backend, prune_config)
@@ -437,8 +475,8 @@ impl AssertionStore {
 
         Self {
             inner,
-            _shutdown_tx: shutdown_tx,
-            _prune_task: Arc::new(prune_task),
+            shutdown_tx,
+            prune_task: Arc::new(prune_task),
             current_block,
             prune_config,
         }
@@ -494,6 +532,10 @@ impl AssertionStore {
     /// Inserts the given assertion into the store.
     /// If an assertion with the same `assertion_contract_id` already exists, it is replaced.
     /// Returns the previous assertion if it existed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the store cannot be accessed or updated.
     pub fn insert(
         &self,
         assertion_adopter: Address,
@@ -551,6 +593,10 @@ impl AssertionStore {
     }
 
     /// Applies the given modifications to the store.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the store cannot be accessed or updated.
     pub fn apply_pending_modifications(
         &self,
         pending_modifications: Vec<PendingModification>,
@@ -649,6 +695,10 @@ impl AssertionStore {
     }
 
     /// Reads the assertions for the given block from the store, given the traces.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the store cannot be accessed or queried.
     #[tracing::instrument(
         skip_all,
         name = "read_assertions_from_store",
@@ -713,6 +763,10 @@ impl AssertionStore {
 
     /// Returns `true` if the address has any active assertions associated with it.
     /// Used to check if a account is an assertion adopter.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the store cannot be accessed.
     #[tracing::instrument(
         skip_all,
         name = "read_adopter_from_db",
@@ -839,7 +893,6 @@ impl AssertionStore {
     }
 
     /// Applies the given assertion adopter modifications to the store.
-    #[allow(clippy::too_many_lines)]
     fn apply_pending_modification(
         &self,
         assertion_adopter: Address,
@@ -851,18 +904,8 @@ impl AssertionStore {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
 
-            // For Sled backend, we need the serialized form for CAS
-            let assertions_serialized: Option<Vec<u8>> = match &inner.backend {
-                StoreBackend::InMemory { .. } => None,
-                StoreBackend::Sled { db, .. } => {
-                    db.get(assertion_adopter)
-                        .map_err(AssertionStoreError::SledError)?
-                        .map(|ivec| ivec.to_vec())
-                }
-            };
-
-            let mut assertions: Vec<AssertionState> =
-                inner.backend.get(&assertion_adopter)?.unwrap_or_default();
+            let (assertions_serialized, mut assertions) =
+                Self::load_assertions_for_update(&inner.backend, assertion_adopter)?;
 
             info!(
                 target: "assertion-executor::assertion_store",
@@ -870,86 +913,13 @@ impl AssertionStore {
                 "Applying pending modifications"
             );
 
-            // Track expiry index changes
-            let mut expiry_additions: Vec<(u64, B256)> = Vec::new();
-            let mut expiry_removals: Vec<(u64, B256)> = Vec::new();
-
+            let mut expiry_updates = ExpiryUpdates::default();
             for modification in modifications {
-                match modification {
-                    PendingModification::Add {
-                        assertion_contract,
-                        trigger_recorder,
-                        activation_block,
-                        ..
-                    } => {
-                        info!(
-                            target: "assertion-executor::assertion_store",
-                            ?assertion_contract,
-                            ?trigger_recorder,
-                            activation_block,
-                            "Applying pending assertion addition"
-                        );
-                        let existing_state = assertions
-                            .iter_mut()
-                            .find(|a| a.assertion_contract_id() == assertion_contract.id);
-
-                        match existing_state {
-                            Some(state) => {
-                                // Remove the old expiry if it had one
-                                if let Some(old_inactivation) = state.inactivation_block {
-                                    expiry_removals.push((old_inactivation, assertion_contract.id));
-                                }
-                                state.activation_block = *activation_block;
-                                state.inactivation_block = None; // Re-activation clears inactivation
-                            }
-                            None => {
-                                assertions.push(AssertionState {
-                                    activation_block: *activation_block,
-                                    inactivation_block: None,
-                                    assertion_contract: assertion_contract.clone(),
-                                    trigger_recorder: trigger_recorder.clone(),
-                                });
-                            }
-                        }
-                    }
-                    PendingModification::Remove {
-                        assertion_contract_id,
-                        inactivation_block,
-                        ..
-                    } => {
-                        info!(
-                            target: "assertion-executor::assertion_store",
-                            ?assertion_contract_id,
-                            inactivation_block,
-                            "Applying pending assertion removal"
-                        );
-                        let existing_state = assertions
-                            .iter_mut()
-                            .find(|a| a.assertion_contract_id() == *assertion_contract_id);
-
-                        match existing_state {
-                            Some(state) => {
-                                // Remove the old expiry if it had one
-                                if let Some(old_inactivation) = state.inactivation_block {
-                                    expiry_removals
-                                        .push((old_inactivation, *assertion_contract_id));
-                                }
-                                state.inactivation_block = Some(*inactivation_block);
-                                // Add a new expiry index
-                                expiry_additions
-                                    .push((*inactivation_block, *assertion_contract_id));
-                            }
-                            None => {
-                                // The assertion was not found, so we add it with the inactivation_block set.
-                                error!(
-                                    target: "assertion-executor::assertion_store",
-                                    ?assertion_contract_id,
-                                    "Apply pending modifications error: Assertion not found for removal",
-                                );
-                            }
-                        }
-                    }
-                }
+                Self::apply_pending_modification_to_assertions(
+                    &mut assertions,
+                    modification,
+                    &mut expiry_updates,
+                );
             }
 
             let cas_succeeded = inner.backend.compare_and_swap(
@@ -959,15 +929,7 @@ impl AssertionStore {
             )?;
 
             if cas_succeeded {
-                // Update expiry index after successful CAS
-                for (block, id) in expiry_removals {
-                    let key = build_expiry_key(block, &assertion_adopter, &id);
-                    let _ = inner.backend.remove_expiry(&key);
-                }
-                for (block, id) in expiry_additions {
-                    let key = build_expiry_key(block, &assertion_adopter, &id);
-                    let _ = inner.backend.insert_expiry(key);
-                }
+                Self::apply_expiry_updates(&mut inner.backend, assertion_adopter, expiry_updates);
                 break;
             }
             tracing::debug!(
@@ -979,12 +941,136 @@ impl AssertionStore {
         Ok(())
     }
 
+    fn load_assertions_for_update(
+        backend: &StoreBackend,
+        assertion_adopter: Address,
+    ) -> Result<(Option<Vec<u8>>, Vec<AssertionState>), AssertionStoreError> {
+        // For Sled backend, we need the serialized form for CAS
+        let assertions_serialized: Option<Vec<u8>> = match backend {
+            StoreBackend::InMemory { .. } => None,
+            StoreBackend::Sled { db, .. } => {
+                db.get(assertion_adopter)
+                    .map_err(AssertionStoreError::SledError)?
+                    .map(|ivec| ivec.to_vec())
+            }
+        };
+
+        let assertions = backend.get(&assertion_adopter)?.unwrap_or_default();
+        Ok((assertions_serialized, assertions))
+    }
+
+    fn apply_pending_modification_to_assertions(
+        assertions: &mut Vec<AssertionState>,
+        modification: &PendingModification,
+        expiry_updates: &mut ExpiryUpdates,
+    ) {
+        match modification {
+            PendingModification::Add {
+                assertion_contract,
+                trigger_recorder,
+                activation_block,
+                ..
+            } => {
+                info!(
+                    target: "assertion-executor::assertion_store",
+                    ?assertion_contract,
+                    ?trigger_recorder,
+                    activation_block,
+                    "Applying pending assertion addition"
+                );
+                let existing_state = assertions
+                    .iter_mut()
+                    .find(|a| a.assertion_contract_id() == assertion_contract.id);
+
+                match existing_state {
+                    Some(state) => {
+                        // Remove the old expiry if it had one
+                        if let Some(old_inactivation) = state.inactivation_block {
+                            expiry_updates
+                                .removals
+                                .push((old_inactivation, assertion_contract.id));
+                        }
+                        state.activation_block = *activation_block;
+                        state.inactivation_block = None; // Re-activation clears inactivation
+                    }
+                    None => {
+                        assertions.push(AssertionState {
+                            activation_block: *activation_block,
+                            inactivation_block: None,
+                            assertion_contract: assertion_contract.clone(),
+                            trigger_recorder: trigger_recorder.clone(),
+                        });
+                    }
+                }
+            }
+            PendingModification::Remove {
+                assertion_contract_id,
+                inactivation_block,
+                ..
+            } => {
+                info!(
+                    target: "assertion-executor::assertion_store",
+                    ?assertion_contract_id,
+                    inactivation_block,
+                    "Applying pending assertion removal"
+                );
+                let existing_state = assertions
+                    .iter_mut()
+                    .find(|a| a.assertion_contract_id() == *assertion_contract_id);
+
+                match existing_state {
+                    Some(state) => {
+                        // Remove the old expiry if it had one
+                        if let Some(old_inactivation) = state.inactivation_block {
+                            expiry_updates
+                                .removals
+                                .push((old_inactivation, *assertion_contract_id));
+                        }
+                        state.inactivation_block = Some(*inactivation_block);
+                        // Add a new expiry index
+                        expiry_updates
+                            .additions
+                            .push((*inactivation_block, *assertion_contract_id));
+                    }
+                    None => {
+                        // The assertion was not found, so we add it with the inactivation_block set.
+                        error!(
+                            target: "assertion-executor::assertion_store",
+                            ?assertion_contract_id,
+                            "Apply pending modifications error: Assertion not found for removal",
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    fn apply_expiry_updates(
+        backend: &mut StoreBackend,
+        assertion_adopter: Address,
+        updates: ExpiryUpdates,
+    ) {
+        // Update expiry index after successful CAS
+        for (block, id) in updates.removals {
+            let key = build_expiry_key(block, &assertion_adopter, &id);
+            let _ = backend.remove_expiry(&key);
+        }
+        for (block, id) in updates.additions {
+            let key = build_expiry_key(block, &assertion_adopter, &id);
+            let _ = backend.insert_expiry(key);
+        }
+    }
+
     #[cfg(any(test, feature = "test"))]
+    /// # Errors
+    ///
+    /// Returns an error if the store cannot be accessed or updated.
     pub fn prune_now(&self, prune_before_block: u64) -> Result<usize, AssertionStoreError> {
         Self::prune_expired_inner(&self.inner, prune_before_block)
     }
 
     #[cfg(any(test, feature = "test"))]
+    #[must_use]
     pub fn assertion_contract_count(&self, assertion_adopter: Address) -> usize {
         let assertions = self.get_assertions_for_contract(assertion_adopter);
         assertions.len()
@@ -1013,9 +1099,6 @@ impl AssertionStore {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::cast_possible_truncation)]
-    #![allow(clippy::cast_sign_loss)]
-    #![allow(clippy::used_underscore_binding)]
     use revm::context::JournalInner;
 
     use super::*;
@@ -1273,16 +1356,15 @@ mod tests {
         ));
     }
 
-    #[allow(clippy::needless_pass_by_value)]
     fn setup_and_match(
-        recorded_triggers: Vec<(TriggerType, HashSet<FixedBytes<4>>)>,
+        recorded_triggers: &[(TriggerType, HashSet<FixedBytes<4>>)],
         journal_entries: Vec<JournalEntry>,
         assertion_adopter: Address,
     ) -> Result<Vec<AssertionsForExecution>, AssertionStoreError> {
         let store = AssertionStore::new_ephemeral();
         let mut trigger_recorder = TriggerRecorder::default();
 
-        for (trigger, selectors) in &recorded_triggers {
+        for (trigger, selectors) in recorded_triggers {
             trigger_recorder
                 .triggers
                 .insert(trigger.clone(), selectors.clone());
@@ -1301,6 +1383,126 @@ mod tests {
         }
 
         store.read(&tracer, U256::from(100))
+    }
+
+    struct ComprehensiveTriggerFixture {
+        recorded_triggers: Vec<(TriggerType, HashSet<FixedBytes<4>>)>,
+        expected_selectors: Vec<FixedBytes<4>>,
+        trigger_selector: FixedBytes<4>,
+        trigger_slot: U256,
+    }
+
+    fn build_comprehensive_fixture() -> ComprehensiveTriggerFixture {
+        let selector_specific_call = FixedBytes::<4>::random();
+        let selector_all_calls = FixedBytes::<4>::random();
+        let selector_specific_storage = FixedBytes::<4>::random();
+        let selector_all_storage = FixedBytes::<4>::random();
+        let selector_balance = FixedBytes::<4>::random();
+
+        let trigger_selector = FixedBytes::<4>::from([0x12, 0x34, 0x56, 0x78]);
+        let trigger_slot = U256::from(42);
+
+        let recorded_triggers = vec![
+            (
+                TriggerType::Call { trigger_selector },
+                vec![selector_specific_call]
+                    .into_iter()
+                    .collect::<HashSet<_>>(),
+            ),
+            (
+                TriggerType::AllCalls,
+                vec![selector_all_calls].into_iter().collect::<HashSet<_>>(),
+            ),
+            (
+                TriggerType::StorageChange {
+                    trigger_slot: trigger_slot.into(),
+                },
+                vec![selector_specific_storage]
+                    .into_iter()
+                    .collect::<HashSet<_>>(),
+            ),
+            (
+                TriggerType::AllStorageChanges,
+                vec![selector_all_storage]
+                    .into_iter()
+                    .collect::<HashSet<_>>(),
+            ),
+            (
+                TriggerType::BalanceChange,
+                vec![selector_balance].into_iter().collect::<HashSet<_>>(),
+            ),
+        ];
+
+        let expected_selectors = vec![
+            selector_specific_call,
+            selector_all_calls,
+            selector_specific_storage,
+            selector_all_storage,
+            selector_balance,
+        ];
+
+        ComprehensiveTriggerFixture {
+            recorded_triggers,
+            expected_selectors,
+            trigger_selector,
+            trigger_slot,
+        }
+    }
+
+    fn build_comprehensive_journal_entries(aa: Address, trigger_slot: U256) -> Vec<JournalEntry> {
+        vec![
+            JournalEntry::StorageChanged {
+                address: aa,
+                key: trigger_slot,
+                had_value: U256::from(0),
+            },
+            JournalEntry::StorageChanged {
+                address: aa,
+                key: U256::from(99), // Different slot to trigger AllStorageChanges
+                had_value: U256::from(1),
+            },
+            JournalEntry::BalanceTransfer {
+                from: aa,
+                to: Address::random(),
+                balance: U256::from(100),
+            },
+        ]
+    }
+
+    fn build_call_tracer(aa: Address, trigger_selector: FixedBytes<4>) -> CallTracer {
+        let mut tracer = CallTracer::default();
+        tracer.record_call_start(
+            revm::interpreter::CallInputs {
+                input: revm::interpreter::CallInput::Bytes(Bytes::from(
+                    trigger_selector.as_slice().to_vec(),
+                )),
+                return_memory_offset: 0..0,
+                gas_limit: 0,
+                bytecode_address: aa,
+                known_bytecode: None,
+                target_address: aa,
+                caller: Address::random(),
+                value: revm::interpreter::CallValue::Transfer(U256::from(100)),
+                scheme: revm::interpreter::CallScheme::Call,
+                is_static: false,
+            },
+            trigger_selector.as_slice(),
+            &mut JournalInner::new(),
+        );
+        tracer.result.clone().unwrap();
+        tracer.record_call_end(&mut JournalInner::new(), false);
+        tracer.result.clone().unwrap();
+        tracer
+    }
+
+    fn assert_sorted_selectors(
+        assertions: &[AssertionsForExecution],
+        mut expected_selectors: Vec<FixedBytes<4>>,
+    ) {
+        let mut matched_selectors = assertions[0].selectors.clone();
+        matched_selectors.sort();
+        expected_selectors.sort();
+        assert_eq!(matched_selectors, expected_selectors);
     }
 
     #[tokio::test]
@@ -1339,7 +1541,7 @@ mod tests {
             had_value: U256::from(0),
         }];
 
-        let assertions = setup_and_match(recorded_triggers, journal_entries, aa)?;
+        let assertions = setup_and_match(&recorded_triggers, journal_entries, aa)?;
         assert_eq!(assertions.len(), 1);
         let mut matched_selectors = assertions[0].selectors.clone();
         matched_selectors.sort();
@@ -1400,7 +1602,7 @@ mod tests {
             },
         ];
 
-        let assertions = setup_and_match(recorded_triggers, journal_entries, aa)?;
+        let assertions = setup_and_match(&recorded_triggers, journal_entries, aa)?;
         assert_eq!(assertions.len(), 1);
         let mut matched_selectors = assertions[0].selectors.clone();
         matched_selectors.sort();
@@ -1444,7 +1646,7 @@ mod tests {
             ),
         ];
 
-        let assertions = setup_and_match(recorded_triggers, vec![], aa)?;
+        let assertions = setup_and_match(&recorded_triggers, vec![], aa)?;
         assert_eq!(assertions.len(), 1);
         let mut matched_selectors = assertions[0].selectors.clone();
         matched_selectors.sort();
@@ -1453,76 +1655,15 @@ mod tests {
         Ok(())
     }
 
-    #[allow(clippy::too_many_lines)]
     #[tokio::test]
     async fn test_all_trigger_types_comprehensive() -> Result<(), AssertionStoreError> {
         let aa = Address::random();
-
-        // Create unique selectors for each trigger type
-        let selector_specific_call = FixedBytes::<4>::random();
-        let selector_all_calls = FixedBytes::<4>::random();
-        let selector_specific_storage = FixedBytes::<4>::random();
-        let selector_all_storage = FixedBytes::<4>::random();
-        let selector_balance = FixedBytes::<4>::random();
-
-        let trigger_selector = FixedBytes::<4>::from([0x12, 0x34, 0x56, 0x78]);
-        let trigger_slot = U256::from(42);
-
-        // Create recorded triggers for ALL trigger types
-        let recorded_triggers = [
-            (
-                TriggerType::Call { trigger_selector },
-                vec![selector_specific_call]
-                    .into_iter()
-                    .collect::<HashSet<_>>(),
-            ),
-            (
-                TriggerType::AllCalls,
-                vec![selector_all_calls].into_iter().collect::<HashSet<_>>(),
-            ),
-            (
-                TriggerType::StorageChange {
-                    trigger_slot: trigger_slot.into(),
-                },
-                vec![selector_specific_storage]
-                    .into_iter()
-                    .collect::<HashSet<_>>(),
-            ),
-            (
-                TriggerType::AllStorageChanges,
-                vec![selector_all_storage]
-                    .into_iter()
-                    .collect::<HashSet<_>>(),
-            ),
-            (
-                TriggerType::BalanceChange,
-                vec![selector_balance].into_iter().collect::<HashSet<_>>(),
-            ),
-        ];
-
-        // Create journal entries that trigger specific call, storage change, and balance change
-        let journal_entries = vec![
-            JournalEntry::StorageChanged {
-                address: aa,
-                key: trigger_slot,
-                had_value: U256::from(0),
-            },
-            JournalEntry::StorageChanged {
-                address: aa,
-                key: U256::from(99), // Different slot to trigger AllStorageChanges
-                had_value: U256::from(1),
-            },
-            JournalEntry::BalanceTransfer {
-                from: aa,
-                to: Address::random(),
-                balance: U256::from(100),
-            },
-        ];
-
+        let fixture = build_comprehensive_fixture();
+        let journal_entries = build_comprehensive_journal_entries(aa, fixture.trigger_slot);
         let store = AssertionStore::new_ephemeral();
         let mut trigger_recorder = TriggerRecorder::default();
 
-        for (trigger, selectors) in &recorded_triggers {
+        for (trigger, selectors) in &fixture.recorded_triggers {
             trigger_recorder
                 .triggers
                 .insert(trigger.clone(), selectors.clone());
@@ -1532,30 +1673,7 @@ mod tests {
         assertion.trigger_recorder = trigger_recorder;
         store.insert(aa, assertion)?;
 
-        let mut tracer = CallTracer::default();
-        // Add call with the specific trigger selector
-        tracer.record_call_start(
-            revm::interpreter::CallInputs {
-                input: revm::interpreter::CallInput::Bytes(Bytes::from(vec![
-                    0x12, 0x34, 0x56, 0x78,
-                ])),
-                return_memory_offset: 0..0,
-                gas_limit: 0,
-                bytecode_address: aa,
-                known_bytecode: None,
-                target_address: aa,
-                caller: Address::random(),
-                value: revm::interpreter::CallValue::Transfer(U256::from(100)),
-                scheme: revm::interpreter::CallScheme::Call,
-                is_static: false,
-            },
-            &[0x12, 0x34, 0x56, 0x78],
-            &mut JournalInner::new(),
-        );
-        tracer.result.clone().unwrap();
-
-        tracer.record_call_end(&mut JournalInner::new(), false);
-        tracer.result.clone().unwrap();
+        let mut tracer = build_call_tracer(aa, fixture.trigger_selector);
 
         for entry in journal_entries {
             tracer.journal.journal.push(entry);
@@ -1563,25 +1681,7 @@ mod tests {
 
         let assertions = store.read(&tracer, U256::from(100))?;
         assert_eq!(assertions.len(), 1);
-
-        // All selectors should be included since we triggered:
-        // - Call (specific trigger_selector)
-        // - AllCalls (because we had a call)
-        // - StorageChange (specific trigger_slot)
-        // - AllStorageChanges (because we had storage changes)
-        // - BalanceChange (because we had a balance transfer)
-        let mut expected_selectors = vec![
-            selector_specific_call,
-            selector_all_calls,
-            selector_specific_storage,
-            selector_all_storage,
-            selector_balance,
-        ];
-        expected_selectors.sort();
-
-        let mut matched_selectors = assertions[0].selectors.clone();
-        matched_selectors.sort();
-        assert_eq!(matched_selectors, expected_selectors);
+        assert_sorted_selectors(&assertions, fixture.expected_selectors);
 
         Ok(())
     }
@@ -1624,7 +1724,7 @@ mod tests {
             },
         ];
 
-        let assertions = setup_and_match(recorded_triggers, journal_entries, aa)?;
+        let assertions = setup_and_match(&recorded_triggers, journal_entries, aa)?;
         assert_eq!(assertions.len(), 1);
 
         // No selectors should match since triggers don't align
@@ -1675,7 +1775,7 @@ mod tests {
             },
         ];
 
-        let assertions = setup_and_match(recorded_triggers, journal_entries, aa)?;
+        let assertions = setup_and_match(&recorded_triggers, journal_entries, aa)?;
         assert_eq!(assertions.len(), 1);
 
         // Should only have selectors for storage change and balance change
@@ -1896,7 +1996,7 @@ mod tests {
 
     #[test]
     fn test_expiry_key_roundtrip() {
-        let block = 12345678u64;
+        let block = 12_345_678u64;
         let aa = Address::random();
         let id = B256::random();
 
@@ -2014,7 +2114,7 @@ mod tests {
         let task_handle = {
             let store = AssertionStore::new_ephemeral_with_config(config);
             // Clone the task handle to check its state after drop
-            Arc::clone(&store._prune_task)
+            Arc::clone(&store.prune_task)
         };
         // Store is dropped here, which should signal shutdown
 

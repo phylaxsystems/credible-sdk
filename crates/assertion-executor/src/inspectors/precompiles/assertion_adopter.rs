@@ -9,7 +9,11 @@ use crate::inspectors::{
 use alloy_sol_types::SolValue;
 use std::convert::Infallible;
 
-/// Returns the assertion adopter as a bytes array
+/// Returns the assertion adopter as a bytes array.
+///
+/// # Errors
+///
+/// This function returns `Infallible` and does not error.
 pub fn get_assertion_adopter(context: &PhEvmContext) -> Result<PhevmOutcome, Infallible> {
     const AA_RET_COST: u64 = 9;
     Ok(PhevmOutcome::new(

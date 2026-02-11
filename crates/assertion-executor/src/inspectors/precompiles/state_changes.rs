@@ -44,6 +44,10 @@ pub enum GetStateChangesError {
 
 /// Function for getting state changes for the `PhEvm` precompile.
 /// This returns a result type, which can be used to determine the success of the precompile call and include error messaging.
+///
+/// # Errors
+///
+/// Returns an error if decoding fails, the journal is missing, or gas is exhausted.
 pub fn get_state_changes(
     input_bytes: &[u8],
     context: &PhEvmContext,

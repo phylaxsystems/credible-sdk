@@ -222,6 +222,7 @@ pub struct BlockChanges {
 
 impl BlockChanges {
     /// Create a new `BlockChanges` instance, with empty state changes.
+    #[must_use]
     pub fn new(block_num: u64, block_hash: B256) -> Self {
         Self {
             block_num,
