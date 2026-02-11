@@ -38,6 +38,7 @@ use sidecar::{
         init_indexer_config,
     },
     critical,
+    da_reachability::run_da_reachability_monitor,
     engine::{
         CoreEngine,
         CoreEngineConfig,
@@ -677,6 +678,9 @@ async fn run_sidecar_once(
     let mut health_server = HealthServer::new(health_bind_addr);
 
     let indexer_cfg = init_indexer_config(config, assertion_store.clone(), executor_config).await?;
+    let da_reachability_handle = tokio::spawn(run_da_reachability_monitor(
+        config.credible.assertion_da_rpc_url.clone(),
+    ));
 
     let should_shutdown = Box::pin(run_async_components(
         &mut transport,
@@ -687,6 +691,17 @@ async fn run_sidecar_once(
         observer_exited_rx,
     ))
     .await;
+
+    da_reachability_handle.abort();
+    match da_reachability_handle.await {
+        Err(join_err) if !join_err.is_cancelled() => {
+            tracing::error!(
+                error = ?join_err,
+                "Assertion DA reachability monitor exited unexpectedly"
+            );
+        }
+        _ => {}
+    }
 
     // Signal threads to stop
     tracing::info!("Signaling threads to shutdown...");

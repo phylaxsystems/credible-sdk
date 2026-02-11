@@ -10,6 +10,7 @@ extern crate core;
 pub mod args;
 pub mod cache;
 pub mod config;
+pub mod da_reachability;
 pub mod engine;
 pub mod event_sequencing;
 pub mod execution_ids;
