@@ -719,12 +719,18 @@ where
         eprintln!("Running: {cmd:?}");
     }
 
+    // Start geth and wire up its output streams for structured parsing and error capture.
     let mut child = spawn_geth_child(&mut cmd, mode)?;
+    // We only parse data from stdout; stderr is handled separately to avoid blocking.
     let stdout = take_child_stdout(&mut child, mode)?;
+    // Spawn a background reader so stderr is drained while we parse stdout.
     let stderr_handle = spawn_stderr_reader(&mut child);
+    // Parse the dump stream as it arrives, updating metadata via the callback.
     let mut metadata = parse_dump_stream(args, mode, stdout, on_account)?;
+    // Collect any stderr output captured during parsing.
     let stderr_lines = collect_stderr(stderr_handle);
     let stderr_text = stderr_lines.join("\n");
+    // Wait for geth to exit and surface stderr if it failed.
     let status = wait_for_geth(&mut child, mode, stderr_text.clone())?;
 
     if !status.success() {
