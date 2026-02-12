@@ -47,7 +47,7 @@ use clap::ValueEnum;
 
 use crate::{
     ExecutorConfig,
-    metrics::IndexerMetrics,
+    metrics,
     primitives::{
         Address,
         B256,
@@ -159,7 +159,6 @@ pub struct Indexer {
     /// Tag to use as the upper bound of pending modifications which should be applied to the
     /// store.
     pub await_tag: BlockTag,
-    metrics: IndexerMetrics,
 }
 
 /// Restricted version of `BlockNumberOrTag` enum.
@@ -277,7 +276,6 @@ impl Indexer {
             executor_config,
             is_synced: false,
             await_tag,
-            metrics: IndexerMetrics::new(),
         }
     }
 
@@ -523,7 +521,7 @@ impl Indexer {
     /// Returns an error if fetching or indexing blocks fails.
     #[instrument(skip(self))]
     pub async fn sync(&self, update_block: UpdateBlock, max_blocks_per_call: u64) -> IndexerResult {
-        self.metrics.set_head_block(update_block.block_number);
+        metrics::set_head_block(update_block.block_number);
         let last_indexed_block_num_hash = self.get_last_indexed_block_num_hash()?;
 
         debug!(
@@ -611,8 +609,7 @@ impl Indexer {
             self.store
                 .apply_pending_modifications(pending_modifications)
                 .map_err(IndexerError::AssertionStoreError)?;
-            self.metrics
-                .record_assertions_moved(pending_modifications_count);
+            metrics::record_assertions_moved(pending_modifications_count);
         }
 
         Ok(())
@@ -678,7 +675,7 @@ impl Indexer {
                 .extract_pending_modifications(log.data(), log_index)
                 .await?
             {
-                self.metrics.record_assertions_seen(1);
+                metrics::record_assertions_seen(1);
                 pending_modifications
                     .entry(block_number)
                     .or_default()
