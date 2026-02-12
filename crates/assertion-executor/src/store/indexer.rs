@@ -266,6 +266,8 @@ impl Indexer {
             await_tag,
         } = cfg;
 
+        metrics::set_syncing(false);
+
         Self {
             provider,
             db,
@@ -521,8 +523,11 @@ impl Indexer {
     /// Returns an error if fetching or indexing blocks fails.
     #[instrument(skip(self))]
     pub async fn sync(&self, update_block: UpdateBlock, max_blocks_per_call: u64) -> IndexerResult {
-        metrics::set_head_block(update_block.block_number);
         let last_indexed_block_num_hash = self.get_last_indexed_block_num_hash()?;
+        let mut indexed_head_before_sync = last_indexed_block_num_hash.as_ref().map_or(
+            self.state_oracle_deployment_block.saturating_sub(1),
+            |block| block.number,
+        );
 
         debug!(
             target = "assertion_executor::indexer",
@@ -555,6 +560,7 @@ impl Indexer {
                         number: common_ancestor,
                         hash: update_block.parent_hash,
                     })?;
+                    indexed_head_before_sync = common_ancestor;
                 } else {
                     from = last_indexed_block_num_hash.number + 1;
                 }
@@ -566,6 +572,12 @@ impl Indexer {
         }
 
         let update_block_number = update_block.block_number;
+        metrics::set_head_block(indexed_head_before_sync);
+
+        // "Syncing" means catching up through a backlog, not steady-state 1-block updates.
+        let is_catching_up = from < update_block_number;
+        metrics::set_syncing(is_catching_up);
+
         let mut current_from = from;
         while current_from <= update_block_number {
             let current_to =
@@ -577,6 +589,9 @@ impl Indexer {
             }
             current_from = current_to + 1;
         }
+
+        // Catch-up completed (or there was no backlog).
+        metrics::set_syncing(false);
 
         Ok(())
     }
@@ -779,6 +794,7 @@ impl Indexer {
                 "Last indexed block number hash updated"
             );
             self.insert_last_indexed_block_num_hash(*last_indexed_block_num_hash)?;
+            metrics::set_head_block(last_indexed_block_num_hash.number);
         } else {
             trace!(
                 target = "assertion_executor::indexer",
