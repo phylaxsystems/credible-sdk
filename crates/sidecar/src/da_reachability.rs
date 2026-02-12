@@ -39,20 +39,7 @@ const REACHABILITY_PROBE_ASSERTION_ID: B256 = B256::ZERO;
 
 /// Run a background loop that periodically checks Assertion DA reachability and
 /// emits Prometheus metrics.
-pub async fn run_da_reachability_monitor(assertion_da_rpc_url: String) {
-    let da_client = match DaClient::new(&assertion_da_rpc_url) {
-        Ok(client) => client,
-        Err(err) => {
-            warn!(
-                error = ?err,
-                assertion_da_rpc_url = %assertion_da_rpc_url,
-                "Failed to initialize Assertion DA reachability monitor"
-            );
-            gauge!("sidecar_assertion_da_reachable").set(0.0);
-            return;
-        }
-    };
-
+pub async fn run_da_reachability_monitor(da_client: DaClient, assertion_da_rpc_url: String) {
     let mut ticker = tokio::time::interval(DA_REACHABILITY_CHECK_INTERVAL);
     ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut last_reachable: Option<bool> = None;
@@ -136,13 +123,6 @@ fn is_reachable_da_error(error: &DaClientError) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use metrics_util::{
-        MetricKind,
-        debugging::{
-            DebugValue,
-            DebuggingRecorder,
-        },
-    };
 
     #[test]
     fn json_rpc_errors_are_considered_reachable() {
@@ -170,30 +150,5 @@ mod tests {
         assert!(
             matches!(result, Err(DaClientError::InvalidResponse(message)) if message == "probe timed out")
         );
-    }
-
-    #[test]
-    fn monitor_sets_reachability_gauge_to_zero_when_client_init_fails() {
-        let recorder = DebuggingRecorder::new();
-        let snapshotter = recorder.snapshotter();
-
-        metrics::with_local_recorder(&recorder, || {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("create tokio runtime");
-            runtime.block_on(run_da_reachability_monitor("not a valid URL".to_string()));
-        });
-
-        let snapshot = snapshotter.snapshot().into_vec();
-        let (_, _, _, value) = snapshot
-            .into_iter()
-            .find(|(composite_key, _, _, _)| {
-                composite_key.kind() == MetricKind::Gauge
-                    && composite_key.key().name() == "sidecar_assertion_da_reachable"
-            })
-            .expect("reachability gauge should be emitted");
-
-        assert_eq!(value, DebugValue::Gauge(0.0.into()));
     }
 }

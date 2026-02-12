@@ -81,6 +81,7 @@ pub async fn init_indexer_config(
     config: &Config,
     store: AssertionStore,
     executor_config: &ExecutorConfig,
+    da_client: DaClient,
 ) -> anyhow::Result<IndexerCfg> {
     trace!(
         state_oracle = ?config.credible.state_oracle,
@@ -91,9 +92,6 @@ pub async fn init_indexer_config(
         block_tag = ?config.credible.block_tag,
         "Initializing indexer"
     );
-
-    // Initialize DA client
-    let da_client = DaClient::new(&config.credible.assertion_da_rpc_url)?;
 
     // Initialize provider for blockchain connection
     let ws_connect = WsConnect::new(&config.credible.indexer_rpc_url);
