@@ -56,6 +56,15 @@ pub enum DaClientError {
     InvalidResponse(String),
 }
 
+impl DaClientError {
+    /// Returns true when this error proves the DA endpoint answered the
+    /// request and is therefore reachable.
+    #[must_use]
+    pub fn is_reachable_da_error(&self) -> bool {
+        matches!(self, Self::JsonRpcError { .. })
+    }
+}
+
 /// JSON-RPC request structure
 #[derive(Debug, Serialize)]
 struct JsonRpcRequest<T> {

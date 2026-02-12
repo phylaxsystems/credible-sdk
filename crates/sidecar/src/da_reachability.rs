@@ -98,7 +98,7 @@ async fn probe_da_reachability(da_client: &DaClient) -> Result<(), DaClientError
 
     match result {
         Ok(_) => Ok(()),
-        Err(err) if is_reachable_da_error(&err) => Ok(()),
+        Err(err) if err.is_reachable_da_error() => Ok(()),
         Err(err) => Err(err),
     }
 }
@@ -116,10 +116,6 @@ where
     }
 }
 
-fn is_reachable_da_error(error: &DaClientError) -> bool {
-    matches!(error, DaClientError::JsonRpcError { .. })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -130,13 +126,13 @@ mod tests {
             code: -32001,
             message: "Assertion not found".to_string(),
         };
-        assert!(is_reachable_da_error(&error));
+        assert!(error.is_reachable_da_error());
     }
 
     #[test]
     fn non_json_rpc_errors_are_unreachable() {
         let error = DaClientError::InvalidResponse("HTTP error: 503".to_string());
-        assert!(!is_reachable_da_error(&error));
+        assert!(!error.is_reachable_da_error());
     }
 
     #[tokio::test]
