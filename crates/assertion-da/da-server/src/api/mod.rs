@@ -200,6 +200,7 @@ mod tests {
         net::TcpListener,
         sync::mpsc,
     };
+    use tokio_util::sync::CancellationToken;
 
     #[tokio::test]
     async fn test_serve() {
@@ -236,6 +237,20 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), 200);
+
+        let health_response = client
+            .get(format!("http://{addr}/health"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(health_response.status(), 200);
+
+        let ready_response = client
+            .get(format!("http://{addr}/ready"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(ready_response.status(), 503);
 
         // Cleanup
         cancel_token.cancel();
