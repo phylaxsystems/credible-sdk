@@ -1,0 +1,166 @@
+name: Deploy Sidecar (Helm)
+
+on:
+  workflow_call:
+    inputs:
+      sidecar-image-repo:
+        type: string
+        required: false
+      state-worker-image-repo:
+        type: string
+        required: false
+      image-tag:
+        type: string
+        required: true
+      environment:
+        type: string
+        required: true
+    secrets:
+      GCP_SA_KEY:
+        description: 'Credentials file for GKE auth'
+        required: true
+      REPO_READ_TOKEN:
+        description: 'Optional token for private chart/config repos'
+        required: false
+  workflow_dispatch:
+    inputs:
+      sidecar-image-repo:
+        description: Image repository for the sidecar
+        type: string
+        required: false
+        default: 'ghcr.io/phylaxsystems/credible-sdk/sidecar'
+      state-worker-image-repo:
+        description: Image repository for the state worker
+        type: string
+        required: false
+        default: 'ghcr.io/phylaxsystems/credible-sdk/state-worker'
+      image-tag:
+        description: Image tag (e.g. git SHA, tag)
+        type: string
+        required: true
+      environment:
+        description: Target environment (K8s cluster)
+        type: choice
+        options:
+          - linea-internal
+          - shadow-layer
+          - benchmark
+        required: true
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  SIDECAR_IMAGE_REPO: ${{ inputs['sidecar-image-repo'] || 'ghcr.io/phylaxsystems/credible-sdk/sidecar' }}
+  STATE_WORKER_IMAGE_REPO: ${{ inputs['state-worker-image-repo'] || 'ghcr.io/phylaxsystems/credible-sdk/state-worker' }}
+  IMAGE_TAG: ${{ inputs['image-tag'] }}
+  CHART_REPO: ${{ vars.SIDECAR_CHART_REPO || 'phylaxsystems/credible-sidecar-helm-chart' }}
+  CONFIG_REPO: ${{ vars.SIDECAR_CONFIG_REPO || 'phylaxsystems/credible-layer-env-config' }}
+  VALUES_FILE: ${{ vars.SIDECAR_VALUES_FILE || format('values-{0}.yaml', inputs.environment) }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    concurrency:
+      group: helm-deploy-${{ inputs.environment }}
+      cancel-in-progress: false
+    steps:
+      - name: Check out helm chart repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CHART_REPO }}
+          path: chart
+          token: ${{ secrets.REPO_READ_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Check out config repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CONFIG_REPO }}
+          path: config
+          token: ${{ secrets.REPO_READ_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Get GKE credentials
+        uses: google-github-actions/get-gke-credentials@v2
+        with:
+          cluster_name: ${{ secrets.GKE_CLUSTER }}
+          location: ${{ secrets.GKE_LOCATION }}
+          project_id: ${{ secrets.GKE_PROJECT }}
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v3
+
+      - name: Verify values file exists
+        run: |
+          if [ ! -f "./config/${VALUES_FILE}" ]; then
+            echo "Missing values file: ./config/${VALUES_FILE}" >&2
+            exit 1
+          fi
+
+      - name: Deploy with Helm
+        id: helm-deploy
+        run: |
+          set -o pipefail
+          RELEASE_NAME="${{ secrets.RELEASE_NAME }}"
+          NAMESPACE="${{ secrets.NAMESPACE }}"
+
+          helm upgrade "$RELEASE_NAME" ./chart \
+            --namespace "$NAMESPACE" \
+            --cleanup-on-fail \
+            --rollback-on-failure \
+            -f "./config/${VALUES_FILE}" \
+            --set-string sidecar.image.repository="${SIDECAR_IMAGE_REPO}" \
+            --set-string sidecar.image.tag="${IMAGE_TAG}" \
+            --set-string stateWorker.image.repository="${STATE_WORKER_IMAGE_REPO}" \
+            --set-string stateWorker.image.tag="${IMAGE_TAG}" \
+            --wait \
+            --timeout 2m 2>&1 | tee /tmp/helm-upgrade.log
+
+      - name: Deployment failure summary
+        if: ${{ always() && steps.helm-deploy.outcome == 'failure' }}
+        run: |
+          RELEASE_NAME="${{ secrets.RELEASE_NAME }}"
+          NAMESPACE="${{ secrets.NAMESPACE }}"
+
+          {
+            echo "## Helm deployment failed"
+            echo ""
+            echo "- Release: \`${RELEASE_NAME}\`"
+            echo "- Namespace: \`${NAMESPACE}\`"
+            echo "- Image tag: \`${IMAGE_TAG}\`"
+            echo ""
+            echo "### Helm upgrade output"
+            echo '```'
+            if [ -f /tmp/helm-upgrade.log ]; then
+              tail -n 200 /tmp/helm-upgrade.log
+            else
+              echo "No helm upgrade log found."
+            fi
+            echo '```'
+            echo ""
+            echo "### Helm status"
+            echo '```'
+            helm status "$RELEASE_NAME" -n "$NAMESPACE" 2>&1 || true
+            echo '```'
+            echo ""
+            echo "### Helm history"
+            echo '```'
+            helm history "$RELEASE_NAME" -n "$NAMESPACE" 2>&1 || true
+            echo '```'
+            echo ""
+            echo "### Recent Kubernetes events"
+            echo '```'
+            kubectl -n "$NAMESPACE" get events --sort-by=.metadata.creationTimestamp 2>&1 | tail -n 20 || true
+            fi
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
