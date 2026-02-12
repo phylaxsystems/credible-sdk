@@ -24,6 +24,7 @@ use hyper::{
     body::Bytes,
 };
 use tokio::sync::oneshot;
+use tokio_util::sync::CancellationToken;
 
 macro_rules! rpc_response {
     (
@@ -46,6 +47,7 @@ pub async fn accept_request<B>(
     signer: &PrivateKeySigner,
     docker: Arc<Docker>,
     client_addr: std::net::SocketAddr,
+    shutdown_token: CancellationToken,
 ) -> Result<hyper::Response<Full<Bytes>>, Infallible>
 where
     B: hyper::body::Body<Error = Error>,
@@ -58,7 +60,7 @@ where
     }
 
     if path == "/ready" && method == Method::GET {
-        let status = if check_database_readiness(&db).await {
+        let status = if check_readiness(&db, &docker, &shutdown_token).await {
             StatusCode::OK
         } else {
             StatusCode::SERVICE_UNAVAILABLE
@@ -85,6 +87,22 @@ where
     rpc_response!(200, Full::new(Bytes::from(resp)))
 }
 
+async fn check_readiness(
+    db: &DbRequestSender,
+    docker: &Docker,
+    shutdown_token: &CancellationToken,
+) -> bool {
+    if shutdown_token.is_cancelled() {
+        return false;
+    }
+
+    if !check_database_readiness(db).await {
+        return false;
+    }
+
+    check_docker_readiness(docker).await
+}
+
 async fn check_database_readiness(db: &DbRequestSender) -> bool {
     let (response_tx, response_rx) = oneshot::channel();
     let request = DbRequest {
@@ -100,6 +118,60 @@ async fn check_database_readiness(db: &DbRequestSender) -> bool {
         Ok(Ok(_)) => true,
         Ok(Err(_)) | Err(_) => false,
     }
+}
+
+async fn check_docker_readiness(docker: &Docker) -> bool {
+    matches!(
+        tokio::time::timeout(Duration::from_secs(1), docker.ping()).await,
+        Ok(Ok(_))
+    )
+}
+
+/// Macros for accepting requests
+#[macro_export]
+macro_rules! accept {
+    (
+        $io:expr,
+        $db:expr,
+        $signer:expr,
+        $docker:expr,
+        $client_addr:expr,
+        $shutdown_token:expr
+    ) => {
+        let db_c = $db.clone();
+        let signer_clone = $signer.clone();
+        let docker_clone = $docker.clone();
+        let client_addr = $client_addr;
+        let shutdown_token = $shutdown_token.clone();
+        // Bind the incoming connection to our service
+        if let Err(err) = hyper::server::conn::http1::Builder::new()
+            // `service_fn` converts our function in a `Service`
+            .serve_connection(
+                $io,
+                hyper::service::service_fn(move |req| {
+                    let db_c = db_c.clone();
+                    let signer_clone = signer_clone.clone();
+                    let docker_clone = docker_clone.clone();
+                    let shutdown_token = shutdown_token.clone();
+                    async move {
+                        $crate::api::accept::accept_request(
+                            req,
+                            db_c,
+                            &signer_clone,
+                            docker_clone,
+                            client_addr,
+                            shutdown_token,
+                        )
+                        .await
+                    }
+                }),
+            )
+            .with_upgrades()
+            .await
+        {
+            tracing::error!(?err, "Error serving connection");
+        }
+    };
 }
 
 #[cfg(test)]
@@ -127,47 +199,4 @@ mod tests {
 
         assert!(check_database_readiness(&tx).await);
     }
-}
-
-/// Macros for accepting requests
-#[macro_export]
-macro_rules! accept {
-    (
-        $io:expr,
-        $db:expr,
-        $signer:expr,
-        $docker:expr,
-        $client_addr:expr
-    ) => {
-        let db_c = $db.clone();
-        let signer_clone = $signer.clone();
-        let docker_clone = $docker.clone();
-        let client_addr = $client_addr;
-        // Bind the incoming connection to our service
-        if let Err(err) = hyper::server::conn::http1::Builder::new()
-            // `service_fn` converts our function in a `Service`
-            .serve_connection(
-                $io,
-                hyper::service::service_fn(move |req| {
-                    let db_c = db_c.clone();
-                    let signer_clone = signer_clone.clone();
-                    let docker_clone = docker_clone.clone();
-                    async move {
-                        $crate::api::accept::accept_request(
-                            req,
-                            db_c,
-                            &signer_clone,
-                            docker_clone,
-                            client_addr,
-                        )
-                        .await
-                    }
-                }),
-            )
-            .with_upgrades()
-            .await
-        {
-            tracing::error!(?err, "Error serving connection");
-        }
-    };
 }

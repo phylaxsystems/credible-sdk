@@ -191,8 +191,13 @@ The DA exposes two HTTP probe endpoints (non JSON-RPC):
 
 - `GET /health`: liveness check. Returns `200 OK` with body `ok` when the process is up.
 - `GET /ready`: readiness check. Returns:
-  - `200 OK` with body `ready` when the service can accept requests and the DB read path is responsive.
-  - `503 Service Unavailable` with body `not ready` when DB access is unavailable.
+  - `200 OK` with body `ready` when all readiness dependencies are available.
+  - `503 Service Unavailable` with body `not ready` when any dependency is unavailable.
+
+Readiness currently requires:
+- The server is not shutting down.
+- DB read path is responsive.
+- Docker daemon is reachable (required for Solidity compilation submissions).
 
 Examples:
 
