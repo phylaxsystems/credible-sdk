@@ -153,7 +153,14 @@ pub async fn serve(
                 res = listener.accept() => {
                     match res {
                         Ok((stream, socketaddr)) => {
-                            serve_connection(socketaddr, &db_tx, docker.clone(), signer.clone(), stream);
+                            serve_connection(
+                                socketaddr,
+                                &db_tx,
+                                docker.clone(),
+                                signer.clone(),
+                                cancel_token.clone(),
+                                stream,
+                            );
                         }
                         Err(err) => {
                             tracing::error!(?err, "Error accepting connection");
@@ -172,6 +179,7 @@ fn serve_connection(
     db_tx: &mpsc::UnboundedSender<DbRequest>,
     docker: Arc<Docker>,
     signer: PrivateKeySigner,
+    shutdown_token: CancellationToken,
     stream: TcpStream,
 ) {
     tracing::info!("Connection from: {}", socketaddr);
@@ -183,10 +191,18 @@ fn serve_connection(
     let db_clone = db_tx.clone();
 
     let docker_clone = docker.clone();
+    let shutdown_token_clone = shutdown_token.clone();
 
     // Spawn a tokio task to serve multiple connections concurrently
     tokio::task::spawn(async move {
-        crate::accept!(io, db_clone, &signer, docker_clone.clone(), socketaddr);
+        crate::accept!(
+            io,
+            db_clone,
+            &signer,
+            docker_clone.clone(),
+            socketaddr,
+            shutdown_token_clone
+        );
     });
 }
 
@@ -200,6 +216,7 @@ mod tests {
         net::TcpListener,
         sync::mpsc,
     };
+    use tokio_util::sync::CancellationToken;
 
     #[tokio::test]
     async fn test_serve() {
@@ -236,6 +253,20 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), 200);
+
+        let health_response = client
+            .get(format!("http://{addr}/health"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(health_response.status(), 200);
+
+        let ready_response = client
+            .get(format!("http://{addr}/ready"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(ready_response.status(), 503);
 
         // Cleanup
         cancel_token.cancel();

@@ -185,6 +185,27 @@ curl -X POST -H "Content-Type: application/json" http://localhost:5001 -d '{
 
 The API follows the JSON-RPC 2.0 specification. The DA has a **max body request size of 10MB**.
 
+## Health and Readiness Probes
+
+The DA exposes two HTTP probe endpoints (non JSON-RPC):
+
+- `GET /health`: liveness check. Returns `200 OK` with body `ok` when the process is up.
+- `GET /ready`: readiness check. Returns:
+  - `200 OK` with body `ready` when all readiness dependencies are available.
+  - `503 Service Unavailable` with body `not ready` when any dependency is unavailable.
+
+Readiness currently requires:
+- The server is not shutting down.
+- DB read path is responsive.
+- Docker daemon is reachable (required for Solidity compilation submissions).
+
+Examples:
+
+```bash
+curl -i http://localhost:5001/health
+curl -i http://localhost:5001/ready
+```
+
 ### `da_submit_solidity_assertion`
 
 Submits and compiles a Solidity assertion.
