@@ -8,6 +8,7 @@
 #![deny(clippy::unimplemented)]
 #![deny(clippy::indexing_slicing)]
 
+use assertion_da_client::DaClient;
 use assertion_executor::{
     AssertionExecutor,
     db::overlay::OverlayDb,
@@ -38,6 +39,7 @@ use sidecar::{
         init_indexer_config,
     },
     critical,
+    da_reachability::run_da_reachability_monitor,
     engine::{
         CoreEngine,
         CoreEngineConfig,
@@ -584,6 +586,28 @@ async fn run_async_components(
     should_shutdown
 }
 
+fn spawn_da_reachability_monitor(
+    config: &Config,
+    da_client: DaClient,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(run_da_reachability_monitor(
+        da_client,
+        config.credible.assertion_da_rpc_url.clone(),
+    ))
+}
+
+async fn stop_da_reachability_monitor(da_reachability_handle: tokio::task::JoinHandle<()>) {
+    da_reachability_handle.abort();
+    if let Err(join_err) = da_reachability_handle.await
+        && !join_err.is_cancelled()
+    {
+        tracing::error!(
+            error = ?join_err,
+            "Assertion DA reachability monitor exited unexpectedly"
+        );
+    }
+}
+
 async fn run_sidecar_once(
     config: &Config,
     executor_config: &assertion_executor::ExecutorConfig,
@@ -676,7 +700,15 @@ async fn run_sidecar_once(
 
     let mut health_server = HealthServer::new(health_bind_addr);
 
-    let indexer_cfg = init_indexer_config(config, assertion_store.clone(), executor_config).await?;
+    let da_client = DaClient::new(&config.credible.assertion_da_rpc_url)?;
+    let indexer_cfg = init_indexer_config(
+        config,
+        assertion_store.clone(),
+        executor_config,
+        da_client.clone(),
+    )
+    .await?;
+    let da_reachability_handle = spawn_da_reachability_monitor(config, da_client);
 
     let should_shutdown = Box::pin(run_async_components(
         &mut transport,
@@ -687,6 +719,8 @@ async fn run_sidecar_once(
         observer_exited_rx,
     ))
     .await;
+
+    stop_da_reachability_monitor(da_reachability_handle).await;
 
     // Signal threads to stop
     tracing::info!("Signaling threads to shutdown...");

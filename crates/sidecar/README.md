@@ -46,6 +46,14 @@ All durations are reported in seconds to the configured metrics backend.
 - `sidecar_irrecoverable_errors_total` - Count of irrecoverable runtime errors
 - `sidecar_restarts_total` - Count of sidecar restarts within the main loop
 
+#### Assertion DA reachability metrics
+
+The sidecar periodically probes the Assertion DA endpoint and exports:
+
+- `sidecar_assertion_da_reachable` - Gauge (`1` reachable, `0` unreachable)
+- `sidecar_assertion_da_reachability_checks_total{status="success|failure"}` - Probe outcomes
+- `sidecar_assertion_da_reachability_check_duration_seconds` - Probe request duration
+
 ### Sidecar config
 
 The sidecar accepts configuration through a combination of command-line arguments (or environment variables) and a
