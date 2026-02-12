@@ -2885,6 +2885,7 @@ version = "1.0.9"
 dependencies = [
  "anyhow",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -11709,6 +11710,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "clap",
+ "credible-utils",
  "eip-system-calls",
  "futures",
  "hex",
