@@ -13,6 +13,7 @@ on:
 permissions:
   packages: write
   contents: read
+  id-token: write
 
 jobs:
   get-version:
