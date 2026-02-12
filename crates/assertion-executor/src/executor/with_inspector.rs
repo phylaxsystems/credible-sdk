@@ -385,40 +385,15 @@ impl AssertionExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        ExecutorConfig,
-        db::{
-            fork_db::ForkDb,
-            overlay::{
-                OverlayDb,
-                test_utils::MockDb,
-            },
-        },
-        store::{
-            AssertionState,
-            AssertionStore,
-        },
-        test_utils::*,
-    };
+    use crate::test_utils::*;
     use revm::{
         Database,
         Inspector,
-        database::{
-            CacheDB,
-            EmptyDBTyped,
-        },
     };
-    use std::{
-        convert::Infallible,
-        sync::atomic::{
-            AtomicUsize,
-            Ordering,
-        },
+    use std::sync::atomic::{
+        AtomicUsize,
+        Ordering,
     };
-
-    type TestDbError = Infallible;
-    type TestDB = OverlayDb<CacheDB<EmptyDBTyped<TestDbError>>>;
-    type TestForkDB = ForkDb<TestDB>;
 
     /// A simple counting inspector that counts how many times `step` is called.
     /// This is used to verify that the inspector runs during execution.
@@ -459,48 +434,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_validate_transaction_with_inspector() {
-        use crate::primitives::AccountInfo;
-
-        let test_db: TestDB = OverlayDb::<CacheDB<EmptyDBTyped<TestDbError>>>::new_test();
-        let mut fork_db: TestForkDB = test_db.fork();
-
-        let mut mock_db = MockDb::new();
-        mock_db.insert_account(COUNTER_ADDRESS, counter_acct_info());
-
-        let assertion_store = AssertionStore::new_ephemeral();
-
-        // Insert assertion
-        let assertion_bytecode = bytecode(SIMPLE_ASSERTION_COUNTER);
-        assertion_store
-            .insert(
-                COUNTER_ADDRESS,
-                AssertionState::new_test(&assertion_bytecode),
-            )
-            .unwrap();
-
-        let config = ExecutorConfig::default();
-        let mut executor = AssertionExecutor::new(config.clone(), assertion_store);
-
-        let basefee = 10;
-        let number = U256::from(1);
-        let block_env = BlockEnv {
-            number,
-            basefee,
-            ..Default::default()
-        };
-
-        let tx = TxEnv {
-            gas_price: basefee.into(),
-            ..counter_call()
-        };
-
-        mock_db.insert_account(
-            tx.caller,
-            AccountInfo {
-                balance: U256::MAX,
-                ..Default::default()
-            },
-        );
+        let CounterValidationSetup {
+            mut fork_db,
+            mut mock_db,
+            mut executor,
+            block_env,
+            tx,
+            ..
+        } = setup_counter_validation();
 
         // Create a counting inspector
         let inspector = CountingInspector::new();

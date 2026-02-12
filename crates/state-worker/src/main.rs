@@ -8,12 +8,14 @@
 #![deny(clippy::unimplemented)]
 #![warn(clippy::indexing_slicing)]
 
+#[macro_use]
+extern crate credible_utils;
+
 mod cli;
 mod genesis;
 mod geth_version;
 #[cfg(test)]
 mod integration_tests;
-mod macros;
 mod metrics;
 mod state;
 mod system_calls;

@@ -1,10 +1,15 @@
 #![cfg(any(test, feature = "test"))]
 
 use crate::{
+    AssertionExecutor,
     ExecutorConfig,
     db::{
         DatabaseCommit,
-        overlay::OverlayDb,
+        fork_db::ForkDb,
+        overlay::{
+            OverlayDb,
+            test_utils::MockDb,
+        },
     },
     inspectors::TriggerRecorder,
     primitives::{
@@ -64,6 +69,74 @@ use alloy_transport_ws::WsConnect;
 /// Deployed bytecode of contract-mocks/src/SimpleCounterAssertion.sol:Counter
 pub const COUNTER: &str = "SimpleCounterAssertion.sol:Counter";
 pub const COUNTER_ADDRESS: Address = Address::new([1u8; 20]);
+
+pub type TestDbError = Infallible;
+pub type TestDB = OverlayDb<CacheDB<EmptyDBTyped<TestDbError>>>;
+pub type TestForkDB = ForkDb<TestDB>;
+
+pub struct CounterValidationSetup {
+    pub test_db: TestDB,
+    pub fork_db: TestForkDB,
+    pub mock_db: MockDb,
+    pub executor: AssertionExecutor,
+    pub block_env: BlockEnv,
+    pub tx: TxEnv,
+}
+
+/// Build a ready-to-use validation setup for the counter assertion tests.
+///
+/// # Panics
+///
+/// Panics if inserting the test assertion into the in-memory store fails.
+#[must_use]
+pub fn setup_counter_validation() -> CounterValidationSetup {
+    let test_db: TestDB = OverlayDb::<CacheDB<EmptyDBTyped<TestDbError>>>::new_test();
+    let fork_db = test_db.fork();
+
+    let mut mock_db = MockDb::new();
+    mock_db.insert_account(COUNTER_ADDRESS, counter_acct_info());
+
+    let assertion_store = AssertionStore::new_ephemeral();
+    let assertion_bytecode = bytecode(SIMPLE_ASSERTION_COUNTER);
+    assertion_store
+        .insert(
+            COUNTER_ADDRESS,
+            AssertionState::new_test(&assertion_bytecode),
+        )
+        .unwrap();
+
+    let executor = AssertionExecutor::new(ExecutorConfig::default(), assertion_store);
+
+    let basefee = 10;
+    let number = U256::from(1);
+    let block_env = BlockEnv {
+        number,
+        basefee,
+        ..Default::default()
+    };
+
+    let tx = TxEnv {
+        gas_price: basefee.into(),
+        ..counter_call()
+    };
+
+    mock_db.insert_account(
+        tx.caller,
+        AccountInfo {
+            balance: U256::MAX,
+            ..Default::default()
+        },
+    );
+
+    CounterValidationSetup {
+        test_db,
+        fork_db,
+        mock_db,
+        executor,
+        block_env,
+        tx,
+    }
+}
 
 #[must_use]
 pub fn counter_call() -> TxEnv {

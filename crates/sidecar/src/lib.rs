@@ -5,6 +5,8 @@
 #![allow(clippy::similar_names)]
 #![allow(clippy::struct_field_names)]
 #![allow(unused)]
+#[macro_use]
+extern crate credible_utils;
 extern crate core;
 
 pub mod args;
@@ -20,6 +22,8 @@ pub mod transaction_observer;
 pub mod transactions_state;
 pub mod transport;
 pub mod utils;
+
+pub use credible_utils::critical;
 
 pub use cache::{
     Sources,

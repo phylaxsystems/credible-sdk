@@ -9,7 +9,6 @@
 pub mod instance;
 #[cfg(any(test, feature = "bench-utils"))]
 pub mod local_instance_db;
-pub(crate) mod macros;
 pub mod profiling;
 #[cfg(any(test, feature = "bench-utils"))]
 pub mod test_drivers;

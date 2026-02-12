@@ -4,7 +4,6 @@
 //! RPC, and then tails new blocks from the `newHeads` subscription. Each block
 //! is traced with the pre-state tracer and written into the database.
 use crate::{
-    critical,
     genesis::GenesisState,
     metrics,
     state::{

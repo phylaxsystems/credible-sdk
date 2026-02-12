@@ -868,10 +868,7 @@ mod test {
     use crate::{
         db::{
             DatabaseRef,
-            overlay::{
-                OverlayDb,
-                test_utils::MockDb,
-            },
+            overlay::test_utils::MockDb,
         },
         inspectors::CallTracer,
         primitives::{
@@ -900,28 +897,13 @@ mod test {
             Output,
             SuccessReason,
         },
-        database::{
-            CacheDB,
-            EmptyDBTyped,
-        },
     };
-    use std::{
-        collections::HashMap,
-        convert::Infallible,
-    };
-
-    // Define a concrete error type for tests if needed, or use Infallible
-    type TestDbError = Infallible; // Or a custom test error enum
-
-    // Define the DB type alias used in tests
-    type TestDB = OverlayDb<CacheDB<EmptyDBTyped<TestDbError>>>;
-    // Define the Fork DB type alias used in tests
-    type TestForkDB = ForkDb<TestDB>;
+    use std::collections::HashMap;
 
     #[tokio::test]
     async fn test_deploy_assertion_contract() {
         // Use the TestDB type
-        let test_db: TestDB = OverlayDb::<CacheDB<EmptyDBTyped<TestDbError>>>::new_test();
+        let test_db: TestDB = TestDB::new_test();
         let mut fork_db: TestForkDB = test_db.fork();
 
         let assertion_store = AssertionStore::new_ephemeral();
@@ -951,7 +933,7 @@ mod test {
 
     #[tokio::test]
     async fn test_execute_assertion_detects_post_tx_overrides() {
-        let test_db: TestDB = OverlayDb::<CacheDB<EmptyDBTyped<TestDbError>>>::new_test();
+        let test_db: TestDB = TestDB::new_test();
         let mut fork_db: TestForkDB = test_db.fork();
 
         let mut counter_storage = EvmStorage::default();
@@ -1038,7 +1020,7 @@ mod test {
     #[tokio::test]
     async fn test_execute_forked_tx() {
         // Use the TestDB type
-        let shared_db: TestDB = OverlayDb::<CacheDB<EmptyDBTyped<TestDbError>>>::new_test();
+        let shared_db: TestDB = TestDB::new_test();
 
         let mut mock_db = MockDb::new();
         mock_db.insert_account(COUNTER_ADDRESS, counter_acct_info());
@@ -1095,53 +1077,14 @@ mod test {
     }
     #[tokio::test]
     async fn test_validate_tx() {
-        // Use the TestDB type
-        let test_db: TestDB = OverlayDb::<CacheDB<EmptyDBTyped<TestDbError>>>::new_test();
-
-        let mut mock_db = MockDb::new();
-
-        mock_db.insert_account(COUNTER_ADDRESS, counter_acct_info());
-
-        let assertion_store = AssertionStore::new_ephemeral();
-
-        // Insert requires Bytes, use helper from test_utils
-        let assertion_bytecode = bytecode(SIMPLE_ASSERTION_COUNTER);
-        assertion_store
-            .insert(
-                COUNTER_ADDRESS,
-                // Assuming AssertionState::new_test takes Bytes or similar
-                AssertionState::new_test(&assertion_bytecode),
-            )
-            .unwrap();
-
-        let config = ExecutorConfig::default();
-
-        // Build uses TestDB
-        let mut executor = AssertionExecutor::new(config.clone(), assertion_store);
-
-        let basefee = 10;
-        let number = U256::from(1);
-        let block_env = BlockEnv {
-            number,
-            basefee,
-            ..Default::default()
-        };
-
-        let tx = TxEnv {
-            gas_price: basefee.into(),
-            ..counter_call()
-        };
-
-        mock_db.insert_account(
-            tx.caller,
-            AccountInfo {
-                balance: U256::MAX,
-                ..Default::default()
-            },
-        );
-
-        // Fork uses TestDB
-        let mut fork_db: TestForkDB = test_db.fork();
+        let CounterValidationSetup {
+            test_db,
+            mut fork_db,
+            mut mock_db,
+            mut executor,
+            block_env,
+            tx,
+        } = setup_counter_validation();
 
         for (expected_state_before, expected_state_after, expected_result) in [
             (uint!(0_U256), uint!(1_U256), true),  // Counter is incremented
@@ -1281,7 +1224,7 @@ mod test {
 
     #[tokio::test]
     async fn test_finalize_validation_result_respects_commit_policy() {
-        let test_db: TestDB = OverlayDb::<CacheDB<EmptyDBTyped<TestDbError>>>::new_test();
+        let test_db: TestDB = TestDB::new_test();
         let mut fork_db_commit_true: TestForkDB = test_db.fork();
         let mut fork_db_commit_false: TestForkDB = test_db.fork();
         let mut fork_db_invalid: TestForkDB = test_db.fork();
