@@ -1460,10 +1460,10 @@ dependencies = [
 
 [[package]]
 name = "assertion-da-client"
-version = "1.0.8"
+version = "1.0.9"
 dependencies = [
  "alloy",
- "assertion-da-core 1.0.8",
+ "assertion-da-core 1.0.9",
  "assertion-da-server",
  "bincode",
  "bollard",
@@ -1491,7 +1491,7 @@ dependencies = [
 
 [[package]]
 name = "assertion-da-core"
-version = "1.0.8"
+version = "1.0.9"
 dependencies = [
  "alloy",
  "serde",
@@ -1499,14 +1499,14 @@ dependencies = [
 
 [[package]]
 name = "assertion-da-server"
-version = "1.0.8"
+version = "1.0.9"
 dependencies = [
  "alloy",
  "alloy-dyn-abi",
  "alloy-json-abi",
  "anyhow",
- "assertion-da-client 1.0.8",
- "assertion-da-core 1.0.8",
+ "assertion-da-client 1.0.9",
+ "assertion-da-core 1.0.9",
  "bincode",
  "bollard",
  "clap",
@@ -1579,7 +1579,7 @@ dependencies = [
 
 [[package]]
 name = "assertion-executor"
-version = "1.0.8"
+version = "1.0.9"
 dependencies = [
  "alloy",
  "alloy-consensus",
@@ -1598,8 +1598,8 @@ dependencies = [
  "alloy-transport",
  "alloy-transport-ws",
  "anyhow",
- "assertion-da-client 1.0.8",
- "assertion-executor 1.0.8",
+ "assertion-da-client 1.0.9",
+ "assertion-executor 1.0.9",
  "benchmark-utils",
  "bincode",
  "bumpalo",
@@ -1894,10 +1894,10 @@ checksum = "d86b93f97252c47b41663388e6d155714a9d0c398b99f1005cbc5f978b29f445"
 
 [[package]]
 name = "benchmark-utils"
-version = "1.0.8"
+version = "1.0.9"
 dependencies = [
  "alloy",
- "assertion-executor 1.0.8",
+ "assertion-executor 1.0.9",
  "revm",
  "tokio",
 ]
@@ -2881,7 +2881,7 @@ dependencies = [
 
 [[package]]
 name = "credible-utils"
-version = "1.0.8"
+version = "1.0.9"
 dependencies = [
  "anyhow",
  "tokio",
@@ -3093,7 +3093,7 @@ dependencies = [
 
 [[package]]
 name = "dapp-api-client"
-version = "1.0.8"
+version = "1.0.9"
 dependencies = [
  "anyhow",
  "assert_matches",
@@ -3571,7 +3571,7 @@ dependencies = [
 
 [[package]]
 name = "eip-system-calls"
-version = "1.0.8"
+version = "1.0.9"
 dependencies = [
  "alloy-eips",
  "alloy-primitives",
@@ -5134,7 +5134,7 @@ dependencies = [
 
 [[package]]
 name = "geth_snapshot"
-version = "1.0.8"
+version = "1.0.9"
 dependencies = [
  "alloy",
  "anyhow",
@@ -6809,11 +6809,11 @@ dependencies = [
 
 [[package]]
 name = "int-test-utils"
-version = "1.0.8"
+version = "1.0.9"
 dependencies = [
  "alloy",
  "anyhow",
- "assertion-da-client 1.0.8",
+ "assertion-da-client 1.0.9",
  "assertion-da-server",
  "axum",
  "dashmap",
@@ -7410,7 +7410,7 @@ dependencies = [
 
 [[package]]
 name = "mdbx"
-version = "1.0.8"
+version = "1.0.9"
 dependencies = [
  "alloy",
  "bytes",
@@ -8510,7 +8510,7 @@ dependencies = [
 
 [[package]]
 name = "pcl"
-version = "1.0.8"
+version = "1.0.9"
 dependencies = [
  "anyhow",
  "clap",
@@ -8525,7 +8525,7 @@ dependencies = [
 
 [[package]]
 name = "pcl-common"
-version = "1.0.8"
+version = "1.0.9"
 dependencies = [
  "clap",
  "serde_json",
@@ -8533,12 +8533,12 @@ dependencies = [
 
 [[package]]
 name = "pcl-core"
-version = "1.0.8"
+version = "1.0.9"
 dependencies = [
  "alloy",
  "alloy-primitives",
  "anyhow",
- "assertion-da-client 1.0.8",
+ "assertion-da-client 1.0.9",
  "chrono",
  "clap",
  "color-eyre",
@@ -8562,7 +8562,7 @@ dependencies = [
 
 [[package]]
 name = "pcl-phoundry"
-version = "1.0.8"
+version = "1.0.9"
 dependencies = [
  "alloy-json-abi",
  "clap",
@@ -11192,7 +11192,7 @@ dependencies = [
 
 [[package]]
 name = "shadow-driver"
-version = "1.0.8"
+version = "1.0.9"
 dependencies = [
  "alloy",
  "alloy-provider",
@@ -11242,7 +11242,7 @@ checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
 name = "sidecar"
-version = "1.0.8"
+version = "1.0.9"
 dependencies = [
  "alloy",
  "alloy-eips",
@@ -11250,8 +11250,8 @@ dependencies = [
  "alloy-provider",
  "alloy-rpc-types-trace",
  "anyhow",
- "assertion-da-client 1.0.8",
- "assertion-executor 1.0.8",
+ "assertion-da-client 1.0.9",
+ "assertion-executor 1.0.9",
  "async-trait",
  "axum",
  "bincode",
@@ -11307,7 +11307,7 @@ dependencies = [
 
 [[package]]
 name = "sidecar-test-macros"
-version = "1.0.8"
+version = "1.0.9"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -11680,7 +11680,7 @@ dependencies = [
 
 [[package]]
 name = "state-checker"
-version = "1.0.8"
+version = "1.0.9"
 dependencies = [
  "alloy",
  "alloy-provider",
@@ -11701,7 +11701,7 @@ dependencies = [
 
 [[package]]
 name = "state-worker"
-version = "1.0.8"
+version = "1.0.9"
 dependencies = [
  "alloy",
  "alloy-provider",
