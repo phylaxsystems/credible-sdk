@@ -343,26 +343,27 @@ impl AssertionExecutor {
         let prepared =
             self.prepare_assertion_contract(assertion_contract, fn_selectors, tx_fork_db, context);
 
+        let execute_fn = |fn_selector: &FixedBytes<4>| {
+            self.execute_assertion_fn_with_inspector(AssertionExecutionWithInspectorParams {
+                assertion_contract,
+                fn_selector: *fn_selector,
+                tx_arena_epoch,
+                block_env: block_env.clone(),
+                multi_fork_db: prepared.multi_fork_db.clone(),
+                phevm_inspector: prepared.inspector.clone(),
+                inspector: inspector.clone(),
+            })
+        };
+
         let current_span = tracing::Span::current();
         let results_vec: Vec<_> = current_span.in_scope(|| {
-            assertion_executor_pool().install(|| {
-                fn_selectors
-                    .into_par_iter()
-                    .map(|fn_selector| {
-                        self.execute_assertion_fn_with_inspector(
-                            AssertionExecutionWithInspectorParams {
-                                assertion_contract,
-                                fn_selector: *fn_selector,
-                                tx_arena_epoch,
-                                block_env: block_env.clone(),
-                                multi_fork_db: prepared.multi_fork_db.clone(),
-                                phevm_inspector: prepared.inspector.clone(),
-                                inspector: inspector.clone(),
-                            },
-                        )
-                    })
-                    .collect()
-            })
+            if fn_selectors.len() < super::PARALLEL_THRESHOLD {
+                fn_selectors.iter().map(execute_fn).collect()
+            } else {
+                assertion_executor_pool().install(|| {
+                    fn_selectors.into_par_iter().map(execute_fn).collect()
+                })
+            }
         });
 
         trace!(target: "assertion-executor::execute_assertions", result_count=results_vec.len(), "Assertion Execution Results with Inspectors");
