@@ -314,12 +314,10 @@ impl AssertionExecutor {
             ));
         }
 
-        let plain_selectors: Vec<FixedBytes<4>> =
-            fn_selectors.iter().map(|s| s.selector).collect();
         let selector_executions = expand_selector_executions(fn_selectors);
         let prepared = self.prepare_assertion_contract(
             assertion_contract,
-            &plain_selectors,
+            fn_selectors.len(),
             tx_fork_db,
             context,
         );

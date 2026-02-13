@@ -464,7 +464,7 @@ impl AssertionExecutor {
     fn prepare_assertion_contract<'ctx, Active>(
         &self,
         assertion_contract: &AssertionContract,
-        fn_selectors: &[FixedBytes<4>],
+        selector_count: usize,
         mut tx_fork_db: ForkDb<Active>,
         context: &'ctx PhEvmContext,
     ) -> PreparedAssertionContract<'ctx, Active>
@@ -475,8 +475,7 @@ impl AssertionExecutor {
         trace!(
             target: "assertion-executor::execute_assertions",
             assertion_contract_id = ?assertion_contract.id,
-            selector_count = fn_selectors.len(),
-            selectors = ?fn_selectors.iter().map(|s| format!("{s:x?}")).collect::<Vec<_>>(),
+            selector_count,
             "Preparing assertion contract",
         );
 
@@ -636,12 +635,10 @@ impl AssertionExecutor {
             });
         }
 
-        let plain_selectors: Vec<FixedBytes<4>> =
-            fn_selectors.iter().map(|s| s.selector).collect();
         let selector_executions = expand_selector_executions(fn_selectors);
         let prepared = self.prepare_assertion_contract(
             assertion_contract,
-            &plain_selectors,
+            fn_selectors.len(),
             tx_fork_db,
             context,
         );
