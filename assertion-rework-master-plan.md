@@ -779,6 +779,9 @@ If we want immediate wins without waiting for the full roadmap:
     - Commits:
       - `cd6a6e2` — executor/precompile/store hardening + multi-call trigger context support.
       - `bc272fd` — plan checklist progress tracking.
+      - `5fddeb0` — one-pass `allSlotWritesBy` attribution + executor selector-prep allocation reduction.
+      - `c496d62` — indexer doctest fix for current provider API.
+      - `2b6f6f9` — Phase 11 checklist/status refresh with benchmark outcomes.
     - Validation run:
       - `cargo test -p assertion-executor@1.0.8 --no-default-features --features "optimism test" --lib` (268 passed).
       - `cargo bench -p assertion-executor@1.0.8 --bench assertion_store_read -- --quick`.
