@@ -11,6 +11,18 @@ pragma solidity ^0.8.13;
 /// NOTE: The interface is named ITriggerRecorder in the executor bindings.
 /// The downstream credible-std exposes it as TriggerRecorder (without I prefix).
 interface ITriggerRecorder {
+    /// @notice Filter for narrowing down which calls should trigger assertions
+    struct TriggerFilter {
+        /// @notice Call type: 0=any, 1=CALL, 2=STATICCALL, 3=DELEGATECALL, 4=CALLCODE
+        uint8 callType;
+        /// @notice Minimum call depth (inclusive), 0 means no minimum
+        uint32 minDepth;
+        /// @notice Maximum call depth (inclusive), 0 means no maximum
+        uint32 maxDepth;
+        /// @notice If true, only trigger on top-level calls (depth == 0)
+        bool topLevelOnly;
+    }
+
     /// @notice Records a call trigger for the specified assertion function.
     /// A call trigger signifies that the assertion function should be called
     /// if the assertion adopter is called.
@@ -21,6 +33,19 @@ interface ITriggerRecorder {
     /// @param fnSelector The function selector of the assertion function.
     /// @param triggerSelector The function selector of the trigger function.
     function registerCallTrigger(bytes4 fnSelector, bytes4 triggerSelector) external view;
+
+    /// @notice Registers a call trigger for all calls to the AA that match `filter`.
+    /// @param fnSelector The function selector of the assertion function.
+    /// @param filter The call-shape filter applied at trigger time.
+    function registerCallTrigger(bytes4 fnSelector, TriggerFilter calldata filter) external view;
+
+    /// @notice Registers a selector-specific call trigger that matches `filter`.
+    /// @param fnSelector The function selector of the assertion function.
+    /// @param triggerSelector The function selector of the trigger function.
+    /// @param filter The call-shape filter applied at trigger time.
+    function registerCallTrigger(bytes4 fnSelector, bytes4 triggerSelector, TriggerFilter calldata filter)
+        external
+        view;
 
     /// @notice Registers storage change trigger for all slots
     /// @param fnSelector The function selector of the assertion function.

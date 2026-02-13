@@ -96,6 +96,30 @@ mod tests {
                 "sumArgUint(address,bytes4,uint256,(uint8,uint32,uint32,bool))",
                 PhEvm::sumArgUintCall::SELECTOR,
             ),
+            (
+                "sumCallArgUintForAddress(address,bytes4,uint256,address,uint256,(uint8,uint32,uint32,bool))",
+                PhEvm::sumCallArgUintForAddressCall::SELECTOR,
+            ),
+            (
+                "uniqueCallArgAddresses(address,bytes4,uint256,(uint8,uint32,uint32,bool))",
+                PhEvm::uniqueCallArgAddressesCall::SELECTOR,
+            ),
+            (
+                "sumCallArgUintByAddress(address,bytes4,uint256,uint256,(uint8,uint32,uint32,bool))",
+                PhEvm::sumCallArgUintByAddressCall::SELECTOR,
+            ),
+            (
+                "sumEventUintForTopicKey(address,bytes32,uint8,bytes32,uint256)",
+                PhEvm::sumEventUintForTopicKeyCall::SELECTOR,
+            ),
+            (
+                "uniqueEventTopicValues(address,bytes32,uint8)",
+                PhEvm::uniqueEventTopicValuesCall::SELECTOR,
+            ),
+            (
+                "sumEventUintByTopic(address,bytes32,uint8,uint256)",
+                PhEvm::sumEventUintByTopicCall::SELECTOR,
+            ),
             // Storage write-policy cheatcodes
             (
                 "anySlotWritten(address,bytes32)",
@@ -172,8 +196,8 @@ mod tests {
         // Verify we have the expected count of methods
         assert_eq!(
             expected_selectors.len(),
-            34,
-            "PhEvm interface should have exactly 34 methods"
+            40,
+            "PhEvm interface should have exactly 40 methods"
         );
     }
 
@@ -188,6 +212,14 @@ mod tests {
             (
                 "registerCallTrigger(bytes4,bytes4)",
                 ITriggerRecorder::registerCallTrigger_1Call::SELECTOR,
+            ),
+            (
+                "registerCallTrigger(bytes4,(uint8,uint32,uint32,bool))",
+                ITriggerRecorder::registerCallTrigger_2Call::SELECTOR,
+            ),
+            (
+                "registerCallTrigger(bytes4,bytes4,(uint8,uint32,uint32,bool))",
+                ITriggerRecorder::registerCallTrigger_3Call::SELECTOR,
             ),
             (
                 "registerStorageChangeTrigger(bytes4)",
@@ -213,8 +245,8 @@ mod tests {
 
         assert_eq!(
             expected_selectors.len(),
-            5,
-            "ITriggerRecorder interface should have exactly 5 methods"
+            7,
+            "ITriggerRecorder interface should have exactly 7 methods"
         );
     }
 
@@ -225,6 +257,21 @@ mod tests {
         assert_ne!(
             ITriggerRecorder::registerCallTrigger_0Call::SELECTOR,
             ITriggerRecorder::registerCallTrigger_1Call::SELECTOR,
+            "registerCallTrigger overloads must have distinct selectors"
+        );
+        assert_ne!(
+            ITriggerRecorder::registerCallTrigger_0Call::SELECTOR,
+            ITriggerRecorder::registerCallTrigger_2Call::SELECTOR,
+            "registerCallTrigger overloads must have distinct selectors"
+        );
+        assert_ne!(
+            ITriggerRecorder::registerCallTrigger_1Call::SELECTOR,
+            ITriggerRecorder::registerCallTrigger_3Call::SELECTOR,
+            "registerCallTrigger overloads must have distinct selectors"
+        );
+        assert_ne!(
+            ITriggerRecorder::registerCallTrigger_2Call::SELECTOR,
+            ITriggerRecorder::registerCallTrigger_3Call::SELECTOR,
             "registerCallTrigger overloads must have distinct selectors"
         );
 

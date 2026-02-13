@@ -93,6 +93,18 @@ interface PhEvm {
         uint32 depth;
     }
 
+    /// @notice Key-value pair used for grouped address aggregates
+    struct AddressUint {
+        address key;
+        uint256 value;
+    }
+
+    /// @notice Key-value pair used for grouped bytes32/topic aggregates
+    struct Bytes32Uint {
+        bytes32 key;
+        uint256 value;
+    }
+
     /// @notice Fork to the state before the assertion-triggering transaction
     /// @dev Allows inspection of pre-transaction state for comparison
     function forkPreTx() external;
@@ -209,6 +221,85 @@ interface PhEvm {
     /// @param filter Criteria for narrowing down which calls to consider
     /// @return total The sum of the argument values across matching calls
     function sumArgUint(address target, bytes4 selector, uint256 argIndex, CallFilter calldata filter) external view returns (uint256 total);
+
+    /// @notice Sum a uint256 argument for calls where an address argument equals `key`
+    /// @param target The target contract address
+    /// @param selector The function selector to match
+    /// @param keyArgIndex ABI word index of the address key argument (0-based)
+    /// @param key Address key to filter by
+    /// @param valueArgIndex ABI word index of the uint256 value argument (0-based)
+    /// @param filter Criteria for narrowing down which calls to consider
+    /// @return total Sum of value arguments for matching key
+    function sumCallArgUintForAddress(
+        address target,
+        bytes4 selector,
+        uint256 keyArgIndex,
+        address key,
+        uint256 valueArgIndex,
+        CallFilter calldata filter
+    ) external view returns (uint256 total);
+
+    /// @notice Return unique address values observed at a call argument index
+    /// @param target The target contract address
+    /// @param selector The function selector to match
+    /// @param argIndex ABI word index of the address argument (0-based)
+    /// @param filter Criteria for narrowing down which calls to consider
+    /// @return keys Unique addresses in deterministic sorted order
+    function uniqueCallArgAddresses(address target, bytes4 selector, uint256 argIndex, CallFilter calldata filter)
+        external
+        view
+        returns (address[] memory keys);
+
+    /// @notice Group and sum uint256 argument values by an address argument key
+    /// @param target The target contract address
+    /// @param selector The function selector to match
+    /// @param keyArgIndex ABI word index of the address key argument (0-based)
+    /// @param valueArgIndex ABI word index of the uint256 value argument (0-based)
+    /// @param filter Criteria for narrowing down which calls to consider
+    /// @return entries Grouped sums sorted by key
+    function sumCallArgUintByAddress(
+        address target,
+        bytes4 selector,
+        uint256 keyArgIndex,
+        uint256 valueArgIndex,
+        CallFilter calldata filter
+    ) external view returns (AddressUint[] memory entries);
+
+    /// @notice Sum uint256 event data values for logs with a specific topic key
+    /// @param emitter Log emitter address
+    /// @param topic0 Event signature topic
+    /// @param keyTopicIndex Topic index to use as key (0..3)
+    /// @param key Topic key value to match
+    /// @param valueDataIndex ABI word index in log data for uint256 value (0-based)
+    /// @return total Sum of matching values
+    function sumEventUintForTopicKey(
+        address emitter,
+        bytes32 topic0,
+        uint8 keyTopicIndex,
+        bytes32 key,
+        uint256 valueDataIndex
+    ) external view returns (uint256 total);
+
+    /// @notice Return unique topic values for logs matching emitter/topic0
+    /// @param emitter Log emitter address
+    /// @param topic0 Event signature topic
+    /// @param topicIndex Topic index to extract unique values from (0..3)
+    /// @return values Unique topic values in deterministic sorted order
+    function uniqueEventTopicValues(address emitter, bytes32 topic0, uint8 topicIndex)
+        external
+        view
+        returns (bytes32[] memory values);
+
+    /// @notice Group and sum uint256 event data values by topic key
+    /// @param emitter Log emitter address
+    /// @param topic0 Event signature topic
+    /// @param keyTopicIndex Topic index to use as grouping key (0..3)
+    /// @param valueDataIndex ABI word index in log data for uint256 value (0-based)
+    /// @return entries Grouped sums sorted by key
+    function sumEventUintByTopic(address emitter, bytes32 topic0, uint8 keyTopicIndex, uint256 valueDataIndex)
+        external
+        view
+        returns (Bytes32Uint[] memory entries);
 
     // ─── Storage write-policy cheatcodes ───
 

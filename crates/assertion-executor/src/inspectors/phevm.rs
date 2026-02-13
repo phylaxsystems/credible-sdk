@@ -9,6 +9,15 @@ use crate::{
         inspector_result_to_call_outcome,
         precompiles::{
             assertion_adopter::get_assertion_adopter,
+            aggregate_facts::{
+                AggregateFactsError,
+                sum_call_arg_uint_by_address,
+                sum_call_arg_uint_for_address,
+                sum_event_uint_by_topic,
+                sum_event_uint_for_topic_key,
+                unique_call_arg_addresses,
+                unique_event_topic_values,
+            },
             call_facts::{
                 CallFactsError,
                 all_calls_by,
@@ -30,7 +39,10 @@ use crate::{
                 fork_pre_call,
                 fork_pre_tx,
             },
-            get_logs::get_logs,
+            get_logs::{
+                GetLogsError,
+                get_logs,
+            },
             load::{
                 LoadExternalSlotError,
                 load_external_slot,
@@ -183,6 +195,8 @@ pub enum PrecompileError<ExtDb: DatabaseRef> {
     SelectorNotFound(FixedBytes<4>),
     #[error("Unexpected error, should be Infallible: {0}")]
     UnexpectedError(#[source] std::convert::Infallible),
+    #[error("Error getting logs: {0}")]
+    GetLogsError(#[source] GetLogsError),
     #[error("Error getting state changes: {0}")]
     GetStateChangesError(#[source] GetStateChangesError),
     #[error("Error getting call inputs: {0}")]
@@ -203,6 +217,8 @@ pub enum PrecompileError<ExtDb: DatabaseRef> {
     Erc20FactsError(#[source] Erc20FactsError),
     #[error("Error in slot diffs: {0}")]
     SlotDiffsError(#[source] SlotDiffsError),
+    #[error("Error in aggregate facts: {0}")]
+    AggregateFactsError(#[source] AggregateFactsError),
 }
 
 /// `PhEvmInspector` is an inspector for supporting the `PhEvm` precompiles.
@@ -425,7 +441,7 @@ impl<'a> PhEvmInspector<'a> {
             }
             PhEvm::getLogsCall::SELECTOR => {
                 get_logs(&self.context, inputs.gas_limit)
-                    .map_err(PrecompileError::UnexpectedError)?
+                    .map_err(PrecompileError::GetLogsError)?
             }
             PhEvm::getStateChangesCall::SELECTOR => {
                 self.run_get_state_changes::<ExtDb>(input_bytes, inputs.gas_limit)?
@@ -481,6 +497,30 @@ impl<'a> PhEvmInspector<'a> {
             PhEvm::sumArgUintCall::SELECTOR => {
                 sum_arg_uint(&self.context, input_bytes, gas_limit)
                     .map_err(PrecompileError::CallFactsError)?
+            }
+            PhEvm::sumCallArgUintForAddressCall::SELECTOR => {
+                sum_call_arg_uint_for_address(&self.context, input_bytes, gas_limit)
+                    .map_err(PrecompileError::AggregateFactsError)?
+            }
+            PhEvm::uniqueCallArgAddressesCall::SELECTOR => {
+                unique_call_arg_addresses(&self.context, input_bytes, gas_limit)
+                    .map_err(PrecompileError::AggregateFactsError)?
+            }
+            PhEvm::sumCallArgUintByAddressCall::SELECTOR => {
+                sum_call_arg_uint_by_address(&self.context, input_bytes, gas_limit)
+                    .map_err(PrecompileError::AggregateFactsError)?
+            }
+            PhEvm::sumEventUintForTopicKeyCall::SELECTOR => {
+                sum_event_uint_for_topic_key(&self.context, input_bytes, gas_limit)
+                    .map_err(PrecompileError::AggregateFactsError)?
+            }
+            PhEvm::uniqueEventTopicValuesCall::SELECTOR => {
+                unique_event_topic_values(&self.context, input_bytes, gas_limit)
+                    .map_err(PrecompileError::AggregateFactsError)?
+            }
+            PhEvm::sumEventUintByTopicCall::SELECTOR => {
+                sum_event_uint_by_topic(&self.context, input_bytes, gas_limit)
+                    .map_err(PrecompileError::AggregateFactsError)?
             }
             PhEvm::anySlotWrittenCall::SELECTOR => {
                 any_slot_written(&self.context, input_bytes, gas_limit)

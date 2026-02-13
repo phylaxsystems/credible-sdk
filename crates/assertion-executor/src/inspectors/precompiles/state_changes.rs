@@ -4,7 +4,10 @@ use crate::{
             PhEvmContext,
             PhevmOutcome,
         },
-        precompiles::deduct_gas_and_check,
+        precompiles::{
+            MAX_ARRAY_RESPONSE_ITEMS,
+            deduct_gas_and_check,
+        },
         sol_primitives::PhEvm,
     },
     primitives::{
@@ -38,6 +41,8 @@ pub enum GetStateChangesError {
     SlotNotFound,
     #[error("Account not found in journal, but differences were found.")]
     AccountNotFound,
+    #[error("getStateChanges response has {count} entries, exceeds max {max}")]
+    TooManyStateChanges { count: usize, max: usize },
     #[error("Out of gas")]
     OutOfGas(PhevmOutcome),
 }
@@ -111,6 +116,13 @@ fn get_differences<A: std::alloc::Allocator>(
     // Use the index to find matching entries directly
     if let Some(entries) = index.changes_for_key(&contract_address, &slot) {
         for entry in entries {
+            if differences.len() >= MAX_ARRAY_RESPONSE_ITEMS {
+                return Err(GetStateChangesError::TooManyStateChanges {
+                    count: differences.len() + 1,
+                    max: MAX_ARRAY_RESPONSE_ITEMS,
+                });
+            }
+
             if let Some(rax) = deduct_gas_and_check(gas_left, MEMORY_COST, gas_limit) {
                 return Err(GetStateChangesError::OutOfGas(rax));
             }
@@ -122,6 +134,13 @@ fn get_differences<A: std::alloc::Allocator>(
     // If any differences were found in the journal, check the state to get the current value.
     // The account should always exist in state if differences were found in the journal.
     if !differences.is_empty() {
+        if differences.len() >= MAX_ARRAY_RESPONSE_ITEMS {
+            return Err(GetStateChangesError::TooManyStateChanges {
+                count: differences.len() + 1,
+                max: MAX_ARRAY_RESPONSE_ITEMS,
+            });
+        }
+
         if let Some(rax) = deduct_gas_and_check(gas_left, PUSH_LAST, gas_limit) {
             return Err(GetStateChangesError::OutOfGas(rax));
         }
@@ -639,6 +658,37 @@ mod test {
 
         assert_eq!(outcome.gas(), BASE_COST + 16 + 3 + 5);
         assert!(outcome.bytes().is_empty());
+    }
+
+    #[test]
+    fn test_get_state_changes_errors_when_response_exceeds_bound() {
+        let contract_address = random_address();
+        let slot = random_u256();
+        let call_inputs = create_call_inputs_for_state_changes(contract_address, slot);
+
+        let mut journal = JournalInner::new();
+        let mut db = MockDb::new();
+        db.insert_storage(contract_address, slot, U256::ZERO);
+        journal.load_account(&mut db, contract_address).unwrap();
+
+        for i in 0..MAX_ARRAY_RESPONSE_ITEMS {
+            journal
+                .sstore(&mut db, contract_address, slot, U256::from(i + 1), false)
+                .unwrap();
+        }
+
+        let err = with_journal_context(journal, |context| {
+            get_state_changes(&call_inputs, context, u64::MAX)
+        })
+        .expect_err("expected TooManyStateChanges");
+
+        match err {
+            GetStateChangesError::TooManyStateChanges { count, max } => {
+                assert_eq!(count, MAX_ARRAY_RESPONSE_ITEMS + 1);
+                assert_eq!(max, MAX_ARRAY_RESPONSE_ITEMS);
+            }
+            other => panic!("expected TooManyStateChanges, got {other:?}"),
+        }
     }
 
     #[tokio::test]

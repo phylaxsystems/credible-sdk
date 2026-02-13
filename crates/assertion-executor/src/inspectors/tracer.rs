@@ -27,6 +27,7 @@ use revm::{
         CreateInputs,
         CreateOutcome,
     },
+    primitives::Log,
 };
 use std::{
     collections::{
@@ -182,6 +183,12 @@ pub struct CallTracer {
     /// Initialized on first precompile access during assertion execution.
     /// Uses `OnceLock` so it can be built from `&self` (shared reference).
     storage_change_index: OnceLock<StorageChangeIndex>,
+    /// Lazily-cached ABI encoding of tx logs for `getLogs()`.
+    /// Shared across all assertion fns for the same traced tx.
+    encoded_logs_cache: OnceLock<Bytes>,
+    /// Lazily-built index of tx logs by `(emitter, topic0)`.
+    /// Used by event-derived fact precompiles to avoid repeated full-log scans.
+    log_index_by_emitter_topic0: OnceLock<HashMap<(Address, FixedBytes<32>), Vec<usize>>>,
 }
 
 impl Default for CallTracer {
@@ -195,6 +202,8 @@ impl Default for CallTracer {
             result: Ok(()),
             adopter_cache: HashMap::new(),
             storage_change_index: OnceLock::new(),
+            encoded_logs_cache: OnceLock::new(),
+            log_index_by_emitter_topic0: OnceLock::new(),
         }
     }
 }
@@ -211,6 +220,8 @@ impl CallTracer {
             result: Ok(()),
             adopter_cache: HashMap::new(),
             storage_change_index: OnceLock::new(),
+            encoded_logs_cache: OnceLock::new(),
+            log_index_by_emitter_topic0: OnceLock::new(),
         }
     }
 
@@ -576,6 +587,46 @@ impl CallTracer {
     pub fn storage_change_index(&self) -> &StorageChangeIndex {
         self.storage_change_index
             .get_or_init(|| StorageChangeIndex::build(&self.journal))
+    }
+
+    /// Returns cached `getLogs()` ABI bytes, initializing once on first use.
+    #[must_use]
+    pub fn encoded_logs_or_init<F>(&self, init: F) -> &Bytes
+    where
+        F: FnOnce() -> Bytes,
+    {
+        self.encoded_logs_cache.get_or_init(init)
+    }
+
+    /// Returns tx log indices for a given `(emitter, topic0)`, building the index once.
+    #[must_use]
+    pub fn log_indices_by_emitter_topic0(
+        &self,
+        tx_logs: &[Log],
+        emitter: Address,
+        topic0: FixedBytes<32>,
+    ) -> &[usize] {
+        let index = self.log_index_by_emitter_topic0.get_or_init(|| {
+            let mut map: HashMap<(Address, FixedBytes<32>), Vec<usize>> = HashMap::new();
+            for (idx, log) in tx_logs.iter().enumerate() {
+                if let Some(first_topic) = log.data.topics().first() {
+                    map.entry((log.address, (*first_topic).into()))
+                        .or_default()
+                        .push(idx);
+                }
+            }
+            map
+        });
+        index
+            .get(&(emitter, topic0))
+            .map_or(&[] as &[usize], Vec::as_slice)
+    }
+
+    /// Returns true if tx log ABI bytes have been cached.
+    #[cfg(any(test, feature = "test"))]
+    #[must_use]
+    pub fn has_encoded_logs_cache(&self) -> bool {
+        self.encoded_logs_cache.get().is_some()
     }
 
     /// Test helper to set checkpoints for the last inserted call record.

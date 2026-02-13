@@ -735,7 +735,8 @@ If we want immediate wins without waiting for the full roadmap:
 - 4 new precompile modules: `call_facts.rs`, `write_policy.rs`, `call_boundary.rs`, `erc20_facts.rs`
 - New dispatch stage `execute_scalar_facts_precompile` in phevm.rs
 - All 247 tests pass (up from 213 baseline, includes fix for previously broken MockAssertion.json test)
-- Still TODO from plan: keyed aggregates (`sumCallArgUintForAddress`, etc.), ERC4626 helpers, trigger-time filtered registration
+- Remaining TODO from original Phase 7 scope: ERC4626 helper cheatcodes.
+  - Deferred until we add a safe low-overhead design for pre/post vault view reads (current runtime does not expose a cheap generic path).
 
 ### Phase 8: Declarative Cheatcodes (P1 Mapping + Diff Facts) -- DONE
 - Implemented 6 new deterministic known-key cheatcodes:
@@ -752,16 +753,16 @@ If we want immediate wins without waiting for the full roadmap:
 ### Phase 9: Assertion Rewrite + Helper Layer -- DEFERRED (cross-repo)
 - Requires modifying `credible-std` (separate repo) for helper wrappers/presets.
 - Requires rewriting assertions in downstream repos (EVC, Malda, Morpho, Aave, etc.).
-- Canonical PhEvm.sol interface (34 methods) is ready for sync.
+- Canonical PhEvm.sol interface (40 methods) is ready for sync.
 - Deferred until Phase 10 cross-repo sync is in place.
 
 ### Phase 10: Cross-Repo Interface Sync Automation -- DEFERRED
 - `credible-std` is a separate repo; automation should run cross-repo via CI workflows and PR bots.
 - In `credible-sdk`, only submodule pointer bumps should be done after upstream `credible-std` updates.
 
-### Phase 11: Runtime Performance Hardening Gate -- IN PROGRESS
+### Phase 11: Runtime Performance Hardening Gate -- DONE
 - **StorageChangeIndex**: DONE (`8ac766e`). Lazily-built index on `CallTracer` via `OnceLock` pre-indexes all `StorageChanged` journal entries by `(address, slot)`. Replaces O(journal) scans with O(1) lookups in `slot_diffs`, `state_changes`, and `write_policy` precompiles. 266 tests pass.
-- **Correctness + Robustness Fix Pack (from review findings)**: IN PROGRESS.
+- **Correctness + Robustness Fix Pack (from review findings)**: DONE.
   - [x] Fix `CallTracer` constructors to initialize `storage_change_index` (`tracer.rs`).
   - [x] Fix `sumArgUint` unchecked arithmetic overflow/panic on large `argIndex` (`call_facts.rs`).
   - [x] Fix `anySlotWritten` double-charge gas accounting bug (`write_policy.rs`).
@@ -802,18 +803,61 @@ If we want immediate wins without waiting for the full roadmap:
       - `assertion_store_read`: stable/no regression.
       - `executor_transaction_perf`: broad improvement (EOA/ERC20/Uniswap scenarios improved or within noise).
       - `executor_avg_block_perf`: vanilla/0_aa/100_aa improved; 3_aa no significant change.
-      - `call-tracer-truncate`: large improvements in heavy cases (`15k`, `15k_deep_pending`), others no significant change.
-      - `worst-case-op`: mostly stable or improved; isolated LOG0 regression was non-reproducible on rerun (improved).
+      - `call-tracer-truncate`: mixed but neutral-to-positive on reruns (no reproducible heavy-case regression).
+      - `worst-case-op`: noisy mixed microbench profile; no consistently reproducible regression across reruns.
   - [x] Full package validation includes doctests:
-    - `cargo test -p assertion-executor@1.0.8 --no-default-features --features "optimism test"` (271 unit tests passed, doctests passed).
-- Remaining items (not yet started):
-  - Items 1-2 (empty-selector short-circuits): Already exist in executor path (verified by code review).
-  - Item 3 (adaptive parallelism): Already implemented in Phases 3-4.
-  - Item 6 (log re-encoding caching): Not started.
-  - Item 7 (bounded array responses): Not started.
-  - Item 8 (trigger-time call-shape filtering): Not started.
-  - Item 9 (keyed/grouped aggregate indexes): Not started.
-  - Focused perf benchmarks: Blocked on benchmarking infrastructure.
+    - `cargo test -p assertion-executor@1.0.8 --no-default-features --features "optimism test"` (285 unit tests passed, doctests passed).
+- **Performance Extension Pack (remaining Phase 11 items)**: DONE.
+  - [x] Item 6 (log re-encoding caching):
+    - Added tx-scope `getLogs()` ABI-encoding cache on `CallTracer` (`encoded_logs_cache`) and used it from `get_logs.rs`.
+    - Added regression test: `test_get_logs_populates_tracer_encoding_cache`.
+  - [x] Item 7 (bounded array responses):
+    - Added hard bound `MAX_ARRAY_RESPONSE_ITEMS = 4096`.
+    - Enforced bounded responses for array-returning hot precompiles:
+      - `getLogs` (`TooManyLogs`)
+      - `getCallInputs` (`TooManyCallInputs`)
+      - `getStateChanges` (`TooManyStateChanges`)
+      - `getChangedSlots` (`TooManyChangedSlots`)
+    - Added bound regression tests for each precompile path.
+  - [x] Item 8 (trigger-time call-shape filtering):
+    - Extended canonical `ITriggerRecorder.sol` with `TriggerFilter` plus filtered overloads:
+      - `registerCallTrigger(bytes4, TriggerFilter)`
+      - `registerCallTrigger(bytes4, bytes4, TriggerFilter)`
+    - Added runtime trigger variants:
+      - `TriggerType::CallFiltered`
+      - `TriggerType::AllCallsFiltered`
+    - Updated `read_adopter` matching to support filtered semantics with per-call trigger IDs.
+    - Added fast path for legacy (non-filtered) trigger sets to preserve existing hot-path performance.
+    - Added unit tests:
+      - `test_call_filtered_trigger_selects_matching_call_ids`
+      - `test_all_calls_filtered_trigger_uses_depth_filter`
+  - [x] Item 9 (keyed/grouped aggregate indexes and APIs):
+    - Added 6 declarative aggregate cheatcodes in canonical `PhEvm.sol`:
+      - `sumCallArgUintForAddress`
+      - `uniqueCallArgAddresses`
+      - `sumCallArgUintByAddress`
+      - `sumEventUintForTopicKey`
+      - `uniqueEventTopicValues`
+      - `sumEventUintByTopic`
+    - New precompile module: `aggregate_facts.rs` with grouped/summed call/event implementations and tests.
+    - Added tx log index on `CallTracer` (`log_index_by_emitter_topic0`) and reused it for:
+      - event aggregate cheatcodes
+      - ERC20 fact precompiles (`erc20_facts.rs`) to avoid repeated full-log scans.
+  - [x] Item 1-3 verification:
+    - Empty-selector short-circuits already present.
+    - Adaptive parallelism already present.
+  - [x] Focused benchmark runs completed:
+    - `cargo bench -p assertion-executor@1.0.8 --bench assertion_store_read`
+    - `cargo bench -p assertion-executor@1.0.8 --bench executor_transaction_perf`
+    - `cargo bench -p assertion-executor@1.0.8 --bench executor_avg_block_perf`
+    - `cargo bench -p assertion-executor@1.0.8 --bench call-tracer-truncate`
+    - `cargo bench -p assertion-executor@1.0.8 --bench worst-case-op` (rerun twice to check noisy outliers)
+    - Summary (latest runs on this branch):
+      - `assertion_store_read`: improved hit and miss paths (notably miss fast path).
+      - `executor_transaction_perf`: broad improvement / no-regression across EOA/ERC20/Uniswap scenarios after fast-path fix.
+      - `executor_avg_block_perf`: mostly improved or within noise.
+      - `call-tracer-truncate`: mixed but neutral-to-positive on reruns.
+      - `worst-case-op`: mixed microbench noise without a consistently reproducible regression.
 
 ## Detailed Implementation Plan (Execution)
 

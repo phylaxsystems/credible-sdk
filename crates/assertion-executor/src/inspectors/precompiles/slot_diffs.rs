@@ -6,6 +6,7 @@ use crate::{
         },
         precompiles::{
             BASE_COST,
+            MAX_ARRAY_RESPONSE_ITEMS,
             deduct_gas_and_check,
         },
         sol_primitives::PhEvm,
@@ -26,6 +27,8 @@ use alloy_sol_types::{
 pub enum SlotDiffsError {
     #[error("Failed to decode slot diffs input: {0:?}")]
     DecodeError(#[source] alloy_sol_types::Error),
+    #[error("getChangedSlots response has {count} entries, exceeds max {max}")]
+    TooManyChangedSlots { count: usize, max: usize },
     #[error("Out of gas")]
     OutOfGas(PhevmOutcome),
 }
@@ -127,6 +130,12 @@ pub fn get_changed_slots(
                         .map(|s| s.present_value)
                         .unwrap_or(pre);
                     if pre != post {
+                        if changed_slots.len() >= MAX_ARRAY_RESPONSE_ITEMS {
+                            return Err(SlotDiffsError::TooManyChangedSlots {
+                                count: changed_slots.len() + 1,
+                                max: MAX_ARRAY_RESPONSE_ITEMS,
+                            });
+                        }
                         changed_slots.push(FixedBytes::<32>::from(slot.to_be_bytes::<32>()));
                     }
                 }
@@ -389,6 +398,38 @@ mod test {
             0,
             "Slot reverted to original should not appear as changed"
         );
+    }
+
+    #[test]
+    fn test_get_changed_slots_errors_when_response_exceeds_bound() {
+        let address = random_address();
+        let mut journal = JournalInner::new();
+        let mut db = MockDb::new();
+        db.insert_storage(address, U256::ZERO, U256::ZERO);
+        journal.load_account(&mut db, address).unwrap();
+
+        for i in 0..(MAX_ARRAY_RESPONSE_ITEMS + 1) {
+            let slot = U256::from(i + 1);
+            journal
+                .sstore(&mut db, address, slot, U256::from(i + 100), false)
+                .unwrap();
+        }
+
+        let input = PhEvm::getChangedSlotsCall { target: address };
+        let encoded = input.abi_encode();
+
+        let err = with_journal_context(journal, |context| {
+            get_changed_slots(context, &encoded, TEST_GAS)
+        })
+        .expect_err("expected TooManyChangedSlots");
+
+        match err {
+            SlotDiffsError::TooManyChangedSlots { count, max } => {
+                assert_eq!(count, MAX_ARRAY_RESPONSE_ITEMS + 1);
+                assert_eq!(max, MAX_ARRAY_RESPONSE_ITEMS);
+            }
+            other => panic!("expected TooManyChangedSlots, got {other:?}"),
+        }
     }
 
     #[test]

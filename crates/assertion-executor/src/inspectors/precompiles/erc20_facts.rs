@@ -56,9 +56,15 @@ fn decode_transfer(log: &Log, token: Address) -> Option<(Address, Address, U256)
 
 /// Compute net flow for an account from a set of Transfer events.
 /// Returns sum of incoming transfers minus sum of outgoing transfers.
-fn compute_net_flow(logs: &[Log], token: Address, account: Address) -> I256 {
+fn compute_net_flow_from_indices(
+    logs: &[Log],
+    log_indices: &[usize],
+    token: Address,
+    account: Address,
+) -> I256 {
     let mut net = I256::ZERO;
-    for log in logs {
+    for &idx in log_indices {
+        let log = &logs[idx];
         if let Some((from, to, value)) = decode_transfer(log, token) {
             if to == account {
                 net = net.wrapping_add(I256::from_raw(value));
@@ -69,6 +75,18 @@ fn compute_net_flow(logs: &[Log], token: Address, account: Address) -> I256 {
         }
     }
     net
+}
+
+fn transfer_log_indices<'a>(ph_context: &'a PhEvmContext, token: Address) -> &'a [usize] {
+    ph_context.logs_and_traces.call_traces.log_indices_by_emitter_topic0(
+        ph_context.logs_and_traces.tx_logs,
+        token,
+        TRANSFER_TOPIC.into(),
+    )
+}
+
+fn in_log_window(idx: usize, start: usize, end: usize) -> bool {
+    idx >= start && idx < end
 }
 
 /// `erc20BalanceDiff(address token, address account) -> int256`
@@ -97,14 +115,15 @@ pub fn erc20_balance_diff(
         .map_err(Erc20FactsError::DecodeError)?;
 
     let logs = ph_context.logs_and_traces.tx_logs;
+    let log_indices = transfer_log_indices(ph_context, call.token);
 
-    // Charge gas for log scanning
-    let log_cost = (logs.len() as u64).saturating_mul(PER_LOG_COST);
+    // Charge gas for indexed transfer log scanning
+    let log_cost = (log_indices.len() as u64).saturating_mul(PER_LOG_COST);
     if let Some(rax) = deduct_gas_and_check(&mut gas_left, log_cost, gas_limit) {
         return Err(Erc20FactsError::OutOfGas(rax));
     }
 
-    let delta = compute_net_flow(logs, call.token, call.account);
+    let delta = compute_net_flow_from_indices(logs, log_indices, call.token, call.account);
     let encoded = delta.abi_encode();
     Ok(PhevmOutcome::new(encoded.into(), gas_limit - gas_left))
 }
@@ -130,8 +149,9 @@ pub fn erc20_supply_diff(
         PhEvm::erc20SupplyDiffCall::abi_decode(input_bytes).map_err(Erc20FactsError::DecodeError)?;
 
     let logs = ph_context.logs_and_traces.tx_logs;
+    let log_indices = transfer_log_indices(ph_context, call.token);
 
-    let log_cost = (logs.len() as u64).saturating_mul(PER_LOG_COST);
+    let log_cost = (log_indices.len() as u64).saturating_mul(PER_LOG_COST);
     if let Some(rax) = deduct_gas_and_check(&mut gas_left, log_cost, gas_limit) {
         return Err(Erc20FactsError::OutOfGas(rax));
     }
@@ -140,7 +160,8 @@ pub fn erc20_supply_diff(
     // Mint: Transfer from address(0) → increases supply
     // Burn: Transfer to address(0) → decreases supply
     let mut delta = I256::ZERO;
-    for log in logs {
+    for &idx in log_indices {
+        let log = &logs[idx];
         if let Some((from, to, value)) = decode_transfer(log, call.token) {
             if from == Address::ZERO {
                 // Mint
@@ -177,13 +198,14 @@ pub fn get_erc20_net_flow(
         .map_err(Erc20FactsError::DecodeError)?;
 
     let logs = ph_context.logs_and_traces.tx_logs;
+    let log_indices = transfer_log_indices(ph_context, call.token);
 
-    let log_cost = (logs.len() as u64).saturating_mul(PER_LOG_COST);
+    let log_cost = (log_indices.len() as u64).saturating_mul(PER_LOG_COST);
     if let Some(rax) = deduct_gas_and_check(&mut gas_left, log_cost, gas_limit) {
         return Err(Erc20FactsError::OutOfGas(rax));
     }
 
-    let net_flow = compute_net_flow(logs, call.token, call.account);
+    let net_flow = compute_net_flow_from_indices(logs, log_indices, call.token, call.account);
     let encoded = net_flow.abi_encode();
     Ok(PhevmOutcome::new(encoded.into(), gas_limit - gas_left))
 }
@@ -236,15 +258,34 @@ pub fn get_erc20_flow_by_call(
         .map(|c| c.log_i)
         .unwrap_or(logs.len())
         .min(logs.len());
-    let scoped_len = end_log_i.saturating_sub(start_log_i);
+    let log_indices = transfer_log_indices(ph_context, call.token);
+    let scoped_count = log_indices
+        .iter()
+        .copied()
+        .filter(|idx| in_log_window(*idx, start_log_i, end_log_i))
+        .count();
 
-    let log_cost = (scoped_len as u64).saturating_mul(PER_LOG_COST);
+    let log_cost = (scoped_count as u64).saturating_mul(PER_LOG_COST);
     if let Some(rax) = deduct_gas_and_check(&mut gas_left, log_cost, gas_limit) {
         return Err(Erc20FactsError::OutOfGas(rax));
     }
 
-    let scoped_logs = &logs[start_log_i..start_log_i + scoped_len];
-    let net_flow = compute_net_flow(scoped_logs, call.token, call.account);
+    let mut net_flow = I256::ZERO;
+    for &idx in log_indices {
+        if !in_log_window(idx, start_log_i, end_log_i) {
+            continue;
+        }
+        let log = &logs[idx];
+        if let Some((from, to, value)) = decode_transfer(log, call.token) {
+            if to == call.account {
+                net_flow = net_flow.wrapping_add(I256::from_raw(value));
+            }
+            if from == call.account {
+                net_flow = net_flow.wrapping_sub(I256::from_raw(value));
+            }
+        }
+    }
+
     let encoded = net_flow.abi_encode();
     Ok(PhevmOutcome::new(encoded.into(), gas_limit - gas_left))
 }
@@ -269,13 +310,13 @@ pub fn did_balance_change(
         .map_err(Erc20FactsError::DecodeError)?;
 
     let logs = ph_context.logs_and_traces.tx_logs;
-
-    let log_cost = (logs.len() as u64).saturating_mul(PER_LOG_COST);
+    let log_indices = transfer_log_indices(ph_context, call.token);
+    let log_cost = (log_indices.len() as u64).saturating_mul(PER_LOG_COST);
     if let Some(rax) = deduct_gas_and_check(&mut gas_left, log_cost, gas_limit) {
         return Err(Erc20FactsError::OutOfGas(rax));
     }
 
-    let delta = compute_net_flow(logs, call.token, call.account);
+    let delta = compute_net_flow_from_indices(logs, log_indices, call.token, call.account);
     let changed = delta != I256::ZERO;
     let encoded = changed.abi_encode();
     Ok(PhevmOutcome::new(encoded.into(), gas_limit - gas_left))
@@ -301,13 +342,13 @@ pub fn balance_diff(
         .map_err(Erc20FactsError::DecodeError)?;
 
     let logs = ph_context.logs_and_traces.tx_logs;
-
-    let log_cost = (logs.len() as u64).saturating_mul(PER_LOG_COST);
+    let log_indices = transfer_log_indices(ph_context, call.token);
+    let log_cost = (log_indices.len() as u64).saturating_mul(PER_LOG_COST);
     if let Some(rax) = deduct_gas_and_check(&mut gas_left, log_cost, gas_limit) {
         return Err(Erc20FactsError::OutOfGas(rax));
     }
 
-    let delta = compute_net_flow(logs, call.token, call.account);
+    let delta = compute_net_flow_from_indices(logs, log_indices, call.token, call.account);
     let encoded = delta.abi_encode();
     Ok(PhevmOutcome::new(encoded.into(), gas_limit - gas_left))
 }

@@ -16,6 +16,7 @@ pub use tracer::{
 };
 pub use trigger_recorder::{
     TRIGGER_RECORDER,
+    TriggerFilter,
     TriggerRecorder,
     TriggerType,
     insert_trigger_recorder_account,

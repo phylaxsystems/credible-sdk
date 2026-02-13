@@ -43,7 +43,7 @@ const PER_CALL_COST: u64 = 5;
 
 /// Maps the CallFilter.callType field to an optional CallScheme filter.
 /// 0 = any, 1 = CALL, 2 = STATICCALL, 3 = DELEGATECALL, 4 = CALLCODE
-fn call_type_to_scheme(call_type: u8) -> Option<CallScheme> {
+pub(crate) fn call_type_to_scheme(call_type: u8) -> Option<CallScheme> {
     match call_type {
         0 => None,
         1 => Some(CallScheme::Call),
@@ -54,7 +54,7 @@ fn call_type_to_scheme(call_type: u8) -> Option<CallScheme> {
     }
 }
 
-fn candidate_call_indices(
+pub(crate) fn candidate_call_indices(
     tracer: &CallTracer,
     target: Address,
     selector: FixedBytes<4>,
@@ -65,7 +65,7 @@ fn candidate_call_indices(
         .map(Vec::as_slice)
 }
 
-fn call_matches_filter(
+pub(crate) fn call_matches_filter(
     record: &CallRecord,
     filter: &PhEvm::CallFilter,
     scheme_filter: Option<CallScheme>,
