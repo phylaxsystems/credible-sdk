@@ -17,6 +17,7 @@ pub use assertion_store::{
     AssertionStoreError,
     AssertionsForExecution,
     PruneConfig,
+    SelectorWithTrigger,
 };
 
 mod indexer;

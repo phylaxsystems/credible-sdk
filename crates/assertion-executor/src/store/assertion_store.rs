@@ -252,19 +252,40 @@ impl StoreBackend {
     }
 }
 
+/// An assertion function selector paired with the call IDs that triggered it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelectorWithTrigger {
+    pub selector: FixedBytes<4>,
+    /// Call record indices from the CallTracer that triggered this selector.
+    /// Empty for non-call triggers (storage changes, balance changes).
+    pub trigger_calls: Vec<usize>,
+}
+
+impl PartialOrd for SelectorWithTrigger {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for SelectorWithTrigger {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.selector.cmp(&other.selector)
+    }
+}
+
 /// Struct representing an assertion contract, matched fn selectors, and the adopter.
 /// This is necessary context when running assertions.
 #[derive(Debug, Clone)]
 pub struct AssertionsForExecution {
     pub assertion_contract: AssertionContract,
-    pub selectors: Vec<FixedBytes<4>>,
+    pub selectors: Vec<SelectorWithTrigger>,
     pub adopter: Address,
 }
 
 /// Used to represent important tracing information.
 struct AssertionsForExecutionMetadata<'a> {
     assertion_id: &'a B256,
-    selectors: &'a Vec<FixedBytes<4>>,
+    selectors: &'a [SelectorWithTrigger],
     adopter: &'a Address,
 }
 
@@ -272,7 +293,14 @@ impl std::fmt::Debug for AssertionsForExecutionMetadata<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AssertionsForExecutionMetadata")
             .field("assertion_id", &self.assertion_id)
-            .field("selectors", &self.selectors)
+            .field(
+                "selectors",
+                &self
+                    .selectors
+                    .iter()
+                    .map(|s| format!("{:x?}", s.selector))
+                    .collect::<Vec<_>>(),
+            )
             .field("adopter", &self.adopter)
             .finish()
     }
@@ -723,16 +751,15 @@ impl AssertionStore {
         let triggers = traces.triggers();
         tracing::Span::current().record("triggers", format!("{triggers:?}"));
 
-        for (contract_address, triggers) in &triggers {
-            let contract_assertions = self.read_adopter(contract_address, triggers, block_num)?;
+        for (contract_address, trigger_types) in &triggers {
+            let contract_assertions =
+                self.read_adopter(contract_address, trigger_types, traces, block_num)?;
             let assertions_for_execution: Vec<AssertionsForExecution> = contract_assertions
                 .into_iter()
-                .map(|(assertion_contract, selectors)| {
-                    AssertionsForExecution {
-                        assertion_contract,
-                        selectors,
-                        adopter: *contract_address,
-                    }
+                .map(|(assertion_contract, selectors)| AssertionsForExecution {
+                    assertion_contract,
+                    selectors,
+                    adopter: *contract_address,
                 })
                 .collect();
 
@@ -798,8 +825,9 @@ impl AssertionStore {
         &self,
         assertion_adopter: &Address,
         triggers: &HashSet<TriggerType>,
+        tracer: &CallTracer,
         block: u64,
-    ) -> Result<Vec<(AssertionContract, Vec<FixedBytes<4>>)>, AssertionStoreError> {
+    ) -> Result<Vec<(AssertionContract, Vec<SelectorWithTrigger>)>, AssertionStoreError> {
         let assertion_states = tracing::trace_span!(
             "read_adopter_from_db",
             ?assertion_adopter,
@@ -849,15 +877,30 @@ impl AssertionStore {
                 in_bound_start && in_bound_end
             })
             .filter_map(|a| {
-                // Get all function selectors from matching triggers
-                let mut all_selectors = HashSet::new();
+                // Map assertion fn selectors → call IDs that triggered them.
+                let mut selector_call_ids: HashMap<FixedBytes<4>, Vec<usize>> = HashMap::new();
                 let mut has_call_trigger = false;
                 let mut has_storage_trigger = false;
 
                 // Process specific triggers and detect trigger types
                 for trigger in triggers {
                     if let Some(selectors) = a.trigger_recorder.triggers.get(trigger) {
-                        all_selectors.extend(selectors.iter().copied());
+                        // Get call IDs for Call triggers
+                        let call_ids: Vec<usize> = match trigger {
+                            TriggerType::Call { trigger_selector } => tracer
+                                .get_call_inputs(*assertion_adopter, *trigger_selector)
+                                .iter()
+                                .map(|c| c.id)
+                                .collect(),
+                            _ => vec![],
+                        };
+
+                        for sel in selectors {
+                            selector_call_ids
+                                .entry(*sel)
+                                .or_default()
+                                .extend(&call_ids);
+                        }
                     }
 
                     // Check trigger type while we're iterating
@@ -872,7 +915,9 @@ impl AssertionStore {
                 if has_call_trigger
                     && let Some(selectors) = a.trigger_recorder.triggers.get(&TriggerType::AllCalls)
                 {
-                    all_selectors.extend(selectors.iter().copied());
+                    for sel in selectors {
+                        selector_call_ids.entry(*sel).or_default();
+                    }
                 }
 
                 // Add AllStorageChanges selectors if needed
@@ -882,11 +927,13 @@ impl AssertionStore {
                         .triggers
                         .get(&TriggerType::AllStorageChanges)
                 {
-                    all_selectors.extend(selectors.iter().copied());
+                    for sel in selectors {
+                        selector_call_ids.entry(*sel).or_default();
+                    }
                 }
 
                 // Skip assertions with no matched selectors to avoid wasted execution
-                if all_selectors.is_empty() {
+                if selector_call_ids.is_empty() {
                     debug!(
                         target: "assertion_store::read_adopter",
                         assertion_id = ?a.assertion_contract.id,
@@ -895,8 +942,16 @@ impl AssertionStore {
                     return None;
                 }
 
-                // Convert HashSet to Vec to match the expected return type
-                Some((a.assertion_contract, all_selectors.into_iter().collect()))
+                // Convert to Vec<SelectorWithTrigger>
+                let selectors_with_triggers: Vec<SelectorWithTrigger> = selector_call_ids
+                    .into_iter()
+                    .map(|(selector, trigger_calls)| SelectorWithTrigger {
+                        selector,
+                        trigger_calls,
+                    })
+                    .collect();
+
+                Some((a.assertion_contract, selectors_with_triggers))
             })
             .collect();
 
@@ -1527,7 +1582,8 @@ mod tests {
         assertions: &[AssertionsForExecution],
         mut expected_selectors: Vec<FixedBytes<4>>,
     ) {
-        let mut matched_selectors = assertions[0].selectors.clone();
+        let mut matched_selectors: Vec<FixedBytes<4>> =
+            assertions[0].selectors.iter().map(|s| s.selector).collect();
         matched_selectors.sort();
         expected_selectors.sort();
         assert_eq!(matched_selectors, expected_selectors);
@@ -1571,7 +1627,8 @@ mod tests {
 
         let assertions = setup_and_match(&recorded_triggers, journal_entries, aa)?;
         assert_eq!(assertions.len(), 1);
-        let mut matched_selectors = assertions[0].selectors.clone();
+        let mut matched_selectors: Vec<FixedBytes<4>> =
+            assertions[0].selectors.iter().map(|s| s.selector).collect();
         matched_selectors.sort();
         assert_eq!(matched_selectors, expected_selectors);
 
@@ -1632,7 +1689,8 @@ mod tests {
 
         let assertions = setup_and_match(&recorded_triggers, journal_entries, aa)?;
         assert_eq!(assertions.len(), 1);
-        let mut matched_selectors = assertions[0].selectors.clone();
+        let mut matched_selectors: Vec<FixedBytes<4>> =
+            assertions[0].selectors.iter().map(|s| s.selector).collect();
         matched_selectors.sort();
         assert_eq!(matched_selectors, expected_selectors);
 
@@ -1676,7 +1734,8 @@ mod tests {
 
         let assertions = setup_and_match(&recorded_triggers, vec![], aa)?;
         assert_eq!(assertions.len(), 1);
-        let mut matched_selectors = assertions[0].selectors.clone();
+        let mut matched_selectors: Vec<FixedBytes<4>> =
+            assertions[0].selectors.iter().map(|s| s.selector).collect();
         matched_selectors.sort();
         assert_eq!(matched_selectors, expected_selectors);
 
@@ -1809,7 +1868,8 @@ mod tests {
         let mut expected_selectors = vec![selector2, selector3];
         expected_selectors.sort();
 
-        let mut matched_selectors = assertions[0].selectors.clone();
+        let mut matched_selectors: Vec<FixedBytes<4>> =
+            assertions[0].selectors.iter().map(|s| s.selector).collect();
         matched_selectors.sort();
         assert_eq!(matched_selectors, expected_selectors);
 
@@ -1874,7 +1934,9 @@ mod tests {
 
         // Only the assertion with matched selectors should be returned
         assert_eq!(assertions.len(), 1);
-        assert_eq!(assertions[0].selectors, vec![selector_matched]);
+        let matched: Vec<FixedBytes<4>> =
+            assertions[0].selectors.iter().map(|s| s.selector).collect();
+        assert_eq!(matched, vec![selector_matched]);
 
         Ok(())
     }

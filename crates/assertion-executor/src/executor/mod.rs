@@ -278,7 +278,7 @@ impl AssertionExecutor {
         T: Send,
         F: Fn(
                 &AssertionContract,
-                &[FixedBytes<4>],
+                &[crate::store::SelectorWithTrigger],
                 &BlockEnv,
                 ForkDb<Active>,
                 &PhEvmContext,
@@ -313,22 +313,13 @@ impl AssertionExecutor {
         );
 
         let execute_one = |assertion_for_execution: crate::store::AssertionsForExecution| {
-            let mut phevm_context = PhEvmContext::new(
+            let phevm_context = PhEvmContext::new(
                 &logs_and_traces,
                 assertion_for_execution.adopter,
                 tx_env,
             );
 
-            // Find the first call targeting this adopter to set as trigger context
-            let adopter = assertion_for_execution.adopter;
-            phevm_context.trigger_call_id = logs_and_traces
-                .call_traces
-                .call_records()
-                .iter()
-                .enumerate()
-                .find(|(_, r)| r.inputs().target_address == adopter)
-                .map(|(i, _)| i);
-
+            // trigger_call_id is set per-selector in run_assertion_contract
             run_assertion_contract(
                 &assertion_for_execution.assertion_contract,
                 &assertion_for_execution.selectors,
@@ -585,7 +576,7 @@ impl AssertionExecutor {
     fn run_assertion_contract<Active>(
         &self,
         assertion_contract: &AssertionContract,
-        fn_selectors: &[FixedBytes<4>],
+        fn_selectors: &[crate::store::SelectorWithTrigger],
         block_env: &BlockEnv,
         tx_fork_db: ForkDb<Active>,
         context: &PhEvmContext,
@@ -609,17 +600,25 @@ impl AssertionExecutor {
             });
         }
 
-        let prepared =
-            self.prepare_assertion_contract(assertion_contract, fn_selectors, tx_fork_db, context);
+        let plain_selectors: Vec<FixedBytes<4>> =
+            fn_selectors.iter().map(|s| s.selector).collect();
+        let prepared = self.prepare_assertion_contract(
+            assertion_contract,
+            &plain_selectors,
+            tx_fork_db,
+            context,
+        );
 
-        let execute_fn = |fn_selector: &FixedBytes<4>| {
+        let execute_fn = |swt: &crate::store::SelectorWithTrigger| {
+            let mut inspector = prepared.inspector.clone();
+            inspector.context.trigger_call_id = swt.trigger_calls.first().copied();
             self.execute_assertion_fn(AssertionExecutionParams {
                 assertion_contract,
-                fn_selector,
+                fn_selector: &swt.selector,
                 tx_arena_epoch,
                 block_env: block_env.clone(),
                 multi_fork_db: prepared.multi_fork_db.clone(),
-                inspector: prepared.inspector.clone(),
+                inspector,
             })
         };
 

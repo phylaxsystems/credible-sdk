@@ -233,7 +233,12 @@ impl AssertionExecutor {
             forked_tx_result,
             tx_env,
             tx_arena_epoch,
-            |assertion_contract, fn_selectors, block_env, tx_fork_db, context, tx_arena_epoch| {
+            |assertion_contract,
+             fn_selectors: &[crate::store::SelectorWithTrigger],
+             block_env,
+             tx_fork_db,
+             context,
+             tx_arena_epoch| {
                 self.run_assertion_contract_with_inspector(
                     assertion_contract,
                     fn_selectors,
@@ -272,7 +277,7 @@ impl AssertionExecutor {
     fn run_assertion_contract_with_inspector<Active, I>(
         &self,
         assertion_contract: &AssertionContract,
-        fn_selectors: &[FixedBytes<4>],
+        fn_selectors: &[crate::store::SelectorWithTrigger],
         block_env: &BlockEnv,
         tx_fork_db: ForkDb<Active>,
         context: &PhEvmContext,
@@ -306,16 +311,24 @@ impl AssertionExecutor {
             ));
         }
 
-        let prepared =
-            self.prepare_assertion_contract(assertion_contract, fn_selectors, tx_fork_db, context);
+        let plain_selectors: Vec<FixedBytes<4>> =
+            fn_selectors.iter().map(|s| s.selector).collect();
+        let prepared = self.prepare_assertion_contract(
+            assertion_contract,
+            &plain_selectors,
+            tx_fork_db,
+            context,
+        );
 
-        let execute_fn = |fn_selector: &FixedBytes<4>| {
+        let execute_fn = |swt: &crate::store::SelectorWithTrigger| {
+            let mut phevm_inspector = prepared.inspector.clone();
+            phevm_inspector.context.trigger_call_id = swt.trigger_calls.first().copied();
             self.execute_assertion_fn_with_inspector(
                 assertion_contract,
-                *fn_selector,
+                swt.selector,
                 block_env.clone(),
                 prepared.multi_fork_db.clone(),
-                prepared.inspector.clone(),
+                phevm_inspector,
                 inspector.clone(),
                 tx_arena_epoch,
             )
