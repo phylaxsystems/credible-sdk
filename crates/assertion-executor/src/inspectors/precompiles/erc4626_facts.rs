@@ -50,6 +50,7 @@ sol! {
     interface IERC20ViewFacts {
         function balanceOf(address account) external view returns (uint256);
         function totalSupply() external view returns (uint256);
+        function allowance(address owner, address spender) external view returns (uint256);
     }
 
     interface IERC4626ViewFacts {
@@ -85,6 +86,15 @@ const MAX_VIEW_CALL_GAS: u64 = 200_000;
 
 fn signed_diff(post: U256, pre: U256) -> I256 {
     I256::from_raw(post).wrapping_sub(I256::from_raw(pre))
+}
+
+fn tx_point_to_fork(point: PhEvm::TxPoint) -> ForkId {
+    let point_u8: u8 = point.into();
+    if point_u8 == 0 {
+        ForkId::PreTx
+    } else {
+        ForkId::PostTx
+    }
 }
 
 fn assets_per_share_bps(total_assets: U256, total_supply: U256) -> U256 {
@@ -211,6 +221,38 @@ where
     )?;
 
     let decoded = IERC20ViewFacts::totalSupplyCall::abi_decode_returns(output.as_ref())
+        .map_err(Erc4626FactsError::ReturnDecodeError)?;
+
+    Ok(decoded)
+}
+
+fn read_erc20_allowance_at_fork<'db, ExtDb, CTX>(
+    evm_context: &mut CTX,
+    ph_context: &PhEvmContext,
+    fork_id: ForkId,
+    token: Address,
+    owner: Address,
+    spender: Address,
+    gas_left: &mut u64,
+    gas_limit: u64,
+) -> Result<U256, Erc4626FactsError>
+where
+    ExtDb: DatabaseRef + Clone + DatabaseCommit + 'db,
+    CTX:
+        ContextTr<Db = &'db mut MultiForkDb<ExtDb>, Journal = Journal<&'db mut MultiForkDb<ExtDb>>>,
+{
+    let call = IERC20ViewFacts::allowanceCall { owner, spender };
+    let output = execute_view_call_at_fork::<ExtDb, CTX>(
+        evm_context,
+        ph_context,
+        fork_id,
+        token,
+        call.abi_encode().into(),
+        gas_left,
+        gas_limit,
+    )?;
+
+    let decoded = IERC20ViewFacts::allowanceCall::abi_decode_returns(output.as_ref())
         .map_err(Erc4626FactsError::ReturnDecodeError)?;
 
     Ok(decoded)
@@ -512,6 +554,162 @@ where
     ))
 }
 
+/// `erc20BalanceAt(address token, address account, TxPoint point) -> uint256`
+pub fn erc20_balance_at<'db, ExtDb, CTX>(
+    evm_context: &mut CTX,
+    ph_context: &PhEvmContext,
+    input_bytes: &[u8],
+    gas: u64,
+) -> Result<PhevmOutcome, Erc4626FactsError>
+where
+    ExtDb: DatabaseRef + Clone + DatabaseCommit + 'db,
+    CTX:
+        ContextTr<Db = &'db mut MultiForkDb<ExtDb>, Journal = Journal<&'db mut MultiForkDb<ExtDb>>>,
+{
+    let gas_limit = gas;
+    let mut gas_left = gas;
+    if let Some(rax) = deduct_gas_and_check(&mut gas_left, BASE_COST, gas_limit) {
+        return Err(Erc4626FactsError::OutOfGas(rax));
+    }
+
+    let call = PhEvm::erc20BalanceAtCall::abi_decode(input_bytes)
+        .map_err(Erc4626FactsError::DecodeError)?;
+    let balance = read_erc20_balance_at_fork::<ExtDb, CTX>(
+        evm_context,
+        ph_context,
+        tx_point_to_fork(call.point),
+        call.token,
+        call.account,
+        &mut gas_left,
+        gas_limit,
+    )?;
+
+    Ok(PhevmOutcome::new(
+        balance.abi_encode().into(),
+        gas_limit - gas_left,
+    ))
+}
+
+/// `erc20SupplyAt(address token, TxPoint point) -> uint256`
+pub fn erc20_supply_at<'db, ExtDb, CTX>(
+    evm_context: &mut CTX,
+    ph_context: &PhEvmContext,
+    input_bytes: &[u8],
+    gas: u64,
+) -> Result<PhevmOutcome, Erc4626FactsError>
+where
+    ExtDb: DatabaseRef + Clone + DatabaseCommit + 'db,
+    CTX:
+        ContextTr<Db = &'db mut MultiForkDb<ExtDb>, Journal = Journal<&'db mut MultiForkDb<ExtDb>>>,
+{
+    let gas_limit = gas;
+    let mut gas_left = gas;
+    if let Some(rax) = deduct_gas_and_check(&mut gas_left, BASE_COST, gas_limit) {
+        return Err(Erc4626FactsError::OutOfGas(rax));
+    }
+
+    let call = PhEvm::erc20SupplyAtCall::abi_decode(input_bytes)
+        .map_err(Erc4626FactsError::DecodeError)?;
+    let supply = read_erc20_supply_at_fork::<ExtDb, CTX>(
+        evm_context,
+        ph_context,
+        tx_point_to_fork(call.point),
+        call.token,
+        &mut gas_left,
+        gas_limit,
+    )?;
+
+    Ok(PhevmOutcome::new(
+        supply.abi_encode().into(),
+        gas_limit - gas_left,
+    ))
+}
+
+/// `erc20AllowanceAt(address token, address owner, address spender, TxPoint point) -> uint256`
+pub fn erc20_allowance_at<'db, ExtDb, CTX>(
+    evm_context: &mut CTX,
+    ph_context: &PhEvmContext,
+    input_bytes: &[u8],
+    gas: u64,
+) -> Result<PhevmOutcome, Erc4626FactsError>
+where
+    ExtDb: DatabaseRef + Clone + DatabaseCommit + 'db,
+    CTX:
+        ContextTr<Db = &'db mut MultiForkDb<ExtDb>, Journal = Journal<&'db mut MultiForkDb<ExtDb>>>,
+{
+    let gas_limit = gas;
+    let mut gas_left = gas;
+    if let Some(rax) = deduct_gas_and_check(&mut gas_left, BASE_COST, gas_limit) {
+        return Err(Erc4626FactsError::OutOfGas(rax));
+    }
+
+    let call = PhEvm::erc20AllowanceAtCall::abi_decode(input_bytes)
+        .map_err(Erc4626FactsError::DecodeError)?;
+    let allowance_ = read_erc20_allowance_at_fork::<ExtDb, CTX>(
+        evm_context,
+        ph_context,
+        tx_point_to_fork(call.point),
+        call.token,
+        call.owner,
+        call.spender,
+        &mut gas_left,
+        gas_limit,
+    )?;
+
+    Ok(PhevmOutcome::new(
+        allowance_.abi_encode().into(),
+        gas_limit - gas_left,
+    ))
+}
+
+/// `erc20AllowanceDiff(address token, address owner, address spender) -> (int256, uint256, uint256)`
+pub fn erc20_allowance_diff<'db, ExtDb, CTX>(
+    evm_context: &mut CTX,
+    ph_context: &PhEvmContext,
+    input_bytes: &[u8],
+    gas: u64,
+) -> Result<PhevmOutcome, Erc4626FactsError>
+where
+    ExtDb: DatabaseRef + Clone + DatabaseCommit + 'db,
+    CTX:
+        ContextTr<Db = &'db mut MultiForkDb<ExtDb>, Journal = Journal<&'db mut MultiForkDb<ExtDb>>>,
+{
+    let gas_limit = gas;
+    let mut gas_left = gas;
+    if let Some(rax) = deduct_gas_and_check(&mut gas_left, BASE_COST, gas_limit) {
+        return Err(Erc4626FactsError::OutOfGas(rax));
+    }
+
+    let call = PhEvm::erc20AllowanceDiffCall::abi_decode(input_bytes)
+        .map_err(Erc4626FactsError::DecodeError)?;
+    let pre = read_erc20_allowance_at_fork::<ExtDb, CTX>(
+        evm_context,
+        ph_context,
+        ForkId::PreTx,
+        call.token,
+        call.owner,
+        call.spender,
+        &mut gas_left,
+        gas_limit,
+    )?;
+    let post = read_erc20_allowance_at_fork::<ExtDb, CTX>(
+        evm_context,
+        ph_context,
+        ForkId::PostTx,
+        call.token,
+        call.owner,
+        call.spender,
+        &mut gas_left,
+        gas_limit,
+    )?;
+    let diff = signed_diff(post, pre);
+
+    Ok(PhevmOutcome::new(
+        (diff, pre, post).abi_encode().into(),
+        gas_limit - gas_left,
+    ))
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -537,5 +735,11 @@ mod test {
 
         assert_eq!(up, I256::try_from(15i64).unwrap());
         assert_eq!(down, I256::try_from(-15i64).unwrap());
+    }
+
+    #[test]
+    fn test_tx_point_to_fork_mapping() {
+        assert_eq!(tx_point_to_fork(PhEvm::TxPoint::PreTx), ForkId::PreTx);
+        assert_eq!(tx_point_to_fork(PhEvm::TxPoint::PostTx), ForkId::PostTx);
     }
 }

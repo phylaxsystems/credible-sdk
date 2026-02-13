@@ -10,8 +10,11 @@ use crate::{
         precompiles::{
             aggregate_facts::{
                 AggregateFactsError,
+                any_event,
+                count_events,
                 sum_call_arg_uint_by_address,
                 sum_call_arg_uint_for_address,
+                sum_event_data_uint,
                 sum_event_uint_by_topic,
                 sum_event_uint_for_topic_key,
                 unique_call_arg_addresses,
@@ -20,8 +23,11 @@ use crate::{
             assertion_adopter::get_assertion_adopter,
             call_boundary::{
                 CallBoundaryError,
+                all_calls_slot_delta_ge,
+                all_calls_slot_delta_le,
                 load_at_call,
                 slot_delta_at_call,
+                sum_calls_slot_delta,
             },
             call_facts::{
                 CallFactsError,
@@ -29,6 +35,7 @@ use crate::{
                 any_call,
                 caller_at,
                 count_calls,
+                get_touched_contracts,
                 get_trigger_context,
                 sum_arg_uint,
             },
@@ -48,6 +55,10 @@ use crate::{
             },
             erc4626_facts::{
                 Erc4626FactsError,
+                erc20_allowance_at,
+                erc20_allowance_diff,
+                erc20_balance_at,
+                erc20_supply_at,
                 erc4626_assets_per_share_diff_bps,
                 erc4626_total_assets_diff,
                 erc4626_total_supply_diff,
@@ -358,6 +369,34 @@ impl<'a> PhEvmInspector<'a> {
                 slot_delta_at_call(context, &self.context, input_bytes, inputs.gas_limit)
                     .map_err(PrecompileError::CallBoundaryError)?
             }
+            PhEvm::allCallsSlotDeltaGECall::SELECTOR => {
+                all_calls_slot_delta_ge(context, &self.context, input_bytes, inputs.gas_limit)
+                    .map_err(PrecompileError::CallBoundaryError)?
+            }
+            PhEvm::allCallsSlotDeltaLECall::SELECTOR => {
+                all_calls_slot_delta_le(context, &self.context, input_bytes, inputs.gas_limit)
+                    .map_err(PrecompileError::CallBoundaryError)?
+            }
+            PhEvm::sumCallsSlotDeltaCall::SELECTOR => {
+                sum_calls_slot_delta(context, &self.context, input_bytes, inputs.gas_limit)
+                    .map_err(PrecompileError::CallBoundaryError)?
+            }
+            PhEvm::erc20BalanceAtCall::SELECTOR => {
+                erc20_balance_at(context, &self.context, input_bytes, inputs.gas_limit)
+                    .map_err(PrecompileError::Erc4626FactsError)?
+            }
+            PhEvm::erc20SupplyAtCall::SELECTOR => {
+                erc20_supply_at(context, &self.context, input_bytes, inputs.gas_limit)
+                    .map_err(PrecompileError::Erc4626FactsError)?
+            }
+            PhEvm::erc20AllowanceAtCall::SELECTOR => {
+                erc20_allowance_at(context, &self.context, input_bytes, inputs.gas_limit)
+                    .map_err(PrecompileError::Erc4626FactsError)?
+            }
+            PhEvm::erc20AllowanceDiffCall::SELECTOR => {
+                erc20_allowance_diff(context, &self.context, input_bytes, inputs.gas_limit)
+                    .map_err(PrecompileError::Erc4626FactsError)?
+            }
             PhEvm::erc4626TotalAssetsDiffCall::SELECTOR => {
                 erc4626_total_assets_diff(context, &self.context, input_bytes, inputs.gas_limit)
                     .map_err(PrecompileError::Erc4626FactsError)?
@@ -522,11 +561,19 @@ impl<'a> PhEvmInspector<'a> {
     ) -> Result<Option<PhevmOutcome>, PrecompileError<ExtDb>> {
         let gas_limit = inputs.gas_limit;
         let outcome = match selector {
-            PhEvm::anyCallCall::SELECTOR => {
+            PhEvm::anyCall_0Call::SELECTOR => {
                 any_call(&self.context, input_bytes, gas_limit)
                     .map_err(PrecompileError::CallFactsError)?
             }
-            PhEvm::countCallsCall::SELECTOR => {
+            PhEvm::anyCall_1Call::SELECTOR => {
+                any_call(&self.context, input_bytes, gas_limit)
+                    .map_err(PrecompileError::CallFactsError)?
+            }
+            PhEvm::countCalls_0Call::SELECTOR => {
+                count_calls(&self.context, input_bytes, gas_limit)
+                    .map_err(PrecompileError::CallFactsError)?
+            }
+            PhEvm::countCalls_1Call::SELECTOR => {
                 count_calls(&self.context, input_bytes, gas_limit)
                     .map_err(PrecompileError::CallFactsError)?
             }
@@ -534,11 +581,19 @@ impl<'a> PhEvmInspector<'a> {
                 caller_at(&self.context, input_bytes, gas_limit)
                     .map_err(PrecompileError::CallFactsError)?
             }
-            PhEvm::allCallsByCall::SELECTOR => {
+            PhEvm::allCallsBy_0Call::SELECTOR => {
                 all_calls_by(&self.context, input_bytes, gas_limit)
                     .map_err(PrecompileError::CallFactsError)?
             }
-            PhEvm::sumArgUintCall::SELECTOR => {
+            PhEvm::allCallsBy_1Call::SELECTOR => {
+                all_calls_by(&self.context, input_bytes, gas_limit)
+                    .map_err(PrecompileError::CallFactsError)?
+            }
+            PhEvm::sumArgUint_0Call::SELECTOR => {
+                sum_arg_uint(&self.context, input_bytes, gas_limit)
+                    .map_err(PrecompileError::CallFactsError)?
+            }
+            PhEvm::sumArgUint_1Call::SELECTOR => {
                 sum_arg_uint(&self.context, input_bytes, gas_limit)
                     .map_err(PrecompileError::CallFactsError)?
             }
@@ -564,6 +619,22 @@ impl<'a> PhEvmInspector<'a> {
             }
             PhEvm::sumEventUintByTopicCall::SELECTOR => {
                 sum_event_uint_by_topic(&self.context, input_bytes, gas_limit)
+                    .map_err(PrecompileError::AggregateFactsError)?
+            }
+            PhEvm::getTouchedContractsCall::SELECTOR => {
+                get_touched_contracts(&self.context, input_bytes, gas_limit)
+                    .map_err(PrecompileError::CallFactsError)?
+            }
+            PhEvm::countEventsCall::SELECTOR => {
+                count_events(&self.context, input_bytes, gas_limit)
+                    .map_err(PrecompileError::AggregateFactsError)?
+            }
+            PhEvm::anyEventCall::SELECTOR => {
+                any_event(&self.context, input_bytes, gas_limit)
+                    .map_err(PrecompileError::AggregateFactsError)?
+            }
+            PhEvm::sumEventDataUintCall::SELECTOR => {
+                sum_event_data_uint(&self.context, input_bytes, gas_limit)
                     .map_err(PrecompileError::AggregateFactsError)?
             }
             PhEvm::anySlotWrittenCall::SELECTOR => {

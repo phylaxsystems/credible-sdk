@@ -78,32 +78,45 @@ mod tests {
             ("getTxObject()", PhEvm::getTxObjectCall::SELECTOR),
             // Scalar call-fact cheatcodes
             (
-                "anyCall(address,bytes4,(uint8,uint32,uint32,bool))",
-                PhEvm::anyCallCall::SELECTOR,
+                "anyCall(address,bytes4,(uint8,uint32,uint32,bool,bool))",
+                PhEvm::anyCall_0Call::SELECTOR,
+            ),
+            ("anyCall(address,bytes4)", PhEvm::anyCall_1Call::SELECTOR),
+            (
+                "countCalls(address,bytes4,(uint8,uint32,uint32,bool,bool))",
+                PhEvm::countCalls_0Call::SELECTOR,
             ),
             (
-                "countCalls(address,bytes4,(uint8,uint32,uint32,bool))",
-                PhEvm::countCallsCall::SELECTOR,
+                "countCalls(address,bytes4)",
+                PhEvm::countCalls_1Call::SELECTOR,
             ),
             ("callerAt(uint256)", PhEvm::callerAtCall::SELECTOR),
             (
-                "allCallsBy(address,bytes4,address,(uint8,uint32,uint32,bool))",
-                PhEvm::allCallsByCall::SELECTOR,
+                "allCallsBy(address,bytes4,address,(uint8,uint32,uint32,bool,bool))",
+                PhEvm::allCallsBy_0Call::SELECTOR,
             ),
             (
-                "sumArgUint(address,bytes4,uint256,(uint8,uint32,uint32,bool))",
-                PhEvm::sumArgUintCall::SELECTOR,
+                "allCallsBy(address,bytes4,address)",
+                PhEvm::allCallsBy_1Call::SELECTOR,
             ),
             (
-                "sumCallArgUintForAddress(address,bytes4,uint256,address,uint256,(uint8,uint32,uint32,bool))",
+                "sumArgUint(address,bytes4,uint256,(uint8,uint32,uint32,bool,bool))",
+                PhEvm::sumArgUint_0Call::SELECTOR,
+            ),
+            (
+                "sumArgUint(address,bytes4,uint256)",
+                PhEvm::sumArgUint_1Call::SELECTOR,
+            ),
+            (
+                "sumCallArgUintForAddress(address,bytes4,uint256,address,uint256,(uint8,uint32,uint32,bool,bool))",
                 PhEvm::sumCallArgUintForAddressCall::SELECTOR,
             ),
             (
-                "uniqueCallArgAddresses(address,bytes4,uint256,(uint8,uint32,uint32,bool))",
+                "uniqueCallArgAddresses(address,bytes4,uint256,(uint8,uint32,uint32,bool,bool))",
                 PhEvm::uniqueCallArgAddressesCall::SELECTOR,
             ),
             (
-                "sumCallArgUintByAddress(address,bytes4,uint256,uint256,(uint8,uint32,uint32,bool))",
+                "sumCallArgUintByAddress(address,bytes4,uint256,uint256,(uint8,uint32,uint32,bool,bool))",
                 PhEvm::sumCallArgUintByAddressCall::SELECTOR,
             ),
             (
@@ -127,6 +140,19 @@ mod tests {
                 "allSlotWritesBy(address,bytes32,address)",
                 PhEvm::allSlotWritesByCall::SELECTOR,
             ),
+            (
+                "getTouchedContracts((uint8,uint32,uint32,bool,bool))",
+                PhEvm::getTouchedContractsCall::SELECTOR,
+            ),
+            (
+                "countEvents(address,bytes32)",
+                PhEvm::countEventsCall::SELECTOR,
+            ),
+            ("anyEvent(address,bytes32)", PhEvm::anyEventCall::SELECTOR),
+            (
+                "sumEventDataUint(address,bytes32,uint256)",
+                PhEvm::sumEventDataUintCall::SELECTOR,
+            ),
             // Call-boundary state cheatcodes
             (
                 "loadAtCall(address,bytes32,uint256,uint8)",
@@ -135,6 +161,18 @@ mod tests {
             (
                 "slotDeltaAtCall(address,bytes32,uint256)",
                 PhEvm::slotDeltaAtCallCall::SELECTOR,
+            ),
+            (
+                "allCallsSlotDeltaGE(address,bytes4,bytes32,int256,(uint8,uint32,uint32,bool,bool))",
+                PhEvm::allCallsSlotDeltaGECall::SELECTOR,
+            ),
+            (
+                "allCallsSlotDeltaLE(address,bytes4,bytes32,int256,(uint8,uint32,uint32,bool,bool))",
+                PhEvm::allCallsSlotDeltaLECall::SELECTOR,
+            ),
+            (
+                "sumCallsSlotDelta(address,bytes4,bytes32,(uint8,uint32,uint32,bool,bool))",
+                PhEvm::sumCallsSlotDeltaCall::SELECTOR,
             ),
             // Trigger context cheatcode
             (
@@ -149,6 +187,22 @@ mod tests {
             (
                 "erc20SupplyDiff(address)",
                 PhEvm::erc20SupplyDiffCall::SELECTOR,
+            ),
+            (
+                "erc20BalanceAt(address,address,uint8)",
+                PhEvm::erc20BalanceAtCall::SELECTOR,
+            ),
+            (
+                "erc20SupplyAt(address,uint8)",
+                PhEvm::erc20SupplyAtCall::SELECTOR,
+            ),
+            (
+                "erc20AllowanceAt(address,address,address,uint8)",
+                PhEvm::erc20AllowanceAtCall::SELECTOR,
+            ),
+            (
+                "erc20AllowanceDiff(address,address,address)",
+                PhEvm::erc20AllowanceDiffCall::SELECTOR,
             ),
             (
                 "getERC20NetFlow(address,address)",
@@ -212,8 +266,8 @@ mod tests {
         // Verify we have the expected count of methods
         assert_eq!(
             expected_selectors.len(),
-            44,
-            "PhEvm interface should have exactly 44 methods"
+            59,
+            "PhEvm interface should have exactly 59 methods"
         );
     }
 
@@ -230,12 +284,20 @@ mod tests {
                 ITriggerRecorder::registerCallTrigger_1Call::SELECTOR,
             ),
             (
-                "registerCallTrigger(bytes4,(uint8,uint32,uint32,bool))",
+                "registerCallTrigger(bytes4,(uint8,uint32,uint32,bool,bool))",
                 ITriggerRecorder::registerCallTrigger_2Call::SELECTOR,
             ),
             (
-                "registerCallTrigger(bytes4,bytes4,(uint8,uint32,uint32,bool))",
+                "registerCallTrigger(bytes4,bytes4,(uint8,uint32,uint32,bool,bool))",
                 ITriggerRecorder::registerCallTrigger_3Call::SELECTOR,
+            ),
+            (
+                "registerCallTriggers(bytes4,bytes4[])",
+                ITriggerRecorder::registerCallTriggers_0Call::SELECTOR,
+            ),
+            (
+                "registerCallTriggers(bytes4,bytes4[],(uint8,uint32,uint32,bool,bool))",
+                ITriggerRecorder::registerCallTriggers_1Call::SELECTOR,
             ),
             (
                 "registerStorageChangeTrigger(bytes4)",
@@ -260,8 +322,8 @@ mod tests {
 
         assert_eq!(
             expected_selectors.len(),
-            7,
-            "ITriggerRecorder interface should have exactly 7 methods"
+            9,
+            "ITriggerRecorder interface should have exactly 9 methods"
         );
     }
 
@@ -295,6 +357,13 @@ mod tests {
             ITriggerRecorder::registerStorageChangeTrigger_0Call::SELECTOR,
             ITriggerRecorder::registerStorageChangeTrigger_1Call::SELECTOR,
             "registerStorageChangeTrigger overloads must have distinct selectors"
+        );
+
+        // registerCallTriggers overloads
+        assert_ne!(
+            ITriggerRecorder::registerCallTriggers_0Call::SELECTOR,
+            ITriggerRecorder::registerCallTriggers_1Call::SELECTOR,
+            "registerCallTriggers overloads must have distinct selectors"
         );
     }
 }
