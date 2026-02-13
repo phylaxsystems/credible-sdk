@@ -1309,6 +1309,66 @@ mod test {
     }
 
     #[test]
+    fn test_count_calls_default_overload_uses_no_filter_signature() {
+        let target = address!("1111111111111111111111111111111111111111");
+        let caller = address!("2222222222222222222222222222222222222222");
+        let selector = FixedBytes::<4>::from([0x12, 0x34, 0x56, 0x78]);
+
+        let mut tracer = CallTracer::default();
+        let mut journal = JournalInner::new();
+        for _ in 0..2 {
+            journal.depth = 0;
+            let (inputs, bytes) = make_call_inputs(target, caller, selector, CallScheme::Call);
+            tracer.record_call_start(inputs, &bytes, &mut journal);
+            tracer.record_call_end(&mut journal, false);
+        }
+
+        let logs_and_traces = LogsAndTraces {
+            tx_logs: &[],
+            call_traces: &tracer,
+        };
+        let tx_env = crate::primitives::TxEnv::default();
+        let context = make_ph_context(&logs_and_traces, &tx_env);
+
+        let input = PhEvm::countCalls_1Call { target, selector };
+        let encoded = input.abi_encode();
+        let result = count_calls(&context, &encoded, 1_000_000).unwrap();
+        let decoded = U256::abi_decode(result.bytes()).unwrap();
+        assert_eq!(decoded, U256::from(2));
+    }
+
+    #[test]
+    fn test_all_calls_by_default_overload_uses_no_filter_signature() {
+        let target = address!("1111111111111111111111111111111111111111");
+        let caller = address!("2222222222222222222222222222222222222222");
+        let selector = FixedBytes::<4>::from([0x12, 0x34, 0x56, 0x78]);
+
+        let mut tracer = CallTracer::default();
+        let mut journal = JournalInner::new();
+        journal.depth = 0;
+        let (inputs, bytes) = make_call_inputs(target, caller, selector, CallScheme::Call);
+        tracer.record_call_start(inputs, &bytes, &mut journal);
+        tracer.record_call_end(&mut journal, false);
+
+        let logs_and_traces = LogsAndTraces {
+            tx_logs: &[],
+            call_traces: &tracer,
+        };
+        let tx_env = crate::primitives::TxEnv::default();
+        let context = make_ph_context(&logs_and_traces, &tx_env);
+
+        let input = PhEvm::allCallsBy_1Call {
+            target,
+            selector,
+            allowedCaller: caller,
+        };
+        let encoded = input.abi_encode();
+        let result = all_calls_by(&context, &encoded, 1_000_000).unwrap();
+        let decoded = bool::abi_decode(result.bytes()).unwrap();
+        assert!(decoded);
+    }
+
+    #[test]
     fn test_sum_arg_uint_default_overload_uses_no_filter_signature() {
         let target = address!("1111111111111111111111111111111111111111");
         let caller = address!("2222222222222222222222222222222222222222");
