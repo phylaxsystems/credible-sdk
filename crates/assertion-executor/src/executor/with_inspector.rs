@@ -321,14 +321,24 @@ impl AssertionExecutor {
             )
         };
 
+        let selector_count = fn_selectors.len();
+        let parallel_fns = selector_count >= super::PARALLEL_THRESHOLD;
+        trace!(
+            target: "assertion-executor::execute_assertions",
+            assertion_contract_id = ?assertion_contract.id,
+            selector_count,
+            scheduling = if parallel_fns { "parallel" } else { "sequential" },
+            "Assertion fn scheduling decision (inspector path)"
+        );
+
         let current_span = tracing::Span::current();
         let results_vec: Vec<_> = current_span.in_scope(|| {
-            if fn_selectors.len() < super::PARALLEL_THRESHOLD {
-                fn_selectors.iter().map(execute_fn).collect()
-            } else {
+            if parallel_fns {
                 assertion_executor_pool().install(|| {
                     fn_selectors.into_par_iter().map(execute_fn).collect()
                 })
+            } else {
+                fn_selectors.iter().map(execute_fn).collect()
             }
         });
 
