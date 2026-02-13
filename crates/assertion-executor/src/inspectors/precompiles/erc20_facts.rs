@@ -242,6 +242,69 @@ pub fn get_erc20_flow_by_call(
     Ok(PhevmOutcome::new(encoded.into(), gas_limit - gas_left))
 }
 
+/// `didBalanceChange(address token, address account) -> bool`
+///
+/// Returns true if the ERC20 balance changed for an account,
+/// based on Transfer event scanning.
+pub fn did_balance_change(
+    ph_context: &PhEvmContext,
+    input_bytes: &[u8],
+    gas: u64,
+) -> Result<PhevmOutcome, Erc20FactsError> {
+    let gas_limit = gas;
+    let mut gas_left = gas;
+
+    if let Some(rax) = deduct_gas_and_check(&mut gas_left, BASE_COST, gas_limit) {
+        return Err(Erc20FactsError::OutOfGas(rax));
+    }
+
+    let call = PhEvm::didBalanceChangeCall::abi_decode(input_bytes)
+        .map_err(Erc20FactsError::DecodeError)?;
+
+    let logs = ph_context.logs_and_traces.tx_logs;
+
+    let log_cost = (logs.len() as u64).saturating_mul(PER_LOG_COST);
+    if let Some(rax) = deduct_gas_and_check(&mut gas_left, log_cost, gas_limit) {
+        return Err(Erc20FactsError::OutOfGas(rax));
+    }
+
+    let delta = compute_net_flow(logs, call.token, call.account);
+    let changed = delta != I256::ZERO;
+    let encoded = changed.abi_encode();
+    Ok(PhevmOutcome::new(encoded.into(), gas_limit - gas_left))
+}
+
+/// `balanceDiff(address token, address account) -> int256`
+///
+/// Returns the ERC20 balance change for an account.
+/// Equivalent to `erc20BalanceDiff` — computes net flow from Transfer events.
+pub fn balance_diff(
+    ph_context: &PhEvmContext,
+    input_bytes: &[u8],
+    gas: u64,
+) -> Result<PhevmOutcome, Erc20FactsError> {
+    let gas_limit = gas;
+    let mut gas_left = gas;
+
+    if let Some(rax) = deduct_gas_and_check(&mut gas_left, BASE_COST, gas_limit) {
+        return Err(Erc20FactsError::OutOfGas(rax));
+    }
+
+    let call = PhEvm::balanceDiffCall::abi_decode(input_bytes)
+        .map_err(Erc20FactsError::DecodeError)?;
+
+    let logs = ph_context.logs_and_traces.tx_logs;
+
+    let log_cost = (logs.len() as u64).saturating_mul(PER_LOG_COST);
+    if let Some(rax) = deduct_gas_and_check(&mut gas_left, log_cost, gas_limit) {
+        return Err(Erc20FactsError::OutOfGas(rax));
+    }
+
+    let delta = compute_net_flow(logs, call.token, call.account);
+    let encoded = delta.abi_encode();
+    Ok(PhevmOutcome::new(encoded.into(), gas_limit - gas_left))
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -529,5 +592,102 @@ mod test {
             matches!(result, Err(Erc20FactsError::CallIdOutOfBounds { .. })),
             "Expected CallIdOutOfBounds, got {result:?}"
         );
+    }
+
+    #[test]
+    fn test_did_balance_change_true() {
+        let token = address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0001");
+        let account = address!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb0001");
+        let other = address!("cccccccccccccccccccccccccccccccccccc0001");
+
+        let logs = vec![make_transfer_log(token, other, account, U256::from(100))];
+
+        let tracer = CallTracer::default();
+        let logs_and_traces = LogsAndTraces {
+            tx_logs: &logs,
+            call_traces: &tracer,
+        };
+        let tx_env = crate::primitives::TxEnv::default();
+        let context = make_ph_context(&logs_and_traces, &tx_env);
+
+        let input = PhEvm::didBalanceChangeCall { token, account };
+        let encoded = input.abi_encode();
+        let result = did_balance_change(&context, &encoded, 1_000_000).unwrap();
+        let decoded = bool::abi_decode(result.bytes()).unwrap();
+        assert!(decoded, "Balance should be reported as changed");
+    }
+
+    #[test]
+    fn test_did_balance_change_false() {
+        let token = address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0001");
+        let account = address!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb0001");
+
+        // No Transfer events
+        let tracer = CallTracer::default();
+        let logs_and_traces = LogsAndTraces {
+            tx_logs: &[],
+            call_traces: &tracer,
+        };
+        let tx_env = crate::primitives::TxEnv::default();
+        let context = make_ph_context(&logs_and_traces, &tx_env);
+
+        let input = PhEvm::didBalanceChangeCall { token, account };
+        let encoded = input.abi_encode();
+        let result = did_balance_change(&context, &encoded, 1_000_000).unwrap();
+        let decoded = bool::abi_decode(result.bytes()).unwrap();
+        assert!(!decoded, "Balance should not be reported as changed");
+    }
+
+    #[test]
+    fn test_did_balance_change_net_zero() {
+        let token = address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0001");
+        let account = address!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb0001");
+        let other = address!("cccccccccccccccccccccccccccccccccccc0001");
+
+        // Send and receive same amount — net zero
+        let logs = vec![
+            make_transfer_log(token, other, account, U256::from(100)),
+            make_transfer_log(token, account, other, U256::from(100)),
+        ];
+
+        let tracer = CallTracer::default();
+        let logs_and_traces = LogsAndTraces {
+            tx_logs: &logs,
+            call_traces: &tracer,
+        };
+        let tx_env = crate::primitives::TxEnv::default();
+        let context = make_ph_context(&logs_and_traces, &tx_env);
+
+        let input = PhEvm::didBalanceChangeCall { token, account };
+        let encoded = input.abi_encode();
+        let result = did_balance_change(&context, &encoded, 1_000_000).unwrap();
+        let decoded = bool::abi_decode(result.bytes()).unwrap();
+        assert!(!decoded, "Net-zero balance change should return false");
+    }
+
+    #[test]
+    fn test_balance_diff() {
+        let token = address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0001");
+        let account = address!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb0001");
+        let other = address!("cccccccccccccccccccccccccccccccccccc0001");
+
+        let logs = vec![
+            make_transfer_log(token, other, account, U256::from(200)),
+            make_transfer_log(token, account, other, U256::from(50)),
+        ];
+
+        let tracer = CallTracer::default();
+        let logs_and_traces = LogsAndTraces {
+            tx_logs: &logs,
+            call_traces: &tracer,
+        };
+        let tx_env = crate::primitives::TxEnv::default();
+        let context = make_ph_context(&logs_and_traces, &tx_env);
+
+        let input = PhEvm::balanceDiffCall { token, account };
+        let encoded = input.abi_encode();
+        let result = balance_diff(&context, &encoded, 1_000_000).unwrap();
+        let decoded = I256::abi_decode(result.bytes()).unwrap();
+        assert_eq!(decoded, I256::try_from(150i64).unwrap());
     }
 }

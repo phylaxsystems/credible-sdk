@@ -47,10 +47,19 @@ use crate::{
             },
             erc20_facts::{
                 Erc20FactsError,
+                balance_diff,
+                did_balance_change,
                 erc20_balance_diff,
                 erc20_supply_diff,
                 get_erc20_flow_by_call,
                 get_erc20_net_flow,
+            },
+            slot_diffs::{
+                SlotDiffsError,
+                did_mapping_key_change,
+                get_changed_slots,
+                get_slot_diff,
+                mapping_value_diff,
             },
             write_policy::{
                 WritePolicyError,
@@ -192,6 +201,8 @@ pub enum PrecompileError<ExtDb: DatabaseRef> {
     CallBoundaryError(#[source] CallBoundaryError),
     #[error("Error in ERC20 facts: {0}")]
     Erc20FactsError(#[source] Erc20FactsError),
+    #[error("Error in slot diffs: {0}")]
+    SlotDiffsError(#[source] SlotDiffsError),
 }
 
 /// `PhEvmInspector` is an inspector for supporting the `PhEvm` precompiles.
@@ -498,6 +509,30 @@ impl<'a> PhEvmInspector<'a> {
             PhEvm::getERC20FlowByCallCall::SELECTOR => {
                 get_erc20_flow_by_call(&self.context, input_bytes, gas_limit)
                     .map_err(PrecompileError::Erc20FactsError)?
+            }
+            PhEvm::didBalanceChangeCall::SELECTOR => {
+                did_balance_change(&self.context, input_bytes, gas_limit)
+                    .map_err(PrecompileError::Erc20FactsError)?
+            }
+            PhEvm::balanceDiffCall::SELECTOR => {
+                balance_diff(&self.context, input_bytes, gas_limit)
+                    .map_err(PrecompileError::Erc20FactsError)?
+            }
+            PhEvm::getChangedSlotsCall::SELECTOR => {
+                get_changed_slots(&self.context, input_bytes, gas_limit)
+                    .map_err(PrecompileError::SlotDiffsError)?
+            }
+            PhEvm::getSlotDiffCall::SELECTOR => {
+                get_slot_diff(&self.context, input_bytes, gas_limit)
+                    .map_err(PrecompileError::SlotDiffsError)?
+            }
+            PhEvm::didMappingKeyChangeCall::SELECTOR => {
+                did_mapping_key_change(&self.context, input_bytes, gas_limit)
+                    .map_err(PrecompileError::SlotDiffsError)?
+            }
+            PhEvm::mappingValueDiffCall::SELECTOR => {
+                mapping_value_diff(&self.context, input_bytes, gas_limit)
+                    .map_err(PrecompileError::SlotDiffsError)?
             }
             _ => return Ok(None),
         };

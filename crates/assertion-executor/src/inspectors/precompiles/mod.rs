@@ -23,6 +23,7 @@ pub mod erc20_facts;
 pub mod fork;
 pub mod get_logs;
 pub mod load;
+pub mod slot_diffs;
 pub mod state_changes;
 pub mod tx_object;
 pub mod write_policy;
