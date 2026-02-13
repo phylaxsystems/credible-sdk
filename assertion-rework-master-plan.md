@@ -766,13 +766,15 @@ If we want immediate wins without waiting for the full roadmap:
   - [x] Fix `sumArgUint` unchecked arithmetic overflow/panic on large `argIndex` (`call_facts.rs`).
   - [x] Fix `anySlotWritten` double-charge gas accounting bug (`write_policy.rs`).
   - [x] Harden `allSlotWritesBy` writer attribution to select innermost call deterministically (reverse start-order match), including nested same-pre checkpoint edge case (`write_policy.rs`).
-  - [ ] Replace `allSlotWritesBy` remaining O(matching_writes * call_records) path with one-pass call-window attribution (`write_policy.rs`).
+  - [x] Replace `allSlotWritesBy` O(matching_writes * call_records) path with one-pass call-window attribution (`write_policy.rs`).
   - [x] Harden `getERC20FlowByCall` against malformed checkpoint bounds (`erc20_facts.rs`).
   - [x] Propagate call IDs for `AllCalls` selectors and dedupe per-selector call IDs (`assertion_store.rs`).
   - [x] Remove repeated filtered `Vec` materialization in `anyCall/countCalls/allCallsBy/sumArgUint` (`call_facts.rs`).
   - [x] Cache per-trigger selector call-id extraction once per adopter read (`assertion_store.rs`).
   - [x] Multi-call execution semantics in executor (run selector once per triggering call ID, non-call selectors once).
+  - [x] Remove selector cloning/formatting allocation in executor preparation path (`executor/mod.rs`, `executor/with_inspector.rs`).
   - [x] Add/adjust tests for multi-call trigger context semantics (normal + inspector paths).
+  - [x] Fix failing full package doctest in `store/indexer.rs` example (`connect_ws`, remove stale `.boxed()`).
   - [x] Commit fix pack + update status with commit IDs and validation commands.
     - Commits:
       - `cd6a6e2` — executor/precompile/store hardening + multi-call trigger context support.
@@ -784,6 +786,9 @@ If we want immediate wins without waiting for the full roadmap:
       - `cargo bench -p assertion-executor@1.0.8 --bench executor_avg_block_perf -- --quick`.
   - [x] Add regression test for nested same-pre checkpoint write attribution (`write_policy.rs`):
     - `test_all_slot_writes_by_nested_same_pre_attributed_to_innermost`
+  - [x] Add adversarial write-policy tests:
+    - `test_all_slot_writes_by_multiple_writes_mixed_callers`
+    - `test_all_slot_writes_by_write_outside_any_call`
   - [x] Re-run full (non-quick) benchmark suites and record outcome:
     - `cargo bench -p assertion-executor@1.0.8 --bench assertion_store_read`
     - `cargo bench -p assertion-executor@1.0.8 --bench executor_transaction_perf`
@@ -791,10 +796,13 @@ If we want immediate wins without waiting for the full roadmap:
     - `cargo bench -p assertion-executor@1.0.8 --bench call-tracer-truncate`
     - `cargo bench -p assertion-executor@1.0.8 --bench worst-case-op`
     - Summary (latest runs on this branch):
-      - `assertion_store_read`: no significant change.
-      - `executor_transaction_perf`: mixed (ERC20 paths improved significantly in rerun; Uniswap/EOA paths show small-to-moderate regressions/noise).
-      - `executor_avg_block_perf`: mixed (3_aa improved; vanilla/100_aa regressed in latest run).
-      - `call-tracer-truncate` + `worst-case-op`: baseline timings captured; no prior baseline deltas printed for those suites.
+      - `assertion_store_read`: stable/no regression.
+      - `executor_transaction_perf`: broad improvement (EOA/ERC20/Uniswap scenarios improved or within noise).
+      - `executor_avg_block_perf`: vanilla/0_aa/100_aa improved; 3_aa no significant change.
+      - `call-tracer-truncate`: large improvements in heavy cases (`15k`, `15k_deep_pending`), others no significant change.
+      - `worst-case-op`: mostly stable or improved; isolated LOG0 regression was non-reproducible on rerun (improved).
+  - [x] Full package validation includes doctests:
+    - `cargo test -p assertion-executor@1.0.8 --no-default-features --features "optimism test"` (271 unit tests passed, doctests passed).
 - Remaining items (not yet started):
   - Items 1-2 (empty-selector short-circuits): Already exist in executor path (verified by code review).
   - Item 3 (adaptive parallelism): Already implemented in Phases 3-4.
