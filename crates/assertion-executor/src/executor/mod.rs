@@ -567,6 +567,20 @@ impl AssertionExecutor {
         Active: DatabaseRef + Sync + Send + Clone,
         Active::Error: Send,
     {
+        if fn_selectors.is_empty() {
+            debug!(
+                target: "assertion-executor::execute_assertions",
+                assertion_contract_id = ?assertion_contract.id,
+                "Skipping assertion contract with no matched selectors"
+            );
+            return Ok(AssertionContractExecution {
+                adopter: context.adopter,
+                assertion_fns_results: vec![],
+                total_assertion_gas: 0,
+                total_assertion_funcs_ran: 0,
+            });
+        }
+
         let prepared =
             self.prepare_assertion_contract(assertion_contract, fn_selectors, tx_fork_db, context);
 
