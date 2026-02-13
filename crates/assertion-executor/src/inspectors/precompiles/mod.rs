@@ -14,13 +14,14 @@ use alloy_primitives::Bytes;
 
 use super::phevm::PhevmOutcome;
 
-pub mod assertion_adopter;
 pub mod aggregate_facts;
+pub mod assertion_adopter;
 pub mod call_boundary;
 pub mod call_facts;
 pub mod calls;
 pub mod console_log;
 pub mod erc20_facts;
+pub mod erc4626_facts;
 pub mod fork;
 pub mod get_logs;
 pub mod load;

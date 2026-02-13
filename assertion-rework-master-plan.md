@@ -735,8 +735,10 @@ If we want immediate wins without waiting for the full roadmap:
 - 4 new precompile modules: `call_facts.rs`, `write_policy.rs`, `call_boundary.rs`, `erc20_facts.rs`
 - New dispatch stage `execute_scalar_facts_precompile` in phevm.rs
 - All 247 tests pass (up from 213 baseline, includes fix for previously broken MockAssertion.json test)
-- Remaining TODO from original Phase 7 scope: ERC4626 helper cheatcodes.
-  - Deferred until we add a safe low-overhead design for pre/post vault view reads (current runtime does not expose a cheap generic path).
+- Phase 7 completion update (post hardening): ERC4626 helper cheatcodes implemented.
+  - Added `erc4626TotalAssetsDiff`, `erc4626TotalSupplyDiff`, `erc4626VaultAssetBalanceDiff`, `erc4626AssetsPerShareDiffBps`.
+  - Implemented via bounded fork-aware view calls on cloned MultiForkDb state (`erc4626_facts.rs`) to keep assertions declarative and business-logic independent.
+  - Current suite: 288 tests passed (including new ERC4626 helper unit coverage).
 
 ### Phase 8: Declarative Cheatcodes (P1 Mapping + Diff Facts) -- DONE
 - Implemented 6 new deterministic known-key cheatcodes:
@@ -753,7 +755,7 @@ If we want immediate wins without waiting for the full roadmap:
 ### Phase 9: Assertion Rewrite + Helper Layer -- DEFERRED (cross-repo)
 - Requires modifying `credible-std` (separate repo) for helper wrappers/presets.
 - Requires rewriting assertions in downstream repos (EVC, Malda, Morpho, Aave, etc.).
-- Canonical PhEvm.sol interface (40 methods) is ready for sync.
+- Canonical PhEvm.sol interface (44 methods) is ready for sync.
 - Deferred until Phase 10 cross-repo sync is in place.
 
 ### Phase 10: Cross-Repo Interface Sync Automation -- DEFERRED
@@ -806,7 +808,7 @@ If we want immediate wins without waiting for the full roadmap:
       - `call-tracer-truncate`: mixed but neutral-to-positive on reruns (no reproducible heavy-case regression).
       - `worst-case-op`: noisy mixed microbench profile; no consistently reproducible regression across reruns.
   - [x] Full package validation includes doctests:
-    - `cargo test -p assertion-executor@1.0.8 --no-default-features --features "optimism test"` (285 unit tests passed, doctests passed).
+    - `cargo test -p assertion-executor@1.0.8 --no-default-features --features "optimism test"` (288 unit tests passed, doctests passed).
 - **Performance Extension Pack (remaining Phase 11 items)**: DONE.
   - [x] Commit:
     - `c7388e8` — completed extension pack implementation (log encoding cache, bounded array responses, trigger-time filters, keyed/grouped aggregates, tx log index reuse) plus validation updates.
@@ -854,12 +856,12 @@ If we want immediate wins without waiting for the full roadmap:
     - `cargo bench -p assertion-executor@1.0.8 --bench executor_avg_block_perf`
     - `cargo bench -p assertion-executor@1.0.8 --bench call-tracer-truncate`
     - `cargo bench -p assertion-executor@1.0.8 --bench worst-case-op` (rerun twice to check noisy outliers)
-    - Summary (latest runs on this branch):
-      - `assertion_store_read`: improved hit and miss paths (notably miss fast path).
-      - `executor_transaction_perf`: mostly neutral with noisy ERC20 subcases across reruns; no single regression reproduced consistently.
-      - `executor_avg_block_perf`: mostly improved or within noise.
-      - `call-tracer-truncate`: mixed but neutral-to-positive on reruns.
-      - `worst-case-op`: mixed microbench noise without a consistently reproducible regression.
+    - Summary (latest `main` vs branch compare run with Criterion baseline `main_ref`):
+      - `assertion_store_read`: mixed, with material hit-path regression (~+29%) and miss-path improvement (~-3.4%).
+      - `executor_transaction_perf`: mixed; large wins on AA and several ERC20 paths, regressions in `erc20_vanilla` and `uniswap_transaction_aa`.
+      - `executor_avg_block_perf`: mostly neutral-to-regressed (`avg_block_3_aa` and `avg_block_100_aa` regressions).
+      - `call-tracer-truncate`: mixed with notable regressions on `15k` / `500`, improvement on `15k_deep_pending`.
+      - `worst-case-op`: mostly stable/noise; `KECCAK` and `SSTORE` improved, `LOG0` regressed.
 
 ## Detailed Implementation Plan (Execution)
 

@@ -365,6 +365,30 @@ interface PhEvm {
     /// @return netFlow The signed net flow within the call's scope
     function getERC20FlowByCall(address token, address account, uint256 callId) external view returns (int256 netFlow);
 
+    // ─── ERC4626 fact cheatcodes ───
+
+    /// @notice Get the change in ERC4626 total assets across the transaction
+    /// @param vault The ERC4626 vault address
+    /// @return delta The signed change in totalAssets (post - pre)
+    function erc4626TotalAssetsDiff(address vault) external view returns (int256 delta);
+
+    /// @notice Get the change in ERC4626 total share supply across the transaction
+    /// @param vault The ERC4626 vault address
+    /// @return delta The signed change in totalSupply (post - pre)
+    function erc4626TotalSupplyDiff(address vault) external view returns (int256 delta);
+
+    /// @notice Get the change in the vault's underlying asset token balance across the transaction
+    /// @dev Uses vault.asset() and ERC20(asset).balanceOf(vault) at pre/post tx state.
+    /// @param vault The ERC4626 vault address
+    /// @return delta The signed change in the vault's asset balance (post - pre)
+    function erc4626VaultAssetBalanceDiff(address vault) external view returns (int256 delta);
+
+    /// @notice Get the change in assets-per-share ratio in basis points across the transaction
+    /// @dev Computes floor(totalAssets * 10_000 / totalSupply) at pre/post state and returns post-pre.
+    /// @param vault The ERC4626 vault address
+    /// @return deltaBps Signed change in assets-per-share ratio in bps
+    function erc4626AssetsPerShareDiffBps(address vault) external view returns (int256 deltaBps);
+
     // ─── P1: State/Mapping diff cheatcodes ───
 
     /// @notice Get all storage slots that changed for a target address during the transaction

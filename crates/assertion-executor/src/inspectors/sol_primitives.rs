@@ -44,10 +44,7 @@ mod tests {
             ("forkPostTx()", PhEvm::forkPostTxCall::SELECTOR),
             ("forkPreCall(uint256)", PhEvm::forkPreCallCall::SELECTOR),
             ("forkPostCall(uint256)", PhEvm::forkPostCallCall::SELECTOR),
-            (
-                "load(address,bytes32)",
-                PhEvm::loadCall::SELECTOR,
-            ),
+            ("load(address,bytes32)", PhEvm::loadCall::SELECTOR),
             ("getLogs()", PhEvm::getLogsCall::SELECTOR),
             (
                 "getAllCallInputs(address,bytes4)",
@@ -139,7 +136,10 @@ mod tests {
                 PhEvm::slotDeltaAtCallCall::SELECTOR,
             ),
             // Trigger context cheatcode
-            ("getTriggerContext()", PhEvm::getTriggerContextCall::SELECTOR),
+            (
+                "getTriggerContext()",
+                PhEvm::getTriggerContextCall::SELECTOR,
+            ),
             // ERC20 fact cheatcodes
             (
                 "erc20BalanceDiff(address,address)",
@@ -156,6 +156,22 @@ mod tests {
             (
                 "getERC20FlowByCall(address,address,uint256)",
                 PhEvm::getERC20FlowByCallCall::SELECTOR,
+            ),
+            (
+                "erc4626TotalAssetsDiff(address)",
+                PhEvm::erc4626TotalAssetsDiffCall::SELECTOR,
+            ),
+            (
+                "erc4626TotalSupplyDiff(address)",
+                PhEvm::erc4626TotalSupplyDiffCall::SELECTOR,
+            ),
+            (
+                "erc4626VaultAssetBalanceDiff(address)",
+                PhEvm::erc4626VaultAssetBalanceDiffCall::SELECTOR,
+            ),
+            (
+                "erc4626AssetsPerShareDiffBps(address)",
+                PhEvm::erc4626AssetsPerShareDiffBpsCall::SELECTOR,
             ),
             // P1: State/Mapping diff cheatcodes
             (
@@ -187,8 +203,7 @@ mod tests {
         // Verify all selectors are non-zero (sanity check)
         for (name, selector) in &expected_selectors {
             assert_ne!(
-                *selector,
-                [0u8; 4],
+                *selector, [0u8; 4],
                 "Selector for {name} should not be zero"
             );
         }
@@ -196,8 +211,8 @@ mod tests {
         // Verify we have the expected count of methods
         assert_eq!(
             expected_selectors.len(),
-            40,
-            "PhEvm interface should have exactly 40 methods"
+            44,
+            "PhEvm interface should have exactly 44 methods"
         );
     }
 
@@ -237,8 +252,7 @@ mod tests {
 
         for (name, selector) in &expected_selectors {
             assert_ne!(
-                *selector,
-                [0u8; 4],
+                *selector, [0u8; 4],
                 "Selector for {name} should not be zero"
             );
         }

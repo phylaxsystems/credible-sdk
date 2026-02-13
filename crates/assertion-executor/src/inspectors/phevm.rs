@@ -8,7 +8,6 @@ use crate::{
     inspectors::{
         inspector_result_to_call_outcome,
         precompiles::{
-            assertion_adopter::get_assertion_adopter,
             aggregate_facts::{
                 AggregateFactsError,
                 sum_call_arg_uint_by_address,
@@ -17,6 +16,12 @@ use crate::{
                 sum_event_uint_for_topic_key,
                 unique_call_arg_addresses,
                 unique_event_topic_values,
+            },
+            assertion_adopter::get_assertion_adopter,
+            call_boundary::{
+                CallBoundaryError,
+                load_at_call,
+                slot_delta_at_call,
             },
             call_facts::{
                 CallFactsError,
@@ -32,6 +37,22 @@ use crate::{
                 get_call_inputs,
             },
             console_log::ConsoleLogError,
+            erc20_facts::{
+                Erc20FactsError,
+                balance_diff,
+                did_balance_change,
+                erc20_balance_diff,
+                erc20_supply_diff,
+                get_erc20_flow_by_call,
+                get_erc20_net_flow,
+            },
+            erc4626_facts::{
+                Erc4626FactsError,
+                erc4626_assets_per_share_diff_bps,
+                erc4626_total_assets_diff,
+                erc4626_total_supply_diff,
+                erc4626_vault_asset_balance_diff,
+            },
             fork::{
                 ForkError,
                 fork_post_call,
@@ -47,25 +68,6 @@ use crate::{
                 LoadExternalSlotError,
                 load_external_slot,
             },
-            state_changes::{
-                GetStateChangesError,
-                get_state_changes,
-            },
-            tx_object::load_tx_object,
-            call_boundary::{
-                CallBoundaryError,
-                load_at_call,
-                slot_delta_at_call,
-            },
-            erc20_facts::{
-                Erc20FactsError,
-                balance_diff,
-                did_balance_change,
-                erc20_balance_diff,
-                erc20_supply_diff,
-                get_erc20_flow_by_call,
-                get_erc20_net_flow,
-            },
             slot_diffs::{
                 SlotDiffsError,
                 did_mapping_key_change,
@@ -73,6 +75,11 @@ use crate::{
                 get_slot_diff,
                 mapping_value_diff,
             },
+            state_changes::{
+                GetStateChangesError,
+                get_state_changes,
+            },
+            tx_object::load_tx_object,
             write_policy::{
                 WritePolicyError,
                 all_slot_writes_by,
@@ -215,6 +222,8 @@ pub enum PrecompileError<ExtDb: DatabaseRef> {
     CallBoundaryError(#[source] CallBoundaryError),
     #[error("Error in ERC20 facts: {0}")]
     Erc20FactsError(#[source] Erc20FactsError),
+    #[error("Error in ERC4626 facts: {0}")]
+    Erc4626FactsError(#[source] Erc4626FactsError),
     #[error("Error in slot diffs: {0}")]
     SlotDiffsError(#[source] SlotDiffsError),
     #[error("Error in aggregate facts: {0}")]
@@ -344,6 +353,32 @@ impl<'a> PhEvmInspector<'a> {
                 slot_delta_at_call(context, &self.context, input_bytes, inputs.gas_limit)
                     .map_err(PrecompileError::CallBoundaryError)?
             }
+            PhEvm::erc4626TotalAssetsDiffCall::SELECTOR => {
+                erc4626_total_assets_diff(context, &self.context, input_bytes, inputs.gas_limit)
+                    .map_err(PrecompileError::Erc4626FactsError)?
+            }
+            PhEvm::erc4626TotalSupplyDiffCall::SELECTOR => {
+                erc4626_total_supply_diff(context, &self.context, input_bytes, inputs.gas_limit)
+                    .map_err(PrecompileError::Erc4626FactsError)?
+            }
+            PhEvm::erc4626VaultAssetBalanceDiffCall::SELECTOR => {
+                erc4626_vault_asset_balance_diff(
+                    context,
+                    &self.context,
+                    input_bytes,
+                    inputs.gas_limit,
+                )
+                .map_err(PrecompileError::Erc4626FactsError)?
+            }
+            PhEvm::erc4626AssetsPerShareDiffBpsCall::SELECTOR => {
+                erc4626_assets_per_share_diff_bps(
+                    context,
+                    &self.context,
+                    input_bytes,
+                    inputs.gas_limit,
+                )
+                .map_err(PrecompileError::Erc4626FactsError)?
+            }
             _ => return Ok(None),
         };
 
@@ -440,8 +475,7 @@ impl<'a> PhEvmInspector<'a> {
                     .map_err(PrecompileError::LoadExternalSlotError)?
             }
             PhEvm::getLogsCall::SELECTOR => {
-                get_logs(&self.context, inputs.gas_limit)
-                    .map_err(PrecompileError::GetLogsError)?
+                get_logs(&self.context, inputs.gas_limit).map_err(PrecompileError::GetLogsError)?
             }
             PhEvm::getStateChangesCall::SELECTOR => {
                 self.run_get_state_changes::<ExtDb>(input_bytes, inputs.gas_limit)?
