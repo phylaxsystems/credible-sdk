@@ -84,8 +84,21 @@ cmd_check() {
 
     if [[ $has_drift -ne 0 ]]; then
         echo ""
-        echo "Interface drift detected. Fix with:"
+        echo "=========================================="
+        echo "  INTERFACE DRIFT DETECTED"
+        echo "=========================================="
+        echo ""
+        echo "The canonical Solidity interfaces in crates/assertion-executor/interfaces/"
+        echo "are out of sync with their downstream copies in credible-std."
+        echo ""
+        echo "To fix:"
         echo "  ./scripts/sync-interfaces.sh sync"
+        echo ""
+        echo "IMPORTANT: Always edit the canonical files, never the downstream copies:"
+        echo "  - crates/assertion-executor/interfaces/PhEvm.sol"
+        echo "  - crates/assertion-executor/interfaces/ITriggerRecorder.sol"
+        echo ""
+        echo "Then run the sync script to propagate changes downstream."
         exit 1
     fi
 
