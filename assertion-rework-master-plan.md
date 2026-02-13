@@ -862,6 +862,24 @@ If we want immediate wins without waiting for the full roadmap:
       - `executor_avg_block_perf`: mostly neutral-to-regressed (`avg_block_3_aa` and `avg_block_100_aa` regressions).
       - `call-tracer-truncate`: mixed with notable regressions on `15k` / `500`, improvement on `15k_deep_pending`.
       - `worst-case-op`: mostly stable/noise; `KECCAK` and `SSTORE` improved, `LOG0` regressed.
+  - [x] Regression remediation follow-up (current branch):
+    - `CallTracer` hot-path changes:
+      - avoid calldata re-copy when input is already `CallInput::Bytes`
+      - single-lookup `(target,selector)` index insertion in `record_call_start`
+      - added borrowed call-id accessor `call_ids_for(target, selector)`
+    - `AssertionStore` hot-path changes:
+      - switched trigger call-id prep from allocated `Vec<usize>` to borrowed slices
+      - lazy all-call union materialization (only when `AllCalls`/`AllCallsFiltered` exists)
+      - single-call/simple-trigger fast path in `read_adopter`
+      - skip sort/dedup for selector call-id vectors of size `<= 1`
+      - empty-store short-circuit in `read` via conservative `has_any_assertions` hint
+    - Validation:
+      - `cargo test -p assertion-executor@1.0.8 --no-default-features --features "optimism test"` (288 passed)
+      - `cargo bench -p assertion-executor@1.0.8 --bench assertion_store_read -- --baseline main_ref`
+      - `cargo bench -p assertion-executor@1.0.8 --bench call-tracer-truncate -- --baseline main_ref2`
+    - Latest snapshots:
+      - `assertion_store_read` vs `main_ref`: `hit_existing_assertion` near-neutral (`~+2.8%`), `miss_nonexistent_assertion` strongly improved (`~-95%`).
+      - `call-tracer-truncate` vs fresh `main_ref2` (same-window A/B): `15k` improved (`~-6.1%`), `500` improved (`~-44.1%`), `500_deep_pending` improved (`~-25.7%`), `15k_deep_pending` regressed (`~+12.2%`) and remains noisy across reruns.
 
 ## Detailed Implementation Plan (Execution)
 

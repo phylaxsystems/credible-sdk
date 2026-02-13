@@ -486,6 +486,9 @@ pub struct AssertionStore {
     prune_task: Arc<tokio::task::JoinHandle<()>>,
     /// Current block number (updated externally for pruning reference)
     current_block: Arc<std::sync::atomic::AtomicU64>,
+    /// Conservative hint for fast-empty reads.
+    /// `false` means the store is definitely empty; `true` means it may contain assertions.
+    has_any_assertions: Arc<std::sync::atomic::AtomicBool>,
     /// Prune configuration
     prune_config: PruneConfig,
 }
@@ -497,6 +500,7 @@ impl std::fmt::Debug for AssertionStore {
             .field("inner", &self.inner)
             .field("shutdown_tx", &self.shutdown_tx)
             .field("current_block", &self.current_block)
+            .field("has_any_assertions", &self.has_any_assertions)
             .field("prune_config", &self.prune_config)
             .finish()
     }
@@ -540,8 +544,10 @@ impl AssertionStore {
 
     /// Creates a new assertion store with the given backend.
     fn with_backend(backend: StoreBackend, prune_config: PruneConfig) -> Self {
+        let has_any_assertions_init = matches!(&backend, StoreBackend::Sled { .. });
         let inner = Arc::new(Mutex::new(AssertionStoreInner { backend }));
         let current_block = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let has_any_assertions = Arc::new(std::sync::atomic::AtomicBool::new(has_any_assertions_init));
 
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let shutdown_tx = Arc::new(shutdown_tx);
@@ -560,6 +566,7 @@ impl AssertionStore {
             shutdown_tx,
             prune_task: Arc::new(prune_task),
             current_block,
+            has_any_assertions,
             prune_config,
         }
     }
@@ -666,6 +673,8 @@ impl AssertionStore {
         }
 
         inner.backend.insert(assertion_adopter, assertions)?;
+        self.has_any_assertions
+            .store(true, std::sync::atomic::Ordering::Release);
 
         // Opportunistic prune on insert
         drop(inner);
@@ -683,6 +692,9 @@ impl AssertionStore {
         &self,
         pending_modifications: Vec<PendingModification>,
     ) -> Result<(), AssertionStoreError> {
+        let has_additions = pending_modifications
+            .iter()
+            .any(|m| matches!(m, PendingModification::Add { .. }));
         let mut map = HashMap::<Address, Vec<PendingModification>>::new();
 
         for modification in pending_modifications {
@@ -697,6 +709,10 @@ impl AssertionStore {
 
         // Opportunistic prune after modifications
         self.maybe_prune();
+        if has_additions {
+            self.has_any_assertions
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
 
         Ok(())
     }
@@ -796,6 +812,13 @@ impl AssertionStore {
         let block_num = block_num
             .try_into()
             .map_err(|_| AssertionStoreError::BlockNumberExceedsU64)?;
+
+        if !self
+            .has_any_assertions
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Ok(vec![]);
+        }
 
         // Update current block for pruning reference
         self.set_current_block(block_num);
@@ -915,31 +938,113 @@ impl AssertionStore {
             return Ok(vec![]);
         }
 
-        let call_ids_by_trigger_selector: HashMap<FixedBytes<4>, Vec<usize>> = triggers
-            .iter()
-            .filter_map(|trigger| match trigger {
-                TriggerType::Call { trigger_selector } => Some(*trigger_selector),
-                TriggerType::CallFiltered {
-                    trigger_selector, ..
-                } => Some(*trigger_selector),
-                _ => None,
-            })
-            .map(|trigger_selector| {
-                let ids = tracer
-                    .get_call_inputs(*assertion_adopter, trigger_selector)
-                    .into_iter()
-                    .map(|c| c.id)
-                    .collect();
-                (trigger_selector, ids)
-            })
-            .collect();
+        let is_active = |a: &AssertionState| {
+            let inactive_block = match a.inactivation_block {
+                Some(inactive_block) => {
+                    // If the inactive block is less than the active block, the end bound is ignored.
+                    if inactive_block < a.activation_block {
+                        u64::MAX
+                    } else {
+                        inactive_block
+                    }
+                }
+                None => u64::MAX,
+            };
+            let in_bound_start = a.activation_block <= block;
+            let in_bound_end = block < inactive_block;
+            in_bound_start && in_bound_end
+        };
 
-        let mut all_triggered_call_ids: Vec<usize> = call_ids_by_trigger_selector
-            .values()
-            .flat_map(|ids| ids.iter().copied())
-            .collect();
-        all_triggered_call_ids.sort_unstable();
-        all_triggered_call_ids.dedup();
+        let single_runtime_call_trigger = if triggers.len() == 1 {
+            match triggers.iter().next() {
+                Some(TriggerType::Call { trigger_selector }) => Some(*trigger_selector),
+                _ => None,
+            }
+        } else {
+            None
+        };
+
+        if let Some(trigger_selector) = single_runtime_call_trigger {
+            let all_simple_single_call = assertion_states.iter().all(|a| {
+                a.trigger_recorder.triggers.keys().all(|recorded_trigger| {
+                    matches!(
+                        recorded_trigger,
+                        TriggerType::Call {
+                            trigger_selector: s
+                        } if *s == trigger_selector
+                    )
+                })
+            });
+
+            if all_simple_single_call {
+                let call_ids = tracer.call_ids_for(*assertion_adopter, trigger_selector).to_vec();
+                let active_assertion_contracts = assertion_states
+                    .into_iter()
+                    .filter(|a| is_active(a))
+                    .filter_map(|a| {
+                        a.trigger_recorder
+                            .triggers
+                            .get(&TriggerType::Call { trigger_selector })
+                            .map(|selectors| {
+                                let selectors_with_triggers = selectors
+                                    .iter()
+                                    .map(|selector| SelectorWithTrigger {
+                                        selector: *selector,
+                                        trigger_calls: call_ids.clone(),
+                                    })
+                                    .collect();
+                                (a.assertion_contract, selectors_with_triggers)
+                            })
+                    })
+                    .collect();
+                return Ok(active_assertion_contracts);
+            }
+        }
+
+        let mut call_ids_by_trigger_selector: HashMap<FixedBytes<4>, &[usize]> = HashMap::new();
+        for trigger in triggers {
+            let trigger_selector = match trigger {
+                TriggerType::Call { trigger_selector }
+                | TriggerType::CallFiltered {
+                    trigger_selector, ..
+                } => *trigger_selector,
+                _ => continue,
+            };
+
+            call_ids_by_trigger_selector
+                .entry(trigger_selector)
+                .or_insert_with(|| tracer.call_ids_for(*assertion_adopter, trigger_selector));
+        }
+
+        let any_all_calls_trigger = assertion_states.iter().any(|a| {
+            a.trigger_recorder.triggers.keys().any(|trigger| {
+                matches!(
+                    trigger,
+                    TriggerType::AllCalls | TriggerType::AllCallsFiltered { .. }
+                )
+            })
+        });
+
+        let all_triggered_call_ids: Vec<usize> = if any_all_calls_trigger {
+            let mut values = call_ids_by_trigger_selector.values();
+            match (values.next(), values.next()) {
+                (None, _) => Vec::new(),
+                (Some(first), None) => first.to_vec(),
+                (Some(first), Some(second)) => {
+                    let mut all_triggered = Vec::new();
+                    all_triggered.extend_from_slice(first);
+                    all_triggered.extend_from_slice(second);
+                    for ids in values {
+                        all_triggered.extend_from_slice(ids);
+                    }
+                    all_triggered.sort_unstable();
+                    all_triggered.dedup();
+                    all_triggered
+                }
+            }
+        } else {
+            Vec::new()
+        };
 
         let mut triggered_storage_slots: HashSet<FixedBytes<32>> = HashSet::new();
         let mut has_storage_trigger = false;
@@ -962,24 +1067,48 @@ impl AssertionStore {
 
         let active_assertion_contracts = assertion_states
             .into_iter()
-            .filter(|a| {
-                let inactive_block = match a.inactivation_block {
-                    Some(inactive_block) => {
-                        // If the inactive block is less than the active block, the end bound is
-                        // ignored.
-                        if inactive_block < a.activation_block {
-                            u64::MAX
-                        } else {
-                            inactive_block
+            .filter(|a| is_active(a))
+            .filter_map(|a| {
+                if let Some(trigger_selector) = single_runtime_call_trigger {
+                    let has_filtered_triggers =
+                        a.trigger_recorder.triggers.keys().any(|trigger| {
+                            matches!(
+                                trigger,
+                                TriggerType::CallFiltered { .. }
+                                    | TriggerType::AllCallsFiltered { .. }
+                            )
+                        });
+                    let has_all_calls = a.trigger_recorder.triggers.contains_key(&TriggerType::AllCalls);
+                    let has_all_storage = a
+                        .trigger_recorder
+                        .triggers
+                        .contains_key(&TriggerType::AllStorageChanges);
+                    if !has_filtered_triggers && !has_all_calls && !has_all_storage {
+                        if let Some(selectors) = a
+                            .trigger_recorder
+                            .triggers
+                            .get(&TriggerType::Call { trigger_selector })
+                        {
+                            if selectors.is_empty() {
+                                return None;
+                            }
+                            let call_ids: &[usize] = call_ids_by_trigger_selector
+                                .get(&trigger_selector)
+                                .copied()
+                                .unwrap_or(&[]);
+                            let call_ids = call_ids.to_vec();
+                            let selectors_with_triggers = selectors
+                                .iter()
+                                .map(|selector| SelectorWithTrigger {
+                                    selector: *selector,
+                                    trigger_calls: call_ids.clone(),
+                                })
+                                .collect();
+                            return Some((a.assertion_contract, selectors_with_triggers));
                         }
                     }
-                    None => u64::MAX,
-                };
-                let in_bound_start = a.activation_block <= block;
-                let in_bound_end = block < inactive_block;
-                in_bound_start && in_bound_end
-            })
-            .filter_map(|a| {
+                }
+
                 // Map assertion fn selectors → call IDs that triggered them.
                 let mut selector_call_ids: HashMap<FixedBytes<4>, Vec<usize>> = HashMap::new();
                 let has_filtered_triggers = a.trigger_recorder.triggers.keys().any(|trigger| {
@@ -999,7 +1128,7 @@ impl AssertionStore {
                             let call_ids: &[usize] = match trigger {
                                 TriggerType::Call { trigger_selector } => call_ids_by_trigger_selector
                                     .get(trigger_selector)
-                                    .map_or(&[], Vec::as_slice),
+                                    .map_or(&[], |ids| *ids),
                                 _ => &[],
                             };
 
@@ -1051,7 +1180,7 @@ impl AssertionStore {
                             TriggerType::Call { trigger_selector } => {
                                 if let Some(ids) = call_ids_by_trigger_selector.get(trigger_selector)
                                 {
-                                    call_ids = ids.as_slice();
+                                    call_ids = ids;
                                     trigger_fired = !ids.is_empty();
                                 }
                             }
@@ -1115,8 +1244,10 @@ impl AssertionStore {
                 }
 
                 for call_ids in selector_call_ids.values_mut() {
-                    call_ids.sort_unstable();
-                    call_ids.dedup();
+                    if call_ids.len() > 1 {
+                        call_ids.sort_unstable();
+                        call_ids.dedup();
+                    }
                 }
 
                 // Convert to Vec<SelectorWithTrigger>

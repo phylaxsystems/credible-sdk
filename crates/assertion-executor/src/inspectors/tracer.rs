@@ -265,9 +265,10 @@ impl CallTracer {
         // In case where we are hit with a non-AA call, we want to ignore its calldata,
         // but we still have to store the rest of it to preserve the journal depth.
         if is_aa {
-            // Coerce the bytes at the time of recording the call,
-            // in case they are of the SharedBuffer variant
-            inputs.input = CallInput::Bytes(Bytes::from(input_bytes.to_vec()));
+            // Coerce only when needed (SharedBuffer). If already Bytes, keep in place.
+            if !matches!(inputs.input, CallInput::Bytes(_)) {
+                inputs.input = CallInput::Bytes(Bytes::from(input_bytes.to_vec()));
+            }
         } else {
             inputs.input = CallInput::Bytes(Bytes::default());
         }
@@ -287,16 +288,17 @@ impl CallTracer {
             selector,
         };
 
-        // Track position within the key's Vec for O(1) truncation
-        let position = self
-            .target_and_selector_indices
-            .get(&key)
-            .map_or(0, Vec::len);
-
-        self.target_and_selector_indices
-            .entry(key.clone())
-            .or_default()
-            .push(index);
+        // Track position within the key's Vec for O(1) truncation.
+        // Use a single hash-table lookup via Entry API.
+        let position = {
+            let indices = self
+                .target_and_selector_indices
+                .entry(key.clone())
+                .or_default();
+            let pos = indices.len();
+            indices.push(index);
+            pos
+        };
 
         // Depth = number of pending calls (i.e. nesting level at time of this call).
         // pending_post_call_writes was already pushed above, so subtract 1.
@@ -430,24 +432,24 @@ impl CallTracer {
         target: Address,
         selector: FixedBytes<4>,
     ) -> Vec<CallInputsWithId<'_>> {
-        // No filtering needed since all recorded calls are valid
-        match self
-            .target_and_selector_indices
+        self.call_ids_for(target, selector)
+            .iter()
+            .map(|&index| {
+                CallInputsWithId {
+                    call_input: self.call_records[index].inputs(),
+                    id: index,
+                }
+            })
+            .collect()
+    }
+
+    /// Returns call-record IDs matching `(target, selector)` in journal order.
+    #[inline]
+    #[must_use]
+    pub fn call_ids_for(&self, target: Address, selector: FixedBytes<4>) -> &[usize] {
+        self.target_and_selector_indices
             .get(&TargetAndSelector { target, selector })
-        {
-            Some(indices) => {
-                indices
-                    .iter()
-                    .map(|&index| {
-                        CallInputsWithId {
-                            call_input: self.call_records[index].inputs(),
-                            id: index,
-                        }
-                    })
-                    .collect()
-            }
-            None => vec![],
-        }
+            .map_or(&[], Vec::as_slice)
     }
 
     /// Check if a call is valid for forking (not inside a reverted subtree)
