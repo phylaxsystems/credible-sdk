@@ -856,7 +856,7 @@ If we want immediate wins without waiting for the full roadmap:
     - `cargo bench -p assertion-executor@1.0.8 --bench worst-case-op` (rerun twice to check noisy outliers)
     - Summary (latest runs on this branch):
       - `assertion_store_read`: improved hit and miss paths (notably miss fast path).
-      - `executor_transaction_perf`: broad improvement / no-regression across EOA/ERC20/Uniswap scenarios after fast-path fix.
+      - `executor_transaction_perf`: mostly neutral with noisy ERC20 subcases across reruns; no single regression reproduced consistently.
       - `executor_avg_block_perf`: mostly improved or within noise.
       - `call-tracer-truncate`: mixed but neutral-to-positive on reruns.
       - `worst-case-op`: mixed microbench noise without a consistently reproducible regression.
