@@ -765,7 +765,8 @@ If we want immediate wins without waiting for the full roadmap:
   - [x] Fix `CallTracer` constructors to initialize `storage_change_index` (`tracer.rs`).
   - [x] Fix `sumArgUint` unchecked arithmetic overflow/panic on large `argIndex` (`call_facts.rs`).
   - [x] Fix `anySlotWritten` double-charge gas accounting bug (`write_policy.rs`).
-  - [x] Replace `allSlotWritesBy` O(journal * calls) attribution with one-pass call-window tracking (`write_policy.rs`).
+  - [x] Harden `allSlotWritesBy` writer attribution to select innermost call deterministically (reverse start-order match), including nested same-pre checkpoint edge case (`write_policy.rs`).
+  - [ ] Replace `allSlotWritesBy` remaining O(matching_writes * call_records) path with one-pass call-window attribution (`write_policy.rs`).
   - [x] Harden `getERC20FlowByCall` against malformed checkpoint bounds (`erc20_facts.rs`).
   - [x] Propagate call IDs for `AllCalls` selectors and dedupe per-selector call IDs (`assertion_store.rs`).
   - [x] Remove repeated filtered `Vec` materialization in `anyCall/countCalls/allCallsBy/sumArgUint` (`call_facts.rs`).
@@ -781,6 +782,19 @@ If we want immediate wins without waiting for the full roadmap:
       - `cargo bench -p assertion-executor@1.0.8 --bench assertion_store_read -- --quick`.
       - `cargo bench -p assertion-executor@1.0.8 --bench executor_transaction_perf -- --quick`.
       - `cargo bench -p assertion-executor@1.0.8 --bench executor_avg_block_perf -- --quick`.
+  - [x] Add regression test for nested same-pre checkpoint write attribution (`write_policy.rs`):
+    - `test_all_slot_writes_by_nested_same_pre_attributed_to_innermost`
+  - [x] Re-run full (non-quick) benchmark suites and record outcome:
+    - `cargo bench -p assertion-executor@1.0.8 --bench assertion_store_read`
+    - `cargo bench -p assertion-executor@1.0.8 --bench executor_transaction_perf`
+    - `cargo bench -p assertion-executor@1.0.8 --bench executor_avg_block_perf`
+    - `cargo bench -p assertion-executor@1.0.8 --bench call-tracer-truncate`
+    - `cargo bench -p assertion-executor@1.0.8 --bench worst-case-op`
+    - Summary (latest runs on this branch):
+      - `assertion_store_read`: no significant change.
+      - `executor_transaction_perf`: mixed (ERC20 paths improved significantly in rerun; Uniswap/EOA paths show small-to-moderate regressions/noise).
+      - `executor_avg_block_perf`: mixed (3_aa improved; vanilla/100_aa regressed in latest run).
+      - `call-tracer-truncate` + `worst-case-op`: baseline timings captured; no prior baseline deltas printed for those suites.
 - Remaining items (not yet started):
   - Items 1-2 (empty-selector short-circuits): Already exist in executor path (verified by code review).
   - Item 3 (adaptive parallelism): Already implemented in Phases 3-4.
