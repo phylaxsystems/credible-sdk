@@ -666,22 +666,11 @@ If we want immediate wins without waiting for the full roadmap:
 - Added 3 selector stability tests (14 PhEvm methods, 5 ITriggerRecorder methods, overload distinctness)
 - All 213 tests pass
 
-### Phase 7: Sync Script + CI Drift Gate -- DONE
-- Created `scripts/sync-interfaces.sh` with `sync` and `check` modes (bash 3 compatible)
-- Handles ITriggerRecorder -> TriggerRecorder name transform for downstream
-- Created `.github/workflows/interface-sync-check.yml` CI job
-- Sync check passes; downstream files in sync
-
-### Phase 8: Auto PR Workflow -- DONE
-- Created `.github/workflows/interface-sync-dispatch.yml`
-- Dispatches `repository_dispatch` event to credible-std when canonical interfaces change on main
-- Includes content hashes for change detection
-- Requires `CROSS_REPO_PAT` secret with repo scope
-
-### Phase 9: Operational Guardrails -- DONE
-- Enhanced sync script failure message with clear instructions (edit canonical, run sync)
-- CI workflow (`interface-sync-check`) enforces sync on all PRs touching interface files
-- Contributor guidance embedded in sync script header and failure output
+### Phases 7-9: Sync Script, Auto PR, Guardrails -- REMOVED
+- Removed: credible-std is a separate repo (https://github.com/phylaxsystems/credible-std),
+  not a local folder. The testdata/mock-protocol/lib/credible-std path is a git submodule.
+- Cross-repo sync between credible-sdk and credible-std should be handled at the
+  credible-std repo level, not by syncing into the submodule checkout.
 
 ## Detailed Implementation Plan (Execution)
 
