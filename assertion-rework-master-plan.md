@@ -761,6 +761,18 @@ If we want immediate wins without waiting for the full roadmap:
 
 ### Phase 11: Runtime Performance Hardening Gate -- IN PROGRESS
 - **StorageChangeIndex**: DONE (`8ac766e`). Lazily-built index on `CallTracer` via `OnceLock` pre-indexes all `StorageChanged` journal entries by `(address, slot)`. Replaces O(journal) scans with O(1) lookups in `slot_diffs`, `state_changes`, and `write_policy` precompiles. 266 tests pass.
+- **Correctness + Robustness Fix Pack (from review findings)**: IN PROGRESS.
+  - [x] Fix `CallTracer` constructors to initialize `storage_change_index` (`tracer.rs`).
+  - [x] Fix `sumArgUint` unchecked arithmetic overflow/panic on large `argIndex` (`call_facts.rs`).
+  - [x] Fix `anySlotWritten` double-charge gas accounting bug (`write_policy.rs`).
+  - [x] Replace `allSlotWritesBy` O(journal * calls) attribution with one-pass call-window tracking (`write_policy.rs`).
+  - [x] Harden `getERC20FlowByCall` against malformed checkpoint bounds (`erc20_facts.rs`).
+  - [x] Propagate call IDs for `AllCalls` selectors and dedupe per-selector call IDs (`assertion_store.rs`).
+  - [x] Remove repeated filtered `Vec` materialization in `anyCall/countCalls/allCallsBy/sumArgUint` (`call_facts.rs`).
+  - [x] Cache per-trigger selector call-id extraction once per adopter read (`assertion_store.rs`).
+  - [x] Multi-call execution semantics in executor (run selector once per triggering call ID, non-call selectors once).
+  - [x] Add/adjust tests for multi-call trigger context semantics (normal + inspector paths).
+  - [ ] Commit fix pack + update status with commit IDs and validation commands.
 - Remaining items (not yet started):
   - Items 1-2 (empty-selector short-circuits): Already exist in executor path (verified by code review).
   - Item 3 (adaptive parallelism): Already implemented in Phases 3-4.
@@ -987,7 +999,8 @@ Goal: lock in latency wins from declarative cheatcodes under parallel execution.
    - `anyCall`/`countCalls`/`allCallsBy`/`sumArgUint` use iterator/short-circuit paths (no intermediate `Vec` for scalar checks).
 4. Reduce per-function clone amplification in executor path:
    - make `MultiForkDb` carry immutable post-tx journal as shared `Arc` and lazily clone only when creating forks.
-   - avoid per-contract linear `call_records()` scan for trigger context by using a precomputed target->first-call map (or exact matched trigger call id metadata).
+   - avoid per-contract linear `call_records()` scan for trigger context by using exact matched trigger call-id metadata.
+   - support multi-call semantics explicitly: selectors with N triggering calls execute N times with per-call `trigger_call_id`.
 5. Cache expensive encodings on tx scope:
    - cache `getLogs` ABI encoding once per tx.
    - optionally cache filtered array encodings for escape-hatch APIs when identical queries repeat.
