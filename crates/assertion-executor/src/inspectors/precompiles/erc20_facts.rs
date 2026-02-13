@@ -74,7 +74,13 @@ fn compute_net_flow(logs: &[Log], token: Address, account: Address) -> I256 {
 /// `erc20BalanceDiff(address token, address account) -> int256`
 ///
 /// Computes the ERC20 balance change for an account by scanning Transfer events.
-/// For standard ERC20 tokens, this equals post-tx balance minus pre-tx balance.
+/// For standard ERC20 tokens, this equals `balanceOf(account)` post-tx minus pre-tx.
+///
+/// NOTE: Uses Transfer event scanning rather than sub-EVM `balanceOf()` calls because
+/// precompiles hold `&mut CTX` which borrows the MultiForkDb, preventing nested EVM
+/// creation. This is accurate for standard ERC20 tokens but will NOT capture balance
+/// changes from rebasing tokens, fee-on-transfer tokens, or tokens that modify
+/// balances without emitting Transfer events.
 pub fn erc20_balance_diff(
     ph_context: &PhEvmContext,
     input_bytes: &[u8],
@@ -106,6 +112,7 @@ pub fn erc20_balance_diff(
 /// `erc20SupplyDiff(address token) -> int256`
 ///
 /// Computes the ERC20 total supply change by scanning Transfer events.
+/// Same architectural note as `erc20_balance_diff` — uses event scanning.
 /// Mints (from address(0)) increase supply, burns (to address(0)) decrease it.
 pub fn erc20_supply_diff(
     ph_context: &PhEvmContext,
