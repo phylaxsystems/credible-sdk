@@ -61,6 +61,71 @@ pub struct SubmissionContext<'a> {
     pub client_ip: &'a str,
 }
 
+impl SubmissionContext<'_> {
+    fn parse_da_submission(&self) -> Result<DaSubmission, String> {
+        serde_json::from_value(self.json_rpc["params"][0].clone()).map_err(|err| {
+            warn!(target: "json_rpc", method = "da_submit_solidity_assertion", %self.request_id, %self.client_ip, json_rpc_id = %self.json_rpc_id, error = ?err, "Failed to parse DaSubmission payload");
+            rpc_error_with_request_id(
+                self.json_rpc,
+                -32602,
+                format!("Invalid params: Failed to parse payload {err:?}").as_str(),
+                self.request_id,
+            )
+        })
+    }
+
+    async fn compile_submission(
+        &self,
+        da_submission: &DaSubmission,
+        docker: Arc<Docker>,
+    ) -> Result<Vec<u8>, String> {
+        compile_solidity(
+            da_submission.assertion_contract_name.as_str(),
+            da_submission.solidity_source.as_str(),
+            da_submission.compiler_version.as_str(),
+            docker,
+        )
+        .await
+        .map_err(|err| {
+            warn!(target: "json_rpc", method = "da_submit_solidity_assertion", %self.request_id, %self.client_ip, json_rpc_id = %self.json_rpc_id, error = ?err, compiler_version = da_submission.compiler_version, contract_name = da_submission.assertion_contract_name, "Solidity compilation failed");
+            rpc_error_with_request_id(
+                self.json_rpc,
+                -32603,
+                &format!("Solidity Compilation Error: {err}"),
+                self.request_id,
+            )
+        })
+    }
+
+    fn encode_submission_args(&self, da_submission: &DaSubmission) -> Result<Bytes, String> {
+        encode_constructor_args(
+            &da_submission.constructor_abi_signature,
+            da_submission.constructor_args.clone(),
+        )
+        .map_err(|err| {
+            warn!(target: "json_rpc", method = "da_submit_solidity_assertion", %self.request_id, %self.client_ip, json_rpc_id = %self.json_rpc_id, error = ?err, constructor_abi = da_submission.constructor_abi_signature, "Constructor args ABI encoding failed");
+            rpc_error_with_request_id(
+                self.json_rpc,
+                -32603,
+                &format!("Constructor args ABI Encoding Error: {err}"),
+                self.request_id,
+            )
+        })
+    }
+
+    async fn sign_assertion(&self, id: &B256) -> Result<Signature, String> {
+        self.signer.sign_hash(id).await.map_err(|err| {
+            warn!(target: "json_rpc", method = "da_submit_solidity_assertion", %self.request_id, %self.client_ip, json_rpc_id = %self.json_rpc_id, error = ?err, "Failed to sign assertion");
+            rpc_error_with_request_id(
+                self.json_rpc,
+                -32604,
+                "Internal Error: Failed to sign Assertion",
+                self.request_id,
+            )
+        })
+    }
+}
+
 /// Accepts, validates and stores a raw EVM bytecode assertion.
 #[cfg(feature = "debug_assertions")]
 #[instrument(
@@ -160,19 +225,19 @@ pub async fn accept_solidity_assertion(
     ctx: &SubmissionContext<'_>,
     docker: Arc<Docker>,
 ) -> Result<String> {
-    let da_submission = match parse_da_submission(ctx) {
+    let da_submission = match ctx.parse_da_submission() {
         Ok(da_submission) => da_submission,
         Err(err_response) => return Ok(err_response),
     };
 
     debug!(target: "json_rpc", compiler_version = da_submission.compiler_version, da_submission.solidity_source , "Compiling solidity source");
 
-    let bytecode = match compile_submission(&da_submission, docker, ctx).await {
+    let bytecode = match ctx.compile_submission(&da_submission, docker).await {
         Ok(bytecode) => bytecode,
         Err(err_response) => return Ok(err_response),
     };
 
-    let encoded_constructor_args = match encode_submission_args(&da_submission, ctx) {
+    let encoded_constructor_args = match ctx.encode_submission_args(&da_submission) {
         Ok(encoded_args) => encoded_args,
         Err(err_response) => return Ok(err_response),
     };
@@ -182,7 +247,7 @@ pub async fn accept_solidity_assertion(
 
     // Hash to get ID
     let id = keccak256(&deployment_data);
-    let prover_signature = match sign_assertion(&id, ctx).await {
+    let prover_signature = match ctx.sign_assertion(&id).await {
         Ok(sig) => sig,
         Err(err_response) => return Ok(err_response),
     };
@@ -209,72 +274,6 @@ pub async fn accept_solidity_assertion(
     }
 
     res
-}
-
-fn parse_da_submission(ctx: &SubmissionContext<'_>) -> Result<DaSubmission, String> {
-    serde_json::from_value(ctx.json_rpc["params"][0].clone()).map_err(|err| {
-        warn!(target: "json_rpc", method = "da_submit_solidity_assertion", %ctx.request_id, %ctx.client_ip, json_rpc_id = %ctx.json_rpc_id, error = ?err, "Failed to parse DaSubmission payload");
-        rpc_error_with_request_id(
-            ctx.json_rpc,
-            -32602,
-            format!("Invalid params: Failed to parse payload {err:?}").as_str(),
-            ctx.request_id,
-        )
-    })
-}
-
-async fn compile_submission(
-    da_submission: &DaSubmission,
-    docker: Arc<Docker>,
-    ctx: &SubmissionContext<'_>,
-) -> Result<Vec<u8>, String> {
-    compile_solidity(
-        da_submission.assertion_contract_name.as_str(),
-        da_submission.solidity_source.as_str(),
-        da_submission.compiler_version.as_str(),
-        docker,
-    )
-    .await
-    .map_err(|err| {
-        warn!(target: "json_rpc", method = "da_submit_solidity_assertion", %ctx.request_id, %ctx.client_ip, json_rpc_id = %ctx.json_rpc_id, error = ?err, compiler_version = da_submission.compiler_version, contract_name = da_submission.assertion_contract_name, "Solidity compilation failed");
-        rpc_error_with_request_id(
-            ctx.json_rpc,
-            -32603,
-            &format!("Solidity Compilation Error: {err}"),
-            ctx.request_id,
-        )
-    })
-}
-
-fn encode_submission_args(
-    da_submission: &DaSubmission,
-    ctx: &SubmissionContext<'_>,
-) -> Result<Bytes, String> {
-    encode_constructor_args(
-        &da_submission.constructor_abi_signature,
-        da_submission.constructor_args.clone(),
-    )
-    .map_err(|err| {
-        warn!(target: "json_rpc", method = "da_submit_solidity_assertion", %ctx.request_id, %ctx.client_ip, json_rpc_id = %ctx.json_rpc_id, error = ?err, constructor_abi = da_submission.constructor_abi_signature, "Constructor args ABI encoding failed");
-        rpc_error_with_request_id(
-            ctx.json_rpc,
-            -32603,
-            &format!("Constructor args ABI Encoding Error: {err}"),
-            ctx.request_id,
-        )
-    })
-}
-
-async fn sign_assertion(id: &B256, ctx: &SubmissionContext<'_>) -> Result<Signature, String> {
-    ctx.signer.sign_hash(id).await.map_err(|err| {
-        warn!(target: "json_rpc", method = "da_submit_solidity_assertion", %ctx.request_id, %ctx.client_ip, json_rpc_id = %ctx.json_rpc_id, error = ?err, "Failed to sign assertion");
-        rpc_error_with_request_id(
-            ctx.json_rpc,
-            -32604,
-            "Internal Error: Failed to sign Assertion",
-            ctx.request_id,
-        )
-    })
 }
 
 /// Retrieves assertion from the database.
