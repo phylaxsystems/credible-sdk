@@ -86,7 +86,9 @@ fn call_id_matches_filter(tracer: &CallTracer, call_id: usize, filter: &TriggerF
         return false;
     }
 
-    let depth = record.depth();
+    let Some(depth) = tracer.call_depth_at(call_id) else {
+        return false;
+    };
     if filter.top_level_only && depth != 0 {
         return false;
     }

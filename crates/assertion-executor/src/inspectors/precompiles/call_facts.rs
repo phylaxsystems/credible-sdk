@@ -81,6 +81,7 @@ pub(crate) fn candidate_call_indices(
 
 pub(crate) fn call_matches_filter(
     record: &CallRecord,
+    depth: u32,
     filter: &PhEvm::CallFilter,
     scheme_filter: Option<CallScheme>,
 ) -> bool {
@@ -90,7 +91,6 @@ pub(crate) fn call_matches_filter(
         return false;
     }
 
-    let depth = record.depth();
     if filter.topLevelOnly && depth != 0 {
         return false;
     }
@@ -144,7 +144,10 @@ pub fn any_call(
     if let Some(indices) = candidate_call_indices(tracer, call.target, call.selector) {
         for &idx in indices {
             visited = visited.saturating_add(1);
-            if call_matches_filter(&call_records[idx], &call.filter, scheme_filter) {
+            let Some(depth) = tracer.call_depth_at(idx) else {
+                continue;
+            };
+            if call_matches_filter(&call_records[idx], depth, &call.filter, scheme_filter) {
                 found = true;
                 break;
             }
@@ -188,7 +191,10 @@ pub fn count_calls(
     if let Some(indices) = candidate_call_indices(tracer, call.target, call.selector) {
         for &idx in indices {
             visited = visited.saturating_add(1);
-            if call_matches_filter(&call_records[idx], &call.filter, scheme_filter) {
+            let Some(depth) = tracer.call_depth_at(idx) else {
+                continue;
+            };
+            if call_matches_filter(&call_records[idx], depth, &call.filter, scheme_filter) {
                 matched = matched.saturating_add(1);
             }
         }
@@ -272,7 +278,10 @@ pub fn all_calls_by(
         for &idx in indices {
             visited = visited.saturating_add(1);
             let record = &call_records[idx];
-            if !call_matches_filter(record, &call.filter, scheme_filter) {
+            let Some(depth) = tracer.call_depth_at(idx) else {
+                continue;
+            };
+            if !call_matches_filter(record, depth, &call.filter, scheme_filter) {
                 continue;
             }
 
@@ -336,7 +345,10 @@ pub fn sum_arg_uint(
         for &idx in indices {
             visited = visited.saturating_add(1);
             let record = &call_records[idx];
-            if !call_matches_filter(record, &call.filter, scheme_filter) {
+            let Some(depth) = tracer.call_depth_at(idx) else {
+                continue;
+            };
+            if !call_matches_filter(record, depth, &call.filter, scheme_filter) {
                 continue;
             }
             let calldata = match &record.inputs().input {
@@ -404,7 +416,7 @@ pub fn get_trigger_context(
                     target: inputs.target_address,
                     codeAddress: inputs.bytecode_address,
                     selector,
-                    depth: record.depth(),
+                    depth: tracer.call_depth_at(call_id).unwrap_or(0),
                 }
             } else {
                 // Call ID set but not found - return zeroed context

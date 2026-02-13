@@ -23,8 +23,8 @@ use alloy_sol_types::{
 use std::collections::{
     BTreeMap,
     BTreeSet,
+    btree_map::Entry,
 };
-use std::collections::btree_map::Entry;
 
 use super::call_facts::{
     call_matches_filter,
@@ -55,11 +55,12 @@ fn arg_start_offset(arg_index: U256, selector_prefix: usize) -> Result<usize, Ag
     let arg_index_usize: usize = arg_index
         .try_into()
         .map_err(|_| AggregateFactsError::InvalidArgIndex { arg_index })?;
-    let byte_offset = arg_index_usize
-        .checked_mul(32)
-        .ok_or(AggregateFactsError::ArgOffsetOverflow {
-            arg_index: arg_index_usize,
-        })?;
+    let byte_offset =
+        arg_index_usize
+            .checked_mul(32)
+            .ok_or(AggregateFactsError::ArgOffsetOverflow {
+                arg_index: arg_index_usize,
+            })?;
     selector_prefix
         .checked_add(byte_offset)
         .ok_or(AggregateFactsError::ArgOffsetOverflow {
@@ -77,7 +78,10 @@ fn read_zero_extended_word(data: &[u8], start: usize) -> [u8; 32] {
     word
 }
 
-fn read_call_arg_word(record: &crate::inspectors::tracer::CallRecord, start: usize) -> Option<[u8; 32]> {
+fn read_call_arg_word(
+    record: &crate::inspectors::tracer::CallRecord,
+    start: usize,
+) -> Option<[u8; 32]> {
     let calldata = match &record.inputs().input {
         revm::interpreter::CallInput::Bytes(bytes) => bytes,
         _ => return None,
@@ -116,7 +120,10 @@ pub fn sum_call_arg_uint_for_address(
         for &idx in indices {
             visited = visited.saturating_add(1);
             let record = &call_records[idx];
-            if !call_matches_filter(record, &call.filter, scheme_filter) {
+            let Some(depth) = tracer.call_depth_at(idx) else {
+                continue;
+            };
+            if !call_matches_filter(record, depth, &call.filter, scheme_filter) {
                 continue;
             }
 
@@ -139,7 +146,10 @@ pub fn sum_call_arg_uint_for_address(
         return Err(AggregateFactsError::OutOfGas(rax));
     }
 
-    Ok(PhevmOutcome::new(total.abi_encode().into(), gas_limit - gas_left))
+    Ok(PhevmOutcome::new(
+        total.abi_encode().into(),
+        gas_limit - gas_left,
+    ))
 }
 
 /// `uniqueCallArgAddresses(...) -> address[]`
@@ -168,7 +178,10 @@ pub fn unique_call_arg_addresses(
         for &idx in indices {
             visited = visited.saturating_add(1);
             let record = &call_records[idx];
-            if !call_matches_filter(record, &call.filter, scheme_filter) {
+            let Some(depth) = tracer.call_depth_at(idx) else {
+                continue;
+            };
+            if !call_matches_filter(record, depth, &call.filter, scheme_filter) {
                 continue;
             }
 
@@ -192,7 +205,10 @@ pub fn unique_call_arg_addresses(
     }
 
     let keys: Vec<Address> = unique.into_iter().collect();
-    Ok(PhevmOutcome::new(keys.abi_encode().into(), gas_limit - gas_left))
+    Ok(PhevmOutcome::new(
+        keys.abi_encode().into(),
+        gas_limit - gas_left,
+    ))
 }
 
 /// `sumCallArgUintByAddress(...) -> AddressUint[]`
@@ -222,7 +238,10 @@ pub fn sum_call_arg_uint_by_address(
         for &idx in indices {
             visited = visited.saturating_add(1);
             let record = &call_records[idx];
-            if !call_matches_filter(record, &call.filter, scheme_filter) {
+            let Some(depth) = tracer.call_depth_at(idx) else {
+                continue;
+            };
+            if !call_matches_filter(record, depth, &call.filter, scheme_filter) {
                 continue;
             }
 
@@ -264,7 +283,10 @@ pub fn sum_call_arg_uint_by_address(
         .map(|(key, value)| PhEvm::AddressUint { key, value })
         .collect();
 
-    Ok(PhevmOutcome::new(entries.abi_encode().into(), gas_limit - gas_left))
+    Ok(PhevmOutcome::new(
+        entries.abi_encode().into(),
+        gas_limit - gas_left,
+    ))
 }
 
 fn validate_topic_index(topic_index: u8) -> Result<usize, AggregateFactsError> {
@@ -311,7 +333,10 @@ pub fn sum_event_uint_for_topic_key(
         total = total.wrapping_add(value);
     }
 
-    Ok(PhevmOutcome::new(total.abi_encode().into(), gas_limit - gas_left))
+    Ok(PhevmOutcome::new(
+        total.abi_encode().into(),
+        gas_limit - gas_left,
+    ))
 }
 
 /// `uniqueEventTopicValues(...) -> bytes32[]`
@@ -356,7 +381,10 @@ pub fn unique_event_topic_values(
     }
 
     let values: Vec<FixedBytes<32>> = unique.into_iter().collect();
-    Ok(PhevmOutcome::new(values.abi_encode().into(), gas_limit - gas_left))
+    Ok(PhevmOutcome::new(
+        values.abi_encode().into(),
+        gas_limit - gas_left,
+    ))
 }
 
 /// `sumEventUintByTopic(...) -> Bytes32Uint[]`
@@ -416,7 +444,10 @@ pub fn sum_event_uint_by_topic(
         .into_iter()
         .map(|(key, value)| PhEvm::Bytes32Uint { key, value })
         .collect();
-    Ok(PhevmOutcome::new(entries.abi_encode().into(), gas_limit - gas_left))
+    Ok(PhevmOutcome::new(
+        entries.abi_encode().into(),
+        gas_limit - gas_left,
+    ))
 }
 
 #[cfg(test)]
@@ -682,27 +713,15 @@ mod test {
         let logs = vec![
             Log {
                 address: emitter,
-                data: LogData::new(
-                    vec![topic0, key1],
-                    Bytes::from(uint_word(4).to_vec()),
-                )
-                .unwrap(),
+                data: LogData::new(vec![topic0, key1], Bytes::from(uint_word(4).to_vec())).unwrap(),
             },
             Log {
                 address: emitter,
-                data: LogData::new(
-                    vec![topic0, key2],
-                    Bytes::from(uint_word(7).to_vec()),
-                )
-                .unwrap(),
+                data: LogData::new(vec![topic0, key2], Bytes::from(uint_word(7).to_vec())).unwrap(),
             },
             Log {
                 address: emitter,
-                data: LogData::new(
-                    vec![topic0, key1],
-                    Bytes::from(uint_word(9).to_vec()),
-                )
-                .unwrap(),
+                data: LogData::new(vec![topic0, key1], Bytes::from(uint_word(9).to_vec())).unwrap(),
             },
         ];
 
@@ -733,9 +752,12 @@ mod test {
         let tracer = CallTracer::default();
         let tx_env = crate::primitives::TxEnv::default();
         with_test_context(&tracer, &logs, &tx_env, |context| {
-            let sum_for_key = sum_event_uint_for_topic_key(context, &sum_for_key_input, u64::MAX)
-                .unwrap();
-            assert_eq!(U256::abi_decode(sum_for_key.bytes()).unwrap(), U256::from(13));
+            let sum_for_key =
+                sum_event_uint_for_topic_key(context, &sum_for_key_input, u64::MAX).unwrap();
+            assert_eq!(
+                U256::abi_decode(sum_for_key.bytes()).unwrap(),
+                U256::from(13)
+            );
 
             let unique = unique_event_topic_values(context, &unique_input, u64::MAX).unwrap();
             let unique_values = Vec::<FixedBytes<32>>::abi_decode(unique.bytes()).unwrap();
