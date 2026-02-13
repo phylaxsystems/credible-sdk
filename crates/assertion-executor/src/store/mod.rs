@@ -16,6 +16,7 @@ mod assertion_store;
 pub use assertion_store::{
     AssertionStore,
     AssertionStoreError,
+    AssertionsForExecution,
     PruneConfig,
 };
 
