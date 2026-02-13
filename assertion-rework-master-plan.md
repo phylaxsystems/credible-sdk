@@ -49,7 +49,7 @@ Design rules:
 1. Scalar first (`bool`, `count`, `sum`, `delta`) and deterministic known-key checks.
 2. Push trace iteration/filtering/ABI decode into Rust runtime.
 3. Build tx facts once, share read-only across all assertion function executions.
-4. Keep mapping key discovery optional; do not block common known-key invariants on it.
+4. Prioritize known-key and event-derived key sets in v1.
 
 ## Fresh Pattern Review (ROI-Driven)
 
@@ -122,6 +122,30 @@ function sumArgUint(address target, bytes4 selector, uint8 argIndex, CallFilter 
     returns (uint256);
 ```
 
+### P0-B2: Trigger-time filters (reduce parallel fan-out at source)
+
+Apply call-shape filters at trigger registration so irrelevant calls do not schedule assertion functions.
+
+```solidity
+struct TriggerFilter {
+    bool successOnly;
+    bool topLevelOnly;
+    uint8 callType; // 0 any, 1 call, 2 delegatecall, 3 staticcall, 4 callcode
+    uint32 minDepth;
+    uint32 maxDepth;
+}
+
+function registerCallTrigger(bytes4 fnSelector, bytes4 triggerSelector, TriggerFilter calldata filter) external view;
+function registerCallTriggers(bytes4 fnSelector, bytes4[] calldata triggerSelectors, TriggerFilter calldata filter)
+    external
+    view;
+```
+
+Why:
+1. Prevents assertion-function over-triggering under parallel execution.
+2. Eliminates repeated in-assertion filtering/skip logic (delegatecall/success/depth checks).
+3. Reduces scheduler and precompile load before assertion code runs.
+
 ### P0-C: Scalar call-boundary facts (replace fork loops)
 
 ```solidity
@@ -145,7 +169,70 @@ function erc20BalanceDiff(address token, address account) external view returns 
 function erc20SupplyDiff(address token) external view returns (int256);
 function getERC20NetFlow(address token, address account) external view returns (int256);
 function getERC20FlowByCall(address token, address account, uint256 callId) external view returns (int256);
+
+function erc4626TotalAssetsDiff(address vault) external view returns (int256);
+function erc4626TotalSupplyDiff(address vault) external view returns (int256);
+function erc4626VaultAssetBalanceDiff(address vault) external view returns (int256);
+function erc4626AssetsPerShareDiffBps(address vault) external view returns (int256 bps);
 ```
+
+### P0-D2: Keyed/grouped aggregates (remove Solidity dedupe maps)
+
+Push key discovery/dedup/aggregation into runtime for call- and event-derived keys.
+
+```solidity
+struct AddressUint {
+    address key;
+    uint256 value;
+}
+
+struct Bytes32Uint {
+    bytes32 key;
+    uint256 value;
+}
+
+function sumCallArgUintForAddress(
+    address target,
+    bytes4 selector,
+    uint8 keyArgIndex,
+    address key,
+    uint8 valueArgIndex,
+    CallFilter calldata filter
+) external view returns (uint256);
+
+function uniqueCallArgAddresses(address target, bytes4 selector, uint8 argIndex, CallFilter calldata filter)
+    external
+    view
+    returns (address[] memory);
+
+function sumCallArgUintByAddress(
+    address target,
+    bytes4 selector,
+    uint8 keyArgIndex,
+    uint8 valueArgIndex,
+    CallFilter calldata filter
+) external view returns (AddressUint[] memory);
+
+function sumEventUintForTopicKey(address emitter, bytes32 topic0, uint8 keyTopicIndex, bytes32 key, uint8 valueDataIndex)
+    external
+    view
+    returns (uint256);
+
+function uniqueEventTopicValues(address emitter, bytes32 topic0, uint8 topicIndex)
+    external
+    view
+    returns (bytes32[] memory);
+
+function sumEventUintByTopic(address emitter, bytes32 topic0, uint8 keyTopicIndex, uint8 valueDataIndex)
+    external
+    view
+    returns (Bytes32Uint[] memory);
+```
+
+Why:
+1. Removes hand-written hash sets/accumulators in assertions (EVC/CTF/MYX patterns).
+2. Keeps array APIs bounded by unique keys, not raw trace length.
+3. Preserves scalar fast path (`sum...ForAddress`, `sum...ForTopicKey`) for common checks.
 
 ### P0-E: Array APIs stay as escape hatches only
 
@@ -200,50 +287,7 @@ Why P1 matters:
 1. Most real invariants are about known addresses/keys.
 2. No preimage tricks needed.
 3. Directly replaces many `getCallInputs`-based key reconstruction patterns.
-
-### P2 (Optional/Targeted: Your Tracking Design)
-
-Use only when invariant requires "all changed keys" for unknown/unbounded key sets.
-
-```solidity
-enum MappingTrackMode { TRACKED_ONLY, BEST_EFFORT_DISCOVERY, STRICT }
-
-function trackMapping(address target, bytes32 baseSlot, uint8 valueSlots, MappingTrackMode mode) external;
-function trackKey(address target, bytes32 baseSlot, bytes32 key) external;
-function seedTrackedKeys(address target, bytes32 baseSlot, bytes32[] calldata keys) external;
-function getChangedTrackedKeys(address target, bytes32 baseSlot)
-    external
-    view
-    returns (bytes32[] memory keys, bool complete);
-```
-
-Optional best-effort discovery:
-
-```solidity
-function getChangedMappingKeys(address target, bytes32 baseSlot)
-    external
-    view
-    returns (bytes32[] memory keys, uint8 completenessCode);
-```
-
-Where `completenessCode` is:
-1. `0`: complete
-2. `1`: partial (best effort)
-3. `2`: unknown/incomplete
-
-## Do We Need Your Design?
-
-Short answer:
-1. Yes, but only for a subset.
-2. It is not the baseline path.
-
-Concrete decision:
-1. For known-key invariants, do not require tracker/indexer design.
-   - Use deterministic mapping/balance diff APIs (P1).
-2. For unknown-key "all touched keys" invariants, use tracker/indexer design (P2).
-   - Especially useful in `ethereum-vault-connector` and `ctf-exchange`.
-3. For `lagoon-v0` and most of `etherex-assertions`, tracker adds little.
-   - Primary pain there is slot/event verbosity, not key discovery.
+4. v1 key coverage comes from deterministic known keys and event/call-derived key sets.
 
 ## Runtime Performance Tasks (Executor-Side)
 
@@ -257,19 +301,21 @@ These changes are required so declarative APIs are actually faster in production
 5. Replace repeated full-journal scans in precompiles with indexed lookups.
 6. Replace repeated full-log re-encoding with filtered/indexed encoders.
 7. Add bounded response options for array APIs (limit/offset) to avoid worst-case decode costs.
+8. Add trigger-time call-shape filtering in trigger matching to prune assertion-function fan-out early.
+9. Add keyed/grouped aggregate indexes to remove repeated per-assertion dedupe/aggregation work.
 
 If we do not ship this runtime layer, new cheatcodes may reduce LoC but still regress latency.
 
 ## Repo-Level ROI Mapping
 
 1. `ethereum-vault-connector`:
-   - Highest ROI: P0 call facts + P2 tracking.
+   - Highest ROI: P0 call facts + event-derived account extraction + P1 known-key diffs.
 2. `malda-lending`:
    - Highest ROI: P0 call facts + `loadAtCall`, plus P1 known-key diffs.
 3. `morpho-vault-2`, `aave-v3-origin`, `myx-v2-assertions`:
    - Highest ROI: P0 call facts + storage/asset facts.
 4. `lagoon-v0`:
-   - Highest ROI: filtered logs + slot diff facts, not tracker.
+   - Highest ROI: filtered logs + slot diff facts.
 5. `etherex-assertions`:
    - Highest ROI: storage write provenance and slot diff helpers.
 
@@ -301,7 +347,7 @@ Suggested expression helpers:
 | Mapping key `k` must not change | `require(!didMappingKeyChange(target, BASE_SLOT, k, 0), \"key_changed\");` |
 | If key changed, value must stay within bounds | `(bytes32 pre, bytes32 post, bool changed) = mappingValueDiff(...); if (changed) require(uint256(post) <= MAX, \"bound\");` |
 | Triggered call must preserve permission gate | `TriggerContext memory t = getTriggerContext(); require(_gateHolds(t.callId), \"gate_violation\");` |
-| Only known tracked keys may change | `(, bool complete) = getChangedTrackedKeys(target, BASE_SLOT); require(complete, \"incomplete_coverage\");` |
+| Only expected keys may change | `require(allKeysInSet(changedKeysFromEvents(...), allowlist), \"unexpected_key_change\");` |
 
 Recommended helper layer in `credible-std`:
 1. `successOnly()`, `topLevelOnly()`, `delegateCallOnly()` filter constructors.
@@ -322,26 +368,24 @@ All reductions below are estimated and based on current files/ranges.
 | `morpho-vault-2` | `assertions/src/VaultV2ConfigAssertions.a.sol:97` (gate helper cluster) | ~61 | ~22 | ~64% |
 | `myx-v2-assertions` | `assertions/src/CollateralAccountingAssertion.a.sol:46` | ~133 | ~34 | ~74% |
 
-### 1) EVC Account Health (nested call decoding -> tracked changed keys)
+### 1) EVC Account Health (nested call decoding -> event-derived account set)
 
 Before: `ethereum-vault-connector/assertions/src/AccountHealthAssertion.a.sol:123`
 - Manual unwrap of nested `batch/call`
 - Selector-specific account extraction
 - Multiple unique-set dedupe loops
 
-After (P0 + P2):
+After (P0 + P1):
 
 ```solidity
 function assertionBatchAccountHealth() external {
     IEVC evc = IEVC(ph.getAssertionAdopter());
 
-    address[] memory vaults = _uniqueVerifiedVaultTargets(ph.getAllCalls(address(evc)));
-    (bytes32[] memory keys, bool complete) =
-        getChangedTrackedKeys(address(evc), ACCOUNT_STATUS_BASE_SLOT);
-    require(complete, "incomplete_account_key_coverage");
+    address[] memory vaults = _uniqueVerifiedVaultTargetsFromCallWithContextLogs(address(evc));
+    address[] memory accounts = _uniqueAccountsFromCallWithContextLogs(address(evc));
 
-    for (uint256 i = 0; i < keys.length; i++) {
-        address account = address(uint160(uint256(keys[i])));
+    for (uint256 i = 0; i < accounts.length; i++) {
+        address account = accounts[i];
         _validateAcrossTouchedVaultsAndControllers(evc, account, vaults);
     }
 }
@@ -485,7 +529,7 @@ Notes:
 1. These snippets are intentionally schematic; exact slot constants/selectors stay protocol-specific.
 2. Biggest reduction comes from removing repeated trace-walking/forking boilerplate, not from removing core invariant math.
 3. Preferred final form is scalar/quantified assertions. Array-returning examples are transitional where per-call evidence is required.
-4. Invariants that require unknown-key completeness still rely on P2 `STRICT` tracking mode.
+4. Key coverage in this roadmap uses known-key and event/call-derived key sets.
 
 ## Simple Additions We Should Also Do (Common ERC20 + Repeated Patterns)
 
@@ -557,11 +601,17 @@ Why:
 function erc4626SharePriceAt(address vault, TxPoint point) external view returns (uint256);
 function erc4626SharePriceDiffBps(address vault) external view returns (int256 bps);
 function erc4626AssetsPerShareAt(address vault, TxPoint point) external view returns (uint256);
+function erc4626TotalAssetsDiff(address vault) external view returns (int256);
+function erc4626TotalSupplyDiff(address vault) external view returns (int256);
+function erc4626VaultAssetBalanceDiff(address vault) external view returns (int256);
+function erc4626AssetsPerShareDiffBps(address vault) external view returns (int256 bps);
 ```
 
 Why:
 1. EVC/Lagoon/Morpho repeatedly compute share-price style invariants.
-2. Avoids each assertion re-implementing tiny variations of the same formula.
+2. Delta-first helpers avoid repeated `forkPreTx/forkPostTx` boilerplate.
+3. Avoids each assertion re-implementing tiny variations of the same formula.
+4. Keep `preview*`-based checks non-default to avoid business-logic coupling.
 
 ### E) Generic policy helpers that always show up
 
@@ -578,7 +628,7 @@ Why:
 ### Practical Priority
 
 If we want immediate wins without waiting for the full roadmap:
-1. Implement tx-level shared indexes + scalar quantifiers first (P0-A through P0-D).
+1. Implement tx-level shared indexes + scalar quantifiers first (P0-A through P0-D2).
 2. Then A + B (ERC20 boilerplate killer on top of shared indexes).
 3. Then E (auth/policy one-liners).
 4. Then D (ERC4626 convenience).
@@ -593,28 +643,34 @@ If we want immediate wins without waiting for the full roadmap:
 2. Ship shared tx indexes:
    - calls, writes, logs, transfers, changed slots
    - single build per tx, read-only across all assertion functions
-3. Ship Loop-Elimination Pack:
+3. Ship Trigger Gate Pack:
+   - filtered trigger registration (`successOnly`, `topLevelOnly`, call-type, depth bounds)
+   - multi-selector filtered registration
+4. Ship Loop-Elimination Pack:
    - `getTriggerContext`
    - `anyCall` / `countCalls` / `allCallsBy` / `sumArgUint`
    - `CallFilter` presets (`successOnly`, `topLevelOnly`, call-type filter)
    - `loadAtCall` / `callerAt` / `slotDeltaAtCall`
-4. Ship Token Facts Pack:
+5. Ship Keyed Aggregate Pack:
+   - `sumCallArgUintForAddress`, `uniqueCallArgAddresses`, `sumCallArgUintByAddress`
+   - `sumEventUintForTopicKey`, `uniqueEventTopicValues`, `sumEventUintByTopic`
+6. Ship Token Facts Pack:
    - `erc20BalanceDiff`, `erc20SupplyDiff`, `erc20AllowanceDiff`
    - `getERC20NetFlow`, `getERC20FlowByCall`
-5. Ship Policy Pack:
+   - `erc4626TotalAssetsDiff`, `erc4626TotalSupplyDiff`, `erc4626VaultAssetBalanceDiff`, `erc4626AssetsPerShareDiffBps`
+7. Ship Policy Pack:
    - `allSlotWritesBy`, `anySlotWritten`
    - filtered logs helpers
    - keep `getStorageWrites` as escape hatch
-6. Rewrite top ROI assertions first:
+8. Rewrite top ROI assertions first:
    - `ethereum-vault-connector/assertions/src/AccountHealthAssertion.a.sol`
    - `malda-lending/assertions/src/OutflowLimiterAssertion.a.sol`
    - `morpho-vault-2/assertions/src/VaultV2ConfigAssertions.a.sol`
    - `aave-v3-origin/assertions/src/production/BorrowingInvariantAssertions.a.sol`
-7. Ship P1 deterministic mapping/balance diffs for known-key invariants.
-8. Ship P2 tracking only for unknown-key completeness gaps.
-9. Add lint gate:
+9. Ship P1 deterministic mapping/balance diffs for known-key invariants.
+10. Add lint gate:
    - fail on new manual `for (...)` loops over `getCallInputs/getLogs` unless allowlisted.
-10. Add API guardrails:
+11. Add API guardrails:
    - mark array-returning APIs as non-default in docs/examples
    - provide scalar alternative in every new helper namespace
 
@@ -623,10 +679,12 @@ If we want immediate wins without waiting for the full roadmap:
 1. >= 60% reduction in explicit call/log loops.
 2. >= 70% reduction in explicit `forkPreCall/forkPostCall` use.
 3. Zero new assertions that re-implement protocol formulas unless justified.
-4. Zero silent false-negatives in key-discovery assertions (`STRICT` mode where required).
+4. No new assertions require manual key-reconstruction loops for key coverage.
 5. >= 30% reduction in p95 `assertion_execution_duration` per tx.
 6. >= 50% reduction in precompile bytes returned per assertion function (scalar-first effect).
 7. No measurable regression in tx throughput under high assertion fan-out.
+8. >= 50% reduction in triggered assertion-function executions with zero relevant calls.
+9. Zero new manual dedupe/accumulator maps for call/event keyed invariants where keyed aggregate APIs exist.
 
 ## Implementation Progress
 
@@ -666,20 +724,59 @@ If we want immediate wins without waiting for the full roadmap:
 - Added 3 selector stability tests (14 PhEvm methods, 5 ITriggerRecorder methods, overload distinctness)
 - All 213 tests pass
 
-### Phases 7-9: Sync Script, Auto PR, Guardrails -- REMOVED
-- Removed: credible-std is a separate repo (https://github.com/phylaxsystems/credible-std),
-  not a local folder. The testdata/mock-protocol/lib/credible-std path is a git submodule.
-- Cross-repo sync between credible-sdk and credible-std should be handled at the
-  credible-std repo level, not by syncing into the submodule checkout.
+### Phase 7: Declarative Cheatcodes (P0 Scalar Facts) -- DONE
+- Implemented 14 new scalar-first cheatcodes across 6 slices:
+  - Slice 1: `anyCall`, `countCalls`, `callerAt` with `CallFilter` struct + depth tracking in CallTracer
+  - Slice 2: `allCallsBy`, `sumArgUint`
+  - Slice 3: `anySlotWritten`, `allSlotWritesBy` (journal-based write provenance)
+  - Slice 4: `loadAtCall`, `slotDeltaAtCall` (fork-switching call-boundary reads)
+  - Slice 5: `getTriggerContext` (trigger call ID threading from store → executor → precompile)
+  - Slice 6: `erc20BalanceDiff`, `erc20SupplyDiff`, `getERC20NetFlow`, `getERC20FlowByCall` (Transfer event scanning)
+- 4 new precompile modules: `call_facts.rs`, `write_policy.rs`, `call_boundary.rs`, `erc20_facts.rs`
+- New dispatch stage `execute_scalar_facts_precompile` in phevm.rs
+- All 247 tests pass (up from 213 baseline, includes fix for previously broken MockAssertion.json test)
+- Still TODO from plan: keyed aggregates (`sumCallArgUintForAddress`, etc.), ERC4626 helpers, trigger-time filtered registration
+
+### Phase 8: Declarative Cheatcodes (P1 Mapping + Diff Facts) -- NOT STARTED
+- Deterministic known-key facts:
+  - `getChangedSlots`, `getSlotDiff`
+  - `didMappingKeyChange`, `mappingValueDiff`
+  - `didBalanceChange`, `balanceDiff`
+
+### Phase 9: Assertion Rewrite + Helper Layer -- NOT STARTED
+- Add `credible-std` helper wrappers and filter presets (`successOnly`, `topLevelOnly`, etc.).
+- Rewrite highest-ROI assertions to use declarative APIs first:
+  - EVC, Malda, Morpho, Aave (then MYX/Lagoon/Etherex).
+- Add lint/docs guardrail: scalar/quantified APIs are default; array APIs are escape hatch.
+
+### Phase 10: Cross-Repo Interface Sync Automation -- DEFERRED
+- `credible-std` is a separate repo; automation should run cross-repo via CI workflows and PR bots.
+- In `credible-sdk`, only submodule pointer bumps should be done after upstream `credible-std` updates.
+
+### Phase 11: Runtime Performance Hardening Gate -- NOT STARTED
+- Goal: ensure the new declarative cheatcodes are fast under parallel assertion-function fan-out.
+- Ship a shared immutable `TxFacts` object (built once per tx) and consume it from precompiles.
+- Eliminate known repeated-scan hotspots and per-function clone amplification.
+- Add focused perf benchmarks for call facts/write policy/tx-fact build/clone overhead once benchmarking is unblocked.
 
 ## Detailed Implementation Plan (Execution)
 
 ### Scope Guardrails
 
 1. Implement in `credible-sdk` only.
-2. Keep unrelated dirty path untouched: `credible-sdk/testdata/mock-protocol/lib/credible-std` (except intentional submodule-pointer bump in Phase 8).
+2. Keep unrelated dirty path untouched: `credible-sdk/testdata/mock-protocol/lib/credible-std` (except intentional submodule-pointer bump in Phase 10).
 3. Commit with explicit pathspecs for touched files only.
 4. Run tests and benchmarks at every phase boundary.
+
+### Phase Map (What Ships When)
+
+1. Phases 0-5: executor performance foundations (already completed).
+2. Phase 6: canonical interface source in `credible-sdk` (completed).
+3. Phase 7: P0 declarative cheatcodes (this is where core new cheatcodes are implemented).
+4. Phase 8: P1 mapping and diff cheatcodes.
+5. Phase 9: rewrite assertions + add stdlib helper wrappers and authoring guardrails.
+6. Phase 10: cross-repo interface sync CI/auto-PR automation (deferred/outside this repo).
+7. Phase 11: runtime performance hardening gate for declarative cheatcodes.
 
 ### Phase 0: Baseline (Before Changes)
 
@@ -801,43 +898,99 @@ Goal: eliminate drift between `credible-sdk` bindings and `credible-std` interfa
 4. Add focused tests for newly introduced interface methods/selectors to prevent accidental removals.
 5. Commit.
 
-### Phase 7: Sync Script + CI Drift Gate
+### Phase 7: Declarative Cheatcodes P0 (Core)
 
-1. Add `credible-sdk/scripts/sync-interfaces.sh`:
-   - `sync` mode: copy canonical interface files into:
-     - `../credible-std/src/PhEvm.sol`
-     - `../credible-std/src/TriggerRecorder.sol`
-   - `check` mode: fail if any target differs from canonical source.
-2. Add CI job in `credible-sdk`:
-   - run sync script in `check` mode,
-   - fail PR when interface drift exists.
-3. Add CI job in `credible-std`:
-   - run same check against canonical upstream interface snapshot (or mirrored script).
-4. Commit.
+1. Implement tx-level shared indexes reused across all assertion functions in the same tx:
+   - call index, write index, log index, normalized transfer index, changed-slot index.
+2. Add `PhEvm` P0 scalar APIs:
+   - call facts: `anyCall`, `countCalls`, `allCallsBy`, `sumArgUint`, `getTriggerContext`
+   - keyed aggregates: `sumCallArgUintForAddress`, `uniqueCallArgAddresses`, `sumCallArgUintByAddress`,
+     `sumEventUintForTopicKey`, `uniqueEventTopicValues`, `sumEventUintByTopic`
+   - call-boundary facts: `loadAtCall`, `callerAt`, `slotDeltaAtCall`
+   - write/token facts: `anySlotWritten`, `allSlotWritesBy`, `erc20BalanceDiff`, `erc20SupplyDiff`,
+     `getERC20NetFlow`, `getERC20FlowByCall`, `erc4626TotalAssetsDiff`, `erc4626TotalSupplyDiff`,
+     `erc4626VaultAssetBalanceDiff`, `erc4626AssetsPerShareDiffBps`
+3. Add `ITriggerRecorder` filtered trigger registration APIs and `Assertion.sol` helper wrappers.
+4. Keep array-returning APIs as non-default escape hatches.
+5. Validate + benchmark:
 
-### Phase 8: Auto PR Workflow (Cross-Repo Sync)
+```bash
+cargo test -p assertion-executor --no-default-features --features "optimism test" --lib
+cargo bench -p assertion-executor --bench executor_transaction_perf -- --quick
+cargo bench -p assertion-executor --bench executor_avg_block_perf -- --quick
+```
 
-Target behavior: when canonical interface changes, downstream update PRs are opened automatically.
+6. Commit.
 
-1. On merge to `credible-sdk/main`, trigger downstream sync automation:
-   - Preferred: `repository_dispatch` to `credible-std`.
-   - Fallback: daily scheduled sync job in `credible-std` if dispatch is unavailable.
-2. In `credible-std`, workflow pulls canonical interface files from `credible-sdk/main`, applies sync, and opens/updates PR using bot automation (e.g. `create-pull-request` action).
-3. After `credible-std` PR merge, open/update a PR in `credible-sdk` to bump:
-   - `testdata/mock-protocol/lib/credible-std` submodule pointer only (no manual edits inside submodule from `credible-sdk`).
-4. Add labels + CODEOWNERS reviewers so interface changes are always reviewed by executor + stdlib owners.
+### Phase 8: Declarative Cheatcodes P1 (Known-Key First)
+
+1. Implement known-key deterministic diff APIs:
+   - `getChangedSlots`, `getSlotDiff`
+   - `didMappingKeyChange`, `mappingValueDiff`
+   - `didBalanceChange`, `balanceDiff`
+2. Validate + benchmark:
+
+```bash
+cargo test -p assertion-executor --no-default-features --features "optimism test" --lib
+cargo bench -p assertion-executor --bench executor_transaction_perf -- --quick
+```
+
+3. Commit.
+
+### Phase 9: Assertion Rewrite + Authoring Guardrails
+
+1. Add `credible-std` helper wrappers/presets for declarative usage:
+   - filter presets and policy predicates (`successOnly`, `topLevelOnly`, `allCallsDeltaGE`, etc.).
+2. Rewrite highest-ROI assertions first:
+   - `ethereum-vault-connector/assertions/src/AccountHealthAssertion.a.sol`
+   - `malda-lending/assertions/src/OutflowLimiterAssertion.a.sol`
+   - `morpho-vault-2/assertions/src/VaultV2ConfigAssertions.a.sol`
+   - `aave-v3-origin/assertions/src/production/BorrowingInvariantAssertions.a.sol`
+3. Add lint/docs guardrails to discourage manual loops over `getCallInputs/getLogs` without allowlist justification.
+4. Validate:
+
+```bash
+cargo test -p assertion-executor --no-default-features --features "optimism test" --lib
+```
+
 5. Commit.
 
-### Phase 9: Operational Guardrails
+### Phase 10: Cross-Repo Interface Sync CI/Auto-PR (Deferred)
 
-1. Add required status checks:
-   - `interface-sync-check` in `credible-sdk`
-   - `interface-sync-check` in `credible-std`
-2. Add contributor docs:
-   - "edit canonical interface only"
-   - "run sync script before push"
-3. Add failure message in CI explaining exactly how to regenerate and where drift was found.
-4. Commit.
+1. In `credible-std` repo, add workflow to sync canonical interface files from `credible-sdk` and open PRs.
+2. In `credible-sdk`, only bump `testdata/mock-protocol/lib/credible-std` submodule pointer after upstream merge.
+3. Add required CI checks in each repo for drift prevention.
+
+### Phase 11: Runtime Performance Hardening Gate (Final)
+
+Goal: lock in latency wins from declarative cheatcodes under parallel execution.
+
+1. Build shared tx facts once, reuse across all assertion functions in the tx:
+   - `Arc<TxFacts>` on `PhEvmContext`.
+   - Fact indexes: first call by target, call range boundaries, write index, state-change index, log index, normalized transfer index.
+2. Replace O(journal * calls) write attribution with one-pass call-window attribution:
+   - derive `journal_idx -> innermost_call_id` via call start/end boundaries.
+   - use that for `allSlotWritesBy` and any caller-attributed write checks.
+3. Remove per-query full scans from hot precompiles:
+   - `anySlotWritten`, `allSlotWritesBy`, `getStateChanges` use indexed lookups.
+   - `anyCall`/`countCalls`/`allCallsBy`/`sumArgUint` use iterator/short-circuit paths (no intermediate `Vec` for scalar checks).
+4. Reduce per-function clone amplification in executor path:
+   - make `MultiForkDb` carry immutable post-tx journal as shared `Arc` and lazily clone only when creating forks.
+   - avoid per-contract linear `call_records()` scan for trigger context by using a precomputed target->first-call map (or exact matched trigger call id metadata).
+5. Cache expensive encodings on tx scope:
+   - cache `getLogs` ABI encoding once per tx.
+   - optionally cache filtered array encodings for escape-hatch APIs when identical queries repeat.
+6. Add focused perf suites (when benchmarks are available again):
+   - `precompile_call_facts_hot`
+   - `precompile_write_policy_hot`
+   - `precompile_state_changes_hot`
+   - `tx_facts_build`
+   - `executor_clone_overhead`
+7. Validation gate:
+   - no remaining O(journal * calls) paths.
+   - no per-assertion full-journal scan in hot scalar precompiles.
+   - trigger context lookup is O(1) per assertion contract.
+   - benchmark deltas documented and neutral-to-positive before merge.
 
 ### Commit Cadence and Template
 
@@ -858,5 +1011,7 @@ Target behavior: when canonical interface changes, downstream update PRs are ope
 2. No unrelated file is included in commits.
 3. Benchmarks show neutral-to-positive impact on tx validation latency.
 4. New behavior is covered by unit tests.
-5. Interface drift checks are enforced in CI for both `credible-sdk` and `credible-std`.
-6. Canonical interface updates automatically produce downstream sync PRs.
+5. Declarative cheatcodes from P0 and P1 are implemented and used in rewritten top-ROI assertions.
+6. Array-loop-based assertion patterns are no longer the default authoring path.
+7. Interface drift checks and auto-PR sync are defined for cross-repo rollout (Phase 10).
+8. Runtime hardening gate (Phase 11) passes with indexed precompile paths and measured latency improvements.
