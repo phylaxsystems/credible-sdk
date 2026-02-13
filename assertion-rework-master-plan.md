@@ -772,7 +772,15 @@ If we want immediate wins without waiting for the full roadmap:
   - [x] Cache per-trigger selector call-id extraction once per adopter read (`assertion_store.rs`).
   - [x] Multi-call execution semantics in executor (run selector once per triggering call ID, non-call selectors once).
   - [x] Add/adjust tests for multi-call trigger context semantics (normal + inspector paths).
-  - [ ] Commit fix pack + update status with commit IDs and validation commands.
+  - [x] Commit fix pack + update status with commit IDs and validation commands.
+    - Commits:
+      - `cd6a6e2` — executor/precompile/store hardening + multi-call trigger context support.
+      - `bc272fd` — plan checklist progress tracking.
+    - Validation run:
+      - `cargo test -p assertion-executor@1.0.8 --no-default-features --features "optimism test" --lib` (268 passed).
+      - `cargo bench -p assertion-executor@1.0.8 --bench assertion_store_read -- --quick`.
+      - `cargo bench -p assertion-executor@1.0.8 --bench executor_transaction_perf -- --quick`.
+      - `cargo bench -p assertion-executor@1.0.8 --bench executor_avg_block_perf -- --quick`.
 - Remaining items (not yet started):
   - Items 1-2 (empty-selector short-circuits): Already exist in executor path (verified by code review).
   - Item 3 (adaptive parallelism): Already implemented in Phases 3-4.
