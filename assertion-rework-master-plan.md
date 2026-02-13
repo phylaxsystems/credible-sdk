@@ -737,27 +737,38 @@ If we want immediate wins without waiting for the full roadmap:
 - All 247 tests pass (up from 213 baseline, includes fix for previously broken MockAssertion.json test)
 - Still TODO from plan: keyed aggregates (`sumCallArgUintForAddress`, etc.), ERC4626 helpers, trigger-time filtered registration
 
-### Phase 8: Declarative Cheatcodes (P1 Mapping + Diff Facts) -- NOT STARTED
-- Deterministic known-key facts:
-  - `getChangedSlots`, `getSlotDiff`
-  - `didMappingKeyChange`, `mappingValueDiff`
-  - `didBalanceChange`, `balanceDiff`
+### Phase 8: Declarative Cheatcodes (P1 Mapping + Diff Facts) -- DONE
+- Implemented 6 new deterministic known-key cheatcodes:
+  - `getChangedSlots(address)` — journal-scanned, returns only net-changed slots (sorted, deterministic)
+  - `getSlotDiff(address, bytes32)` — returns (pre, post, changed) tuple from journal first-had-value + state
+  - `didMappingKeyChange(address, bytes32, bytes32, uint256)` — keccak256(key++baseSlot)+fieldOffset slot computation
+  - `mappingValueDiff(address, bytes32, bytes32, uint256)` — returns (pre, post, changed) for mapping slot
+  - `didBalanceChange(address, address)` — Transfer event net-flow != 0
+  - `balanceDiff(address, address)` — equivalent to erc20BalanceDiff
+- New module: `slot_diffs.rs` (getChangedSlots, getSlotDiff, didMappingKeyChange, mappingValueDiff)
+- Extended `erc20_facts.rs` (didBalanceChange, balanceDiff)
+- 263 tests pass (16 new)
 
-### Phase 9: Assertion Rewrite + Helper Layer -- NOT STARTED
-- Add `credible-std` helper wrappers and filter presets (`successOnly`, `topLevelOnly`, etc.).
-- Rewrite highest-ROI assertions to use declarative APIs first:
-  - EVC, Malda, Morpho, Aave (then MYX/Lagoon/Etherex).
-- Add lint/docs guardrail: scalar/quantified APIs are default; array APIs are escape hatch.
+### Phase 9: Assertion Rewrite + Helper Layer -- DEFERRED (cross-repo)
+- Requires modifying `credible-std` (separate repo) for helper wrappers/presets.
+- Requires rewriting assertions in downstream repos (EVC, Malda, Morpho, Aave, etc.).
+- Canonical PhEvm.sol interface (34 methods) is ready for sync.
+- Deferred until Phase 10 cross-repo sync is in place.
 
 ### Phase 10: Cross-Repo Interface Sync Automation -- DEFERRED
 - `credible-std` is a separate repo; automation should run cross-repo via CI workflows and PR bots.
 - In `credible-sdk`, only submodule pointer bumps should be done after upstream `credible-std` updates.
 
-### Phase 11: Runtime Performance Hardening Gate -- NOT STARTED
-- Goal: ensure the new declarative cheatcodes are fast under parallel assertion-function fan-out.
-- Ship a shared immutable `TxFacts` object (built once per tx) and consume it from precompiles.
-- Eliminate known repeated-scan hotspots and per-function clone amplification.
-- Add focused perf benchmarks for call facts/write policy/tx-fact build/clone overhead once benchmarking is unblocked.
+### Phase 11: Runtime Performance Hardening Gate -- IN PROGRESS
+- **StorageChangeIndex**: DONE (`8ac766e`). Lazily-built index on `CallTracer` via `OnceLock` pre-indexes all `StorageChanged` journal entries by `(address, slot)`. Replaces O(journal) scans with O(1) lookups in `slot_diffs`, `state_changes`, and `write_policy` precompiles. 266 tests pass.
+- Remaining items (not yet started):
+  - Items 1-2 (empty-selector short-circuits): Already exist in executor path (verified by code review).
+  - Item 3 (adaptive parallelism): Already implemented in Phases 3-4.
+  - Item 6 (log re-encoding caching): Not started.
+  - Item 7 (bounded array responses): Not started.
+  - Item 8 (trigger-time call-shape filtering): Not started.
+  - Item 9 (keyed/grouped aggregate indexes): Not started.
+  - Focused perf benchmarks: Blocked on benchmarking infrastructure.
 
 ## Detailed Implementation Plan (Execution)
 
