@@ -4,6 +4,8 @@
 //! `Transfer` logs and therefore represent trace-derived facts, not canonical token
 //! state from direct contract calls.
 
+#![allow(clippy::missing_errors_doc)]
+
 use crate::inspectors::{
     phevm::{
         PhEvmContext,
@@ -88,11 +90,7 @@ fn transfer_log_indices<'a>(ph_context: &'a PhEvmContext, token: Address) -> &'a
     ph_context
         .logs_and_traces
         .call_traces
-        .log_indices_by_emitter_topic0(
-            ph_context.logs_and_traces.tx_logs,
-            token,
-            TRANSFER_TOPIC.into(),
-        )
+        .log_indices_by_emitter_topic0(ph_context.logs_and_traces.tx_logs, token, TRANSFER_TOPIC)
 }
 
 fn in_log_window(idx: usize, start: usize, end: usize) -> bool {
@@ -105,7 +103,7 @@ fn in_log_window(idx: usize, start: usize, end: usize) -> bool {
 /// For standard ERC20 tokens, this equals `balanceOf(account)` post-tx minus pre-tx.
 ///
 /// NOTE: Uses Transfer event scanning rather than sub-EVM `balanceOf()` calls because
-/// precompiles hold `&mut CTX` which borrows the MultiForkDb, preventing nested EVM
+/// precompiles hold `&mut CTX` which borrows the `MultiForkDb`, preventing nested EVM
 /// creation. This is accurate for standard ERC20 tokens but will NOT capture balance
 /// changes from rebasing tokens, fee-on-transfer tokens, or tokens that modify
 /// balances without emitting Transfer events.
@@ -259,10 +257,9 @@ pub fn get_erc20_flow_by_call(
 
     // Filter tx_logs to those within the call's log checkpoint range
     let logs = ph_context.logs_and_traces.tx_logs;
-    let start_log_i = pre_checkpoint.map(|c| c.log_i).unwrap_or(0).min(logs.len());
+    let start_log_i = pre_checkpoint.map_or(0, |c| c.log_i).min(logs.len());
     let end_log_i_raw = post_checkpoint
-        .map(|c| c.log_i)
-        .unwrap_or(logs.len())
+        .map_or(logs.len(), |c| c.log_i)
         .min(logs.len());
     // Guard against malformed/inconsistent checkpoints.
     let end_log_i = end_log_i_raw.max(start_log_i);

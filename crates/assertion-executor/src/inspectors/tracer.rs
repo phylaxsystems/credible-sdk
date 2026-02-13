@@ -50,7 +50,7 @@ use tracing::error;
 /// repeating full scans in every precompile call within the same tx/assertion run.
 #[derive(Clone, Debug)]
 pub struct StorageChangeIndex {
-    /// Maps (address, slot) -> list of (journal_idx, had_value) entries in journal order.
+    /// Maps (address, slot) -> list of (`journal_idx`, `had_value`) entries in journal order.
     changes_by_key: HashMap<(Address, U256), Vec<StorageChangeEntry>>,
     /// Maps address -> sorted vec of slots that had any `StorageChanged` entry.
     slots_by_address: HashMap<Address, Vec<U256>>,
@@ -122,7 +122,9 @@ impl StorageChangeIndex {
     /// Get all slots that had `StorageChanged` entries for an address (sorted).
     #[inline]
     pub fn slots_for_address(&self, address: &Address) -> Option<&[U256]> {
-        self.slots_by_address.get(address).map(|v| v.as_slice())
+        self.slots_by_address
+            .get(address)
+            .map(std::vec::Vec::as_slice)
     }
 
     /// Get all `StorageChanged` entries for (address, slot) in journal order.
@@ -130,7 +132,7 @@ impl StorageChangeIndex {
     pub fn changes_for_key(&self, address: &Address, slot: &U256) -> Option<&[StorageChangeEntry]> {
         self.changes_by_key
             .get(&(*address, *slot))
-            .map(|v| v.as_slice())
+            .map(std::vec::Vec::as_slice)
     }
 
     /// Build an index from a journal. Public for tests that need direct access.
@@ -276,6 +278,7 @@ impl CallTracer {
         }
 
         let index = self.call_records.len();
+        #[allow(clippy::cast_possible_truncation)]
         let depth = self.pending_post_call_writes.len() as u16;
 
         // Push to stack - tracks pending calls awaiting post_call_checkpoint
@@ -616,7 +619,7 @@ impl CallTracer {
             let mut map: HashMap<(Address, FixedBytes<32>), Vec<usize>> = HashMap::new();
             for (idx, log) in tx_logs.iter().enumerate() {
                 if let Some(first_topic) = log.data.topics().first() {
-                    map.entry((log.address, (*first_topic).into()))
+                    map.entry((log.address, (*first_topic)))
                         .or_default()
                         .push(idx);
                 }

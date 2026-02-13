@@ -4,6 +4,8 @@
 //! call-shape invariants declaratively without iterating over raw `getCallInputs()`
 //! output in Solidity.
 
+#![allow(clippy::missing_errors_doc)]
+
 use crate::inspectors::{
     phevm::{
         PhEvmContext,
@@ -55,11 +57,10 @@ const PER_RETURN_WORD_COST: u64 = 3;
 const SCALAR_RETURN_WORDS: u64 = 1;
 const TRIGGER_CONTEXT_RETURN_WORDS: u64 = 6;
 
-/// Maps the CallFilter.callType field to an optional CallScheme filter.
+/// Maps the CallFilter.callType field to an optional `CallScheme` filter.
 /// 0 = any, 1 = CALL, 2 = STATICCALL, 3 = DELEGATECALL, 4 = CALLCODE
 pub(crate) fn call_type_to_scheme(call_type: u8) -> Option<CallScheme> {
     match call_type {
-        0 => None,
         1 => Some(CallScheme::Call),
         2 => Some(CallScheme::StaticCall),
         3 => Some(CallScheme::DelegateCall),
@@ -351,9 +352,8 @@ pub fn sum_arg_uint(
             if !call_matches_filter(record, depth, &call.filter, scheme_filter) {
                 continue;
             }
-            let calldata = match &record.inputs().input {
-                revm::interpreter::CallInput::Bytes(b) => b,
-                _ => continue,
+            let revm::interpreter::CallInput::Bytes(calldata) = &record.inputs().input else {
+                continue;
             };
 
             // Skip the 4-byte selector, then read 32 bytes at the arg offset.
@@ -1093,8 +1093,7 @@ mod test {
         let result = sum_arg_uint(&context, &encoded, 1_000_000);
         assert!(matches!(
             result,
-            Err(CallFactsError::ArgOffsetOverflow { .. })
-                | Err(CallFactsError::InvalidArgIndex { .. })
+            Err(CallFactsError::ArgOffsetOverflow { .. } | CallFactsError::InvalidArgIndex { .. })
         ));
     }
 

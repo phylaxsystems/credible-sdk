@@ -171,7 +171,7 @@ pub struct PhEvmContext<'a> {
     pub adopter: Address,
     pub console_logs: Vec<String>,
     pub original_tx_env: &'a TxEnv,
-    /// The call ID (index into CallTracer.call_records) of the call that triggered
+    /// The call ID (index into `CallTracer.call_records`) of the call that triggered
     /// this assertion. `None` if the trigger was not a call (e.g. storage/balance change).
     pub trigger_call_id: Option<TriggerCallId>,
 }
@@ -513,6 +513,7 @@ impl<'a> PhEvmInspector<'a> {
     ///
     /// These selectors derive declarative facts from captured traces
     /// (calls, logs, slot diffs) and do not mutate fork state.
+    #[allow(clippy::too_many_lines)]
     fn execute_fact_query_precompile<ExtDb: DatabaseRef>(
         &self,
         selector: [u8; 4],

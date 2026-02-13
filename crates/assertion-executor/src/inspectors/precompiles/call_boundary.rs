@@ -1,3 +1,5 @@
+#![allow(clippy::missing_errors_doc)]
+
 use crate::{
     db::{
         DatabaseCommit,
@@ -127,7 +129,7 @@ where
 /// `loadAtCall(address target, bytes32 slot, uint256 callId, CallPoint point) -> bytes32`
 ///
 /// Forks to the pre or post state of the specified call, reads the storage slot,
-/// then restores the PostTx fork state. Returns the slot value.
+/// then restores the `PostTx` fork state. Returns the slot value.
 ///
 /// `callId` should come from trigger context (per-call assertion execution) or
 /// from prior call-query precompiles.
@@ -325,7 +327,7 @@ mod test {
 
     const TEST_GAS: u64 = 1_000_000;
 
-    /// Creates a MultiForkDb with pre-tx and post-tx storage, plus a CallTracer with
+    /// Creates a `MultiForkDb` with pre-tx and post-tx storage, plus a `CallTracer` with
     /// one call record whose checkpoint range covers the journal entries from the sstore.
     fn create_test_setup(
         address: Address,

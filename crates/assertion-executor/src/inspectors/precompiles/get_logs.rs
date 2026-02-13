@@ -54,7 +54,6 @@ fn encode_logs(logs: &[Log]) -> Bytes {
 /// Get the log outputs.
 ///
 /// # Errors
-///
 pub fn get_logs(context: &PhEvmContext, gas: u64) -> Result<PhevmOutcome, GetLogsError> {
     let gas_limit = gas;
     let mut gas_left = gas;
@@ -230,7 +229,9 @@ mod test {
                 assert_eq!(outcome.gas(), gas_limit);
                 assert!(outcome.bytes().is_empty());
             }
-            other => panic!("expected OutOfGas, got {other:?}"),
+            other @ GetLogsError::TooManyLogs { .. } => {
+                panic!("expected OutOfGas, got {other:?}");
+            }
         }
     }
 
@@ -459,7 +460,9 @@ mod test {
                 assert_eq!(count, MAX_ARRAY_RESPONSE_ITEMS + 1);
                 assert_eq!(max, MAX_ARRAY_RESPONSE_ITEMS);
             }
-            other => panic!("expected TooManyLogs, got {other:?}"),
+            other @ GetLogsError::OutOfGas(_) => {
+                panic!("expected TooManyLogs, got {other:?}");
+            }
         }
     }
 
@@ -467,8 +470,7 @@ mod test {
     fn test_get_logs_populates_tracer_encoding_cache() {
         let log = Log {
             address: Address::ZERO,
-            data: LogData::new(vec![random_bytes32()], Bytes::from(random_bytes::<16>()))
-                .unwrap(),
+            data: LogData::new(vec![random_bytes32()], Bytes::from(random_bytes::<16>())).unwrap(),
         };
         let logs = [log];
 

@@ -308,7 +308,7 @@ impl AssertionExecutor {
     /// Reads triggered assertions and executes each assertion contract in parallel.
     fn execute_triggered_assertions<Active, T, F>(
         &self,
-        block_env: BlockEnv,
+        block_env: &BlockEnv,
         tx_fork_db: &ForkDb<Active>,
         forked_tx_result: &ExecuteForkedTxResult,
         tx_env: &TxEnv,
@@ -363,7 +363,7 @@ impl AssertionExecutor {
             run_assertion_contract(
                 &assertion_for_execution.assertion_contract,
                 &assertion_for_execution.selectors,
-                &block_env,
+                block_env,
                 tx_fork_db.clone(),
                 &phevm_context,
                 tx_arena_epoch,
@@ -504,6 +504,7 @@ impl AssertionExecutor {
     ///
     /// Returns an error if executing the transaction or assertions fails.
     #[instrument(level = "debug", skip_all, target = "executor::validate_tx")]
+    #[allow(clippy::needless_pass_by_value)]
     pub fn validate_transaction_ext_db<ExtDb, Active>(
         &mut self,
         block_env: BlockEnv,
@@ -539,7 +540,7 @@ impl AssertionExecutor {
         let assertion_timer = Instant::now();
         let results = self
             .execute_assertions(
-                block_env,
+                &block_env,
                 fork_db,
                 &forked_tx_result,
                 tx_env,
@@ -565,7 +566,7 @@ impl AssertionExecutor {
 
     fn execute_assertions<Active>(
         &self,
-        block_env: BlockEnv,
+        block_env: &BlockEnv,
         tx_fork_db: &ForkDb<Active>,
         forked_tx_result: &ExecuteForkedTxResult,
         tx_env: &TxEnv,
@@ -745,6 +746,7 @@ impl AssertionExecutor {
     ///
     /// Returns an error if executing the transaction or assertions fails.
     #[instrument(level = "debug", skip_all, target = "executor::validate_tx")]
+    #[allow(clippy::needless_pass_by_value)]
     pub fn validate_transaction<Active>(
         &mut self,
         block_env: BlockEnv,
@@ -775,7 +777,7 @@ impl AssertionExecutor {
         let assertion_timer = Instant::now();
         let results = self
             .execute_assertions(
-                block_env,
+                &block_env,
                 fork_db,
                 &forked_tx_result,
                 tx_env,
@@ -1112,7 +1114,7 @@ mod test {
         let tx_arena_epoch = crate::arena::next_tx_arena_epoch();
         let results = executor
             .execute_assertions(
-                block_env,
+                &block_env,
                 &fork_db,
                 &forked_tx_result,
                 &TxEnv::default(),

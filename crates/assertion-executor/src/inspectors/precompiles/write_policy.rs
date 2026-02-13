@@ -3,6 +3,8 @@
 //! These precompiles intentionally expose boolean policy checks (`any`, `all`).
 //! Value-oriented queries belong to `getSlotDiff`/`load`.
 
+#![allow(clippy::missing_errors_doc)]
+
 use crate::inspectors::{
     phevm::{
         PhEvmContext,
@@ -117,11 +119,9 @@ pub fn all_slot_writes_by(
     }
 
     // Use the index to get only matching storage changes, then attribute each to a call
-    let result = index
-        .changes_for_key(&target, &slot)
-        .map_or(true, |entries| {
-            all_matching_writes_by_allowed_caller(entries, call_records, allowed_caller)
-        });
+    let result = index.changes_for_key(&target, &slot).is_none_or(|entries| {
+        all_matching_writes_by_allowed_caller(entries, call_records, allowed_caller)
+    });
 
     let encoded = result.abi_encode();
     Ok(PhevmOutcome::new(encoded.into(), gas_limit - gas_left))
@@ -129,7 +129,7 @@ pub fn all_slot_writes_by(
 
 /// Checks whether all matching writes are attributed to `allowed_caller`.
 ///
-/// Runs in O(call_records log call_records + matching_writes) by sweeping sorted call
+/// Runs in `O(call_records` log `call_records` + `matching_writes`) by sweeping sorted call
 /// start/end checkpoints once while iterating matching writes in journal order.
 fn all_matching_writes_by_allowed_caller(
     entries: &[crate::inspectors::tracer::StorageChangeEntry],
@@ -151,8 +151,7 @@ fn all_matching_writes_by_allowed_caller(
     end_order.sort_by_key(|&idx| {
         call_records[idx]
             .post_call_checkpoint()
-            .map(|checkpoint| checkpoint.journal_i)
-            .unwrap_or(usize::MAX)
+            .map_or(usize::MAX, |checkpoint| checkpoint.journal_i)
     });
 
     let mut active_calls: Vec<usize> = Vec::new();

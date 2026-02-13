@@ -1,3 +1,5 @@
+#![allow(clippy::missing_errors_doc)]
+
 use crate::{
     db::{
         DatabaseCommit,
@@ -125,7 +127,7 @@ where
         .map_err(Erc4626FactsError::MultiForkError)?;
 
     let env = evm_env(chain_id, SpecId::default(), BlockEnv::default());
-    let tx_gas_limit = (*gas_left).min(MAX_VIEW_CALL_GAS).max(BASE_COST);
+    let tx_gas_limit = (*gas_left).clamp(BASE_COST, MAX_VIEW_CALL_GAS);
     let tx_env = TxEnv {
         kind: TxKind::Call(target),
         caller: ph_context.adopter,

@@ -76,15 +76,21 @@ impl From<ITriggerRecorder::TriggerFilter> for TriggerFilter {
 
 #[derive(Clone, Debug, PartialEq, Hash, Eq, Serialize, Deserialize)]
 pub enum TriggerType {
-    Call { trigger_selector: FixedBytes<4> },
+    Call {
+        trigger_selector: FixedBytes<4>,
+    },
     AllCalls,
     CallFiltered {
         trigger_selector: FixedBytes<4>,
         filter: TriggerFilter,
     },
-    AllCallsFiltered { filter: TriggerFilter },
+    AllCallsFiltered {
+        filter: TriggerFilter,
+    },
     BalanceChange,
-    StorageChange { trigger_slot: FixedBytes<32> },
+    StorageChange {
+        trigger_slot: FixedBytes<32>,
+    },
     AllStorageChanges,
 }
 
@@ -462,25 +468,29 @@ mod test {
         recorder.record_trigger(&input).unwrap();
 
         assert_eq!(recorder.triggers.len(), 1);
-        assert!(recorder
-            .triggers
-            .contains_key(&TriggerType::AllCallsFiltered {
+        assert!(
+            recorder
+                .triggers
+                .contains_key(&TriggerType::AllCallsFiltered {
+                    filter: TriggerFilter {
+                        call_type: 3,
+                        min_depth: 1,
+                        max_depth: 2,
+                        top_level_only: false,
+                    }
+                })
+        );
+        assert!(
+            recorder.triggers[&TriggerType::AllCallsFiltered {
                 filter: TriggerFilter {
                     call_type: 3,
                     min_depth: 1,
                     max_depth: 2,
                     top_level_only: false,
                 }
-            }));
-        assert!(recorder.triggers[&TriggerType::AllCallsFiltered {
-            filter: TriggerFilter {
-                call_type: 3,
-                min_depth: 1,
-                max_depth: 2,
-                top_level_only: false,
-            }
-        }]
-        .contains(&fn_selector));
+            }]
+                .contains(&fn_selector)
+        );
     }
 
     #[test]
@@ -505,18 +515,7 @@ mod test {
         recorder.record_trigger(&input).unwrap();
 
         assert_eq!(recorder.triggers.len(), 1);
-        assert!(recorder
-            .triggers
-            .contains_key(&TriggerType::CallFiltered {
-                trigger_selector,
-                filter: TriggerFilter {
-                    call_type: 2,
-                    min_depth: 0,
-                    max_depth: 4,
-                    top_level_only: true,
-                },
-            }));
-        assert!(recorder.triggers[&TriggerType::CallFiltered {
+        assert!(recorder.triggers.contains_key(&TriggerType::CallFiltered {
             trigger_selector,
             filter: TriggerFilter {
                 call_type: 2,
@@ -524,8 +523,19 @@ mod test {
                 max_depth: 4,
                 top_level_only: true,
             },
-        }]
-        .contains(&fn_selector));
+        }));
+        assert!(
+            recorder.triggers[&TriggerType::CallFiltered {
+                trigger_selector,
+                filter: TriggerFilter {
+                    call_type: 2,
+                    min_depth: 0,
+                    max_depth: 4,
+                    top_level_only: true,
+                },
+            }]
+                .contains(&fn_selector)
+        );
     }
 
     #[test]

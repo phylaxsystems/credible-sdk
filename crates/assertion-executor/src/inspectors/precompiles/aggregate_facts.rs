@@ -1,3 +1,5 @@
+#![allow(clippy::missing_errors_doc)]
+
 use crate::inspectors::{
     phevm::{
         PhEvmContext,
@@ -82,9 +84,8 @@ fn read_call_arg_word(
     record: &crate::inspectors::tracer::CallRecord,
     start: usize,
 ) -> Option<[u8; 32]> {
-    let calldata = match &record.inputs().input {
-        revm::interpreter::CallInput::Bytes(bytes) => bytes,
-        _ => return None,
+    let revm::interpreter::CallInput::Bytes(calldata) = &record.inputs().input else {
+        return None;
     };
     Some(read_zero_extended_word(calldata.as_ref(), start))
 }
@@ -370,7 +371,7 @@ pub fn unique_event_topic_values(
         if topic_idx >= topics.len() {
             continue;
         }
-        let value: FixedBytes<32> = topics[topic_idx].into();
+        let value: FixedBytes<32> = topics[topic_idx];
         if unique.len() >= MAX_ARRAY_RESPONSE_ITEMS && !unique.contains(&value) {
             return Err(AggregateFactsError::TooManyResults {
                 count: unique.len() + 1,
@@ -419,7 +420,7 @@ pub fn sum_event_uint_by_topic(
         if topic_idx >= topics.len() {
             continue;
         }
-        let key: FixedBytes<32> = topics[topic_idx].into();
+        let key: FixedBytes<32> = topics[topic_idx];
         let value = U256::from_be_bytes(read_zero_extended_word(&log.data.data, value_start));
         let next_count = grouped.len() + 1;
         let is_full = grouped.len() >= MAX_ARRAY_RESPONSE_ITEMS;

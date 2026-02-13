@@ -375,7 +375,7 @@ mod test {
         let selector = random_selector();
         let get_call_inputs = create_get_call_input(target, selector);
 
-        let mock_call_inputs: Vec<_> = (0..(MAX_ARRAY_RESPONSE_ITEMS + 1))
+        let mock_call_inputs: Vec<_> = (0..=MAX_ARRAY_RESPONSE_ITEMS)
             .map(|_| create_random_call_input::<1>(target, selector))
             .collect();
         let call_tracer = create_call_tracer_with_inputs(mock_call_inputs);

@@ -32,10 +32,11 @@ mod tests {
     use super::*;
     use alloy_sol_types::SolCall;
 
-    /// Guards against accidental removal or modification of PhEvm interface methods.
+    /// Guards against accidental removal or modification of `PhEvm` interface methods.
     /// If any selector changes, it means the ABI has changed and downstream
     /// credible-std must be updated in sync.
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn test_phevm_interface_selectors_are_stable() {
         // Each selector is the first 4 bytes of keccak256(signature).
         // These values are ABI-critical and must not change.
@@ -216,7 +217,7 @@ mod tests {
         );
     }
 
-    /// Guards against accidental removal or modification of ITriggerRecorder interface methods.
+    /// Guards against accidental removal or modification of `ITriggerRecorder` interface methods.
     #[test]
     fn test_trigger_recorder_interface_selectors_are_stable() {
         let expected_selectors: Vec<(&str, [u8; 4])> = vec![

@@ -66,7 +66,6 @@ pub enum AssertionStoreError {
 
 fn call_type_to_scheme(call_type: u8) -> Option<CallScheme> {
     match call_type {
-        0 => None,
         1 => Some(CallScheme::Call),
         2 => Some(CallScheme::StaticCall),
         3 => Some(CallScheme::DelegateCall),
@@ -312,7 +311,7 @@ impl StoreBackend {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SelectorWithTrigger {
     pub selector: FixedBytes<4>,
-    /// Call record indices from the CallTracer that triggered this selector.
+    /// Call record indices from the `CallTracer` that triggered this selector.
     /// Empty for non-call triggers (storage changes, balance changes).
     pub trigger_calls: Vec<usize>,
 }
@@ -903,6 +902,7 @@ impl AssertionStore {
         fields(assertion_adopter=?assertion_adopter, triggers=?triggers, block=?block),
         level = "trace"
     )]
+    #[allow(clippy::too_many_lines)]
     fn read_adopter(
         &self,
         assertion_adopter: &Address,
@@ -1106,31 +1106,32 @@ impl AssertionStore {
                         .trigger_recorder
                         .triggers
                         .contains_key(&TriggerType::AllStorageChanges);
-                    if !has_filtered_triggers && !has_all_calls && !has_all_storage {
-                        if let Some(selectors) = a
+                    if !has_filtered_triggers
+                        && !has_all_calls
+                        && !has_all_storage
+                        && let Some(selectors) = a
                             .trigger_recorder
                             .triggers
                             .get(&TriggerType::Call { trigger_selector })
-                        {
-                            if selectors.is_empty() {
-                                return None;
-                            }
-                            let call_ids: &[usize] = call_ids_by_trigger_selector
-                                .get(&trigger_selector)
-                                .copied()
-                                .unwrap_or(&[]);
-                            let call_ids = call_ids.to_vec();
-                            let selectors_with_triggers = selectors
-                                .iter()
-                                .map(|selector| {
-                                    SelectorWithTrigger {
-                                        selector: *selector,
-                                        trigger_calls: call_ids.clone(),
-                                    }
-                                })
-                                .collect();
-                            return Some((a.assertion_contract, selectors_with_triggers));
+                    {
+                        if selectors.is_empty() {
+                            return None;
                         }
+                        let call_ids: &[usize] = call_ids_by_trigger_selector
+                            .get(&trigger_selector)
+                            .copied()
+                            .unwrap_or(&[]);
+                        let call_ids = call_ids.to_vec();
+                        let selectors_with_triggers = selectors
+                            .iter()
+                            .map(|selector| {
+                                SelectorWithTrigger {
+                                    selector: *selector,
+                                    trigger_calls: call_ids.clone(),
+                                }
+                            })
+                            .collect();
+                        return Some((a.assertion_contract, selectors_with_triggers));
                     }
                 }
 
@@ -1143,57 +1144,7 @@ impl AssertionStore {
                     )
                 });
 
-                if !has_filtered_triggers {
-                    // Fast path for legacy trigger sets (no filter-based triggers).
-                    let mut has_storage_trigger_legacy = false;
-
-                    for trigger in triggers {
-                        if let Some(selectors) = a.trigger_recorder.triggers.get(trigger) {
-                            let call_ids: &[usize] = match trigger {
-                                TriggerType::Call { trigger_selector } => {
-                                    call_ids_by_trigger_selector
-                                        .get(trigger_selector)
-                                        .map_or(&[], |ids| *ids)
-                                }
-                                _ => &[],
-                            };
-
-                            for sel in selectors {
-                                selector_call_ids
-                                    .entry(*sel)
-                                    .or_default()
-                                    .extend_from_slice(call_ids);
-                            }
-                        }
-
-                        if matches!(trigger, TriggerType::StorageChange { .. }) {
-                            has_storage_trigger_legacy = true;
-                        }
-                    }
-
-                    if !all_triggered_call_ids.is_empty()
-                        && let Some(selectors) =
-                            a.trigger_recorder.triggers.get(&TriggerType::AllCalls)
-                    {
-                        for sel in selectors {
-                            selector_call_ids
-                                .entry(*sel)
-                                .or_default()
-                                .extend_from_slice(&all_triggered_call_ids);
-                        }
-                    }
-
-                    if has_storage_trigger_legacy
-                        && let Some(selectors) = a
-                            .trigger_recorder
-                            .triggers
-                            .get(&TriggerType::AllStorageChanges)
-                    {
-                        for sel in selectors {
-                            selector_call_ids.entry(*sel).or_default();
-                        }
-                    }
-                } else {
+                if has_filtered_triggers {
                     for (recorded_trigger, selectors) in &a.trigger_recorder.triggers {
                         #[allow(unused_assignments)]
                         let mut filtered_call_ids_buf: Option<Vec<usize>> = None;
@@ -1255,6 +1206,56 @@ impl AssertionStore {
                             if !call_ids.is_empty() {
                                 entry.extend_from_slice(call_ids);
                             }
+                        }
+                    }
+                } else {
+                    // Fast path for legacy trigger sets (no filter-based triggers).
+                    let mut has_storage_trigger_legacy = false;
+
+                    for trigger in triggers {
+                        if let Some(selectors) = a.trigger_recorder.triggers.get(trigger) {
+                            let call_ids: &[usize] = match trigger {
+                                TriggerType::Call { trigger_selector } => {
+                                    call_ids_by_trigger_selector
+                                        .get(trigger_selector)
+                                        .map_or(&[], |ids| *ids)
+                                }
+                                _ => &[],
+                            };
+
+                            for sel in selectors {
+                                selector_call_ids
+                                    .entry(*sel)
+                                    .or_default()
+                                    .extend_from_slice(call_ids);
+                            }
+                        }
+
+                        if matches!(trigger, TriggerType::StorageChange { .. }) {
+                            has_storage_trigger_legacy = true;
+                        }
+                    }
+
+                    if !all_triggered_call_ids.is_empty()
+                        && let Some(selectors) =
+                            a.trigger_recorder.triggers.get(&TriggerType::AllCalls)
+                    {
+                        for sel in selectors {
+                            selector_call_ids
+                                .entry(*sel)
+                                .or_default()
+                                .extend_from_slice(&all_triggered_call_ids);
+                        }
+                    }
+
+                    if has_storage_trigger_legacy
+                        && let Some(selectors) = a
+                            .trigger_recorder
+                            .triggers
+                            .get(&TriggerType::AllStorageChanges)
+                    {
+                        for sel in selectors {
+                            selector_call_ids.entry(*sel).or_default();
                         }
                     }
                 }
@@ -2554,12 +2555,15 @@ mod tests {
         let mut tracer = CallTracer::default();
         tracer.insert_trace(aa);
 
-        let assertions = store.read(&tracer, U256::from(100))?;
+        let read_results = store.read(&tracer, U256::from(100))?;
 
         // Only the assertion with matched selectors should be returned
-        assert_eq!(assertions.len(), 1);
-        let matched: Vec<FixedBytes<4>> =
-            assertions[0].selectors.iter().map(|s| s.selector).collect();
+        assert_eq!(read_results.len(), 1);
+        let matched: Vec<FixedBytes<4>> = read_results[0]
+            .selectors
+            .iter()
+            .map(|s| s.selector)
+            .collect();
         assert_eq!(matched, vec![selector_matched]);
 
         Ok(())

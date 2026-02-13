@@ -1,3 +1,5 @@
+#![allow(clippy::missing_errors_doc)]
+
 use crate::{
     inspectors::{
         phevm::{
@@ -66,26 +68,21 @@ fn get_slot_pre_post(
     let index = context.logs_and_traces.call_traces.storage_change_index();
     let journal = context.post_tx_journal();
 
-    match index.first_had_value(&target, &slot) {
-        Some(pre) => {
-            let post = journal
-                .state
-                .get(&target)
-                .and_then(|account| account.storage.get(&slot))
-                .map(|s| s.present_value)
-                .unwrap_or(pre);
-            (pre, post, pre != post)
-        }
-        None => {
-            // Not changed — return loaded value or zero
-            let value = journal
-                .state
-                .get(&target)
-                .and_then(|account| account.storage.get(&slot))
-                .map(|s| s.present_value)
-                .unwrap_or(U256::ZERO);
-            (value, value, false)
-        }
+    if let Some(pre) = index.first_had_value(&target, &slot) {
+        let post = journal
+            .state
+            .get(&target)
+            .and_then(|account| account.storage.get(&slot))
+            .map_or(pre, |s| s.present_value);
+        (pre, post, pre != post)
+    } else {
+        // Not changed — return loaded value or zero
+        let value = journal
+            .state
+            .get(&target)
+            .and_then(|account| account.storage.get(&slot))
+            .map_or(U256::ZERO, |s| s.present_value);
+        (value, value, false)
     }
 }
 
@@ -105,10 +102,13 @@ pub fn get_changed_slots(
         return Err(SlotDiffsError::OutOfGas(rax));
     }
 
-    let call = PhEvm::getChangedSlotsCall::abi_decode(input_bytes)
-        .map_err(SlotDiffsError::DecodeError)?;
+    let call =
+        PhEvm::getChangedSlotsCall::abi_decode(input_bytes).map_err(SlotDiffsError::DecodeError)?;
 
-    let index = ph_context.logs_and_traces.call_traces.storage_change_index();
+    let index = ph_context
+        .logs_and_traces
+        .call_traces
+        .storage_change_index();
     let journal = ph_context.post_tx_journal();
 
     // Charge gas proportional to journal size (same cost model, amortized build)
@@ -120,24 +120,20 @@ pub fn get_changed_slots(
 
     // Use the pre-built index to find changed slots
     let mut changed_slots: Vec<FixedBytes<32>> = Vec::new();
-    if let Some(slots) = index.slots_for_address(&call.target) {
-        if let Some(account) = journal.state.get(&call.target) {
-            for slot in slots {
-                if let Some(pre) = index.first_had_value(&call.target, slot) {
-                    let post = account
-                        .storage
-                        .get(slot)
-                        .map(|s| s.present_value)
-                        .unwrap_or(pre);
-                    if pre != post {
-                        if changed_slots.len() >= MAX_ARRAY_RESPONSE_ITEMS {
-                            return Err(SlotDiffsError::TooManyChangedSlots {
-                                count: changed_slots.len() + 1,
-                                max: MAX_ARRAY_RESPONSE_ITEMS,
-                            });
-                        }
-                        changed_slots.push(FixedBytes::<32>::from(slot.to_be_bytes::<32>()));
+    if let Some(slots) = index.slots_for_address(&call.target)
+        && let Some(account) = journal.state.get(&call.target)
+    {
+        for slot in slots {
+            if let Some(pre) = index.first_had_value(&call.target, slot) {
+                let post = account.storage.get(slot).map_or(pre, |s| s.present_value);
+                if pre != post {
+                    if changed_slots.len() >= MAX_ARRAY_RESPONSE_ITEMS {
+                        return Err(SlotDiffsError::TooManyChangedSlots {
+                            count: changed_slots.len() + 1,
+                            max: MAX_ARRAY_RESPONSE_ITEMS,
+                        });
                     }
+                    changed_slots.push(FixedBytes::<32>::from(slot.to_be_bytes::<32>()));
                 }
             }
         }
@@ -163,8 +159,8 @@ pub fn get_slot_diff(
         return Err(SlotDiffsError::OutOfGas(rax));
     }
 
-    let call = PhEvm::getSlotDiffCall::abi_decode(input_bytes)
-        .map_err(SlotDiffsError::DecodeError)?;
+    let call =
+        PhEvm::getSlotDiffCall::abi_decode(input_bytes).map_err(SlotDiffsError::DecodeError)?;
 
     let slot: U256 = call.slot.into();
 
@@ -337,8 +333,7 @@ mod test {
         });
         assert!(result.is_ok());
 
-        let decoded =
-            Vec::<FixedBytes<32>>::abi_decode(result.unwrap().bytes()).unwrap();
+        let decoded = Vec::<FixedBytes<32>>::abi_decode(result.unwrap().bytes()).unwrap();
         assert_eq!(decoded.len(), 2);
         // Both changed slots should be present
         assert!(decoded.contains(&slot_to_bytes32(slot1)));
@@ -358,8 +353,7 @@ mod test {
         });
         assert!(result.is_ok());
 
-        let decoded =
-            Vec::<FixedBytes<32>>::abi_decode(result.unwrap().bytes()).unwrap();
+        let decoded = Vec::<FixedBytes<32>>::abi_decode(result.unwrap().bytes()).unwrap();
         assert_eq!(decoded.len(), 0);
     }
 
@@ -391,8 +385,7 @@ mod test {
         });
         assert!(result.is_ok());
 
-        let decoded =
-            Vec::<FixedBytes<32>>::abi_decode(result.unwrap().bytes()).unwrap();
+        let decoded = Vec::<FixedBytes<32>>::abi_decode(result.unwrap().bytes()).unwrap();
         assert_eq!(
             decoded.len(),
             0,
@@ -408,7 +401,7 @@ mod test {
         db.insert_storage(address, U256::ZERO, U256::ZERO);
         journal.load_account(&mut db, address).unwrap();
 
-        for i in 0..(MAX_ARRAY_RESPONSE_ITEMS + 1) {
+        for i in 0..=MAX_ARRAY_RESPONSE_ITEMS {
             let slot = U256::from(i + 1);
             journal
                 .sstore(&mut db, address, slot, U256::from(i + 100), false)
@@ -460,10 +453,7 @@ mod test {
         assert!(result.is_ok());
 
         let (pre, post, changed) =
-            <(FixedBytes<32>, FixedBytes<32>, bool)>::abi_decode(
-                result.unwrap().bytes(),
-            )
-            .unwrap();
+            <(FixedBytes<32>, FixedBytes<32>, bool)>::abi_decode(result.unwrap().bytes()).unwrap();
         assert_eq!(U256::from_be_bytes(pre.0), original);
         assert_eq!(U256::from_be_bytes(post.0), new_value);
         assert!(changed);
@@ -487,10 +477,7 @@ mod test {
         assert!(result.is_ok());
 
         let (pre, post, changed) =
-            <(FixedBytes<32>, FixedBytes<32>, bool)>::abi_decode(
-                result.unwrap().bytes(),
-            )
-            .unwrap();
+            <(FixedBytes<32>, FixedBytes<32>, bool)>::abi_decode(result.unwrap().bytes()).unwrap();
         assert_eq!(pre, post);
         assert!(!changed);
     }
@@ -530,10 +517,7 @@ mod test {
         assert!(result.is_ok());
 
         let (pre, post, changed) =
-            <(FixedBytes<32>, FixedBytes<32>, bool)>::abi_decode(
-                result.unwrap().bytes(),
-            )
-            .unwrap();
+            <(FixedBytes<32>, FixedBytes<32>, bool)>::abi_decode(result.unwrap().bytes()).unwrap();
         assert_eq!(U256::from_be_bytes(pre.0), original);
         assert_eq!(U256::from_be_bytes(post.0), U256::from(40));
         assert!(changed);
@@ -675,10 +659,7 @@ mod test {
         assert!(result.is_ok());
 
         let (pre, post, changed) =
-            <(FixedBytes<32>, FixedBytes<32>, bool)>::abi_decode(
-                result.unwrap().bytes(),
-            )
-            .unwrap();
+            <(FixedBytes<32>, FixedBytes<32>, bool)>::abi_decode(result.unwrap().bytes()).unwrap();
         assert_eq!(U256::from_be_bytes(pre.0), original);
         assert_eq!(U256::from_be_bytes(post.0), new_value);
         assert!(changed);
@@ -721,10 +702,7 @@ mod test {
         assert!(result.is_ok());
 
         let (pre, post, changed) =
-            <(FixedBytes<32>, FixedBytes<32>, bool)>::abi_decode(
-                result.unwrap().bytes(),
-            )
-            .unwrap();
+            <(FixedBytes<32>, FixedBytes<32>, bool)>::abi_decode(result.unwrap().bytes()).unwrap();
         assert_eq!(U256::from_be_bytes(pre.0), original);
         assert_eq!(U256::from_be_bytes(post.0), new_value);
         assert!(changed);
