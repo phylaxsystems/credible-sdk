@@ -20,8 +20,6 @@
 //!
 //! See the `grpc` mod for the protobuf API reference.
 #![doc = include_str!("./README.md")]
-// For auto generated code and docs
-#![allow(clippy::too_many_lines)]
 #![allow(clippy::default_trait_access)]
 #![allow(clippy::doc_markdown)]
 

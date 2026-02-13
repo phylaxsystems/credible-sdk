@@ -164,6 +164,10 @@ reth-libmdbx = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
 [workspace.metadata.cargo-shear]
 ignored = []
 
+[workspace.lints.clippy]
+too_many_lines = "deny"
+too_many_arguments = "deny"
+
 # Maxperf profile for absolute maximum performance
 # Only use for builds that are going to get used by end users
 [profile.maxperf]

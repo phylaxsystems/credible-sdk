@@ -3,7 +3,6 @@
 #![allow(clippy::missing_errors_doc)]
 #![allow(clippy::type_complexity)]
 #![allow(clippy::match_same_arms)]
-#![allow(clippy::too_many_lines)]
 #![allow(clippy::collapsible_if)]
 #![allow(clippy::unused_async)]
 

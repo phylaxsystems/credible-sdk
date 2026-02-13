@@ -7,6 +7,7 @@ use std::{
 
 use crate::api::{
     assertion_submission::{
+        SubmissionContext,
         accept_bytecode_assertion,
         accept_solidity_assertion,
         retreive_assertion,
@@ -25,6 +26,7 @@ use anyhow::Result;
 
 use bollard::Docker;
 use metrics::{
+    Label,
     counter,
     gauge,
     histogram,
@@ -141,8 +143,6 @@ async fn verify_request<B: hyper::body::Body<Error = Error>>(
 }
 
 /// Matches the incoming method sent by a client to a corresponding function.
-// FIXME: Break down in several pieces
-#[allow(clippy::too_many_lines)]
 #[tracing::instrument(
     level = "debug",
     skip_all,
@@ -180,10 +180,10 @@ where
 
     let method = json_rpc["method"].as_str().unwrap_or_default();
     let json_rpc_id = json_rpc["id"].clone();
-    let labels = [("http_method", method.to_string())];
+    let labels = vec![Label::new("http_method", method.to_string())];
 
-    gauge!("api_requests_active", &labels).increment(1);
-    counter!("api_requests_count", &labels).increment(1);
+    gauge!("api_requests_active", labels.clone()).increment(1);
+    counter!("api_requests_count", labels.clone()).increment(1);
 
     info!(
         target: "json_rpc",
@@ -196,76 +196,24 @@ where
     );
 
     let req_start = Instant::now();
+    let metric_method = method.to_string();
+    let ctx = RequestContext {
+        json_rpc: &json_rpc,
+        db,
+        signer,
+        docker,
+        request_id: &request_id,
+        json_rpc_id: &json_rpc_id,
+        client_ip: &client_ip,
+        labels,
+        req_start,
+    };
     let result = match method {
         #[cfg(feature = "debug_assertions")]
-        "da_submit_assertion" => {
-            let res = accept_bytecode_assertion(
-                &json_rpc,
-                db,
-                signer,
-                &request_id,
-                &json_rpc_id,
-                &client_ip,
-            )
-            .await;
-
-            histogram!(
-                "da_request_duration_seconds",
-                "method" => "submit_solidity_assertion",
-            )
-            .record(req_start.elapsed().as_secs_f64());
-            gauge!("api_requests_active", &labels).decrement(1);
-
-            res
-        }
-        "da_submit_solidity_assertion" => {
-            let res = accept_solidity_assertion(
-                &json_rpc,
-                db,
-                signer,
-                docker,
-                &request_id,
-                &json_rpc_id,
-                &client_ip,
-            )
-            .await;
-
-            histogram!(
-                "da_request_duration_seconds",
-                "method" => "submit_solidity_assertion",
-            )
-            .record(req_start.elapsed().as_secs_f64());
-            gauge!("api_requests_active", &labels).decrement(1);
-            res
-        }
-        "da_get_assertion" => {
-            let res =
-                retreive_assertion(&json_rpc, db, &request_id, &json_rpc_id, &client_ip).await;
-
-            histogram!(
-                "da_request_duration_seconds",
-                "method" => "get_assertion",
-            )
-            .record(req_start.elapsed().as_secs_f64());
-            gauge!("api_requests_active", &labels).decrement(1);
-            res
-        }
-        _ => {
-            warn!(target: "json_rpc", method = method, %request_id, %client_ip, json_rpc_id = %json_rpc_id, "Unknown JSON-RPC method");
-            gauge!("api_requests_active", &labels).decrement(1);
-            counter!("api_requests_error_count", &labels).increment(1);
-            histogram!(
-                "da_request_duration_seconds",
-                "method" => "unknown"
-            )
-            .record(req_start.elapsed().as_secs_f64());
-            Ok(rpc_error_with_request_id(
-                &json_rpc,
-                -32601,
-                "Method not found",
-                &request_id,
-            ))
-        }
+        "da_submit_assertion" => handle_submit_assertion(&ctx).await,
+        "da_submit_solidity_assertion" => handle_submit_solidity_assertion(&ctx).await,
+        "da_get_assertion" => handle_get_assertion(&ctx).await,
+        _ => Ok(handle_unknown_method(&metric_method, &ctx)),
     };
 
     // Log final request completion status
@@ -283,6 +231,84 @@ where
     }
 
     result
+}
+
+struct RequestContext<'a> {
+    json_rpc: &'a Value,
+    db: &'a DbRequestSender,
+    signer: &'a PrivateKeySigner,
+    docker: Arc<Docker>,
+    request_id: &'a Uuid,
+    json_rpc_id: &'a Value,
+    client_ip: &'a str,
+    labels: Vec<Label>,
+    req_start: Instant,
+}
+
+#[cfg(feature = "debug_assertions")]
+async fn handle_submit_assertion(ctx: &RequestContext<'_>) -> Result<String> {
+    let submission_ctx = SubmissionContext {
+        json_rpc: ctx.json_rpc,
+        db: ctx.db,
+        signer: ctx.signer,
+        request_id: ctx.request_id,
+        json_rpc_id: ctx.json_rpc_id,
+        client_ip: ctx.client_ip,
+    };
+    let res = accept_bytecode_assertion(&submission_ctx).await;
+
+    record_request_metrics(ctx.req_start, &ctx.labels, "submit_solidity_assertion");
+    res
+}
+
+async fn handle_submit_solidity_assertion(ctx: &RequestContext<'_>) -> Result<String> {
+    let submission_ctx = SubmissionContext {
+        json_rpc: ctx.json_rpc,
+        db: ctx.db,
+        signer: ctx.signer,
+        request_id: ctx.request_id,
+        json_rpc_id: ctx.json_rpc_id,
+        client_ip: ctx.client_ip,
+    };
+    let res = accept_solidity_assertion(&submission_ctx, ctx.docker.clone()).await;
+
+    record_request_metrics(ctx.req_start, &ctx.labels, "submit_solidity_assertion");
+    res
+}
+
+async fn handle_get_assertion(ctx: &RequestContext<'_>) -> Result<String> {
+    let res = retreive_assertion(
+        ctx.json_rpc,
+        ctx.db,
+        ctx.request_id,
+        ctx.json_rpc_id,
+        ctx.client_ip,
+    )
+    .await;
+
+    record_request_metrics(ctx.req_start, &ctx.labels, "get_assertion");
+    res
+}
+
+fn handle_unknown_method(method: &str, ctx: &RequestContext<'_>) -> String {
+    warn!(target: "json_rpc", method = method, %ctx.request_id, %ctx.client_ip, json_rpc_id = %ctx.json_rpc_id, "Unknown JSON-RPC method");
+    gauge!("api_requests_active", ctx.labels.clone()).decrement(1);
+    counter!("api_requests_error_count", ctx.labels.clone()).increment(1);
+    histogram!(
+        "da_request_duration_seconds",
+        "method" => "unknown"
+    )
+    .record(ctx.req_start.elapsed().as_secs_f64());
+    rpc_error_with_request_id(ctx.json_rpc, -32601, "Method not found", ctx.request_id)
+}
+
+fn record_request_metrics(req_start: Instant, labels: &[Label], method: &str) {
+    histogram!(
+        "da_request_duration_seconds",
+        "method" => method.to_string(),
+    )
+    .record(req_start.elapsed().as_secs_f64());
+    gauge!("api_requests_active", labels.to_vec()).decrement(1);
 }
 
 /// Struct to store an assertion in the database.
@@ -716,21 +742,57 @@ mod tests {
         assert_eq!(response_json["error"]["message"], "Request body too large");
     }
 
-    #[allow(clippy::too_many_lines)]
     #[tokio::test]
     async fn test_invalid_json_schema() {
         let (_temp_dir, _db_sender, _signer, server_url) = setup_test_env().await;
-
-        // Test 1: Missing required field (method)
-        let request_body = json!({
-            "jsonrpc": "2.0",
-            "id": 1
-        });
-
         let client = reqwest::Client::new();
+
+        let cases = [
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1
+            }),
+            json!({
+                "method": "da_submit_assertion",
+                "params": [],
+                "id": 2
+            }),
+            json!({
+                "jsonrpc": "1.0",
+                "method": "da_submit_assertion",
+                "params": [],
+                "id": 3
+            }),
+            json!({
+                "jsonrpc": "2.0",
+                "method": "da_submit_assertion",
+                "params": "not_an_array",
+                "id": 4
+            }),
+            json!({
+                "jsonrpc": "2.0",
+                "method": "da_submit_assertion",
+                "params": [],
+                "id": 5,
+                "extra": "field"
+            }),
+        ];
+
+        for (idx, request_body) in cases.iter().enumerate() {
+            let expected_id = i64::try_from(idx + 1).expect("index fits in i64");
+            assert_invalid_schema_request(&client, &server_url, request_body, expected_id).await;
+        }
+    }
+
+    async fn assert_invalid_schema_request(
+        client: &reqwest::Client,
+        server_url: &str,
+        request_body: &Value,
+        expected_id: i64,
+    ) {
         let response = client
-            .post(&server_url)
-            .json(&request_body)
+            .post(server_url)
+            .json(request_body)
             .send()
             .await
             .unwrap();
@@ -739,114 +801,10 @@ mod tests {
 
         let response_json: Value = response.json().await.unwrap();
         assert_eq!(response_json["jsonrpc"], "2.0");
-        assert_eq!(response_json["id"], 1);
+        assert_eq!(response_json["id"], expected_id);
         assert_eq!(response_json["error"]["code"], -32600);
         assert_eq!(
             response_json["error"]["message"],
-            "Invalid JSON-RPC request format"
-        );
-
-        // Test 2: Missing jsonrpc field
-        let request_body2 = json!({
-            "method": "da_submit_assertion",
-            "params": [],
-            "id": 2
-        });
-
-        let response2 = client
-            .post(&server_url)
-            .json(&request_body2)
-            .send()
-            .await
-            .unwrap();
-
-        assert_eq!(response2.status(), 200);
-
-        let response_json2: Value = response2.json().await.unwrap();
-        assert_eq!(response_json2["jsonrpc"], "2.0");
-        assert_eq!(response_json2["id"], 2);
-        assert_eq!(response_json2["error"]["code"], -32600);
-        assert_eq!(
-            response_json2["error"]["message"],
-            "Invalid JSON-RPC request format"
-        );
-
-        // Test 3: Wrong jsonrpc version
-        let request_body3 = json!({
-            "jsonrpc": "1.0",
-            "method": "da_submit_assertion",
-            "params": [],
-            "id": 3
-        });
-
-        let response3 = client
-            .post(&server_url)
-            .json(&request_body3)
-            .send()
-            .await
-            .unwrap();
-
-        assert_eq!(response3.status(), 200);
-
-        let response_json3: Value = response3.json().await.unwrap();
-        assert_eq!(response_json3["jsonrpc"], "2.0");
-        assert_eq!(response_json3["id"], 3);
-        assert_eq!(response_json3["error"]["code"], -32600);
-        assert_eq!(
-            response_json3["error"]["message"],
-            "Invalid JSON-RPC request format"
-        );
-
-        // Test 4: Wrong params type (should be array)
-        let request_body4 = json!({
-            "jsonrpc": "2.0",
-            "method": "da_submit_assertion",
-            "params": "not_an_array",
-            "id": 4
-        });
-
-        let response4 = client
-            .post(&server_url)
-            .json(&request_body4)
-            .send()
-            .await
-            .unwrap();
-
-        assert_eq!(response4.status(), 200);
-
-        let response_json4: Value = response4.json().await.unwrap();
-        assert_eq!(response_json4["jsonrpc"], "2.0");
-        assert_eq!(response_json4["id"], 4);
-        assert_eq!(response_json4["error"]["code"], -32600);
-        assert_eq!(
-            response_json4["error"]["message"],
-            "Invalid JSON-RPC request format"
-        );
-
-        // Test 5: Additional properties not allowed
-        let request_body5 = json!({
-            "jsonrpc": "2.0",
-            "method": "da_submit_assertion",
-            "params": [],
-            "id": 5,
-            "extra": "field"
-        });
-
-        let response5 = client
-            .post(&server_url)
-            .json(&request_body5)
-            .send()
-            .await
-            .unwrap();
-
-        assert_eq!(response5.status(), 200);
-
-        let response_json5: Value = response5.json().await.unwrap();
-        assert_eq!(response_json5["jsonrpc"], "2.0");
-        assert_eq!(response_json5["id"], 5);
-        assert_eq!(response_json5["error"]["code"], -32600);
-        assert_eq!(
-            response_json5["error"]["message"],
             "Invalid JSON-RPC request format"
         );
     }
