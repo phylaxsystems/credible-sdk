@@ -39,12 +39,12 @@ jobs:
           OLD_VERSION=$(git show HEAD~1:Cargo.toml 2>/dev/null | grep -m 1 '^version = ' | cut -d '"' -f2)                                                                                                           
           NEW_VERSION=$(grep -m 1 '^version = ' Cargo.toml | cut -d '"' -f2)                                                                                                                                               
                                                                                                                                                                                                                    
-          if [ -n "$NEW_VERSION" ] && [ "$OLD_VERSION" != "$NEW_VERSION" ]; then                                                                                                                                           
-            VERSION="$NEW_VERSION"                                                                                                                                                                                       
-            echo "Version changed from $OLD_VERSION to $NEW_VERSION"                                                                                                                                                     
-          else                                                                                                                                                                                                             
-            VERSION=""                                                                                                                                                                                                   
-            echo "Version unchanged"                                                                                                                                                                                     
+          if [ -n "$NEW_VERSION" ] && [ "$OLD_VERSION" != "$NEW_VERSION" ]; then
+            VERSION="$NEW_VERSION"
+            echo "Version changed from $OLD_VERSION to $NEW_VERSION"
+          else
+            VERSION="${{ github.sha }}"
+            echo "Version unchanged, falling back to commit SHA: $VERSION"
           fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
