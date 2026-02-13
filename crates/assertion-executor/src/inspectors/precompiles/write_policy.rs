@@ -130,15 +130,13 @@ pub fn all_slot_writes_by(
 
 /// Finds the innermost call whose checkpoint range contains the given journal index.
 ///
-/// Iterates call records and finds the one with the highest `pre_call_checkpoint.journal_i`
-/// that is still `<= journal_idx` and whose `post_call_checkpoint.journal_i > journal_idx`.
+/// Iterates from latest to earliest call record. The latest record that contains
+/// `journal_idx` is the innermost writer context for that journal position.
 fn call_at_journal_position(
     call_records: &[crate::inspectors::tracer::CallRecord],
     journal_idx: usize,
 ) -> Option<&crate::inspectors::tracer::CallRecord> {
-    let mut best: Option<&crate::inspectors::tracer::CallRecord> = None;
-
-    for record in call_records {
+    for record in call_records.iter().rev() {
         let pre = record.pre_call_checkpoint().journal_i;
         if pre > journal_idx {
             continue;
@@ -150,15 +148,11 @@ fn call_at_journal_position(
                 continue;
             }
         }
-        // This call's range contains journal_idx.
-        // Pick the one with the highest pre (innermost).
-        match best {
-            Some(current_best) if current_best.pre_call_checkpoint().journal_i >= pre => {}
-            _ => best = Some(record),
-        }
+        // First matching record in reverse start order is innermost.
+        return Some(record);
     }
 
-    best
+    None
 }
 
 #[cfg(test)]
@@ -368,5 +362,86 @@ mod test {
         let result = all_slot_writes_by(&context, &encoded, 1_000_000).unwrap();
         let decoded = bool::abi_decode(result.bytes()).unwrap();
         assert!(!decoded, "Unauthorized caller should return false");
+    }
+
+    #[test]
+    fn test_all_slot_writes_by_nested_same_pre_attributed_to_innermost() {
+        let contract = address!("1111111111111111111111111111111111111111");
+        let allowed_caller = address!("2222222222222222222222222222222222222222");
+        let unauthorized = address!("3333333333333333333333333333333333333333");
+        let slot = U256::from(42);
+        let selector_parent = alloy_primitives::FixedBytes::<4>::from([0x12, 0x34, 0x56, 0x78]);
+        let selector_child = alloy_primitives::FixedBytes::<4>::from([0x90, 0xab, 0xcd, 0xef]);
+
+        let mut tracer = CallTracer::default();
+        let mut journal = JournalInner::new();
+        journal.depth = 0;
+
+        // Parent call starts at journal index 0.
+        let parent_input: Bytes = selector_parent.into();
+        let parent = CallInputs {
+            input: CallInput::Bytes(parent_input.clone()),
+            return_memory_offset: 0..0,
+            gas_limit: 0,
+            bytecode_address: contract,
+            known_bytecode: None,
+            target_address: contract,
+            caller: allowed_caller,
+            value: CallValue::default(),
+            scheme: CallScheme::Call,
+            is_static: false,
+        };
+        tracer.record_call_start(parent, &parent_input, &mut journal);
+
+        // Child call starts immediately, so it shares the same pre checkpoint as parent.
+        journal.depth = 1;
+        let child_input: Bytes = selector_child.into();
+        let child = CallInputs {
+            input: CallInput::Bytes(child_input.clone()),
+            return_memory_offset: 0..0,
+            gas_limit: 0,
+            bytecode_address: contract,
+            known_bytecode: None,
+            target_address: contract,
+            caller: unauthorized,
+            value: CallValue::default(),
+            scheme: CallScheme::Call,
+            is_static: false,
+        };
+        tracer.record_call_start(child, &child_input, &mut journal);
+
+        // Storage write is performed inside child context.
+        let entry = JournalEntry::StorageChanged {
+            address: contract,
+            key: slot,
+            had_value: U256::ZERO,
+        };
+        journal.journal.push(entry.clone());
+        tracer.journal.journal.push(entry);
+
+        // Close child then parent.
+        tracer.record_call_end(&mut journal, false);
+        journal.depth = 0;
+        tracer.record_call_end(&mut journal, false);
+
+        let logs_and_traces = LogsAndTraces {
+            tx_logs: &[],
+            call_traces: &tracer,
+        };
+        let tx_env = crate::primitives::TxEnv::default();
+        let context = make_ph_context(&logs_and_traces, &tx_env);
+
+        let input = PhEvm::allSlotWritesByCall {
+            target: contract,
+            slot: B256::from(slot),
+            allowedCaller: allowed_caller,
+        };
+        let encoded = input.abi_encode();
+        let result = all_slot_writes_by(&context, &encoded, 1_000_000).unwrap();
+        let decoded = bool::abi_decode(result.bytes()).unwrap();
+        assert!(
+            !decoded,
+            "Write must be attributed to innermost unauthorized caller"
+        );
     }
 }
