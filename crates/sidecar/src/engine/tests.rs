@@ -379,6 +379,27 @@ fn assert_transaction_result_success(
     }
 }
 
+#[tokio::test]
+async fn test_finalize_block_metrics_updates_sources_monitoring_head() {
+    let mut engine: CoreEngine<CacheDB<EmptyDBTyped<TestDbError>>> = CoreEngine::new_test();
+    let block_number = U256::from(42);
+    let mut processed_blocks = 0u64;
+    let mut block_processing_time = Instant::now();
+
+    engine.finalize_block_metrics(
+        block_number,
+        &mut processed_blocks,
+        &mut block_processing_time,
+    );
+
+    assert_eq!(engine.current_head, block_number);
+    assert_eq!(
+        engine.sources_monitoring.get_head_block_number(),
+        block_number
+    );
+    assert_eq!(processed_blocks, 1);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_core_engine_errors_when_no_synced_sources() {
     let (engine, tx_sender) = create_test_engine_with_timeout(Duration::from_millis(10)).await;

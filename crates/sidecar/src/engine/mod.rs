@@ -1540,6 +1540,8 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
     ) {
         // Set the block number to the latest applied head
         self.sources.set_block_number(block_number);
+        self.sources_monitoring
+            .update_head_block_number(block_number);
         self.current_head = block_number;
 
         self.block_metrics.block_processing_duration = block_processing_time.elapsed();
