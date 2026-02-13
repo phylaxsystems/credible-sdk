@@ -10,10 +10,7 @@ use crate::{
         },
         sol_primitives::PhEvm,
     },
-    primitives::{
-        JournalEntry,
-        U256,
-    },
+    primitives::U256,
 };
 
 use alloy_primitives::{
@@ -24,7 +21,6 @@ use alloy_sol_types::{
     SolCall,
     SolValue,
 };
-use std::collections::HashMap;
 
 #[derive(thiserror::Error, Debug)]
 pub enum SlotDiffsError {
@@ -53,10 +49,10 @@ fn compute_mapping_slot(
     base.wrapping_add(field_offset)
 }
 
-/// Scan the journal for pre/post values of a specific slot.
+/// Look up pre/post values of a specific slot using the storage change index.
 ///
 /// Returns `(pre_value, post_value, changed)`:
-/// - `pre_value`: the value before the first write (first `had_value` in journal)
+/// - `pre_value`: the value before the first write (from index)
 /// - `post_value`: the current value from `journal.state`
 /// - `changed`: whether pre != post
 fn get_slot_pre_post(
@@ -64,25 +60,10 @@ fn get_slot_pre_post(
     target: alloy_primitives::Address,
     slot: U256,
 ) -> (U256, U256, bool) {
+    let index = context.logs_and_traces.call_traces.storage_change_index();
     let journal = context.post_tx_journal();
 
-    // Find the first StorageChanged entry for this target+slot (= original value)
-    let mut first_had_value: Option<U256> = None;
-    for entry in &journal.journal {
-        if let JournalEntry::StorageChanged {
-            address,
-            key,
-            had_value,
-        } = entry
-        {
-            if *address == target && *key == slot {
-                first_had_value = Some(*had_value);
-                break;
-            }
-        }
-    }
-
-    match first_had_value {
+    match index.first_had_value(&target, &slot) {
         Some(pre) => {
             let post = journal
                 .state
@@ -124,47 +105,36 @@ pub fn get_changed_slots(
     let call = PhEvm::getChangedSlotsCall::abi_decode(input_bytes)
         .map_err(SlotDiffsError::DecodeError)?;
 
+    let index = ph_context.logs_and_traces.call_traces.storage_change_index();
     let journal = ph_context.post_tx_journal();
 
-    // Collect first had_value for each slot that was written
-    let mut first_had_value: HashMap<U256, U256> = HashMap::new();
-    for entry in &journal.journal {
-        if let Some(rax) =
-            deduct_gas_and_check(&mut gas_left, PER_JOURNAL_ENTRY_COST, gas_limit)
-        {
-            return Err(SlotDiffsError::OutOfGas(rax));
-        }
-
-        if let JournalEntry::StorageChanged {
-            address,
-            key,
-            had_value,
-        } = entry
-        {
-            if *address == call.target {
-                first_had_value.entry(*key).or_insert(*had_value);
-            }
-        }
+    // Charge gas proportional to journal size (same cost model, amortized build)
+    let journal_len = journal.journal.len() as u64;
+    let scan_cost = journal_len.saturating_mul(PER_JOURNAL_ENTRY_COST);
+    if let Some(rax) = deduct_gas_and_check(&mut gas_left, scan_cost, gas_limit) {
+        return Err(SlotDiffsError::OutOfGas(rax));
     }
 
-    // Filter to truly changed slots (pre != post)
+    // Use the pre-built index to find changed slots
     let mut changed_slots: Vec<FixedBytes<32>> = Vec::new();
-    if let Some(account) = journal.state.get(&call.target) {
-        for (slot, pre_value) in &first_had_value {
-            let post_value = account
-                .storage
-                .get(slot)
-                .map(|s| s.present_value)
-                .unwrap_or(*pre_value);
-            if *pre_value != post_value {
-                changed_slots.push(FixedBytes::<32>::from(slot.to_be_bytes::<32>()));
+    if let Some(slots) = index.slots_for_address(&call.target) {
+        if let Some(account) = journal.state.get(&call.target) {
+            for slot in slots {
+                if let Some(pre) = index.first_had_value(&call.target, slot) {
+                    let post = account
+                        .storage
+                        .get(slot)
+                        .map(|s| s.present_value)
+                        .unwrap_or(pre);
+                    if pre != post {
+                        changed_slots.push(FixedBytes::<32>::from(slot.to_be_bytes::<32>()));
+                    }
+                }
             }
         }
     }
 
-    // Sort for deterministic output
-    changed_slots.sort();
-
+    // slots_for_address returns sorted slots, so changed_slots is already sorted
     let encoded = changed_slots.abi_encode();
     Ok(PhevmOutcome::new(encoded.into(), gas_limit - gas_left))
 }

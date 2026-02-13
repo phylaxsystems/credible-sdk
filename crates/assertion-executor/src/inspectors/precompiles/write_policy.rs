@@ -16,8 +16,6 @@ use alloy_sol_types::{
     SolValue,
 };
 
-use crate::primitives::JournalEntry;
-
 #[derive(thiserror::Error, Debug)]
 pub enum WritePolicyError {
     #[error("Failed to decode write policy input: {0:?}")]
@@ -30,8 +28,8 @@ const PER_ENTRY_COST: u64 = 5;
 
 /// `anySlotWritten(address target, bytes32 slot) -> bool`
 ///
-/// Scans journal entries for `StorageChanged` matching the target address and slot.
-/// Returns true if any matching storage change was found.
+/// Checks the storage change index for any `StorageChanged` matching the target and slot.
+/// Returns true if any matching storage change was found. O(1) via pre-built index.
 pub fn any_slot_written(
     ph_context: &PhEvmContext,
     input_bytes: &[u8],
@@ -50,32 +48,16 @@ pub fn any_slot_written(
     let target = call.target;
     let slot: U256 = call.slot.into();
 
-    let journal = &ph_context.logs_and_traces.call_traces.journal;
-    let mut entries_scanned: u64 = 0;
-    let mut found = false;
+    let index = ph_context.logs_and_traces.call_traces.storage_change_index();
 
-    for entry in &journal.journal {
-        entries_scanned += 1;
-        if entries_scanned % 100 == 0 {
-            let scan_cost = entries_scanned.saturating_mul(PER_ENTRY_COST) / 100;
-            if let Some(rax) = deduct_gas_and_check(&mut gas_left, scan_cost, gas_limit) {
-                return Err(WritePolicyError::OutOfGas(rax));
-            }
-        }
-
-        if let JournalEntry::StorageChanged { address, key, .. } = entry {
-            if *address == target && *key == slot {
-                found = true;
-                break;
-            }
-        }
-    }
-
-    // Charge remaining gas for entries scanned
-    let remaining_cost = entries_scanned.saturating_mul(PER_ENTRY_COST) / 100;
-    if let Some(rax) = deduct_gas_and_check(&mut gas_left, remaining_cost, gas_limit) {
+    // Charge gas proportional to journal size (same cost model)
+    let journal_len = ph_context.logs_and_traces.call_traces.journal.journal.len() as u64;
+    let scan_cost = journal_len.saturating_mul(PER_ENTRY_COST) / 100;
+    if let Some(rax) = deduct_gas_and_check(&mut gas_left, scan_cost, gas_limit) {
         return Err(WritePolicyError::OutOfGas(rax));
     }
+
+    let found = index.has_changes(&target, &slot);
 
     let encoded = found.abi_encode();
     Ok(PhevmOutcome::new(encoded.into(), gas_limit - gas_left))
@@ -83,8 +65,8 @@ pub fn any_slot_written(
 
 /// `allSlotWritesBy(address target, bytes32 slot, address allowedCaller) -> bool`
 ///
-/// For each `StorageChanged` journal entry matching target and slot,
-/// finds the call that was active at that journal position and checks
+/// Uses the storage change index to find matching `StorageChanged` entries,
+/// then attributes each write to the innermost active call and checks
 /// that its caller matches `allowedCaller`.
 ///
 /// Returns true if no writes occurred, or all writes were by the allowed caller (vacuous truth).
@@ -108,20 +90,23 @@ pub fn all_slot_writes_by(
     let allowed_caller = call.allowedCaller;
 
     let tracer = ph_context.logs_and_traces.call_traces;
-    let journal = &tracer.journal;
+    let index = tracer.storage_change_index();
     let call_records = tracer.call_records();
+
+    // Charge gas for journal scan
+    let journal_len = tracer.journal.journal.len() as u64;
+    let scan_cost = journal_len.saturating_mul(PER_ENTRY_COST) / 100;
+    if let Some(rax) = deduct_gas_and_check(&mut gas_left, scan_cost, gas_limit) {
+        return Err(WritePolicyError::OutOfGas(rax));
+    }
 
     let mut result = true;
 
-    for (journal_idx, entry) in journal.journal.iter().enumerate() {
-        if let JournalEntry::StorageChanged { address, key, .. } = entry {
-            if *address != target || *key != slot {
-                continue;
-            }
-
-            // Find the innermost call whose checkpoint range contains this journal entry.
-            // Pick the call with the highest pre_call_checkpoint.journal_i <= journal_idx.
-            let caller_of_write = call_at_journal_position(call_records, journal_idx);
+    // Use the index to get only matching storage changes, then attribute each to a call
+    if let Some(entries) = index.changes_for_key(&target, &slot) {
+        for entry in entries {
+            let caller_of_write =
+                call_at_journal_position(call_records, entry.journal_idx);
 
             match caller_of_write {
                 Some(record) => {
@@ -132,19 +117,11 @@ pub fn all_slot_writes_by(
                 }
                 None => {
                     // Write occurred outside any tracked call (e.g., at top level tx)
-                    // This means it was the tx sender, not a call-level operation.
-                    // We cannot attribute a caller, so we consider it unauthorized.
                     result = false;
                     break;
                 }
             }
         }
-    }
-
-    // Charge gas for journal scan
-    let scan_cost = (journal.journal.len() as u64).saturating_mul(PER_ENTRY_COST) / 100;
-    if let Some(rax) = deduct_gas_and_check(&mut gas_left, scan_cost, gas_limit) {
-        return Err(WritePolicyError::OutOfGas(rax));
     }
 
     let encoded = result.abi_encode();
@@ -187,12 +164,15 @@ fn call_at_journal_position(
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::inspectors::{
-        phevm::{
-            LogsAndTraces,
-            PhEvmContext,
+    use crate::{
+        inspectors::{
+            phevm::{
+                LogsAndTraces,
+                PhEvmContext,
+            },
+            tracer::CallTracer,
         },
-        tracer::CallTracer,
+        primitives::JournalEntry,
     };
     use alloy_primitives::{
         Address,

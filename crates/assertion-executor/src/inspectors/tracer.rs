@@ -9,6 +9,7 @@ use crate::{
         Bytes,
         FixedBytes,
         JournalEntry,
+        U256,
     },
     store::AssertionStore,
 };
@@ -27,11 +28,117 @@ use revm::{
         CreateOutcome,
     },
 };
-use std::collections::{
-    HashMap,
-    HashSet,
+use std::{
+    collections::{
+        HashMap,
+        HashSet,
+    },
+    sync::OnceLock,
 };
 use tracing::error;
+
+/// Pre-computed index of journal `StorageChanged` entries, built lazily on first access.
+///
+/// Amortizes O(journal) scanning cost across all precompile queries within a single
+/// assertion execution context. Multiple precompiles (`getChangedSlots`, `getSlotDiff`,
+/// `anySlotWritten`, `allSlotWritesBy`, `getStateChanges`, etc.) all scan the same journal
+/// for `StorageChanged` entries. This index scans once and provides O(1) lookups.
+#[derive(Clone, Debug)]
+pub struct StorageChangeIndex {
+    /// Maps (address, slot) -> list of (journal_idx, had_value) entries in journal order.
+    changes_by_key: HashMap<(Address, U256), Vec<StorageChangeEntry>>,
+    /// Maps address -> sorted vec of slots that had any `StorageChanged` entry.
+    slots_by_address: HashMap<Address, Vec<U256>>,
+}
+
+/// A single `StorageChanged` journal entry, recording its position and the previous value.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StorageChangeEntry {
+    /// Index of this entry in `journal.journal`.
+    pub journal_idx: usize,
+    /// The value the slot held before this write.
+    pub had_value: U256,
+}
+
+impl StorageChangeIndex {
+    /// Build the index by scanning the journal once.
+    fn build(journal: &JournalInner<JournalEntry>) -> Self {
+        let mut changes_by_key: HashMap<(Address, U256), Vec<StorageChangeEntry>> =
+            HashMap::new();
+        let mut slots_set: HashMap<Address, HashSet<U256>> = HashMap::new();
+
+        for (journal_idx, entry) in journal.journal.iter().enumerate() {
+            if let JournalEntry::StorageChanged {
+                address,
+                key,
+                had_value,
+            } = entry
+            {
+                changes_by_key
+                    .entry((*address, *key))
+                    .or_default()
+                    .push(StorageChangeEntry {
+                        journal_idx,
+                        had_value: *had_value,
+                    });
+                slots_set.entry(*address).or_default().insert(*key);
+            }
+        }
+
+        let slots_by_address = slots_set
+            .into_iter()
+            .map(|(addr, slots)| {
+                let mut v: Vec<U256> = slots.into_iter().collect();
+                v.sort();
+                (addr, v)
+            })
+            .collect();
+
+        Self {
+            changes_by_key,
+            slots_by_address,
+        }
+    }
+
+    /// Get the first `had_value` (pre-tx original value) for a specific (address, slot).
+    #[inline]
+    pub fn first_had_value(&self, address: &Address, slot: &U256) -> Option<U256> {
+        self.changes_by_key
+            .get(&(*address, *slot))
+            .and_then(|entries| entries.first())
+            .map(|e| e.had_value)
+    }
+
+    /// Check if any `StorageChanged` entry exists for (address, slot).
+    #[inline]
+    pub fn has_changes(&self, address: &Address, slot: &U256) -> bool {
+        self.changes_by_key.contains_key(&(*address, *slot))
+    }
+
+    /// Get all slots that had `StorageChanged` entries for an address (sorted).
+    #[inline]
+    pub fn slots_for_address(&self, address: &Address) -> Option<&[U256]> {
+        self.slots_by_address.get(address).map(|v| v.as_slice())
+    }
+
+    /// Get all `StorageChanged` entries for (address, slot) in journal order.
+    #[inline]
+    pub fn changes_for_key(
+        &self,
+        address: &Address,
+        slot: &U256,
+    ) -> Option<&[StorageChangeEntry]> {
+        self.changes_by_key
+            .get(&(*address, *slot))
+            .map(|v| v.as_slice())
+    }
+
+    /// Build an index from a journal. Public for tests that need direct access.
+    #[cfg(any(test, feature = "test"))]
+    pub fn build_from_journal(journal: &JournalInner<JournalEntry>) -> Self {
+        Self::build(journal)
+    }
+}
 
 #[derive(thiserror::Error, Debug, Clone, PartialEq, Eq)]
 pub enum CallTracerError {
@@ -71,6 +178,10 @@ pub struct CallTracer {
     pub target_and_selector_indices: HashMap<TargetAndSelector, Vec<usize>>,
     /// Result of call tracing operations. Check after tracing to detect errors.
     pub result: Result<(), CallTracerError>,
+    /// Lazily-built index of journal `StorageChanged` entries.
+    /// Initialized on first precompile access during assertion execution.
+    /// Uses `OnceLock` so it can be built from `&self` (shared reference).
+    storage_change_index: OnceLock<StorageChangeIndex>,
 }
 
 impl Default for CallTracer {
@@ -83,6 +194,7 @@ impl Default for CallTracer {
             target_and_selector_indices: HashMap::new(),
             result: Ok(()),
             adopter_cache: HashMap::new(),
+            storage_change_index: OnceLock::new(),
         }
     }
 }
@@ -98,6 +210,7 @@ impl CallTracer {
             target_and_selector_indices: HashMap::new(),
             result: Ok(()),
             adopter_cache: HashMap::new(),
+            storage_change_index: OnceLock::new(),
         }
     }
 
@@ -453,6 +566,16 @@ impl CallTracer {
     #[must_use]
     pub fn get_call_record(&self, call_id: usize) -> Option<&CallRecord> {
         self.call_records.get(call_id)
+    }
+
+    /// Returns the lazily-built storage change index.
+    ///
+    /// On first call, scans the journal once to build the index.
+    /// Subsequent calls return the cached index in O(1).
+    #[must_use]
+    pub fn storage_change_index(&self) -> &StorageChangeIndex {
+        self.storage_change_index
+            .get_or_init(|| StorageChangeIndex::build(&self.journal))
     }
 
     /// Test helper to set checkpoints for the last inserted call record.
@@ -1914,5 +2037,109 @@ mod test {
 
         let b_func2_calls = tracer.get_call_inputs(addr_b, selector_2);
         assert_eq!(b_func2_calls.len(), 0, "B.func2() calls all reverted");
+    }
+
+    #[test]
+    fn test_storage_change_index_basic() {
+        use crate::primitives::JournalEntry;
+
+        let addr1 = address!("1111111111111111111111111111111111111111");
+        let addr2 = address!("2222222222222222222222222222222222222222");
+
+        let mut tracer = CallTracer::default();
+        tracer.journal.journal.push(JournalEntry::StorageChanged {
+            address: addr1,
+            key: U256::from(1),
+            had_value: U256::from(100),
+        });
+        tracer.journal.journal.push(JournalEntry::StorageChanged {
+            address: addr1,
+            key: U256::from(2),
+            had_value: U256::from(200),
+        });
+        tracer.journal.journal.push(JournalEntry::StorageChanged {
+            address: addr2,
+            key: U256::from(1),
+            had_value: U256::from(300),
+        });
+        // Second write to addr1 slot 1
+        tracer.journal.journal.push(JournalEntry::StorageChanged {
+            address: addr1,
+            key: U256::from(1),
+            had_value: U256::from(150),
+        });
+
+        let index = tracer.storage_change_index();
+
+        // first_had_value: should return first entry's value
+        assert_eq!(
+            index.first_had_value(&addr1, &U256::from(1)),
+            Some(U256::from(100))
+        );
+        assert_eq!(
+            index.first_had_value(&addr1, &U256::from(2)),
+            Some(U256::from(200))
+        );
+        assert_eq!(
+            index.first_had_value(&addr2, &U256::from(1)),
+            Some(U256::from(300))
+        );
+        assert_eq!(index.first_had_value(&addr2, &U256::from(2)), None);
+
+        // has_changes
+        assert!(index.has_changes(&addr1, &U256::from(1)));
+        assert!(index.has_changes(&addr1, &U256::from(2)));
+        assert!(index.has_changes(&addr2, &U256::from(1)));
+        assert!(!index.has_changes(&addr2, &U256::from(2)));
+
+        // slots_for_address: sorted
+        let addr1_slots = index.slots_for_address(&addr1).unwrap();
+        assert_eq!(addr1_slots, &[U256::from(1), U256::from(2)]);
+
+        let addr2_slots = index.slots_for_address(&addr2).unwrap();
+        assert_eq!(addr2_slots, &[U256::from(1)]);
+
+        // changes_for_key: all entries in order
+        let changes = index.changes_for_key(&addr1, &U256::from(1)).unwrap();
+        assert_eq!(changes.len(), 2);
+        assert_eq!(changes[0].had_value, U256::from(100));
+        assert_eq!(changes[0].journal_idx, 0);
+        assert_eq!(changes[1].had_value, U256::from(150));
+        assert_eq!(changes[1].journal_idx, 3);
+    }
+
+    #[test]
+    fn test_storage_change_index_empty_journal() {
+        let tracer = CallTracer::default();
+        let addr = address!("1111111111111111111111111111111111111111");
+        let index = tracer.storage_change_index();
+
+        assert!(!index.has_changes(&addr, &U256::from(0)));
+        assert_eq!(index.first_had_value(&addr, &U256::from(0)), None);
+        assert_eq!(index.slots_for_address(&addr), None);
+        assert_eq!(index.changes_for_key(&addr, &U256::from(0)), None);
+    }
+
+    #[test]
+    fn test_storage_change_index_lazy_initialization() {
+        use crate::primitives::JournalEntry;
+
+        let mut tracer = CallTracer::default();
+        tracer.journal.journal.push(JournalEntry::StorageChanged {
+            address: address!("1111111111111111111111111111111111111111"),
+            key: U256::from(1),
+            had_value: U256::from(100),
+        });
+
+        // First access triggers build
+        let idx1 = tracer.storage_change_index();
+        assert!(idx1.has_changes(
+            &address!("1111111111111111111111111111111111111111"),
+            &U256::from(1)
+        ));
+
+        // Second access returns same cached index (pointer equality)
+        let idx2 = tracer.storage_change_index();
+        assert!(std::ptr::eq(idx1, idx2));
     }
 }
