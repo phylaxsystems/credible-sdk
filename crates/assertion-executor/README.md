@@ -38,6 +38,17 @@ This repository contains the following primary components:
 [`fork-db`]: https://github.com/phylaxsystems/credible-sdk/blob/main/crates/assertion-executor/src/db/fork_db.rs
 [`phevm`]: https://github.com/phylaxsystems/credible-sdk/blob/main/crates/assertion-executor/src/inspectors/phevm.rs
 
+## Indexer metrics
+
+The assertion indexer emits the following Prometheus metrics:
+
+| Metric | Type | Description |
+| --- | --- | --- |
+| `assertion_executor_indexer_head_block` | `gauge` | Latest block number indexed by the assertion indexer. During catch-up this advances until it reaches chain head. |
+| `assertion_executor_indexer_is_syncing` | `gauge` (`0`/`1`) | `1` only while catching up through a backlog (for example after downtime). `0` during steady-state operation, including normal new-block processing. |
+| `assertion_executor_indexer_assertions_seen_total` | `counter` | Total assertion events decoded from state oracle logs. |
+| `assertion_executor_indexer_assertions_moved_total` | `counter` | Total assertions moved from pending modifications into the assertion store. |
+
 ## Fuzz testing
 
 This repo contains fuzz tests for the executor precompiles/cheatcodes. To run them you need to install `cargo-fuzz`.

@@ -13,6 +13,16 @@ pub fn set_head_block(block_number: u64) {
     gauge!("assertion_executor_indexer_head_block").set(lossy_u64_to_f64(block_number));
 }
 
+/// Record whether the indexer is currently catching up to chain head.
+///
+/// This is `1` when replaying a backlog (for example after downtime), and `0`
+/// during normal steady-state operation.
+///
+/// Committed as a `Gauge`: `assertion_executor_indexer_is_syncing`
+pub fn set_syncing(is_syncing: bool) {
+    gauge!("assertion_executor_indexer_is_syncing").set(if is_syncing { 1.0 } else { 0.0 });
+}
+
 /// Record how many assertions the indexer has seen.
 ///
 /// Committed as a `Counter`: `assertion_executor_indexer_assertions_seen_total`
