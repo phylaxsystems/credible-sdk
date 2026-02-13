@@ -8,7 +8,10 @@ use crate::inspectors::{
         deduct_gas_and_check,
     },
     sol_primitives::PhEvm,
-    tracer::CallTracer,
+    tracer::{
+        CallRecord,
+        CallTracer,
+    },
 };
 
 use alloy_primitives::{
@@ -30,6 +33,10 @@ pub enum CallFactsError {
     OutOfGas(PhevmOutcome),
     #[error("Call ID {call_id} is out of bounds (total calls: {total})")]
     CallIdOutOfBounds { call_id: U256, total: usize },
+    #[error("argIndex {arg_index} cannot be represented as usize")]
+    InvalidArgIndex { arg_index: U256 },
+    #[error("argIndex {arg_index} overflows calldata offset computation")]
+    ArgOffsetOverflow { arg_index: usize },
 }
 
 const PER_CALL_COST: u64 = 5;
@@ -47,65 +54,38 @@ fn call_type_to_scheme(call_type: u8) -> Option<CallScheme> {
     }
 }
 
-/// Applies a `CallFilter` to the call tracer, returning matching call record indices.
-///
-/// Filters by:
-/// - target address and function selector (from tracer index)
-/// - call scheme (callType)
-/// - depth range (minDepth/maxDepth, 0 = no bound)
-/// - topLevelOnly (depth == 0)
-///
-/// Note: `successOnly` is effectively always true since reverted calls
-/// are already truncated in `record_call_end`.
-fn apply_call_filter(
+fn candidate_call_indices(
     tracer: &CallTracer,
     target: Address,
     selector: FixedBytes<4>,
-    filter: &PhEvm::CallFilter,
-) -> Vec<usize> {
-    let scheme_filter = call_type_to_scheme(filter.callType);
-
-    let indices = match tracer
+) -> Option<&[usize]> {
+    tracer
         .target_and_selector_indices
         .get(&crate::inspectors::tracer::TargetAndSelector { target, selector })
-    {
-        Some(indices) => indices,
-        None => return vec![],
-    };
+        .map(Vec::as_slice)
+}
 
-    indices
-        .iter()
-        .copied()
-        .filter(|&idx| {
-            let record = &tracer.call_records()[idx];
+fn call_matches_filter(
+    record: &CallRecord,
+    filter: &PhEvm::CallFilter,
+    scheme_filter: Option<CallScheme>,
+) -> bool {
+    if let Some(scheme) = scheme_filter && record.inputs().scheme != scheme {
+        return false;
+    }
 
-            // Filter by call scheme
-            if let Some(scheme) = scheme_filter {
-                if record.inputs().scheme != scheme {
-                    return false;
-                }
-            }
+    let depth = record.depth();
+    if filter.topLevelOnly && depth != 0 {
+        return false;
+    }
+    if filter.minDepth > 0 && depth < filter.minDepth {
+        return false;
+    }
+    if filter.maxDepth > 0 && depth > filter.maxDepth {
+        return false;
+    }
 
-            let depth = record.depth();
-
-            // Filter by topLevelOnly
-            if filter.topLevelOnly && depth != 0 {
-                return false;
-            }
-
-            // Filter by minDepth (0 = no minimum)
-            if filter.minDepth > 0 && depth < filter.minDepth {
-                return false;
-            }
-
-            // Filter by maxDepth (0 = no maximum)
-            if filter.maxDepth > 0 && depth > filter.maxDepth {
-                return false;
-            }
-
-            true
-        })
-        .collect()
+    true
 }
 
 /// `anyCall(address target, bytes4 selector, CallFilter filter) -> bool`
@@ -126,21 +106,28 @@ pub fn any_call(
     let call = PhEvm::anyCallCall::abi_decode(input_bytes)
         .map_err(CallFactsError::DecodeError)?;
 
-    let matching = apply_call_filter(
-        ph_context.logs_and_traces.call_traces,
-        call.target,
-        call.selector,
-        &call.filter,
-    );
+    let tracer = ph_context.logs_and_traces.call_traces;
+    let call_records = tracer.call_records();
+    let scheme_filter = call_type_to_scheme(call.filter.callType);
+    let mut visited = 0u64;
+    let mut found = false;
 
-    // Charge per-call gas for each index examined
-    let filter_cost = (matching.len() as u64).saturating_mul(PER_CALL_COST);
+    if let Some(indices) = candidate_call_indices(tracer, call.target, call.selector) {
+        for &idx in indices {
+            visited = visited.saturating_add(1);
+            if call_matches_filter(&call_records[idx], &call.filter, scheme_filter) {
+                found = true;
+                break;
+            }
+        }
+    }
+
+    let filter_cost = visited.saturating_mul(PER_CALL_COST);
     if let Some(rax) = deduct_gas_and_check(&mut gas_left, filter_cost, gas_limit) {
         return Err(CallFactsError::OutOfGas(rax));
     }
 
-    let result = !matching.is_empty();
-    let encoded = result.abi_encode();
+    let encoded = found.abi_encode();
     Ok(PhevmOutcome::new(encoded.into(), gas_limit - gas_left))
 }
 
@@ -162,19 +149,27 @@ pub fn count_calls(
     let call = PhEvm::countCallsCall::abi_decode(input_bytes)
         .map_err(CallFactsError::DecodeError)?;
 
-    let matching = apply_call_filter(
-        ph_context.logs_and_traces.call_traces,
-        call.target,
-        call.selector,
-        &call.filter,
-    );
+    let tracer = ph_context.logs_and_traces.call_traces;
+    let call_records = tracer.call_records();
+    let scheme_filter = call_type_to_scheme(call.filter.callType);
+    let mut visited = 0u64;
+    let mut matched = 0u64;
 
-    let filter_cost = (matching.len() as u64).saturating_mul(PER_CALL_COST);
+    if let Some(indices) = candidate_call_indices(tracer, call.target, call.selector) {
+        for &idx in indices {
+            visited = visited.saturating_add(1);
+            if call_matches_filter(&call_records[idx], &call.filter, scheme_filter) {
+                matched = matched.saturating_add(1);
+            }
+        }
+    }
+
+    let filter_cost = visited.saturating_mul(PER_CALL_COST);
     if let Some(rax) = deduct_gas_and_check(&mut gas_left, filter_cost, gas_limit) {
         return Err(CallFactsError::OutOfGas(rax));
     }
 
-    let count = U256::from(matching.len());
+    let count = U256::from(matched);
     let encoded = count.abi_encode();
     Ok(PhevmOutcome::new(encoded.into(), gas_limit - gas_left))
 }
@@ -232,22 +227,31 @@ pub fn all_calls_by(
     let call = PhEvm::allCallsByCall::abi_decode(input_bytes)
         .map_err(CallFactsError::DecodeError)?;
 
-    let matching = apply_call_filter(
-        ph_context.logs_and_traces.call_traces,
-        call.target,
-        call.selector,
-        &call.filter,
-    );
-
     let tracer = ph_context.logs_and_traces.call_traces;
-    let filter_cost = (matching.len() as u64).saturating_mul(PER_CALL_COST);
+    let call_records = tracer.call_records();
+    let scheme_filter = call_type_to_scheme(call.filter.callType);
+    let mut visited = 0u64;
+    let mut result = true;
+
+    if let Some(indices) = candidate_call_indices(tracer, call.target, call.selector) {
+        for &idx in indices {
+            visited = visited.saturating_add(1);
+            let record = &call_records[idx];
+            if !call_matches_filter(record, &call.filter, scheme_filter) {
+                continue;
+            }
+
+            if record.inputs().caller != call.allowedCaller {
+                result = false;
+                break;
+            }
+        }
+    }
+
+    let filter_cost = visited.saturating_mul(PER_CALL_COST);
     if let Some(rax) = deduct_gas_and_check(&mut gas_left, filter_cost, gas_limit) {
         return Err(CallFactsError::OutOfGas(rax));
     }
-
-    let result = matching.iter().all(|&idx| {
-        tracer.call_records()[idx].inputs().caller == call.allowedCaller
-    });
 
     let encoded = result.abi_encode();
     Ok(PhevmOutcome::new(encoded.into(), gas_limit - gas_left))
@@ -272,52 +276,60 @@ pub fn sum_arg_uint(
     let call = PhEvm::sumArgUintCall::abi_decode(input_bytes)
         .map_err(CallFactsError::DecodeError)?;
 
-    let matching = apply_call_filter(
-        ph_context.logs_and_traces.call_traces,
-        call.target,
-        call.selector,
-        &call.filter,
-    );
-
     let tracer = ph_context.logs_and_traces.call_traces;
-    let filter_cost = (matching.len() as u64).saturating_mul(PER_CALL_COST);
-    if let Some(rax) = deduct_gas_and_check(&mut gas_left, filter_cost, gas_limit) {
-        return Err(CallFactsError::OutOfGas(rax));
-    }
-
     let arg_index: usize = call
         .argIndex
         .try_into()
-        .unwrap_or(usize::MAX);
-    // Byte offset within calldata (after the 4-byte selector)
-    let byte_offset = arg_index * 32;
+        .map_err(|_| CallFactsError::InvalidArgIndex {
+            arg_index: call.argIndex,
+        })?;
+    let byte_offset = arg_index
+        .checked_mul(32)
+        .ok_or(CallFactsError::ArgOffsetOverflow { arg_index })?;
+    let data_start = 4usize
+        .checked_add(byte_offset)
+        .ok_or(CallFactsError::ArgOffsetOverflow { arg_index })?;
+    let data_end = data_start
+        .checked_add(32)
+        .ok_or(CallFactsError::ArgOffsetOverflow { arg_index })?;
 
+    let scheme_filter = call_type_to_scheme(call.filter.callType);
+    let call_records = tracer.call_records();
+    let mut visited = 0u64;
     let mut total = U256::ZERO;
-    for &idx in &matching {
-        let record = &tracer.call_records()[idx];
-        let calldata = match &record.inputs().input {
-            revm::interpreter::CallInput::Bytes(b) => b,
-            _ => continue,
-        };
-
-        // Skip the 4-byte selector, then read 32 bytes at the arg offset
-        let data_start = 4 + byte_offset;
-        let data_end = data_start + 32;
-        if calldata.len() < data_end {
-            // Calldata too short for this argIndex — skip silently
-            // (matching the EVM behavior of zero-extending short calldata)
-            let mut padded = [0u8; 32];
-            let available = calldata.len().saturating_sub(data_start);
-            if available > 0 {
-                padded[..available].copy_from_slice(&calldata[data_start..data_start + available]);
+    if let Some(indices) = candidate_call_indices(tracer, call.target, call.selector) {
+        for &idx in indices {
+            visited = visited.saturating_add(1);
+            let record = &call_records[idx];
+            if !call_matches_filter(record, &call.filter, scheme_filter) {
+                continue;
             }
-            total = total.wrapping_add(U256::from_be_bytes(padded));
-        } else {
-            let word: [u8; 32] = calldata[data_start..data_end]
-                .try_into()
-                .unwrap_or_default();
-            total = total.wrapping_add(U256::from_be_bytes(word));
+            let calldata = match &record.inputs().input {
+                revm::interpreter::CallInput::Bytes(b) => b,
+                _ => continue,
+            };
+
+            // Skip the 4-byte selector, then read 32 bytes at the arg offset.
+            if calldata.len() < data_end {
+                // Calldata too short for this argIndex — zero-extend.
+                let mut padded = [0u8; 32];
+                let available = calldata.len().saturating_sub(data_start);
+                if available > 0 {
+                    padded[..available]
+                        .copy_from_slice(&calldata[data_start..data_start + available]);
+                }
+                total = total.wrapping_add(U256::from_be_bytes(padded));
+            } else {
+                let word: [u8; 32] =
+                    calldata[data_start..data_end].try_into().unwrap_or_default();
+                total = total.wrapping_add(U256::from_be_bytes(word));
+            }
         }
+    }
+
+    let filter_cost = visited.saturating_mul(PER_CALL_COST);
+    if let Some(rax) = deduct_gas_and_check(&mut gas_left, filter_cost, gas_limit) {
+        return Err(CallFactsError::OutOfGas(rax));
     }
 
     let encoded = total.abi_encode();

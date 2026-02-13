@@ -70,6 +70,7 @@ use revm::{
 use rayon::{
     ThreadPoolBuilder,
     prelude::{
+        IntoParallelRefIterator,
         IntoParallelIterator,
         ParallelIterator,
     },
@@ -130,6 +131,40 @@ struct AssertionExecutionParams<'a, Active> {
     block_env: BlockEnv,
     multi_fork_db: MultiForkDb<ForkDb<Active>>,
     inspector: PhEvmInspector<'a>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct SelectorExecution {
+    fn_selector: FixedBytes<4>,
+    trigger_call_id: Option<usize>,
+}
+
+pub(super) fn expand_selector_executions(
+    fn_selectors: &[crate::store::SelectorWithTrigger],
+) -> Vec<SelectorExecution> {
+    let execution_capacity = fn_selectors
+        .iter()
+        .map(|swt| swt.trigger_calls.len().max(1))
+        .sum();
+    let mut executions = Vec::with_capacity(execution_capacity);
+
+    for swt in fn_selectors {
+        if swt.trigger_calls.is_empty() {
+            executions.push(SelectorExecution {
+                fn_selector: swt.selector,
+                trigger_call_id: None,
+            });
+        } else {
+            executions.extend(swt.trigger_calls.iter().copied().map(|call_id| {
+                SelectorExecution {
+                    fn_selector: swt.selector,
+                    trigger_call_id: Some(call_id),
+                }
+            }));
+        }
+    }
+
+    executions
 }
 
 #[derive(Debug, Clone)]
@@ -565,7 +600,8 @@ impl AssertionExecutor {
     /// Runs a single assertion contract's functions in parallel (without a custom inspector).
     ///
     /// Prepares the shared context via `prepare_assertion_contract`, then fans out
-    /// each function selector to `execute_assertion_fn` on the assertion thread pool.
+    /// each function selector/context pair to `execute_assertion_fn` on the assertion
+    /// thread pool.
     /// See `run_assertion_contract_with_inspector` for the inspector variant.
     #[instrument(
         skip_all,
@@ -602,6 +638,7 @@ impl AssertionExecutor {
 
         let plain_selectors: Vec<FixedBytes<4>> =
             fn_selectors.iter().map(|s| s.selector).collect();
+        let selector_executions = expand_selector_executions(fn_selectors);
         let prepared = self.prepare_assertion_contract(
             assertion_contract,
             &plain_selectors,
@@ -609,12 +646,12 @@ impl AssertionExecutor {
             context,
         );
 
-        let execute_fn = |swt: &crate::store::SelectorWithTrigger| {
+        let execute_fn = |execution: &SelectorExecution| {
             let mut inspector = prepared.inspector.clone();
-            inspector.context.trigger_call_id = swt.trigger_calls.first().copied();
+            inspector.context.trigger_call_id = execution.trigger_call_id;
             self.execute_assertion_fn(AssertionExecutionParams {
                 assertion_contract,
-                fn_selector: &swt.selector,
+                fn_selector: &execution.fn_selector,
                 tx_arena_epoch,
                 block_env: block_env.clone(),
                 multi_fork_db: prepared.multi_fork_db.clone(),
@@ -622,12 +659,13 @@ impl AssertionExecutor {
             })
         };
 
-        let selector_count = fn_selectors.len();
-        let parallel_fns = selector_count >= PARALLEL_THRESHOLD;
+        let execution_count = selector_executions.len();
+        let parallel_fns = execution_count >= PARALLEL_THRESHOLD;
         trace!(
             target: "assertion-executor::execute_assertions",
             assertion_contract_id = ?assertion_contract.id,
-            selector_count,
+            selector_count = fn_selectors.len(),
+            execution_count,
             scheduling = if parallel_fns { "parallel" } else { "sequential" },
             "Assertion fn scheduling decision"
         );
@@ -636,10 +674,10 @@ impl AssertionExecutor {
         let results_vec: Vec<_> = current_span.in_scope(|| {
             if parallel_fns {
                 assertion_executor_pool().install(|| {
-                    fn_selectors.into_par_iter().map(execute_fn).collect()
+                    selector_executions.par_iter().map(execute_fn).collect()
                 })
             } else {
-                fn_selectors.iter().map(execute_fn).collect()
+                selector_executions.iter().map(execute_fn).collect()
             }
         });
 
@@ -1294,6 +1332,33 @@ mod test {
             ),
             console_logs: vec![],
         }
+    }
+
+    #[test]
+    fn test_expand_selector_executions_multi_call_semantics() {
+        let sel_a = FixedBytes::from([0xAA, 0xAA, 0xAA, 0xAA]);
+        let sel_b = FixedBytes::from([0xBB, 0xBB, 0xBB, 0xBB]);
+
+        let input = vec![
+            crate::store::SelectorWithTrigger {
+                selector: sel_a,
+                trigger_calls: vec![3, 7],
+            },
+            crate::store::SelectorWithTrigger {
+                selector: sel_b,
+                trigger_calls: vec![],
+            },
+        ];
+
+        let expanded = super::expand_selector_executions(&input);
+
+        assert_eq!(expanded.len(), 3);
+        assert_eq!(expanded[0].fn_selector, sel_a);
+        assert_eq!(expanded[0].trigger_call_id, Some(3));
+        assert_eq!(expanded[1].fn_selector, sel_a);
+        assert_eq!(expanded[1].trigger_call_id, Some(7));
+        assert_eq!(expanded[2].fn_selector, sel_b);
+        assert_eq!(expanded[2].trigger_call_id, None);
     }
 
     #[tokio::test]

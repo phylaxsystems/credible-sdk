@@ -228,15 +228,22 @@ pub fn get_erc20_flow_by_call(
 
     // Filter tx_logs to those within the call's log checkpoint range
     let logs = ph_context.logs_and_traces.tx_logs;
-    let start_log_i = pre_checkpoint.map(|c| c.log_i).unwrap_or(0);
-    let end_log_i = post_checkpoint.map(|c| c.log_i).unwrap_or(logs.len());
+    let start_log_i = pre_checkpoint
+        .map(|c| c.log_i)
+        .unwrap_or(0)
+        .min(logs.len());
+    let end_log_i = post_checkpoint
+        .map(|c| c.log_i)
+        .unwrap_or(logs.len())
+        .min(logs.len());
+    let scoped_len = end_log_i.saturating_sub(start_log_i);
 
-    let log_cost = ((end_log_i - start_log_i) as u64).saturating_mul(PER_LOG_COST);
+    let log_cost = (scoped_len as u64).saturating_mul(PER_LOG_COST);
     if let Some(rax) = deduct_gas_and_check(&mut gas_left, log_cost, gas_limit) {
         return Err(Erc20FactsError::OutOfGas(rax));
     }
 
-    let scoped_logs = &logs[start_log_i..end_log_i.min(logs.len())];
+    let scoped_logs = &logs[start_log_i..start_log_i + scoped_len];
     let net_flow = compute_net_flow(scoped_logs, call.token, call.account);
     let encoded = net_flow.abi_encode();
     Ok(PhevmOutcome::new(encoded.into(), gas_limit - gas_left))
