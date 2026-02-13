@@ -162,6 +162,9 @@ pub struct LogsAndTraces<'a> {
     pub call_traces: &'a CallTracer,
 }
 
+/// Index into `CallTracer.call_records`.
+pub type TriggerCallId = usize;
+
 #[derive(Debug, Clone)]
 pub struct PhEvmContext<'a> {
     pub logs_and_traces: &'a LogsAndTraces<'a>,
@@ -170,7 +173,7 @@ pub struct PhEvmContext<'a> {
     pub original_tx_env: &'a TxEnv,
     /// The call ID (index into CallTracer.call_records) of the call that triggered
     /// this assertion. `None` if the trigger was not a call (e.g. storage/balance change).
-    pub trigger_call_id: Option<usize>,
+    pub trigger_call_id: Option<TriggerCallId>,
 }
 
 impl<'a> PhEvmContext<'a> {
@@ -287,8 +290,10 @@ impl<'a> PhEvmInspector<'a> {
             return Ok(outcome);
         }
 
+        // Fact/query precompiles are pure trace readers (no fork mutation).
+        // Keep them after fork/call-input/misc dispatch for a clearer execution model.
         if let Some(outcome) =
-            self.execute_scalar_facts_precompile::<ExtDb>(selector, inputs, &input_bytes)?
+            self.execute_fact_query_precompile::<ExtDb>(selector, inputs, &input_bytes)?
         {
             return Ok(outcome);
         }
@@ -504,7 +509,11 @@ impl<'a> PhEvmInspector<'a> {
         Ok(Some(outcome))
     }
 
-    fn execute_scalar_facts_precompile<ExtDb: DatabaseRef>(
+    /// Dispatches read-only query/fact precompiles.
+    ///
+    /// These selectors derive declarative facts from captured traces
+    /// (calls, logs, slot diffs) and do not mutate fork state.
+    fn execute_fact_query_precompile<ExtDb: DatabaseRef>(
         &self,
         selector: [u8; 4],
         inputs: &CallInputs,

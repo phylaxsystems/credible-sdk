@@ -44,6 +44,9 @@ use tracing::error;
 /// assertion execution context. Multiple precompiles (`getChangedSlots`, `getSlotDiff`,
 /// `anySlotWritten`, `allSlotWritesBy`, `getStateChanges`, etc.) all scan the same journal
 /// for `StorageChanged` entries. This index scans once and provides O(1) lookups.
+///
+/// Although the journal already contains this information, the index exists to avoid
+/// repeating full scans in every precompile call within the same tx/assertion run.
 #[derive(Clone, Debug)]
 pub struct StorageChangeIndex {
     /// Maps (address, slot) -> list of (journal_idx, had_value) entries in journal order.
@@ -64,8 +67,7 @@ pub struct StorageChangeEntry {
 impl StorageChangeIndex {
     /// Build the index by scanning the journal once.
     fn build(journal: &JournalInner<JournalEntry>) -> Self {
-        let mut changes_by_key: HashMap<(Address, U256), Vec<StorageChangeEntry>> =
-            HashMap::new();
+        let mut changes_by_key: HashMap<(Address, U256), Vec<StorageChangeEntry>> = HashMap::new();
         let mut slots_set: HashMap<Address, HashSet<U256>> = HashMap::new();
 
         for (journal_idx, entry) in journal.journal.iter().enumerate() {
@@ -124,11 +126,7 @@ impl StorageChangeIndex {
 
     /// Get all `StorageChanged` entries for (address, slot) in journal order.
     #[inline]
-    pub fn changes_for_key(
-        &self,
-        address: &Address,
-        slot: &U256,
-    ) -> Option<&[StorageChangeEntry]> {
+    pub fn changes_for_key(&self, address: &Address, slot: &U256) -> Option<&[StorageChangeEntry]> {
         self.changes_by_key
             .get(&(*address, *slot))
             .map(|v| v.as_slice())

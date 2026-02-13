@@ -1,3 +1,9 @@
+//! ERC20 event-derived fact precompiles.
+//!
+//! The "facts" naming is intentional: these helpers derive balances/flows from
+//! `Transfer` logs and therefore represent trace-derived facts, not canonical token
+//! state from direct contract calls.
+
 use crate::inspectors::{
     phevm::{
         PhEvmContext,
@@ -36,6 +42,7 @@ pub enum Erc20FactsError {
 const TRANSFER_TOPIC: B256 =
     alloy_primitives::b256!("ddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef");
 
+/// Per-indexed-log processing charge for ERC20 event-derived queries.
 const PER_LOG_COST: u64 = 3;
 
 /// Extract a Transfer event's (from, to, value) if the log matches the token address
@@ -78,11 +85,14 @@ fn compute_net_flow_from_indices(
 }
 
 fn transfer_log_indices<'a>(ph_context: &'a PhEvmContext, token: Address) -> &'a [usize] {
-    ph_context.logs_and_traces.call_traces.log_indices_by_emitter_topic0(
-        ph_context.logs_and_traces.tx_logs,
-        token,
-        TRANSFER_TOPIC.into(),
-    )
+    ph_context
+        .logs_and_traces
+        .call_traces
+        .log_indices_by_emitter_topic0(
+            ph_context.logs_and_traces.tx_logs,
+            token,
+            TRANSFER_TOPIC.into(),
+        )
 }
 
 fn in_log_window(idx: usize, start: usize, end: usize) -> bool {
@@ -131,7 +141,7 @@ pub fn erc20_balance_diff(
 /// `erc20SupplyDiff(address token) -> int256`
 ///
 /// Computes the ERC20 total supply change by scanning Transfer events.
-/// Same architectural note as `erc20_balance_diff` — uses event scanning.
+/// Same architectural note as `erc20_balance_diff` - uses event scanning.
 /// Mints (from address(0)) increase supply, burns (to address(0)) decrease it.
 pub fn erc20_supply_diff(
     ph_context: &PhEvmContext,
@@ -145,8 +155,8 @@ pub fn erc20_supply_diff(
         return Err(Erc20FactsError::OutOfGas(rax));
     }
 
-    let call =
-        PhEvm::erc20SupplyDiffCall::abi_decode(input_bytes).map_err(Erc20FactsError::DecodeError)?;
+    let call = PhEvm::erc20SupplyDiffCall::abi_decode(input_bytes)
+        .map_err(Erc20FactsError::DecodeError)?;
 
     let logs = ph_context.logs_and_traces.tx_logs;
     let log_indices = transfer_log_indices(ph_context, call.token);
@@ -157,8 +167,8 @@ pub fn erc20_supply_diff(
     }
 
     // Supply change = mints - burns
-    // Mint: Transfer from address(0) → increases supply
-    // Burn: Transfer to address(0) → decreases supply
+    // Mint: Transfer from address(0) -> increases supply
+    // Burn: Transfer to address(0) -> decreases supply
     let mut delta = I256::ZERO;
     for &idx in log_indices {
         let log = &logs[idx];
@@ -230,13 +240,12 @@ pub fn get_erc20_flow_by_call(
         .map_err(Erc20FactsError::DecodeError)?;
 
     let tracer = ph_context.logs_and_traces.call_traces;
-    let call_id_usize: usize = call
-        .callId
-        .try_into()
-        .map_err(|_| Erc20FactsError::CallIdOutOfBounds {
+    let call_id_usize: usize = call.callId.try_into().map_err(|_| {
+        Erc20FactsError::CallIdOutOfBounds {
             call_id: call.callId,
             total: tracer.call_records().len(),
-        })?;
+        }
+    })?;
 
     if call_id_usize >= tracer.call_records().len() {
         return Err(Erc20FactsError::CallIdOutOfBounds {
@@ -250,14 +259,13 @@ pub fn get_erc20_flow_by_call(
 
     // Filter tx_logs to those within the call's log checkpoint range
     let logs = ph_context.logs_and_traces.tx_logs;
-    let start_log_i = pre_checkpoint
-        .map(|c| c.log_i)
-        .unwrap_or(0)
-        .min(logs.len());
-    let end_log_i = post_checkpoint
+    let start_log_i = pre_checkpoint.map(|c| c.log_i).unwrap_or(0).min(logs.len());
+    let end_log_i_raw = post_checkpoint
         .map(|c| c.log_i)
         .unwrap_or(logs.len())
         .min(logs.len());
+    // Guard against malformed/inconsistent checkpoints.
+    let end_log_i = end_log_i_raw.max(start_log_i);
     let log_indices = transfer_log_indices(ph_context, call.token);
     let scoped_count = log_indices
         .iter()
@@ -325,7 +333,7 @@ pub fn did_balance_change(
 /// `balanceDiff(address token, address account) -> int256`
 ///
 /// Returns the ERC20 balance change for an account.
-/// Equivalent to `erc20BalanceDiff` — computes net flow from Transfer events.
+/// Equivalent to `erc20BalanceDiff` - computes net flow from Transfer events.
 pub fn balance_diff(
     ph_context: &PhEvmContext,
     input_bytes: &[u8],
@@ -338,8 +346,8 @@ pub fn balance_diff(
         return Err(Erc20FactsError::OutOfGas(rax));
     }
 
-    let call = PhEvm::balanceDiffCall::abi_decode(input_bytes)
-        .map_err(Erc20FactsError::DecodeError)?;
+    let call =
+        PhEvm::balanceDiffCall::abi_decode(input_bytes).map_err(Erc20FactsError::DecodeError)?;
 
     let logs = ph_context.logs_and_traces.tx_logs;
     let log_indices = transfer_log_indices(ph_context, call.token);
@@ -561,9 +569,9 @@ mod test {
 
         // Create logs: one transfer before the call, one during, one after
         let logs = vec![
-            make_transfer_log(token, other, account, U256::from(10)),  // before call
+            make_transfer_log(token, other, account, U256::from(10)), // before call
             make_transfer_log(token, other, account, U256::from(100)), // during call
-            make_transfer_log(token, other, account, U256::from(5)),   // after call
+            make_transfer_log(token, other, account, U256::from(5)),  // after call
         ];
 
         let mut tracer = CallTracer::default();
@@ -692,7 +700,7 @@ mod test {
         let account = address!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb0001");
         let other = address!("cccccccccccccccccccccccccccccccccccc0001");
 
-        // Send and receive same amount — net zero
+        // Send and receive same amount - net zero
         let logs = vec![
             make_transfer_log(token, other, account, U256::from(100)),
             make_transfer_log(token, account, other, U256::from(100)),

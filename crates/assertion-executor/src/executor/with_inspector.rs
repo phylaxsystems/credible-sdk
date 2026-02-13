@@ -51,8 +51,8 @@ use tracing::{
 };
 
 use rayon::prelude::{
-    IntoParallelRefIterator,
     IntoParallelIterator,
+    IntoParallelRefIterator,
     ParallelIterator,
 };
 
@@ -60,7 +60,7 @@ use super::{
     AssertionExecutor,
     ExecuteForkedTxResult,
     assertion_executor_pool,
-    expand_selector_executions,
+    expand_selector_invocations,
 };
 
 use crate::evm::build_evm::{
@@ -314,7 +314,7 @@ impl AssertionExecutor {
             ));
         }
 
-        let selector_executions = expand_selector_executions(fn_selectors);
+        let selector_executions = expand_selector_invocations(fn_selectors);
         let prepared = self.prepare_assertion_contract(
             assertion_contract,
             fn_selectors.len(),
@@ -322,7 +322,7 @@ impl AssertionExecutor {
             context,
         );
 
-        let execute_fn = |execution: &super::SelectorExecution| {
+        let execute_fn = |execution: &super::SelectorInvocation| {
             let mut phevm_inspector = prepared.inspector.clone();
             phevm_inspector.context.trigger_call_id = execution.trigger_call_id;
             self.execute_assertion_fn_with_inspector(
@@ -337,7 +337,7 @@ impl AssertionExecutor {
         };
 
         let execution_count = selector_executions.len();
-        let parallel_fns = execution_count >= super::PARALLEL_THRESHOLD;
+        let parallel_fns = super::should_parallelize(execution_count);
         trace!(
             target: "assertion-executor::execute_assertions",
             assertion_contract_id = ?assertion_contract.id,
@@ -350,9 +350,8 @@ impl AssertionExecutor {
         let current_span = tracing::Span::current();
         let results_vec: Vec<_> = current_span.in_scope(|| {
             if parallel_fns {
-                assertion_executor_pool().install(|| {
-                    selector_executions.par_iter().map(execute_fn).collect()
-                })
+                assertion_executor_pool()
+                    .install(|| selector_executions.par_iter().map(execute_fn).collect())
             } else {
                 selector_executions.iter().map(execute_fn).collect()
             }

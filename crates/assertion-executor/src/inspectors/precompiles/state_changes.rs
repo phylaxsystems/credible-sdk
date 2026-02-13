@@ -89,7 +89,10 @@ pub fn get_state_changes(
     Ok(PhevmOutcome::new(dif_bytes, gas_limit - gas_left))
 }
 
-/// Returns an array of different values for an account and slot, using the pre-built index.
+/// Returns an array of different values for an account and slot, using the shared storage index.
+///
+/// This replaced repeated full-journal scans so multiple state/slot precompiles executed
+/// in the same assertion context can reuse one indexed view.
 fn get_differences<A: std::alloc::Allocator>(
     journal: &JournalInner<JournalEntry>,
     index: &crate::inspectors::tracer::StorageChangeIndex,

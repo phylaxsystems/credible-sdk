@@ -75,8 +75,7 @@ where
             .estimated_create_fork_bytes(fork_id, &journal.inner, tracer)
             .map_err(CallBoundaryError::MultiForkError)?;
         let words_written = bytes_written.div_ceil(EVM_WORD_BYTES);
-        if let Some(rax) =
-            deduct_gas_and_check(gas_left, words_written * MEM_WRITE_COST, gas_limit)
+        if let Some(rax) = deduct_gas_and_check(gas_left, words_written * MEM_WRITE_COST, gas_limit)
         {
             return Err(CallBoundaryError::OutOfGas(rax));
         }
@@ -95,6 +94,9 @@ where
 }
 
 /// Read a storage slot from the current fork state.
+///
+/// This mirrors `load` precompile semantics but stays local because call-boundary
+/// operations need explicit fork-switch gas accounting and error mapping.
 fn read_slot<'db, ExtDb, CTX>(
     evm_context: &mut CTX,
     target: alloy_primitives::Address,
@@ -104,10 +106,8 @@ fn read_slot<'db, ExtDb, CTX>(
 ) -> Result<U256, CallBoundaryError>
 where
     ExtDb: DatabaseRef + Clone + DatabaseCommit + 'db,
-    CTX: ContextTr<
-            Db = &'db mut MultiForkDb<ExtDb>,
-            Journal = Journal<&'db mut MultiForkDb<ExtDb>>,
-        >,
+    CTX:
+        ContextTr<Db = &'db mut MultiForkDb<ExtDb>, Journal = Journal<&'db mut MultiForkDb<ExtDb>>>,
 {
     evm_context
         .journal_mut()
@@ -128,6 +128,9 @@ where
 ///
 /// Forks to the pre or post state of the specified call, reads the storage slot,
 /// then restores the PostTx fork state. Returns the slot value.
+///
+/// `callId` should come from trigger context (per-call assertion execution) or
+/// from prior call-query precompiles.
 pub fn load_at_call<'db, ExtDb, CTX>(
     evm_context: &mut CTX,
     ph_context: &PhEvmContext,
@@ -136,10 +139,8 @@ pub fn load_at_call<'db, ExtDb, CTX>(
 ) -> Result<PhevmOutcome, CallBoundaryError>
 where
     ExtDb: DatabaseRef + Clone + DatabaseCommit + 'db,
-    CTX: ContextTr<
-            Db = &'db mut MultiForkDb<ExtDb>,
-            Journal = Journal<&'db mut MultiForkDb<ExtDb>>,
-        >,
+    CTX:
+        ContextTr<Db = &'db mut MultiForkDb<ExtDb>, Journal = Journal<&'db mut MultiForkDb<ExtDb>>>,
 {
     let gas_limit = gas;
     let mut gas_left = gas;
@@ -148,8 +149,8 @@ where
         return Err(CallBoundaryError::OutOfGas(rax));
     }
 
-    let call = PhEvm::loadAtCallCall::abi_decode(input_bytes)
-        .map_err(CallBoundaryError::DecodeError)?;
+    let call =
+        PhEvm::loadAtCallCall::abi_decode(input_bytes).map_err(CallBoundaryError::DecodeError)?;
 
     let target = call.target;
     let slot = call.slot;
@@ -158,12 +159,12 @@ where
     let call_point: u8 = call.point.into();
 
     // Validate call ID
-    let call_id_usize: usize = call_id
-        .try_into()
-        .map_err(|_| CallBoundaryError::CallIdOutOfBounds {
+    let call_id_usize: usize = call_id.try_into().map_err(|_| {
+        CallBoundaryError::CallIdOutOfBounds {
             call_id,
             total: ph_context.logs_and_traces.call_traces.call_records().len(),
-        })?;
+        }
+    })?;
 
     let tracer = ph_context.logs_and_traces.call_traces;
     if !tracer.is_call_forkable(call_id_usize) {
@@ -216,10 +217,8 @@ pub fn slot_delta_at_call<'db, ExtDb, CTX>(
 ) -> Result<PhevmOutcome, CallBoundaryError>
 where
     ExtDb: DatabaseRef + Clone + DatabaseCommit + 'db,
-    CTX: ContextTr<
-            Db = &'db mut MultiForkDb<ExtDb>,
-            Journal = Journal<&'db mut MultiForkDb<ExtDb>>,
-        >,
+    CTX:
+        ContextTr<Db = &'db mut MultiForkDb<ExtDb>, Journal = Journal<&'db mut MultiForkDb<ExtDb>>>,
 {
     let gas_limit = gas;
     let mut gas_left = gas;
@@ -236,12 +235,12 @@ where
     let call_id = call.callId;
 
     // Validate call ID
-    let call_id_usize: usize = call_id
-        .try_into()
-        .map_err(|_| CallBoundaryError::CallIdOutOfBounds {
+    let call_id_usize: usize = call_id.try_into().map_err(|_| {
+        CallBoundaryError::CallIdOutOfBounds {
             call_id,
             total: ph_context.logs_and_traces.call_traces.call_records().len(),
-        })?;
+        }
+    })?;
 
     let tracer = ph_context.logs_and_traces.call_traces;
     if !tracer.is_call_forkable(call_id_usize) {
@@ -268,8 +267,7 @@ where
     );
     let journal = evm_context.journal_mut();
     switch_to_fork(journal, post_fork_id, tracer, &mut gas_left, gas_limit)?;
-    let post_value =
-        read_slot::<ExtDb, CTX>(evm_context, target, slot, &mut gas_left, gas_limit)?;
+    let post_value = read_slot::<ExtDb, CTX>(evm_context, target, slot, &mut gas_left, gas_limit)?;
 
     // Restore PostTx fork
     let journal = evm_context.journal_mut();
@@ -352,9 +350,7 @@ mod test {
         );
 
         let mut journal_inner = JournalInner::new();
-        journal_inner
-            .load_account(&mut pre_tx_db, address)
-            .unwrap();
+        journal_inner.load_account(&mut pre_tx_db, address).unwrap();
         journal_inner
             .sstore(&mut pre_tx_db, address, slot, post_value, false)
             .unwrap();
@@ -456,7 +452,10 @@ mod test {
         let result =
             load_at_call::<ForkDb<MockDb>, _>(&mut context, &ph_ctx, &encoded, TEST_GAS).unwrap();
         let decoded = U256::abi_decode(result.bytes()).unwrap();
-        assert_eq!(decoded, post_value, "PostCall should return post-call value");
+        assert_eq!(
+            decoded, post_value,
+            "PostCall should return post-call value"
+        );
     }
 
     #[test]
@@ -488,10 +487,12 @@ mod test {
         };
         let encoded: Bytes = input.abi_encode().into();
 
-        let result =
-            load_at_call::<ForkDb<MockDb>, _>(&mut context, &ph_ctx, &encoded, TEST_GAS);
+        let result = load_at_call::<ForkDb<MockDb>, _>(&mut context, &ph_ctx, &encoded, TEST_GAS);
         assert!(
-            matches!(result, Err(CallBoundaryError::CallInsideRevertedSubtree { .. })),
+            matches!(
+                result,
+                Err(CallBoundaryError::CallInsideRevertedSubtree { .. })
+            ),
             "Expected CallInsideRevertedSubtree for out-of-bounds call ID, got {result:?}"
         );
     }

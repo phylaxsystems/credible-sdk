@@ -70,8 +70,8 @@ use revm::{
 use rayon::{
     ThreadPoolBuilder,
     prelude::{
-        IntoParallelRefIterator,
         IntoParallelIterator,
+        IntoParallelRefIterator,
         ParallelIterator,
     },
 };
@@ -91,10 +91,6 @@ use tracing::{
     warn,
 };
 
-/// Minimum number of items before rayon parallel execution is worthwhile.
-/// Below this threshold, sequential execution avoids scheduling overhead.
-const PARALLEL_THRESHOLD: usize = 2;
-
 static ASSERTION_EXECUTOR_POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
 
 fn assertion_executor_pool() -> &'static rayon::ThreadPool {
@@ -104,6 +100,13 @@ fn assertion_executor_pool() -> &'static rayon::ThreadPool {
             .build()
             .expect("Failed to build assertion executor thread pool")
     })
+}
+
+/// Rayon scheduling has non-trivial overhead for single-item workloads.
+/// We run sequentially only when there is exactly one item.
+#[inline]
+pub(super) fn should_parallelize(work_items: usize) -> bool {
+    work_items > 1
 }
 
 #[derive(Debug, Clone)]
@@ -134,14 +137,19 @@ struct AssertionExecutionParams<'a, Active> {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(super) struct SelectorExecution {
+pub(super) struct SelectorInvocation {
     fn_selector: FixedBytes<4>,
     trigger_call_id: Option<usize>,
 }
 
-pub(super) fn expand_selector_executions(
+/// Expands each assertion selector into concrete invocations.
+///
+/// A selector with N trigger call IDs becomes N invocations so each assertion run
+/// receives one `trigger_call_id`. Non-call-triggered selectors produce one
+/// invocation with `None`.
+pub(super) fn expand_selector_invocations(
     fn_selectors: &[crate::store::SelectorWithTrigger],
-) -> Vec<SelectorExecution> {
+) -> Vec<SelectorInvocation> {
     let execution_capacity = fn_selectors
         .iter()
         .map(|swt| swt.trigger_calls.len().max(1))
@@ -150,13 +158,13 @@ pub(super) fn expand_selector_executions(
 
     for swt in fn_selectors {
         if swt.trigger_calls.is_empty() {
-            executions.push(SelectorExecution {
+            executions.push(SelectorInvocation {
                 fn_selector: swt.selector,
                 trigger_call_id: None,
             });
         } else {
             executions.extend(swt.trigger_calls.iter().copied().map(|call_id| {
-                SelectorExecution {
+                SelectorInvocation {
                     fn_selector: swt.selector,
                     trigger_call_id: Some(call_id),
                 }
@@ -348,11 +356,8 @@ impl AssertionExecutor {
         );
 
         let execute_one = |assertion_for_execution: crate::store::AssertionsForExecution| {
-            let phevm_context = PhEvmContext::new(
-                &logs_and_traces,
-                assertion_for_execution.adopter,
-                tx_env,
-            );
+            let phevm_context =
+                PhEvmContext::new(&logs_and_traces, assertion_for_execution.adopter, tx_env);
 
             // trigger_call_id is set per-selector in run_assertion_contract
             run_assertion_contract(
@@ -366,7 +371,7 @@ impl AssertionExecutor {
         };
 
         let total_selectors: usize = assertions.iter().map(|a| a.selectors.len()).sum();
-        let parallel = assertion_count >= PARALLEL_THRESHOLD;
+        let parallel = should_parallelize(assertion_count);
         debug!(
             target: "assertion-executor::execute_assertions",
             assertion_count,
@@ -376,9 +381,8 @@ impl AssertionExecutor {
         );
 
         if parallel {
-            assertion_executor_pool().install(|| {
-                assertions.into_par_iter().map(execute_one).collect()
-            })
+            assertion_executor_pool()
+                .install(|| assertions.into_par_iter().map(execute_one).collect())
         } else {
             assertions.into_iter().map(execute_one).collect()
         }
@@ -635,7 +639,7 @@ impl AssertionExecutor {
             });
         }
 
-        let selector_executions = expand_selector_executions(fn_selectors);
+        let selector_executions = expand_selector_invocations(fn_selectors);
         let prepared = self.prepare_assertion_contract(
             assertion_contract,
             fn_selectors.len(),
@@ -643,7 +647,7 @@ impl AssertionExecutor {
             context,
         );
 
-        let execute_fn = |execution: &SelectorExecution| {
+        let execute_fn = |execution: &SelectorInvocation| {
             let mut inspector = prepared.inspector.clone();
             inspector.context.trigger_call_id = execution.trigger_call_id;
             self.execute_assertion_fn(AssertionExecutionParams {
@@ -657,7 +661,7 @@ impl AssertionExecutor {
         };
 
         let execution_count = selector_executions.len();
-        let parallel_fns = execution_count >= PARALLEL_THRESHOLD;
+        let parallel_fns = should_parallelize(execution_count);
         trace!(
             target: "assertion-executor::execute_assertions",
             assertion_contract_id = ?assertion_contract.id,
@@ -670,9 +674,8 @@ impl AssertionExecutor {
         let current_span = tracing::Span::current();
         let results_vec: Vec<_> = current_span.in_scope(|| {
             if parallel_fns {
-                assertion_executor_pool().install(|| {
-                    selector_executions.par_iter().map(execute_fn).collect()
-                })
+                assertion_executor_pool()
+                    .install(|| selector_executions.par_iter().map(execute_fn).collect())
             } else {
                 selector_executions.iter().map(execute_fn).collect()
             }
@@ -1332,7 +1335,7 @@ mod test {
     }
 
     #[test]
-    fn test_expand_selector_executions_multi_call_semantics() {
+    fn test_expand_selector_invocations_multi_call_semantics() {
         let sel_a = FixedBytes::from([0xAA, 0xAA, 0xAA, 0xAA]);
         let sel_b = FixedBytes::from([0xBB, 0xBB, 0xBB, 0xBB]);
 
@@ -1347,7 +1350,7 @@ mod test {
             },
         ];
 
-        let expanded = super::expand_selector_executions(&input);
+        let expanded = super::expand_selector_invocations(&input);
 
         assert_eq!(expanded.len(), 3);
         assert_eq!(expanded[0].fn_selector, sel_a);
