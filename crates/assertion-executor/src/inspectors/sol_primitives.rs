@@ -78,6 +78,61 @@ mod tests {
                 PhEvm::getAssertionAdopterCall::SELECTOR,
             ),
             ("getTxObject()", PhEvm::getTxObjectCall::SELECTOR),
+            // Scalar call-fact cheatcodes
+            (
+                "anyCall(address,bytes4,(uint8,uint32,uint32,bool))",
+                PhEvm::anyCallCall::SELECTOR,
+            ),
+            (
+                "countCalls(address,bytes4,(uint8,uint32,uint32,bool))",
+                PhEvm::countCallsCall::SELECTOR,
+            ),
+            ("callerAt(uint256)", PhEvm::callerAtCall::SELECTOR),
+            (
+                "allCallsBy(address,bytes4,address,(uint8,uint32,uint32,bool))",
+                PhEvm::allCallsByCall::SELECTOR,
+            ),
+            (
+                "sumArgUint(address,bytes4,uint256,(uint8,uint32,uint32,bool))",
+                PhEvm::sumArgUintCall::SELECTOR,
+            ),
+            // Storage write-policy cheatcodes
+            (
+                "anySlotWritten(address,bytes32)",
+                PhEvm::anySlotWrittenCall::SELECTOR,
+            ),
+            (
+                "allSlotWritesBy(address,bytes32,address)",
+                PhEvm::allSlotWritesByCall::SELECTOR,
+            ),
+            // Call-boundary state cheatcodes
+            (
+                "loadAtCall(address,bytes32,uint256,uint8)",
+                PhEvm::loadAtCallCall::SELECTOR,
+            ),
+            (
+                "slotDeltaAtCall(address,bytes32,uint256)",
+                PhEvm::slotDeltaAtCallCall::SELECTOR,
+            ),
+            // Trigger context cheatcode
+            ("getTriggerContext()", PhEvm::getTriggerContextCall::SELECTOR),
+            // ERC20 fact cheatcodes
+            (
+                "erc20BalanceDiff(address,address)",
+                PhEvm::erc20BalanceDiffCall::SELECTOR,
+            ),
+            (
+                "erc20SupplyDiff(address)",
+                PhEvm::erc20SupplyDiffCall::SELECTOR,
+            ),
+            (
+                "getERC20NetFlow(address,address)",
+                PhEvm::getERC20NetFlowCall::SELECTOR,
+            ),
+            (
+                "getERC20FlowByCall(address,address,uint256)",
+                PhEvm::getERC20FlowByCallCall::SELECTOR,
+            ),
         ];
 
         // Verify all selectors are non-zero (sanity check)
@@ -92,8 +147,8 @@ mod tests {
         // Verify we have the expected count of methods
         assert_eq!(
             expected_selectors.len(),
-            14,
-            "PhEvm interface should have exactly 14 methods"
+            28,
+            "PhEvm interface should have exactly 28 methods"
         );
     }
 

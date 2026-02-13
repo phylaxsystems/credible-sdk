@@ -15,13 +15,17 @@ use alloy_primitives::Bytes;
 use super::phevm::PhevmOutcome;
 
 pub mod assertion_adopter;
+pub mod call_boundary;
+pub mod call_facts;
 pub mod calls;
 pub mod console_log;
+pub mod erc20_facts;
 pub mod fork;
 pub mod get_logs;
 pub mod load;
 pub mod state_changes;
 pub mod tx_object;
+pub mod write_policy;
 
 pub use revm::interpreter::gas::COLD_SLOAD_COST;
 

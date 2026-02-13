@@ -9,6 +9,15 @@ use crate::{
         inspector_result_to_call_outcome,
         precompiles::{
             assertion_adopter::get_assertion_adopter,
+            call_facts::{
+                CallFactsError,
+                all_calls_by,
+                any_call,
+                caller_at,
+                count_calls,
+                get_trigger_context,
+                sum_arg_uint,
+            },
             calls::{
                 GetCallInputsError,
                 get_call_inputs,
@@ -31,6 +40,23 @@ use crate::{
                 get_state_changes,
             },
             tx_object::load_tx_object,
+            call_boundary::{
+                CallBoundaryError,
+                load_at_call,
+                slot_delta_at_call,
+            },
+            erc20_facts::{
+                Erc20FactsError,
+                erc20_balance_diff,
+                erc20_supply_diff,
+                get_erc20_flow_by_call,
+                get_erc20_net_flow,
+            },
+            write_policy::{
+                WritePolicyError,
+                all_slot_writes_by,
+                any_slot_written,
+            },
         },
         sol_primitives::{
             PhEvm,
@@ -114,6 +140,9 @@ pub struct PhEvmContext<'a> {
     pub adopter: Address,
     pub console_logs: Vec<String>,
     pub original_tx_env: &'a TxEnv,
+    /// The call ID (index into CallTracer.call_records) of the call that triggered
+    /// this assertion. `None` if the trigger was not a call (e.g. storage/balance change).
+    pub trigger_call_id: Option<usize>,
 }
 
 impl<'a> PhEvmContext<'a> {
@@ -128,6 +157,7 @@ impl<'a> PhEvmContext<'a> {
             adopter,
             console_logs: vec![],
             original_tx_env: tx_env,
+            trigger_call_id: None,
         }
     }
 
@@ -154,6 +184,14 @@ pub enum PrecompileError<ExtDb: DatabaseRef> {
     ConsoleLogError(#[source] ConsoleLogError),
     #[error("Error loading external slot: {0}")]
     LoadExternalSlotError(#[source] LoadExternalSlotError<ExtDb>),
+    #[error("Error in scalar call facts: {0}")]
+    CallFactsError(#[source] CallFactsError),
+    #[error("Error in write policy: {0}")]
+    WritePolicyError(#[source] WritePolicyError),
+    #[error("Error in call boundary: {0}")]
+    CallBoundaryError(#[source] CallBoundaryError),
+    #[error("Error in ERC20 facts: {0}")]
+    Erc20FactsError(#[source] Erc20FactsError),
 }
 
 /// `PhEvmInspector` is an inspector for supporting the `PhEvm` precompiles.
@@ -213,6 +251,12 @@ impl<'a> PhEvmInspector<'a> {
             return Ok(outcome);
         }
 
+        if let Some(outcome) =
+            self.execute_scalar_facts_precompile::<ExtDb>(selector, inputs, &input_bytes)?
+        {
+            return Ok(outcome);
+        }
+
         Err(PrecompileError::SelectorNotFound(selector.into()))
     }
 
@@ -264,6 +308,14 @@ impl<'a> PhEvmInspector<'a> {
                     inputs.gas_limit,
                 )
                 .map_err(PrecompileError::ForkError)?
+            }
+            PhEvm::loadAtCallCall::SELECTOR => {
+                load_at_call(context, &self.context, input_bytes, inputs.gas_limit)
+                    .map_err(PrecompileError::CallBoundaryError)?
+            }
+            PhEvm::slotDeltaAtCallCall::SELECTOR => {
+                slot_delta_at_call(context, &self.context, input_bytes, inputs.gas_limit)
+                    .map_err(PrecompileError::CallBoundaryError)?
             }
             _ => return Ok(None),
         };
@@ -384,6 +436,68 @@ impl<'a> PhEvmInspector<'a> {
 
                 #[cfg(not(feature = "phoundry"))]
                 return Ok(Some(PhevmOutcome::from(Bytes::default())));
+            }
+            _ => return Ok(None),
+        };
+
+        Ok(Some(outcome))
+    }
+
+    fn execute_scalar_facts_precompile<ExtDb: DatabaseRef>(
+        &self,
+        selector: [u8; 4],
+        inputs: &CallInputs,
+        input_bytes: &Bytes,
+    ) -> Result<Option<PhevmOutcome>, PrecompileError<ExtDb>> {
+        let gas_limit = inputs.gas_limit;
+        let outcome = match selector {
+            PhEvm::anyCallCall::SELECTOR => {
+                any_call(&self.context, input_bytes, gas_limit)
+                    .map_err(PrecompileError::CallFactsError)?
+            }
+            PhEvm::countCallsCall::SELECTOR => {
+                count_calls(&self.context, input_bytes, gas_limit)
+                    .map_err(PrecompileError::CallFactsError)?
+            }
+            PhEvm::callerAtCall::SELECTOR => {
+                caller_at(&self.context, input_bytes, gas_limit)
+                    .map_err(PrecompileError::CallFactsError)?
+            }
+            PhEvm::allCallsByCall::SELECTOR => {
+                all_calls_by(&self.context, input_bytes, gas_limit)
+                    .map_err(PrecompileError::CallFactsError)?
+            }
+            PhEvm::sumArgUintCall::SELECTOR => {
+                sum_arg_uint(&self.context, input_bytes, gas_limit)
+                    .map_err(PrecompileError::CallFactsError)?
+            }
+            PhEvm::anySlotWrittenCall::SELECTOR => {
+                any_slot_written(&self.context, input_bytes, gas_limit)
+                    .map_err(PrecompileError::WritePolicyError)?
+            }
+            PhEvm::allSlotWritesByCall::SELECTOR => {
+                all_slot_writes_by(&self.context, input_bytes, gas_limit)
+                    .map_err(PrecompileError::WritePolicyError)?
+            }
+            PhEvm::getTriggerContextCall::SELECTOR => {
+                get_trigger_context(&self.context, gas_limit)
+                    .map_err(PrecompileError::CallFactsError)?
+            }
+            PhEvm::erc20BalanceDiffCall::SELECTOR => {
+                erc20_balance_diff(&self.context, input_bytes, gas_limit)
+                    .map_err(PrecompileError::Erc20FactsError)?
+            }
+            PhEvm::erc20SupplyDiffCall::SELECTOR => {
+                erc20_supply_diff(&self.context, input_bytes, gas_limit)
+                    .map_err(PrecompileError::Erc20FactsError)?
+            }
+            PhEvm::getERC20NetFlowCall::SELECTOR => {
+                get_erc20_net_flow(&self.context, input_bytes, gas_limit)
+                    .map_err(PrecompileError::Erc20FactsError)?
+            }
+            PhEvm::getERC20FlowByCallCall::SELECTOR => {
+                get_erc20_flow_by_call(&self.context, input_bytes, gas_limit)
+                    .map_err(PrecompileError::Erc20FactsError)?
             }
             _ => return Ok(None),
         };

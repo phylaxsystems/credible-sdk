@@ -313,11 +313,21 @@ impl AssertionExecutor {
         );
 
         let execute_one = |assertion_for_execution: crate::store::AssertionsForExecution| {
-            let phevm_context = PhEvmContext::new(
+            let mut phevm_context = PhEvmContext::new(
                 &logs_and_traces,
                 assertion_for_execution.adopter,
                 tx_env,
             );
+
+            // Find the first call targeting this adopter to set as trigger context
+            let adopter = assertion_for_execution.adopter;
+            phevm_context.trigger_call_id = logs_and_traces
+                .call_traces
+                .call_records()
+                .iter()
+                .enumerate()
+                .find(|(_, r)| r.inputs().target_address == adopter)
+                .map(|(i, _)| i);
 
             run_assertion_contract(
                 &assertion_for_execution.assertion_contract,

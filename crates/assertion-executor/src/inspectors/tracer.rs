@@ -174,12 +174,17 @@ impl CallTracer {
             .or_default()
             .push(index);
 
+        // Depth = number of pending calls (i.e. nesting level at time of this call).
+        // pending_post_call_writes was already pushed above, so subtract 1.
+        let depth = (self.pending_post_call_writes.len() - 1) as u32;
+
         self.call_records.push(CallRecord {
             inputs,
             target_and_selector: key,
             key_index: position,
             pre_call_checkpoint,
             post_call_checkpoint: None,
+            depth,
         });
     }
 
@@ -397,6 +402,7 @@ impl CallTracer {
                 journal_i: 0,
             },
             post_call_checkpoint: None,
+            depth: 0,
         });
     }
 
@@ -443,6 +449,12 @@ impl CallTracer {
         result
     }
 
+    /// Returns a reference to a specific call record by index.
+    #[must_use]
+    pub fn get_call_record(&self, call_id: usize) -> Option<&CallRecord> {
+        self.call_records.get(call_id)
+    }
+
     /// Test helper to set checkpoints for the last inserted call record.
     #[cfg(any(test, feature = "test"))]
     pub fn set_last_call_checkpoints(
@@ -473,6 +485,9 @@ pub struct CallRecord {
     pre_call_checkpoint: JournalCheckpoint,
     /// Journal checkpoint at the end of the call, None until `call_end`.
     post_call_checkpoint: Option<JournalCheckpoint>,
+    /// Call nesting depth (0 = top-level call).
+    /// Recorded from `pending_post_call_writes.len()` at call start time.
+    depth: u32,
 }
 
 impl CallRecord {
@@ -494,6 +509,11 @@ impl CallRecord {
     /// Returns the journal checkpoint at the end of the call, or None if the call hasn't ended.
     pub fn post_call_checkpoint(&self) -> Option<JournalCheckpoint> {
         self.post_call_checkpoint
+    }
+
+    /// Returns the call nesting depth (0 = top-level call).
+    pub fn depth(&self) -> u32 {
+        self.depth
     }
 }
 
