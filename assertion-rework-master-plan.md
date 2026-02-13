@@ -808,6 +808,8 @@ If we want immediate wins without waiting for the full roadmap:
   - [x] Full package validation includes doctests:
     - `cargo test -p assertion-executor@1.0.8 --no-default-features --features "optimism test"` (285 unit tests passed, doctests passed).
 - **Performance Extension Pack (remaining Phase 11 items)**: DONE.
+  - [x] Commit:
+    - `c7388e8` — completed extension pack implementation (log encoding cache, bounded array responses, trigger-time filters, keyed/grouped aggregates, tx log index reuse) plus validation updates.
   - [x] Item 6 (log re-encoding caching):
     - Added tx-scope `getLogs()` ABI-encoding cache on `CallTracer` (`encoded_logs_cache`) and used it from `get_logs.rs`.
     - Added regression test: `test_get_logs_populates_tracer_encoding_cache`.
