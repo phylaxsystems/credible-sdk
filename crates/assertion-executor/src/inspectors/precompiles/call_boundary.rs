@@ -31,6 +31,7 @@ use crate::{
 
 use alloy_primitives::{
     Address,
+    FixedBytes,
     I256,
 };
 use alloy_sol_types::{
@@ -60,8 +61,6 @@ pub enum CallBoundaryError {
     CallInsideRevertedSubtree { call_id: usize },
     #[error("MultiForkDb error during call boundary operation")]
     MultiForkError(#[source] MultiForkError),
-    #[error("ID exceeds usize")]
-    IdExceedsUsize(#[source] alloy_primitives::ruint::FromUintError<usize>),
     #[error("Database error loading account")]
     LoadAccountError,
 }
@@ -105,6 +104,36 @@ where
     Ok(())
 }
 
+#[inline]
+fn resolve_forkable_call_id(
+    ph_context: &PhEvmContext,
+    call_id: U256,
+) -> Result<usize, CallBoundaryError> {
+    let tracer = ph_context.logs_and_traces.call_traces;
+    let total = tracer.call_records().len();
+    let call_id_usize: usize = call_id
+        .try_into()
+        .map_err(|_| CallBoundaryError::CallIdOutOfBounds { call_id, total })?;
+
+    if !tracer.is_call_forkable(call_id_usize) {
+        return Err(CallBoundaryError::CallInsideRevertedSubtree {
+            call_id: call_id_usize,
+        });
+    }
+
+    Ok(call_id_usize)
+}
+
+#[inline]
+fn call_point_to_fork_id(call_id: usize, point: PhEvm::CallPoint) -> ForkId {
+    let point_u8: u8 = point.into();
+    if point_u8 == 0 {
+        ForkId::PreCall(call_id)
+    } else {
+        ForkId::PostCall(call_id)
+    }
+}
+
 /// Read a storage slot from the current fork state.
 ///
 /// This mirrors `load` precompile semantics but stays local because call-boundary
@@ -136,6 +165,57 @@ where
         .data)
 }
 
+struct SlotDeltaQuery<'a> {
+    target: Address,
+    selector: FixedBytes<4>,
+    slot: alloy_primitives::B256,
+    filter: &'a PhEvm::CallFilter,
+}
+
+fn for_each_matching_slot_delta<'db, ExtDb, CTX>(
+    evm_context: &mut CTX,
+    ph_context: &PhEvmContext,
+    query: SlotDeltaQuery<'_>,
+    gas_left: &mut u64,
+    gas_limit: u64,
+    mut f: impl FnMut(I256) -> bool,
+) -> Result<(), CallBoundaryError>
+where
+    ExtDb: DatabaseRef + Clone + DatabaseCommit + 'db,
+    CTX:
+        ContextTr<Db = &'db mut MultiForkDb<ExtDb>, Journal = Journal<&'db mut MultiForkDb<ExtDb>>>,
+{
+    let tracer = ph_context.logs_and_traces.call_traces;
+    let call_records = tracer.call_records();
+    let scheme_filter = call_type_to_scheme(query.filter.callType);
+
+    if let Some(indices) = candidate_call_indices(tracer, query.target, query.selector) {
+        for &idx in indices {
+            let Some(depth) = tracer.call_depth_at(idx) else {
+                continue;
+            };
+            if !call_matches_filter(&call_records[idx], depth, query.filter, scheme_filter) {
+                continue;
+            }
+
+            let delta = slot_delta_for_call_id::<ExtDb, CTX>(
+                evm_context,
+                ph_context,
+                query.target,
+                query.slot,
+                idx,
+                gas_left,
+                gas_limit,
+            )?;
+            if !f(delta) {
+                break;
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// `loadAtCall(address target, bytes32 slot, uint256 callId, CallPoint point) -> bytes32`
 ///
 /// Forks to the pre or post state of the specified call, reads the storage slot,
@@ -164,48 +244,22 @@ where
     let call =
         PhEvm::loadAtCallCall::abi_decode(input_bytes).map_err(CallBoundaryError::DecodeError)?;
 
-    let target = call.target;
-    let slot = call.slot;
-    let call_id = call.callId;
-    // CallPoint enum: 0 = PreCall, 1 = PostCall
-    let call_point: u8 = call.point.into();
-
-    // Validate call ID
-    let call_id_usize: usize = call_id.try_into().map_err(|_| {
-        CallBoundaryError::CallIdOutOfBounds {
-            call_id,
-            total: ph_context.logs_and_traces.call_traces.call_records().len(),
-        }
-    })?;
-
+    let call_id = resolve_forkable_call_id(ph_context, call.callId)?;
     let tracer = ph_context.logs_and_traces.call_traces;
-    if !tracer.is_call_forkable(call_id_usize) {
-        return Err(CallBoundaryError::CallInsideRevertedSubtree {
-            call_id: call_id_usize,
-        });
-    }
-
-    // Determine fork ID based on CallPoint (0 = PreCall, 1 = PostCall)
-    let fork_id = if call_point == 0 {
-        ForkId::PreCall(
-            call_id
-                .try_into()
-                .map_err(CallBoundaryError::IdExceedsUsize)?,
-        )
-    } else {
-        ForkId::PostCall(
-            call_id
-                .try_into()
-                .map_err(CallBoundaryError::IdExceedsUsize)?,
-        )
-    };
+    let fork_id = call_point_to_fork_id(call_id, call.point);
 
     // Switch to target fork
     let journal = evm_context.journal_mut();
     switch_to_fork(journal, fork_id, tracer, &mut gas_left, gas_limit)?;
 
     // Read the slot
-    let value = read_slot::<ExtDb, CTX>(evm_context, target, slot, &mut gas_left, gas_limit)?;
+    let value = read_slot::<ExtDb, CTX>(
+        evm_context,
+        call.target,
+        call.slot,
+        &mut gas_left,
+        gas_limit,
+    )?;
 
     // Restore PostTx fork (the default state for assertion execution)
     let journal = evm_context.journal_mut();
@@ -241,56 +295,17 @@ where
 
     let call = PhEvm::slotDeltaAtCallCall::abi_decode(input_bytes)
         .map_err(CallBoundaryError::DecodeError)?;
-
-    let target = call.target;
-    let slot = call.slot;
-    let call_id = call.callId;
-
-    // Validate call ID
-    let call_id_usize: usize = call_id.try_into().map_err(|_| {
-        CallBoundaryError::CallIdOutOfBounds {
-            call_id,
-            total: ph_context.logs_and_traces.call_traces.call_records().len(),
-        }
-    })?;
-
-    let tracer = ph_context.logs_and_traces.call_traces;
-    if !tracer.is_call_forkable(call_id_usize) {
-        return Err(CallBoundaryError::CallInsideRevertedSubtree {
-            call_id: call_id_usize,
-        });
-    }
-
-    // Switch to PRE fork and read
-    let pre_fork_id = ForkId::PreCall(
-        call_id
-            .try_into()
-            .map_err(CallBoundaryError::IdExceedsUsize)?,
-    );
-    let journal = evm_context.journal_mut();
-    switch_to_fork(journal, pre_fork_id, tracer, &mut gas_left, gas_limit)?;
-    let pre_value = read_slot::<ExtDb, CTX>(evm_context, target, slot, &mut gas_left, gas_limit)?;
-
-    // Switch to POST fork and read
-    let post_fork_id = ForkId::PostCall(
-        call_id
-            .try_into()
-            .map_err(CallBoundaryError::IdExceedsUsize)?,
-    );
-    let journal = evm_context.journal_mut();
-    switch_to_fork(journal, post_fork_id, tracer, &mut gas_left, gas_limit)?;
-    let post_value = read_slot::<ExtDb, CTX>(evm_context, target, slot, &mut gas_left, gas_limit)?;
-
-    // Restore PostTx fork
-    let journal = evm_context.journal_mut();
-    journal
-        .database
-        .switch_fork(ForkId::PostTx, &mut journal.inner, tracer)
-        .map_err(CallBoundaryError::MultiForkError)?;
-
-    // Compute int256 delta = post - pre (wrapping, as signed)
-    let delta = post_value.wrapping_sub(pre_value);
-    let encoded: Bytes = alloy_primitives::I256::from_raw(delta).abi_encode().into();
+    let call_id = resolve_forkable_call_id(ph_context, call.callId)?;
+    let delta = slot_delta_for_call_id::<ExtDb, CTX>(
+        evm_context,
+        ph_context,
+        call.target,
+        call.slot,
+        call_id,
+        &mut gas_left,
+        gas_limit,
+    )?;
+    let encoded: Bytes = delta.abi_encode().into();
     Ok(PhevmOutcome::new(encoded, gas_limit - gas_left))
 }
 
@@ -352,36 +367,26 @@ where
 
     let call = PhEvm::allCallsSlotDeltaGECall::abi_decode(input_bytes)
         .map_err(CallBoundaryError::DecodeError)?;
-    let tracer = ph_context.logs_and_traces.call_traces;
-    let call_records = tracer.call_records();
-    let scheme_filter = call_type_to_scheme(call.filter.callType);
     let mut ok = true;
-
-    if let Some(indices) = candidate_call_indices(tracer, call.target, call.selector) {
-        for &idx in indices {
-            let Some(depth) = tracer.call_depth_at(idx) else {
-                continue;
-            };
-            if !call_matches_filter(&call_records[idx], depth, &call.filter, scheme_filter) {
-                continue;
-            }
-
-            let delta = slot_delta_for_call_id::<ExtDb, CTX>(
-                evm_context,
-                ph_context,
-                call.target,
-                call.slot,
-                idx,
-                &mut gas_left,
-                gas_limit,
-            )?;
-
+    for_each_matching_slot_delta::<ExtDb, CTX>(
+        evm_context,
+        ph_context,
+        SlotDeltaQuery {
+            target: call.target,
+            selector: call.selector,
+            slot: call.slot,
+            filter: &call.filter,
+        },
+        &mut gas_left,
+        gas_limit,
+        |delta| {
             if delta < call.minDelta {
                 ok = false;
-                break;
+                return false;
             }
-        }
-    }
+            true
+        },
+    )?;
 
     Ok(PhevmOutcome::new(
         ok.abi_encode().into(),
@@ -409,36 +414,26 @@ where
 
     let call = PhEvm::allCallsSlotDeltaLECall::abi_decode(input_bytes)
         .map_err(CallBoundaryError::DecodeError)?;
-    let tracer = ph_context.logs_and_traces.call_traces;
-    let call_records = tracer.call_records();
-    let scheme_filter = call_type_to_scheme(call.filter.callType);
     let mut ok = true;
-
-    if let Some(indices) = candidate_call_indices(tracer, call.target, call.selector) {
-        for &idx in indices {
-            let Some(depth) = tracer.call_depth_at(idx) else {
-                continue;
-            };
-            if !call_matches_filter(&call_records[idx], depth, &call.filter, scheme_filter) {
-                continue;
-            }
-
-            let delta = slot_delta_for_call_id::<ExtDb, CTX>(
-                evm_context,
-                ph_context,
-                call.target,
-                call.slot,
-                idx,
-                &mut gas_left,
-                gas_limit,
-            )?;
-
+    for_each_matching_slot_delta::<ExtDb, CTX>(
+        evm_context,
+        ph_context,
+        SlotDeltaQuery {
+            target: call.target,
+            selector: call.selector,
+            slot: call.slot,
+            filter: &call.filter,
+        },
+        &mut gas_left,
+        gas_limit,
+        |delta| {
             if delta > call.maxDelta {
                 ok = false;
-                break;
+                return false;
             }
-        }
-    }
+            true
+        },
+    )?;
 
     Ok(PhevmOutcome::new(
         ok.abi_encode().into(),
@@ -466,32 +461,23 @@ where
 
     let call = PhEvm::sumCallsSlotDeltaCall::abi_decode(input_bytes)
         .map_err(CallBoundaryError::DecodeError)?;
-    let tracer = ph_context.logs_and_traces.call_traces;
-    let call_records = tracer.call_records();
-    let scheme_filter = call_type_to_scheme(call.filter.callType);
     let mut total = I256::ZERO;
-
-    if let Some(indices) = candidate_call_indices(tracer, call.target, call.selector) {
-        for &idx in indices {
-            let Some(depth) = tracer.call_depth_at(idx) else {
-                continue;
-            };
-            if !call_matches_filter(&call_records[idx], depth, &call.filter, scheme_filter) {
-                continue;
-            }
-
-            let delta = slot_delta_for_call_id::<ExtDb, CTX>(
-                evm_context,
-                ph_context,
-                call.target,
-                call.slot,
-                idx,
-                &mut gas_left,
-                gas_limit,
-            )?;
+    for_each_matching_slot_delta::<ExtDb, CTX>(
+        evm_context,
+        ph_context,
+        SlotDeltaQuery {
+            target: call.target,
+            selector: call.selector,
+            slot: call.slot,
+            filter: &call.filter,
+        },
+        &mut gas_left,
+        gas_limit,
+        |delta| {
             total = total.wrapping_add(delta);
-        }
-    }
+            true
+        },
+    )?;
 
     Ok(PhevmOutcome::new(
         total.abi_encode().into(),

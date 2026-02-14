@@ -138,6 +138,37 @@ fn charge_return_words(
     Ok(())
 }
 
+#[inline]
+fn for_each_matching_call(
+    tracer: &CallTracer,
+    target: Address,
+    selector: FixedBytes<4>,
+    filter: &PhEvm::CallFilter,
+    mut f: impl FnMut(usize, &CallRecord) -> bool,
+) -> u64 {
+    let mut visited = 0u64;
+    let call_records = tracer.call_records();
+    let scheme_filter = call_type_to_scheme(filter.callType);
+
+    if let Some(indices) = candidate_call_indices(tracer, target, selector) {
+        for &idx in indices {
+            visited = visited.saturating_add(1);
+            let Some(depth) = tracer.call_depth_at(idx) else {
+                continue;
+            };
+            let record = &call_records[idx];
+            if !call_matches_filter(record, depth, filter, scheme_filter) {
+                continue;
+            }
+            if !f(idx, record) {
+                break;
+            }
+        }
+    }
+
+    visited
+}
+
 /// `anyCall(address target, bytes4 selector, CallFilter filter) -> bool`
 ///
 /// Returns true if at least one call matching the filter exists.
@@ -169,23 +200,11 @@ pub fn any_call(
     };
 
     let tracer = ph_context.logs_and_traces.call_traces;
-    let call_records = tracer.call_records();
-    let scheme_filter = call_type_to_scheme(filter.callType);
-    let mut visited = 0u64;
     let mut found = false;
-
-    if let Some(indices) = candidate_call_indices(tracer, target, call_selector) {
-        for &idx in indices {
-            visited = visited.saturating_add(1);
-            let Some(depth) = tracer.call_depth_at(idx) else {
-                continue;
-            };
-            if call_matches_filter(&call_records[idx], depth, &filter, scheme_filter) {
-                found = true;
-                break;
-            }
-        }
-    }
+    let visited = for_each_matching_call(tracer, target, call_selector, &filter, |_, _| {
+        found = true;
+        false
+    });
 
     let filter_cost = visited.saturating_mul(PER_CALL_COST);
     if let Some(rax) = deduct_gas_and_check(&mut gas_left, filter_cost, gas_limit) {
@@ -227,22 +246,11 @@ pub fn count_calls(
     };
 
     let tracer = ph_context.logs_and_traces.call_traces;
-    let call_records = tracer.call_records();
-    let scheme_filter = call_type_to_scheme(filter.callType);
-    let mut visited = 0u64;
     let mut matched = 0u64;
-
-    if let Some(indices) = candidate_call_indices(tracer, target, call_selector) {
-        for &idx in indices {
-            visited = visited.saturating_add(1);
-            let Some(depth) = tracer.call_depth_at(idx) else {
-                continue;
-            };
-            if call_matches_filter(&call_records[idx], depth, &filter, scheme_filter) {
-                matched = matched.saturating_add(1);
-            }
-        }
-    }
+    let visited = for_each_matching_call(tracer, target, call_selector, &filter, |_, _| {
+        matched = matched.saturating_add(1);
+        true
+    });
 
     let filter_cost = visited.saturating_mul(PER_CALL_COST);
     if let Some(rax) = deduct_gas_and_check(&mut gas_left, filter_cost, gas_limit) {
@@ -330,28 +338,14 @@ pub fn all_calls_by(
         };
 
     let tracer = ph_context.logs_and_traces.call_traces;
-    let call_records = tracer.call_records();
-    let scheme_filter = call_type_to_scheme(filter.callType);
-    let mut visited = 0u64;
     let mut result = true;
-
-    if let Some(indices) = candidate_call_indices(tracer, target, call_selector) {
-        for &idx in indices {
-            visited = visited.saturating_add(1);
-            let record = &call_records[idx];
-            let Some(depth) = tracer.call_depth_at(idx) else {
-                continue;
-            };
-            if !call_matches_filter(record, depth, &filter, scheme_filter) {
-                continue;
-            }
-
-            if record.inputs().caller != allowed_caller {
-                result = false;
-                break;
-            }
+    let visited = for_each_matching_call(tracer, target, call_selector, &filter, |_, record| {
+        if record.inputs().caller != allowed_caller {
+            result = false;
+            return false;
         }
-    }
+        true
+    });
 
     let filter_cost = visited.saturating_mul(PER_CALL_COST);
     if let Some(rax) = deduct_gas_and_check(&mut gas_left, filter_cost, gas_limit) {
@@ -415,42 +409,29 @@ pub fn sum_arg_uint(
         .checked_add(32)
         .ok_or(CallFactsError::ArgOffsetOverflow { arg_index })?;
 
-    let scheme_filter = call_type_to_scheme(filter.callType);
-    let call_records = tracer.call_records();
-    let mut visited = 0u64;
     let mut total = U256::ZERO;
-    if let Some(indices) = candidate_call_indices(tracer, target, call_selector) {
-        for &idx in indices {
-            visited = visited.saturating_add(1);
-            let record = &call_records[idx];
-            let Some(depth) = tracer.call_depth_at(idx) else {
-                continue;
-            };
-            if !call_matches_filter(record, depth, &filter, scheme_filter) {
-                continue;
-            }
-            let revm::interpreter::CallInput::Bytes(calldata) = &record.inputs().input else {
-                continue;
-            };
+    let visited = for_each_matching_call(tracer, target, call_selector, &filter, |_, record| {
+        let revm::interpreter::CallInput::Bytes(calldata) = &record.inputs().input else {
+            return true;
+        };
 
-            // Skip the 4-byte selector, then read 32 bytes at the arg offset.
-            if calldata.len() < data_end {
-                // Calldata too short for this argIndex - zero-extend.
-                let mut padded = [0u8; 32];
-                let available = calldata.len().saturating_sub(data_start);
-                if available > 0 {
-                    padded[..available]
-                        .copy_from_slice(&calldata[data_start..data_start + available]);
-                }
-                total = total.wrapping_add(U256::from_be_bytes(padded));
-            } else {
-                let word: [u8; 32] = calldata[data_start..data_end]
-                    .try_into()
-                    .unwrap_or_default();
-                total = total.wrapping_add(U256::from_be_bytes(word));
+        // Skip the 4-byte selector, then read 32 bytes at the arg offset.
+        if calldata.len() < data_end {
+            // Calldata too short for this argIndex - zero-extend.
+            let mut padded = [0u8; 32];
+            let available = calldata.len().saturating_sub(data_start);
+            if available > 0 {
+                padded[..available].copy_from_slice(&calldata[data_start..data_start + available]);
             }
+            total = total.wrapping_add(U256::from_be_bytes(padded));
+        } else {
+            let word: [u8; 32] = calldata[data_start..data_end]
+                .try_into()
+                .unwrap_or_default();
+            total = total.wrapping_add(U256::from_be_bytes(word));
         }
-    }
+        true
+    });
 
     let filter_cost = visited.saturating_mul(PER_CALL_COST);
     if let Some(rax) = deduct_gas_and_check(&mut gas_left, filter_cost, gas_limit) {

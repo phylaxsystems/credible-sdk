@@ -269,8 +269,7 @@ fn read_erc20_allowance_at_fork<'db, ExtDb, CTX>(
     ph_context: &PhEvmContext,
     fork_id: ForkId,
     token: Address,
-    owner: Address,
-    spender: Address,
+    owner_spender: (Address, Address),
     gas_left: &mut u64,
     gas_limit: u64,
 ) -> Result<U256, Erc4626FactsError>
@@ -279,6 +278,7 @@ where
     CTX:
         ContextTr<Db = &'db mut MultiForkDb<ExtDb>, Journal = Journal<&'db mut MultiForkDb<ExtDb>>>,
 {
+    let (owner, spender) = owner_spender;
     let call = IERC20ViewFacts::allowanceCall { owner, spender };
     let output = execute_view_call_at_fork::<ExtDb, CTX>(
         evm_context,
@@ -356,6 +356,83 @@ where
     Ok(decoded)
 }
 
+#[inline]
+fn read_u256_pair_at_forks(
+    mut read: impl FnMut(ForkId) -> Result<U256, Erc4626FactsError>,
+    pre_fork: ForkId,
+    post_fork: ForkId,
+) -> Result<(U256, U256), Erc4626FactsError> {
+    Ok((read(pre_fork)?, read(post_fork)?))
+}
+
+#[inline]
+fn resolve_call_fork_pair(
+    ph_context: &PhEvmContext,
+    call_id: U256,
+) -> Result<(ForkId, ForkId), Erc4626FactsError> {
+    let id = resolve_forkable_call_id(ph_context, call_id)?;
+    Ok((ForkId::PreCall(id), ForkId::PostCall(id)))
+}
+
+fn vault_asset_balance_diff_between<'db, ExtDb, CTX>(
+    evm_context: &mut CTX,
+    ph_context: &PhEvmContext,
+    vault: Address,
+    pre_fork: ForkId,
+    post_fork: ForkId,
+    gas_left: &mut u64,
+    gas_limit: u64,
+) -> Result<I256, Erc4626FactsError>
+where
+    ExtDb: DatabaseRef + Clone + DatabaseCommit + 'db,
+    CTX:
+        ContextTr<Db = &'db mut MultiForkDb<ExtDb>, Journal = Journal<&'db mut MultiForkDb<ExtDb>>>,
+{
+    let pre_asset = read_vault_asset_at_fork::<ExtDb, CTX>(
+        evm_context,
+        ph_context,
+        pre_fork,
+        vault,
+        gas_left,
+        gas_limit,
+    )?;
+    let post_asset = read_vault_asset_at_fork::<ExtDb, CTX>(
+        evm_context,
+        ph_context,
+        post_fork,
+        vault,
+        gas_left,
+        gas_limit,
+    )?;
+    if pre_asset != post_asset {
+        return Err(Erc4626FactsError::VaultAssetChanged {
+            vault,
+            pre: pre_asset,
+            post: post_asset,
+        });
+    }
+
+    let pre_balance = read_erc20_balance_at_fork::<ExtDb, CTX>(
+        evm_context,
+        ph_context,
+        pre_fork,
+        pre_asset,
+        vault,
+        gas_left,
+        gas_limit,
+    )?;
+    let post_balance = read_erc20_balance_at_fork::<ExtDb, CTX>(
+        evm_context,
+        ph_context,
+        post_fork,
+        pre_asset,
+        vault,
+        gas_left,
+        gas_limit,
+    )?;
+    Ok(signed_diff(post_balance, pre_balance))
+}
+
 /// `erc4626TotalAssetsDiff(address vault) -> int256`
 pub fn erc4626_total_assets_diff<'db, ExtDb, CTX>(
     evm_context: &mut CTX,
@@ -377,28 +454,22 @@ where
 
     let call = PhEvm::erc4626TotalAssetsDiffCall::abi_decode(input_bytes)
         .map_err(Erc4626FactsError::DecodeError)?;
-
-    let pre = read_vault_total_assets_at_fork::<ExtDb, CTX>(
-        evm_context,
-        ph_context,
+    let (pre, post) = read_u256_pair_at_forks(
+        |fork| {
+            read_vault_total_assets_at_fork::<ExtDb, CTX>(
+                evm_context,
+                ph_context,
+                fork,
+                call.vault,
+                &mut gas_left,
+                gas_limit,
+            )
+        },
         ForkId::PreTx,
-        call.vault,
-        &mut gas_left,
-        gas_limit,
-    )?;
-
-    let post = read_vault_total_assets_at_fork::<ExtDb, CTX>(
-        evm_context,
-        ph_context,
         ForkId::PostTx,
-        call.vault,
-        &mut gas_left,
-        gas_limit,
     )?;
-
-    let delta = signed_diff(post, pre);
     Ok(PhevmOutcome::new(
-        delta.abi_encode().into(),
+        signed_diff(post, pre).abi_encode().into(),
         gas_limit - gas_left,
     ))
 }
@@ -424,28 +495,22 @@ where
 
     let call = PhEvm::erc4626TotalSupplyDiffCall::abi_decode(input_bytes)
         .map_err(Erc4626FactsError::DecodeError)?;
-
-    let pre = read_erc20_supply_at_fork::<ExtDb, CTX>(
-        evm_context,
-        ph_context,
+    let (pre, post) = read_u256_pair_at_forks(
+        |fork| {
+            read_erc20_supply_at_fork::<ExtDb, CTX>(
+                evm_context,
+                ph_context,
+                fork,
+                call.vault,
+                &mut gas_left,
+                gas_limit,
+            )
+        },
         ForkId::PreTx,
-        call.vault,
-        &mut gas_left,
-        gas_limit,
-    )?;
-
-    let post = read_erc20_supply_at_fork::<ExtDb, CTX>(
-        evm_context,
-        ph_context,
         ForkId::PostTx,
-        call.vault,
-        &mut gas_left,
-        gas_limit,
     )?;
-
-    let delta = signed_diff(post, pre);
     Ok(PhevmOutcome::new(
-        delta.abi_encode().into(),
+        signed_diff(post, pre).abi_encode().into(),
         gas_limit - gas_left,
     ))
 }
@@ -471,53 +536,15 @@ where
 
     let call = PhEvm::erc4626VaultAssetBalanceDiffCall::abi_decode(input_bytes)
         .map_err(Erc4626FactsError::DecodeError)?;
-
-    let pre_asset = read_vault_asset_at_fork::<ExtDb, CTX>(
+    let delta = vault_asset_balance_diff_between::<ExtDb, CTX>(
         evm_context,
         ph_context,
+        call.vault,
         ForkId::PreTx,
-        call.vault,
-        &mut gas_left,
-        gas_limit,
-    )?;
-    let post_asset = read_vault_asset_at_fork::<ExtDb, CTX>(
-        evm_context,
-        ph_context,
         ForkId::PostTx,
-        call.vault,
         &mut gas_left,
         gas_limit,
     )?;
-
-    if pre_asset != post_asset {
-        return Err(Erc4626FactsError::VaultAssetChanged {
-            vault: call.vault,
-            pre: pre_asset,
-            post: post_asset,
-        });
-    }
-
-    let pre = read_erc20_balance_at_fork::<ExtDb, CTX>(
-        evm_context,
-        ph_context,
-        ForkId::PreTx,
-        post_asset,
-        call.vault,
-        &mut gas_left,
-        gas_limit,
-    )?;
-
-    let post = read_erc20_balance_at_fork::<ExtDb, CTX>(
-        evm_context,
-        ph_context,
-        ForkId::PostTx,
-        post_asset,
-        call.vault,
-        &mut gas_left,
-        gas_limit,
-    )?;
-
-    let delta = signed_diff(post, pre);
     Ok(PhevmOutcome::new(
         delta.abi_encode().into(),
         gas_limit - gas_left,
@@ -545,41 +572,33 @@ where
 
     let call = PhEvm::erc4626AssetsPerShareDiffBpsCall::abi_decode(input_bytes)
         .map_err(Erc4626FactsError::DecodeError)?;
-
-    let pre_assets = read_vault_total_assets_at_fork::<ExtDb, CTX>(
-        evm_context,
-        ph_context,
+    let (pre_assets, post_assets) = read_u256_pair_at_forks(
+        |fork| {
+            read_vault_total_assets_at_fork::<ExtDb, CTX>(
+                evm_context,
+                ph_context,
+                fork,
+                call.vault,
+                &mut gas_left,
+                gas_limit,
+            )
+        },
         ForkId::PreTx,
-        call.vault,
-        &mut gas_left,
-        gas_limit,
-    )?;
-
-    let post_assets = read_vault_total_assets_at_fork::<ExtDb, CTX>(
-        evm_context,
-        ph_context,
         ForkId::PostTx,
-        call.vault,
-        &mut gas_left,
-        gas_limit,
     )?;
-
-    let pre_supply = read_erc20_supply_at_fork::<ExtDb, CTX>(
-        evm_context,
-        ph_context,
+    let (pre_supply, post_supply) = read_u256_pair_at_forks(
+        |fork| {
+            read_erc20_supply_at_fork::<ExtDb, CTX>(
+                evm_context,
+                ph_context,
+                fork,
+                call.vault,
+                &mut gas_left,
+                gas_limit,
+            )
+        },
         ForkId::PreTx,
-        call.vault,
-        &mut gas_left,
-        gas_limit,
-    )?;
-
-    let post_supply = read_erc20_supply_at_fork::<ExtDb, CTX>(
-        evm_context,
-        ph_context,
         ForkId::PostTx,
-        call.vault,
-        &mut gas_left,
-        gas_limit,
     )?;
 
     let pre_bps = assets_per_share_bps(pre_assets, pre_supply);
@@ -688,8 +707,7 @@ where
         ph_context,
         tx_point_to_fork(call.point),
         call.token,
-        call.owner,
-        call.spender,
+        (call.owner, call.spender),
         &mut gas_left,
         gas_limit,
     )?;
@@ -720,25 +738,20 @@ where
 
     let call = PhEvm::erc20AllowanceDiffCall::abi_decode(input_bytes)
         .map_err(Erc4626FactsError::DecodeError)?;
-    let pre = read_erc20_allowance_at_fork::<ExtDb, CTX>(
-        evm_context,
-        ph_context,
+    let (pre, post) = read_u256_pair_at_forks(
+        |fork| {
+            read_erc20_allowance_at_fork::<ExtDb, CTX>(
+                evm_context,
+                ph_context,
+                fork,
+                call.token,
+                (call.owner, call.spender),
+                &mut gas_left,
+                gas_limit,
+            )
+        },
         ForkId::PreTx,
-        call.token,
-        call.owner,
-        call.spender,
-        &mut gas_left,
-        gas_limit,
-    )?;
-    let post = read_erc20_allowance_at_fork::<ExtDb, CTX>(
-        evm_context,
-        ph_context,
         ForkId::PostTx,
-        call.token,
-        call.owner,
-        call.spender,
-        &mut gas_left,
-        gas_limit,
     )?;
     let diff = signed_diff(post, pre);
 
@@ -768,24 +781,21 @@ where
 
     let call = PhEvm::erc20BalanceDeltaAtCallCall::abi_decode(input_bytes)
         .map_err(Erc4626FactsError::DecodeError)?;
-    let call_id = resolve_forkable_call_id(ph_context, call.callId)?;
-    let pre = read_erc20_balance_at_fork::<ExtDb, CTX>(
-        evm_context,
-        ph_context,
-        ForkId::PreCall(call_id),
-        call.token,
-        call.account,
-        &mut gas_left,
-        gas_limit,
-    )?;
-    let post = read_erc20_balance_at_fork::<ExtDb, CTX>(
-        evm_context,
-        ph_context,
-        ForkId::PostCall(call_id),
-        call.token,
-        call.account,
-        &mut gas_left,
-        gas_limit,
+    let (pre_fork, post_fork) = resolve_call_fork_pair(ph_context, call.callId)?;
+    let (pre, post) = read_u256_pair_at_forks(
+        |fork| {
+            read_erc20_balance_at_fork::<ExtDb, CTX>(
+                evm_context,
+                ph_context,
+                fork,
+                call.token,
+                call.account,
+                &mut gas_left,
+                gas_limit,
+            )
+        },
+        pre_fork,
+        post_fork,
     )?;
 
     Ok(PhevmOutcome::new(
@@ -814,22 +824,20 @@ where
 
     let call = PhEvm::erc20SupplyDeltaAtCallCall::abi_decode(input_bytes)
         .map_err(Erc4626FactsError::DecodeError)?;
-    let call_id = resolve_forkable_call_id(ph_context, call.callId)?;
-    let pre = read_erc20_supply_at_fork::<ExtDb, CTX>(
-        evm_context,
-        ph_context,
-        ForkId::PreCall(call_id),
-        call.token,
-        &mut gas_left,
-        gas_limit,
-    )?;
-    let post = read_erc20_supply_at_fork::<ExtDb, CTX>(
-        evm_context,
-        ph_context,
-        ForkId::PostCall(call_id),
-        call.token,
-        &mut gas_left,
-        gas_limit,
+    let (pre_fork, post_fork) = resolve_call_fork_pair(ph_context, call.callId)?;
+    let (pre, post) = read_u256_pair_at_forks(
+        |fork| {
+            read_erc20_supply_at_fork::<ExtDb, CTX>(
+                evm_context,
+                ph_context,
+                fork,
+                call.token,
+                &mut gas_left,
+                gas_limit,
+            )
+        },
+        pre_fork,
+        post_fork,
     )?;
 
     Ok(PhevmOutcome::new(
@@ -864,8 +872,7 @@ where
         ph_context,
         call_point_to_fork(call_id, call.point),
         call.token,
-        call.owner,
-        call.spender,
+        (call.owner, call.spender),
         &mut gas_left,
         gas_limit,
     )?;
@@ -896,26 +903,21 @@ where
 
     let call = PhEvm::erc20AllowanceDeltaAtCallCall::abi_decode(input_bytes)
         .map_err(Erc4626FactsError::DecodeError)?;
-    let call_id = resolve_forkable_call_id(ph_context, call.callId)?;
-    let pre = read_erc20_allowance_at_fork::<ExtDb, CTX>(
-        evm_context,
-        ph_context,
-        ForkId::PreCall(call_id),
-        call.token,
-        call.owner,
-        call.spender,
-        &mut gas_left,
-        gas_limit,
-    )?;
-    let post = read_erc20_allowance_at_fork::<ExtDb, CTX>(
-        evm_context,
-        ph_context,
-        ForkId::PostCall(call_id),
-        call.token,
-        call.owner,
-        call.spender,
-        &mut gas_left,
-        gas_limit,
+    let (pre_fork, post_fork) = resolve_call_fork_pair(ph_context, call.callId)?;
+    let (pre, post) = read_u256_pair_at_forks(
+        |fork| {
+            read_erc20_allowance_at_fork::<ExtDb, CTX>(
+                evm_context,
+                ph_context,
+                fork,
+                call.token,
+                (call.owner, call.spender),
+                &mut gas_left,
+                gas_limit,
+            )
+        },
+        pre_fork,
+        post_fork,
     )?;
 
     Ok(PhevmOutcome::new(
@@ -944,22 +946,20 @@ where
 
     let call = PhEvm::erc4626TotalAssetsDeltaAtCallCall::abi_decode(input_bytes)
         .map_err(Erc4626FactsError::DecodeError)?;
-    let call_id = resolve_forkable_call_id(ph_context, call.callId)?;
-    let pre = read_vault_total_assets_at_fork::<ExtDb, CTX>(
-        evm_context,
-        ph_context,
-        ForkId::PreCall(call_id),
-        call.vault,
-        &mut gas_left,
-        gas_limit,
-    )?;
-    let post = read_vault_total_assets_at_fork::<ExtDb, CTX>(
-        evm_context,
-        ph_context,
-        ForkId::PostCall(call_id),
-        call.vault,
-        &mut gas_left,
-        gas_limit,
+    let (pre_fork, post_fork) = resolve_call_fork_pair(ph_context, call.callId)?;
+    let (pre, post) = read_u256_pair_at_forks(
+        |fork| {
+            read_vault_total_assets_at_fork::<ExtDb, CTX>(
+                evm_context,
+                ph_context,
+                fork,
+                call.vault,
+                &mut gas_left,
+                gas_limit,
+            )
+        },
+        pre_fork,
+        post_fork,
     )?;
 
     Ok(PhevmOutcome::new(
@@ -988,22 +988,20 @@ where
 
     let call = PhEvm::erc4626TotalSupplyDeltaAtCallCall::abi_decode(input_bytes)
         .map_err(Erc4626FactsError::DecodeError)?;
-    let call_id = resolve_forkable_call_id(ph_context, call.callId)?;
-    let pre = read_erc20_supply_at_fork::<ExtDb, CTX>(
-        evm_context,
-        ph_context,
-        ForkId::PreCall(call_id),
-        call.vault,
-        &mut gas_left,
-        gas_limit,
-    )?;
-    let post = read_erc20_supply_at_fork::<ExtDb, CTX>(
-        evm_context,
-        ph_context,
-        ForkId::PostCall(call_id),
-        call.vault,
-        &mut gas_left,
-        gas_limit,
+    let (pre_fork, post_fork) = resolve_call_fork_pair(ph_context, call.callId)?;
+    let (pre, post) = read_u256_pair_at_forks(
+        |fork| {
+            read_erc20_supply_at_fork::<ExtDb, CTX>(
+                evm_context,
+                ph_context,
+                fork,
+                call.vault,
+                &mut gas_left,
+                gas_limit,
+            )
+        },
+        pre_fork,
+        post_fork,
     )?;
 
     Ok(PhevmOutcome::new(
@@ -1032,54 +1030,19 @@ where
 
     let call = PhEvm::erc4626VaultAssetBalanceDeltaAtCallCall::abi_decode(input_bytes)
         .map_err(Erc4626FactsError::DecodeError)?;
-    let call_id = resolve_forkable_call_id(ph_context, call.callId)?;
-    let pre_fork = ForkId::PreCall(call_id);
-    let post_fork = ForkId::PostCall(call_id);
-    let pre_asset = read_vault_asset_at_fork::<ExtDb, CTX>(
+    let (pre_fork, post_fork) = resolve_call_fork_pair(ph_context, call.callId)?;
+    let delta = vault_asset_balance_diff_between::<ExtDb, CTX>(
         evm_context,
         ph_context,
+        call.vault,
         pre_fork,
-        call.vault,
-        &mut gas_left,
-        gas_limit,
-    )?;
-    let post_asset = read_vault_asset_at_fork::<ExtDb, CTX>(
-        evm_context,
-        ph_context,
         post_fork,
-        call.vault,
-        &mut gas_left,
-        gas_limit,
-    )?;
-    if pre_asset != post_asset {
-        return Err(Erc4626FactsError::VaultAssetChanged {
-            vault: call.vault,
-            pre: pre_asset,
-            post: post_asset,
-        });
-    }
-
-    let pre_balance = read_erc20_balance_at_fork::<ExtDb, CTX>(
-        evm_context,
-        ph_context,
-        pre_fork,
-        pre_asset,
-        call.vault,
-        &mut gas_left,
-        gas_limit,
-    )?;
-    let post_balance = read_erc20_balance_at_fork::<ExtDb, CTX>(
-        evm_context,
-        ph_context,
-        post_fork,
-        pre_asset,
-        call.vault,
         &mut gas_left,
         gas_limit,
     )?;
 
     Ok(PhevmOutcome::new(
-        signed_diff(post_balance, pre_balance).abi_encode().into(),
+        delta.abi_encode().into(),
         gas_limit - gas_left,
     ))
 }
