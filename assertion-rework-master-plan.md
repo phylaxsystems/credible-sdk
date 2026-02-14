@@ -762,12 +762,16 @@ If we want immediate wins without waiting for the full roadmap:
       - `artifact_bytecode_cache_matches_fresh_decode`
       - `public_bytecode_helpers_return_cached_values`
     - Evaluated and dropped `SmallVec` trigger-call storage experiment (no clear perf gain, extra complexity).
+    - Added sequential invocation fast paths in executor hot paths (`executor/mod.rs`):
+      - `execute_triggered_assertions`: sequential branch now uses explicit loop instead of iterator `map(...).collect()`.
+      - `run_assertion_contract`: sequential branch now executes selectors directly without materializing `selector_executions` vector.
+      - Replaced expensive trace formatting allocation with count-only trace field.
     - Validation:
-      - `cargo test -p assertion-executor@1.0.8 --lib` (304 passed)
-      - Focused A/B medians (main `c68b725` vs branch `63b4570` + cache-only):
-        - `executor_avg_block_performance/avg_block_100_aa`: `23.794 ms` -> `25.055 ms` (`+5.30%`, regression)
-        - `assertion_store::read/hit_existing_assertion`: `654.32 ns` -> `695.70 ns` (`+6.32%`, regression)
-        - `executor_transaction_performance/erc20_vanilla`: `16.171 us` -> `10.630 us` (`-34.27%`, improvement)
+      - `cargo test -p assertion-executor@1.0.8 --lib` (306 passed)
+      - Focused A/B medians (main `c68b725` vs branch `63b4570` + cache + executor sequential fast paths):
+        - `executor_avg_block_performance/avg_block_100_aa`: `23.794 ms` -> `24.992 ms` (`+5.03%`, regression, improved from `+5.30%`)
+        - `assertion_store::read/hit_existing_assertion`: `654.32 ns` -> `662.54 ns` (`+1.26%`, near-neutral, improved from `+6.32%`)
+        - `executor_transaction_performance/erc20_vanilla`: `16.171 us` -> `10.455 us` (`-35.35%`, improvement)
 
 ## Execution Appendix (Condensed)
 
