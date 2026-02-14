@@ -109,6 +109,16 @@ pub(super) fn should_parallelize(work_items: usize) -> bool {
     work_items > 1
 }
 
+// Function-level assertion invocations are often short-lived and can easily
+// overpay rayon scheduling costs. Use a conservative threshold so the default
+// path remains sequential unless there is enough independent work.
+const ASSERTION_FN_PARALLEL_MIN_WORK_ITEMS: usize = 8;
+
+#[inline]
+pub(super) fn should_parallelize_assertion_fns(work_items: usize) -> bool {
+    work_items >= ASSERTION_FN_PARALLEL_MIN_WORK_ITEMS
+}
+
 #[derive(Debug, Clone)]
 pub struct AssertionExecutor {
     pub config: ExecutorConfig,
@@ -689,7 +699,7 @@ impl AssertionExecutor {
         }
 
         let execution_count = selector_invocation_count(fn_selectors);
-        let parallel_fns = should_parallelize(execution_count);
+        let parallel_fns = should_parallelize_assertion_fns(execution_count);
         trace!(
             target: "assertion-executor::execute_assertions",
             assertion_contract_id = ?assertion_contract.id,

@@ -336,7 +336,7 @@ impl AssertionExecutor {
         };
 
         let execution_count = selector_executions.len();
-        let parallel_fns = super::should_parallelize(execution_count);
+        let parallel_fns = super::should_parallelize_assertion_fns(execution_count);
         trace!(
             target: "assertion-executor::execute_assertions",
             assertion_contract_id = ?assertion_contract.id,
