@@ -640,7 +640,6 @@ impl AssertionExecutor {
             });
         }
 
-        let selector_executions = expand_selector_invocations(fn_selectors);
         let prepared = self.prepare_assertion_contract(
             assertion_contract,
             fn_selectors.len(),
@@ -648,6 +647,39 @@ impl AssertionExecutor {
             context,
         );
 
+        // Common hot path: one selector with at most one trigger call.
+        // Bypass expansion/allocation/scheduling overhead and execute directly.
+        if fn_selectors.len() == 1 {
+            let selector = &fn_selectors[0];
+            let direct_trigger_call_id = match selector.trigger_calls.as_slice() {
+                [] => Some(None),
+                [call_id] => Some(Some(*call_id)),
+                _ => None,
+            };
+
+            if let Some(trigger_call_id) = direct_trigger_call_id {
+                let mut inspector = prepared.inspector;
+                inspector.context.trigger_call_id = trigger_call_id;
+                let fn_selector = selector.selector;
+                let fn_result = self.execute_assertion_fn(AssertionExecutionParams {
+                    assertion_contract,
+                    fn_selector: &fn_selector,
+                    tx_arena_epoch,
+                    block_env: block_env.clone(),
+                    multi_fork_db: prepared.multi_fork_db,
+                    inspector,
+                })?;
+                let total_assertion_gas = fn_result.as_result().gas_used();
+                return Ok(AssertionContractExecution {
+                    adopter: context.adopter,
+                    assertion_fns_results: vec![fn_result],
+                    total_assertion_gas,
+                    total_assertion_funcs_ran: 1,
+                });
+            }
+        }
+
+        let selector_executions = expand_selector_invocations(fn_selectors);
         let execute_fn = |execution: &SelectorInvocation| {
             let mut inspector = prepared.inspector.clone();
             inspector.context.trigger_call_id = execution.trigger_call_id;

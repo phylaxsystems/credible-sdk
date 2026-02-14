@@ -998,15 +998,27 @@ impl AssertionStore {
                             .triggers
                             .get(&TriggerType::Call { trigger_selector })
                             .map(|selectors| {
-                                let selectors_with_triggers = selectors
-                                    .iter()
-                                    .map(|selector| {
-                                        SelectorWithTrigger {
-                                            selector: *selector,
-                                            trigger_calls: call_ids.clone(),
-                                        }
-                                    })
-                                    .collect();
+                                let selectors_with_triggers = if selectors.len() == 1 {
+                                    let selector = selectors
+                                        .iter()
+                                        .next()
+                                        .copied()
+                                        .expect("len checked above");
+                                    vec![SelectorWithTrigger {
+                                        selector,
+                                        trigger_calls: call_ids.clone(),
+                                    }]
+                                } else {
+                                    selectors
+                                        .iter()
+                                        .map(|selector| {
+                                            SelectorWithTrigger {
+                                                selector: *selector,
+                                                trigger_calls: call_ids.clone(),
+                                            }
+                                        })
+                                        .collect()
+                                };
                                 (a.assertion_contract, selectors_with_triggers)
                             })
                     })
@@ -1126,16 +1138,25 @@ impl AssertionStore {
                             .get(&trigger_selector)
                             .copied()
                             .unwrap_or(&[]);
-                        let call_ids = call_ids.to_vec();
-                        let selectors_with_triggers = selectors
-                            .iter()
-                            .map(|selector| {
-                                SelectorWithTrigger {
-                                    selector: *selector,
-                                    trigger_calls: call_ids.clone(),
-                                }
-                            })
-                            .collect();
+                        let selectors_with_triggers = if selectors.len() == 1 {
+                            let selector =
+                                selectors.iter().next().copied().expect("len checked above");
+                            vec![SelectorWithTrigger {
+                                selector,
+                                trigger_calls: call_ids.to_vec(),
+                            }]
+                        } else {
+                            let call_ids = call_ids.to_vec();
+                            selectors
+                                .iter()
+                                .map(|selector| {
+                                    SelectorWithTrigger {
+                                        selector: *selector,
+                                        trigger_calls: call_ids.clone(),
+                                    }
+                                })
+                                .collect()
+                        };
                         return Some((a.assertion_contract, selectors_with_triggers));
                     }
                 }
