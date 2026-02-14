@@ -35,8 +35,6 @@ use super::BASE_COST;
 pub enum GetStateChangesError {
     #[error("Error decoding call inputs")]
     CallDecodeError(#[source] alloy_sol_types::Error),
-    #[error("Journal Missing from Context. For some reason it was not captured.")]
-    JournalMissing,
     #[error("Slot not found in journal, but differences were found.")]
     SlotNotFound,
     #[error("Account not found in journal, but differences were found.")]

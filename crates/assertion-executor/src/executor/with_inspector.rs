@@ -313,12 +313,25 @@ impl AssertionExecutor {
             ));
         }
 
-        let selector_executions = expand_selector_invocations(fn_selectors);
         let prepared = self.prepare_assertion_contract(
             assertion_contract,
             fn_selectors.len(),
             tx_fork_db,
             context,
+        );
+        // Keep one shared invocation list for both scheduling modes. The non-inspector
+        // path keeps a specialized sequential fast path for peak throughput; here we
+        // prefer a smaller, easier-to-review control flow.
+        let selector_executions = expand_selector_invocations(fn_selectors);
+        let execution_count = selector_executions.len();
+        let parallel_fns = super::should_parallelize_assertion_fns(execution_count);
+        trace!(
+            target: "assertion-executor::execute_assertions",
+            assertion_contract_id = ?assertion_contract.id,
+            selector_count = fn_selectors.len(),
+            execution_count,
+            scheduling = if parallel_fns { "parallel" } else { "sequential" },
+            "Assertion fn scheduling decision (inspector path)"
         );
 
         let execute_fn = |execution: &super::SelectorInvocation| {
@@ -335,23 +348,14 @@ impl AssertionExecutor {
             )
         };
 
-        let execution_count = selector_executions.len();
-        let parallel_fns = super::should_parallelize(execution_count);
-        trace!(
-            target: "assertion-executor::execute_assertions",
-            assertion_contract_id = ?assertion_contract.id,
-            selector_count = fn_selectors.len(),
-            execution_count,
-            scheduling = if parallel_fns { "parallel" } else { "sequential" },
-            "Assertion fn scheduling decision (inspector path)"
-        );
-
         let current_span = tracing::Span::current();
         let results_vec: Vec<_> = current_span.in_scope(|| {
             if parallel_fns {
                 assertion_executor_pool()
                     .install(|| selector_executions.par_iter().map(execute_fn).collect())
             } else {
+                // Preserve selector order for deterministic inspector outputs when
+                // execution stays on the caller thread.
                 selector_executions.iter().map(execute_fn).collect()
             }
         });

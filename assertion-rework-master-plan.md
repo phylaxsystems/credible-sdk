@@ -766,12 +766,31 @@ If we want immediate wins without waiting for the full roadmap:
       - `execute_triggered_assertions`: sequential branch now uses explicit loop instead of iterator `map(...).collect()`.
       - `run_assertion_contract`: sequential branch now executes selectors directly without materializing `selector_executions` vector.
       - Replaced expensive trace formatting allocation with count-only trace field.
+    - Parallelism policy unlock (hot-path driven):
+      - Added a dedicated fn-level parallelization policy (`should_parallelize_assertion_fns`) with conservative threshold (`>= 8` work items).
+      - Kept outer contract-level parallelism unchanged; reduced over-scheduling on short selector/call-trigger batches.
+      - Applied consistently to both executor paths (`executor/mod.rs`, `executor/with_inspector.rs`).
+    - Cleanup/reviewability pass:
+      - Reduced duplicated selector execution code in sequential paths via shared local execution closures.
+      - Added explicit inline comments around trigger-context and multi-call semantics in executor hot paths.
+      - Kept allocation-heavy selector expansion only on the parallel path.
+      - `f41e0d6`: collapsed duplicated inspector-path scheduling flow into one execution vector path (parallel/sequential switch), and fixed incomplete `PreparedAssertionContract` docs.
+      - `5cdc4ef`: removed duplicated write-policy gas-charging branches via small helpers, deduped zero-trigger-context construction, and removed unused `JournalMissing` error variant.
+    - Samply profiling loop (`executor_avg_block_performance/avg_block_100_aa`):
+      - Confirmed artifact cache removed prior `serde_json`/`read_artifact` setup hotspot.
+      - New dominant user-space hotspots moved to executor runtime path (`AssertionExecutor::validate_transaction`, `execute_triggered_assertions`, `execute_assertions`) and REVM inspect loop.
     - Validation:
       - `cargo test -p assertion-executor@1.0.8 --lib` (306 passed)
-      - Focused A/B medians (main `c68b725` vs branch `63b4570` + cache + executor sequential fast paths):
-        - `executor_avg_block_performance/avg_block_100_aa`: `23.794 ms` -> `24.992 ms` (`+5.03%`, regression, improved from `+5.30%`)
-        - `assertion_store::read/hit_existing_assertion`: `654.32 ns` -> `662.54 ns` (`+1.26%`, near-neutral, improved from `+6.32%`)
-        - `executor_transaction_performance/erc20_vanilla`: `16.171 us` -> `10.455 us` (`-35.35%`, improvement)
+      - Focused same-window A/B medians (main `c68b725` vs current branch):
+        - `executor_avg_block_performance/avg_block_100_aa`: `23.904 ms` -> `20.991 ms` (`-12.19%`, major improvement)
+        - `assertion_store::read/hit_existing_assertion`: `661.65 ns` -> `687.52 ns` (`+3.91%`, small regression)
+        - `executor_transaction_performance/erc20_vanilla`: `14.669 us` -> `10.553 us` (`-28.06%`, major improvement)
+      - Post-cleanup local rerun snapshots (current branch, Criterion continuation):
+        - `executor_avg_block_performance/avg_block_100_aa`: `[21.377 ms 21.523 ms 21.771 ms]` (no significant change)
+        - `assertion_store::read/hit_existing_assertion`: `[686.29 ns 689.18 ns 692.11 ns]` (no significant change)
+      - Latest local snapshots after cleanup commits:
+        - `cargo test -p assertion-executor@1.0.8 --lib`: `306 passed`
+        - `executor_avg_block_performance/avg_block_100_aa`: `[21.101 ms 21.186 ms 21.255 ms]` (no significant change)
 
 ## Execution Appendix (Condensed)
 

@@ -62,6 +62,39 @@ const SCALAR_RETURN_WORDS: u64 = 1;
 const TRIGGER_CONTEXT_RETURN_WORDS: u64 = 6;
 
 #[inline]
+fn charge_base_cost(gas_left: &mut u64, gas_limit: u64) -> Result<(), CallFactsError> {
+    if let Some(rax) = deduct_gas_and_check(gas_left, BASE_COST, gas_limit) {
+        return Err(CallFactsError::OutOfGas(rax));
+    }
+    Ok(())
+}
+
+#[inline]
+fn charge_filter_cost(
+    gas_left: &mut u64,
+    gas_limit: u64,
+    visited: u64,
+) -> Result<(), CallFactsError> {
+    let filter_cost = visited.saturating_mul(PER_CALL_COST);
+    if let Some(rax) = deduct_gas_and_check(gas_left, filter_cost, gas_limit) {
+        return Err(CallFactsError::OutOfGas(rax));
+    }
+    Ok(())
+}
+
+#[inline]
+fn zero_trigger_context() -> PhEvm::TriggerContext {
+    PhEvm::TriggerContext {
+        callId: U256::ZERO,
+        caller: Address::ZERO,
+        target: Address::ZERO,
+        codeAddress: Address::ZERO,
+        selector: FixedBytes::ZERO,
+        depth: 0,
+    }
+}
+
+#[inline]
 fn default_success_filter() -> PhEvm::CallFilter {
     PhEvm::CallFilter {
         callType: 0,
@@ -185,9 +218,7 @@ pub fn any_call(
     let gas_limit = gas;
     let mut gas_left = gas;
 
-    if let Some(rax) = deduct_gas_and_check(&mut gas_left, BASE_COST, gas_limit) {
-        return Err(CallFactsError::OutOfGas(rax));
-    }
+    charge_base_cost(&mut gas_left, gas_limit)?;
 
     let selector: [u8; 4] = input_bytes
         .get(0..4)
@@ -213,10 +244,7 @@ pub fn any_call(
         false
     });
 
-    let filter_cost = visited.saturating_mul(PER_CALL_COST);
-    if let Some(rax) = deduct_gas_and_check(&mut gas_left, filter_cost, gas_limit) {
-        return Err(CallFactsError::OutOfGas(rax));
-    }
+    charge_filter_cost(&mut gas_left, gas_limit, visited)?;
     charge_return_words(&mut gas_left, gas_limit, SCALAR_RETURN_WORDS)?;
 
     let encoded = found.abi_encode();
@@ -234,9 +262,7 @@ pub fn count_calls(
     let gas_limit = gas;
     let mut gas_left = gas;
 
-    if let Some(rax) = deduct_gas_and_check(&mut gas_left, BASE_COST, gas_limit) {
-        return Err(CallFactsError::OutOfGas(rax));
-    }
+    charge_base_cost(&mut gas_left, gas_limit)?;
 
     let selector: [u8; 4] = input_bytes
         .get(0..4)
@@ -260,10 +286,7 @@ pub fn count_calls(
         true
     });
 
-    let filter_cost = visited.saturating_mul(PER_CALL_COST);
-    if let Some(rax) = deduct_gas_and_check(&mut gas_left, filter_cost, gas_limit) {
-        return Err(CallFactsError::OutOfGas(rax));
-    }
+    charge_filter_cost(&mut gas_left, gas_limit, visited)?;
     charge_return_words(&mut gas_left, gas_limit, SCALAR_RETURN_WORDS)?;
 
     let count = U256::from(matched);
@@ -285,9 +308,7 @@ pub fn caller_at(
     let gas_limit = gas;
     let mut gas_left = gas;
 
-    if let Some(rax) = deduct_gas_and_check(&mut gas_left, BASE_COST, gas_limit) {
-        return Err(CallFactsError::OutOfGas(rax));
-    }
+    charge_base_cost(&mut gas_left, gas_limit)?;
 
     let call = PhEvm::callerAtCall::abi_decode(input_bytes).map_err(CallFactsError::DecodeError)?;
 
@@ -321,9 +342,7 @@ pub fn all_calls_by(
     let gas_limit = gas;
     let mut gas_left = gas;
 
-    if let Some(rax) = deduct_gas_and_check(&mut gas_left, BASE_COST, gas_limit) {
-        return Err(CallFactsError::OutOfGas(rax));
-    }
+    charge_base_cost(&mut gas_left, gas_limit)?;
 
     let selector: [u8; 4] = input_bytes
         .get(0..4)
@@ -356,10 +375,7 @@ pub fn all_calls_by(
         true
     });
 
-    let filter_cost = visited.saturating_mul(PER_CALL_COST);
-    if let Some(rax) = deduct_gas_and_check(&mut gas_left, filter_cost, gas_limit) {
-        return Err(CallFactsError::OutOfGas(rax));
-    }
+    charge_filter_cost(&mut gas_left, gas_limit, visited)?;
     charge_return_words(&mut gas_left, gas_limit, SCALAR_RETURN_WORDS)?;
 
     let encoded = result.abi_encode();
@@ -378,9 +394,7 @@ pub fn sum_arg_uint(
     let gas_limit = gas;
     let mut gas_left = gas;
 
-    if let Some(rax) = deduct_gas_and_check(&mut gas_left, BASE_COST, gas_limit) {
-        return Err(CallFactsError::OutOfGas(rax));
-    }
+    charge_base_cost(&mut gas_left, gas_limit)?;
 
     let selector: [u8; 4] = input_bytes
         .get(0..4)
@@ -444,10 +458,7 @@ pub fn sum_arg_uint(
         true
     });
 
-    let filter_cost = visited.saturating_mul(PER_CALL_COST);
-    if let Some(rax) = deduct_gas_and_check(&mut gas_left, filter_cost, gas_limit) {
-        return Err(CallFactsError::OutOfGas(rax));
-    }
+    charge_filter_cost(&mut gas_left, gas_limit, visited)?;
     charge_return_words(&mut gas_left, gas_limit, SCALAR_RETURN_WORDS)?;
 
     let encoded = total.abi_encode();
@@ -465,9 +476,7 @@ pub fn get_touched_contracts(
     let gas_limit = gas;
     let mut gas_left = gas;
 
-    if let Some(rax) = deduct_gas_and_check(&mut gas_left, BASE_COST, gas_limit) {
-        return Err(CallFactsError::OutOfGas(rax));
-    }
+    charge_base_cost(&mut gas_left, gas_limit)?;
 
     let call = PhEvm::getTouchedContractsCall::abi_decode(input_bytes)
         .map_err(CallFactsError::DecodeError)?;
@@ -497,10 +506,7 @@ pub fn get_touched_contracts(
         targets.insert(target);
     }
 
-    let filter_cost = visited.saturating_mul(PER_CALL_COST);
-    if let Some(rax) = deduct_gas_and_check(&mut gas_left, filter_cost, gas_limit) {
-        return Err(CallFactsError::OutOfGas(rax));
-    }
+    charge_filter_cost(&mut gas_left, gas_limit, visited)?;
 
     let encoded = targets.into_iter().collect::<Vec<_>>().abi_encode();
     Ok(PhevmOutcome::new(encoded.into(), gas_limit - gas_left))
@@ -519,9 +525,7 @@ pub fn get_trigger_context(
     let gas_limit = gas;
     let mut gas_left = gas;
 
-    if let Some(rax) = deduct_gas_and_check(&mut gas_left, BASE_COST, gas_limit) {
-        return Err(CallFactsError::OutOfGas(rax));
-    }
+    charge_base_cost(&mut gas_left, gas_limit)?;
 
     let tracer = ph_context.logs_and_traces.call_traces;
 
@@ -542,27 +546,11 @@ pub fn get_trigger_context(
             } else {
                 // Defensive fallback: executor set a call id that no longer exists.
                 // We keep this non-throwing and return zero context for robustness.
-                PhEvm::TriggerContext {
-                    callId: U256::ZERO,
-                    caller: Address::ZERO,
-                    target: Address::ZERO,
-                    codeAddress: Address::ZERO,
-                    selector: FixedBytes::ZERO,
-                    depth: 0,
-                }
+                zero_trigger_context()
             }
         }
-        None => {
-            // Non-call triggers (storage/balance) intentionally yield zero context.
-            PhEvm::TriggerContext {
-                callId: U256::ZERO,
-                caller: Address::ZERO,
-                target: Address::ZERO,
-                codeAddress: Address::ZERO,
-                selector: FixedBytes::ZERO,
-                depth: 0,
-            }
-        }
+        // Non-call triggers (storage/balance) intentionally yield zero context.
+        None => zero_trigger_context(),
     };
 
     charge_return_words(&mut gas_left, gas_limit, TRIGGER_CONTEXT_RETURN_WORDS)?;
