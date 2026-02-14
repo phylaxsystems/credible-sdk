@@ -18,6 +18,12 @@ This plan is biased toward the Euler roadmap objective: remove assertion plumbin
 3. Kept the new declarative precompile paths lint-clean with scoped, explicit lint allowances where noise-only.
 4. Restored this master plan file to keep progress tracking in-repo.
 5. Added `cargo-deny` advisory handling for `RUSTSEC-2026-0002` (transitive tooling path via Foundry debugger stack).
+6. Implemented Phase 13 per-call token facts in executor:
+   - `erc20BalanceDeltaAtCall`, `erc20SupplyDeltaAtCall`,
+   - `erc20AllowanceAtCall`, `erc20AllowanceDeltaAtCall`,
+   - `erc4626TotalAssetsDeltaAtCall`, `erc4626TotalSupplyDeltaAtCall`,
+   - `erc4626VaultAssetBalanceDeltaAtCall`.
+7. Synced canonical `PhEvm.sol` into `credible-std` (Phase 12 interface follow-up).
 
 ### Validation results
 
