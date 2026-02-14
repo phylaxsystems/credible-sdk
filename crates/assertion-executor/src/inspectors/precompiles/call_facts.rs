@@ -62,6 +62,18 @@ const SCALAR_RETURN_WORDS: u64 = 1;
 const TRIGGER_CONTEXT_RETURN_WORDS: u64 = 6;
 
 #[inline]
+fn zero_trigger_context() -> PhEvm::TriggerContext {
+    PhEvm::TriggerContext {
+        callId: U256::ZERO,
+        caller: Address::ZERO,
+        target: Address::ZERO,
+        codeAddress: Address::ZERO,
+        selector: FixedBytes::ZERO,
+        depth: 0,
+    }
+}
+
+#[inline]
 fn default_success_filter() -> PhEvm::CallFilter {
     PhEvm::CallFilter {
         callType: 0,
@@ -542,27 +554,11 @@ pub fn get_trigger_context(
             } else {
                 // Defensive fallback: executor set a call id that no longer exists.
                 // We keep this non-throwing and return zero context for robustness.
-                PhEvm::TriggerContext {
-                    callId: U256::ZERO,
-                    caller: Address::ZERO,
-                    target: Address::ZERO,
-                    codeAddress: Address::ZERO,
-                    selector: FixedBytes::ZERO,
-                    depth: 0,
-                }
+                zero_trigger_context()
             }
         }
-        None => {
-            // Non-call triggers (storage/balance) intentionally yield zero context.
-            PhEvm::TriggerContext {
-                callId: U256::ZERO,
-                caller: Address::ZERO,
-                target: Address::ZERO,
-                codeAddress: Address::ZERO,
-                selector: FixedBytes::ZERO,
-                depth: 0,
-            }
-        }
+        // Non-call triggers (storage/balance) intentionally yield zero context.
+        None => zero_trigger_context(),
     };
 
     charge_return_words(&mut gas_left, gas_limit, TRIGGER_CONTEXT_RETURN_WORDS)?;

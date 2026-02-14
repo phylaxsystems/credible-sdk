@@ -37,6 +37,29 @@ pub enum WritePolicyError {
 /// gas proportional to trace size and aligned with prior behavior.
 const PER_ENTRY_COST: u64 = 5;
 
+#[inline]
+fn charge_base_cost(gas_left: &mut u64, gas_limit: u64) -> Result<(), WritePolicyError> {
+    if let Some(rax) = deduct_gas_and_check(gas_left, BASE_COST, gas_limit) {
+        return Err(WritePolicyError::OutOfGas(rax));
+    }
+    Ok(())
+}
+
+#[inline]
+fn charge_scan_cost(
+    gas_left: &mut u64,
+    gas_limit: u64,
+    journal_len: usize,
+) -> Result<(), WritePolicyError> {
+    // Keep compatibility with historic pricing: scan charge is proportional
+    // to journal size, then scaled by /100 for predicate-style queries.
+    let scan_cost = (journal_len as u64).saturating_mul(PER_ENTRY_COST) / 100;
+    if let Some(rax) = deduct_gas_and_check(gas_left, scan_cost, gas_limit) {
+        return Err(WritePolicyError::OutOfGas(rax));
+    }
+    Ok(())
+}
+
 /// `anySlotWritten(address target, bytes32 slot) -> bool`
 ///
 /// Checks the storage change index for any `StorageChanged` matching the target and slot.
@@ -52,9 +75,7 @@ pub fn any_slot_written(
     let gas_limit = gas;
     let mut gas_left = gas;
 
-    if let Some(rax) = deduct_gas_and_check(&mut gas_left, BASE_COST, gas_limit) {
-        return Err(WritePolicyError::OutOfGas(rax));
-    }
+    charge_base_cost(&mut gas_left, gas_limit)?;
 
     let call = PhEvm::anySlotWrittenCall::abi_decode(input_bytes)
         .map_err(WritePolicyError::DecodeError)?;
@@ -67,12 +88,11 @@ pub fn any_slot_written(
         .call_traces
         .storage_change_index();
 
-    // Charge gas proportional to journal size (same cost model)
-    let journal_len = ph_context.logs_and_traces.call_traces.journal.journal.len() as u64;
-    let scan_cost = journal_len.saturating_mul(PER_ENTRY_COST) / 100;
-    if let Some(rax) = deduct_gas_and_check(&mut gas_left, scan_cost, gas_limit) {
-        return Err(WritePolicyError::OutOfGas(rax));
-    }
+    charge_scan_cost(
+        &mut gas_left,
+        gas_limit,
+        ph_context.logs_and_traces.call_traces.journal.journal.len(),
+    )?;
 
     let found = index.has_changes(&target, &slot);
 
@@ -96,9 +116,7 @@ pub fn all_slot_writes_by(
     let gas_limit = gas;
     let mut gas_left = gas;
 
-    if let Some(rax) = deduct_gas_and_check(&mut gas_left, BASE_COST, gas_limit) {
-        return Err(WritePolicyError::OutOfGas(rax));
-    }
+    charge_base_cost(&mut gas_left, gas_limit)?;
 
     let call = PhEvm::allSlotWritesByCall::abi_decode(input_bytes)
         .map_err(WritePolicyError::DecodeError)?;
@@ -111,12 +129,7 @@ pub fn all_slot_writes_by(
     let index = tracer.storage_change_index();
     let call_records = tracer.call_records();
 
-    // Charge gas for journal scan
-    let journal_len = tracer.journal.journal.len() as u64;
-    let scan_cost = journal_len.saturating_mul(PER_ENTRY_COST) / 100;
-    if let Some(rax) = deduct_gas_and_check(&mut gas_left, scan_cost, gas_limit) {
-        return Err(WritePolicyError::OutOfGas(rax));
-    }
+    charge_scan_cost(&mut gas_left, gas_limit, tracer.journal.journal.len())?;
 
     // Use the index to get only matching storage changes, then attribute each to a call
     let result = index.changes_for_key(&target, &slot).is_none_or(|entries| {
