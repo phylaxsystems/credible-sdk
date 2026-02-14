@@ -399,171 +399,13 @@ All reductions below are estimated and based on current files/ranges.
 | `lagoon-v0` | `assertions/src/SyncDepositModeAssertion_v0.5.0.a.sol:120` | ~55 | ~20 | ~64% |
 | `etherex-assertions` | `assertions/src/AccessHubUpgradeAssertion.a.sol:41` | ~35 | ~14 | ~60% |
 | `aave-v3-origin` | `assertions/src/production/BorrowingInvariantAssertions.a.sol:257` | ~36 | ~16 | ~56% |
-| `morpho-vault-2` | `assertions/src/VaultV2ConfigAssertions.a.sol:97` (gate helper cluster) | ~61 | ~22 | ~64% |
+| `morpho-vault-2` | `assertions/src/VaultV2ConfigAssertions.a.sol:97` | ~61 | ~22 | ~64% |
 | `myx-v2-assertions` | `assertions/src/CollateralAccountingAssertion.a.sol:46` | ~133 | ~34 | ~74% |
 
-### 1) EVC Account Health (nested call decoding -> event-derived account set)
-
-Before: `ethereum-vault-connector/assertions/src/AccountHealthAssertion.a.sol:123`
-- Manual unwrap of nested `batch/call`
-- Selector-specific account extraction
-- Multiple unique-set dedupe loops
-
-After (P0 + P1):
-
-```solidity
-function assertionBatchAccountHealth() external {
-    IEVC evc = IEVC(ph.getAssertionAdopter());
-
-    address[] memory vaults = _uniqueVerifiedVaultTargetsFromCallWithContextLogs(address(evc));
-    address[] memory accounts = _uniqueAccountsFromCallWithContextLogs(address(evc));
-
-    for (uint256 i = 0; i < accounts.length; i++) {
-        address account = accounts[i];
-        _validateAcrossTouchedVaultsAndControllers(evc, account, vaults);
-    }
-}
-```
-
-### 2) Malda Outflow (per-call fork loop -> loadAtCall)
-
-Before: `malda-lending/assertions/src/OutflowLimiterAssertion.a.sol:60`
-- Manual decode + `forkPreCall/forkPostCall` per borrow call
-- Repeated boilerplate around per-call state boundaries
-
-After (P0 + P1):
-
-```solidity
-function assertionBorrowOutflowLimit() external {
-    IOperator operator = IOperator(ph.getAssertionAdopter());
-    IOracleOperator oracle = IOracleOperator(operator.oracleOperator());
-    uint256 limit = operator.limitPerTimePeriod();
-    if (limit == 0) return;
-
-    CallInfo[] memory borrows =
-        getCalls(address(operator), IOperatorDefender.beforeMTokenBorrow.selector);
-
-    for (uint256 i = 0; i < borrows.length; i++) {
-        (address mToken,, uint256 amount) = abi.decode(borrows[i].input, (address, address, uint256));
-        uint256 expectedUsd = (amount * oracle.getUnderlyingPrice(mToken)) / 1e18;
-
-        uint256 pre = uint256(loadAtCall(address(operator), CUMULATIVE_OUTFLOW_SLOT, borrows[i].id, CallPoint.PRE));
-        uint256 post = uint256(loadAtCall(address(operator), CUMULATIVE_OUTFLOW_SLOT, borrows[i].id, CallPoint.POST));
-        require(_withinBps(post - pre, expectedUsd, 10), "outflow_tracking_mismatch");
-    }
-
-    require(operator.cumulativeOutflowVolume() <= limit, "borrow_exceeds_outflow_limit");
-}
-```
-
-### 3) Lagoon Sync Deposit Accounting (manual tx-call replay -> transfer + slot facts)
-
-Before: `lagoon-v0/assertions/src/SyncDepositModeAssertion_v0.5.0.a.sol:120`
-- Replays share-mint formula from protocol internals
-- Manual call iteration and local reconstruction
-
-After (P0 + P1):
-
-```solidity
-function assertionSyncDepositAccounting() external {
-    IVault vault = IVault(ph.getAssertionAdopter());
-    address asset = vault.asset();
-    address safe = vault.safe();
-
-    int256 safeDelta = _netTransferDelta(asset, safe);
-    (bytes32 preAssets, bytes32 postAssets,) = getSlotDiff(address(vault), TOTAL_ASSETS_SLOT);
-
-    require(int256(uint256(postAssets) - uint256(preAssets)) == safeDelta, "totalAssets_not_backed_by_safe_flow");
-}
-```
-
-### 4) Etherex Upgrade Auth (pre/post slot + selector scans -> write provenance)
-
-Before: `etherex-assertions/assertions/src/AccessHubUpgradeAssertion.a.sol:41`
-- Manual pre/post slot compare
-- Two selector scans for caller checks
-
-After (P0 + P1):
-
-```solidity
-function assertNoUnauthorizedUpgrade() external {
-    address proxy = ph.getAssertionAdopter();
-    address proxyAdmin = address(uint160(uint256(ph.load(proxy, ADMIN_SLOT))));
-
-    StorageWrite[] memory writes = getStorageWrites(proxy, IMPLEMENTATION_SLOT);
-    for (uint256 i = 0; i < writes.length; i++) {
-        require(_callerAt(writes[i].callId) == proxyAdmin, "unauthorized_upgrade");
-    }
-}
-```
-
-### 5) Aave Borrow Balance Change (packed calldata + forks -> call + transfer facts)
-
-Before: `aave-v3-origin/assertions/src/production/BorrowingInvariantAssertions.a.sol:257`
-- Packed parameter decode logic in assertion
-- Manual pre/post balance forks
-
-After (P0):
-
-```solidity
-function assertBorrowBalanceChanges() external {
-    IMockL2Pool pool = IMockL2Pool(ph.getAssertionAdopter());
-    CallInfo[] memory borrows = getCalls(address(pool), pool.borrow.selector);
-
-    for (uint256 i = 0; i < borrows.length; i++) {
-        (address asset, address user, uint256 amount) = _decodeBorrowCall(borrows[i]);
-        int256 userDelta = _netTransferDeltaByCall(asset, user, borrows[i].id);
-        require(userDelta == int256(amount), "borrow_balance_delta_mismatch");
-    }
-}
-```
-
-### 6) Morpho Gate Checks (6 repeated decode+fork helpers -> one generic helper)
-
-Before: `morpho-vault-2/assertions/src/VaultV2ConfigAssertions.a.sol:97`
-- Repeated near-identical helper functions for deposit/mint/withdraw/redeem/transfer/transferFrom
-
-After (P0):
-
-```solidity
-function _assertGate(bytes4 selector, function(address,address,IVaultV2) view policy) internal {
-    IVaultV2 vault = IVaultV2(ph.getAssertionAdopter());
-    CallInfo[] memory calls = getCalls(address(vault), selector);
-    for (uint256 i = 0; i < calls.length; i++) {
-        (address actor, address counterparty) = _gateAccounts(selector, calls[i].input, calls[i].caller);
-        policy(actor, counterparty, vault);
-    }
-}
-```
-
-### 7) MYX Collateral Accounting (manual multi-call reconstruction -> normalized flows)
-
-Before: `myx-v2-assertions/assertions/src/CollateralAccountingAssertion.a.sol:46`
-- Aggregates 4 call sets + per-call pre/post forks for disburse path
-- Recomputes branch logic for quote/base payout behavior
-
-After (P0 + P1):
-
-```solidity
-function assertionCollateralAccounting() external {
-    ITradingVault vault = ITradingVault(ph.getAssertionAdopter());
-    address quote = _quoteToken(vault);
-    address base = _baseToken(vault);
-
-    int256 quoteNet = _netTransferDelta(quote, address(vault));
-    int256 baseNet = _netTransferDelta(base, address(vault));
-    (int256 expectedQuote, int256 expectedBase) = _expectedNetFromChangedDebtAndCollateral(vault);
-
-    require(quoteNet == expectedQuote, "quote_collateral_accounting_mismatch");
-    require(baseNet == expectedBase, "base_collateral_accounting_mismatch");
-}
-```
-
-Notes:
-1. These snippets are intentionally schematic; exact slot constants/selectors stay protocol-specific.
-2. Biggest reduction comes from removing repeated trace-walking/forking boilerplate, not from removing core invariant math.
-3. Preferred final form is scalar/quantified assertions. Array-returning examples are transitional where per-call evidence is required.
-4. Key coverage in this roadmap uses known-key and event/call-derived key sets.
+Summary:
+1. Main wins come from removing call/log/fork replay boilerplate.
+2. Scalar/quantified APIs produce the largest readability and performance improvements.
+3. Array APIs remain transitional escape hatches for custom cases.
 
 ## Simple Additions We Should Also Do (Common ERC20 + Repeated Patterns)
 
@@ -914,258 +756,38 @@ If we want immediate wins without waiting for the full roadmap:
     - Latest snapshots:
       - `assertion_store_read` vs `main_ref`: `hit_existing_assertion` near-neutral (`~+2.8%`), `miss_nonexistent_assertion` strongly improved (`~-95%`).
       - `call-tracer-truncate` vs fresh `main_ref2` (same-window A/B): `15k` improved (`~-6.1%`), `500` improved (`~-44.1%`), `500_deep_pending` improved (`~-25.7%`), `15k_deep_pending` regressed (`~+12.2%`) and remains noisy across reruns.
+  - [x] Post-pass benchmark/setup optimization (2026-02-14):
+    - Added artifact bytecode cache in `test_utils.rs` (`OnceLock<RwLock<HashMap<...>>>`) to avoid repeated artifact JSON reads/decodes in bench setup paths (`bytecode`, `deployed_bytecode`).
+    - Added unit tests for cache correctness:
+      - `artifact_bytecode_cache_matches_fresh_decode`
+      - `public_bytecode_helpers_return_cached_values`
+    - Evaluated and dropped `SmallVec` trigger-call storage experiment (no clear perf gain, extra complexity).
+    - Added sequential invocation fast paths in executor hot paths (`executor/mod.rs`):
+      - `execute_triggered_assertions`: sequential branch now uses explicit loop instead of iterator `map(...).collect()`.
+      - `run_assertion_contract`: sequential branch now executes selectors directly without materializing `selector_executions` vector.
+      - Replaced expensive trace formatting allocation with count-only trace field.
+    - Validation:
+      - `cargo test -p assertion-executor@1.0.8 --lib` (306 passed)
+      - Focused A/B medians (main `c68b725` vs branch `63b4570` + cache + executor sequential fast paths):
+        - `executor_avg_block_performance/avg_block_100_aa`: `23.794 ms` -> `24.992 ms` (`+5.03%`, regression, improved from `+5.30%`)
+        - `assertion_store::read/hit_existing_assertion`: `654.32 ns` -> `662.54 ns` (`+1.26%`, near-neutral, improved from `+6.32%`)
+        - `executor_transaction_performance/erc20_vanilla`: `16.171 us` -> `10.455 us` (`-35.35%`, improvement)
 
-## Detailed Implementation Plan (Execution)
+## Execution Appendix (Condensed)
 
-### Scope Guardrails
+The long-form execution checklist has been intentionally compacted to keep this file reviewable.
+Phase status remains tracked above under `Implementation Progress`.
 
-1. Implement in `credible-sdk` only.
-2. Keep unrelated dirty path untouched: `credible-sdk/testdata/mock-protocol/lib/credible-std` (except intentional submodule-pointer bump in Phase 10).
-3. Commit with explicit pathspecs for touched files only.
-4. Run tests and benchmarks at every phase boundary.
+Execution guardrails:
+1. Implement in `credible-sdk`; keep unrelated paths untouched.
+2. Commit per phase with explicit test/bench commands and observed deltas.
+3. Prefer scalar/indexed query paths over array scan paths in hot precompiles.
+4. Keep `credible-sdk` canonical interfaces (`interfaces/PhEvm.sol`, `interfaces/ITriggerRecorder.sol`) as source of truth for cross-repo sync.
 
-### Phase Map (What Ships When)
-
-1. Phases 0-5: executor performance foundations (already completed).
-2. Phase 6: canonical interface source in `credible-sdk` (completed).
-3. Phase 7: P0 declarative cheatcodes (this is where core new cheatcodes are implemented).
-4. Phase 8: P1 mapping and diff cheatcodes.
-5. Phase 9: rewrite assertions + add stdlib helper wrappers and authoring guardrails.
-6. Phase 10: cross-repo interface sync CI/auto-PR automation (deferred/outside this repo).
-7. Phase 11: runtime performance hardening gate for declarative cheatcodes.
-
-### Phase 0: Baseline (Before Changes)
-
-1. Record local branch/status and touched files.
-2. Run focused baseline tests:
-
-```bash
-cd /Users/odysseas/code/phylax/assertions/credible-sdk
-cargo test -p assertion-executor --no-default-features --features "optimism test" --lib
-```
-
-3. Run quick baseline benchmarks:
-
-```bash
-cargo bench -p assertion-executor --bench assertion_store_read -- --quick
-cargo bench -p assertion-executor --bench executor_transaction_perf -- --quick
-```
-
-4. Save baseline numbers for before/after comparison.
-
-### Phase 1: Selector-Pruning in Store Read Path
-
-1. Update `crates/assertion-executor/src/store/assertion_store.rs`:
-   - Drop assertions with empty matched selector sets.
-2. Add/update matcher tests in the same file.
-3. Validate + benchmark:
-
-```bash
-cargo test -p assertion-executor --no-default-features --features "optimism test" assertion_store
-cargo bench -p assertion-executor --bench assertion_store_read -- --quick
-```
-
-4. Commit.
-
-### Phase 2: Zero-Work Fast Paths in Executor
-
-1. Update `crates/assertion-executor/src/executor/mod.rs`:
-   - Early return in `run_assertion_contract` for empty `fn_selectors`.
-2. Update `crates/assertion-executor/src/executor/with_inspector.rs`:
-   - Same early return for inspector path.
-3. Add/update tests for empty-selector execution behavior.
-4. Validate + benchmark:
-
-```bash
-cargo test -p assertion-executor --no-default-features --features "optimism test" executor
-cargo bench -p assertion-executor --bench executor_transaction_perf -- --quick
-```
-
-5. Commit.
-
-### Phase 3: Adaptive Parallelism
-
-1. Add thresholded scheduling for tiny workloads in:
-   - `execute_triggered_assertions`
-   - `run_assertion_contract`
-   - `run_assertion_contract_with_inspector`
-2. Preserve behavior; change scheduling only.
-3. Validate + benchmark:
-
-```bash
-cargo test -p assertion-executor --no-default-features --features "optimism test" --lib
-cargo bench -p assertion-executor --bench executor_transaction_perf -- --quick
-cargo bench -p assertion-executor --bench executor_avg_block_perf -- --quick
-```
-
-4. Commit.
-
-### Phase 4: Perf Instrumentation
-
-1. Add lightweight counters/timers for:
-   - skipped-empty-selector executions
-   - sequential vs parallel path selection
-2. Keep instrumentation non-invasive and optional at runtime.
-3. Validate + benchmark spot check:
-
-```bash
-cargo test -p assertion-executor --no-default-features --features "optimism test" --lib
-cargo bench -p assertion-executor --bench executor_transaction_perf -- --quick
-```
-
-4. Commit.
-
-### Phase 5: Broader Validation Gate
-
-1. Run package-level validation:
-
-```bash
-cargo test -p assertion-executor --no-default-features --features "optimism test" --lib
-```
-
-2. Run heavier benchmark sweep:
-
-```bash
-cargo bench -p assertion-executor --bench assertion_store_read -- --quick
-cargo bench -p assertion-executor --bench executor_transaction_perf -- --quick
-cargo bench -p assertion-executor --bench executor_avg_block_perf -- --quick
-```
-
-3. If environment allows, run broader non-full suite:
-
-```bash
-make test-no-full
-```
-
-4. Compare against Phase 0 baselines and document deltas.
-5. Final cleanup commit.
-
-### Phase 6: Canonical Interface Source (Bindings -> Std)
-
-Goal: eliminate drift between `credible-sdk` bindings and `credible-std` interfaces.
-
-1. Create canonical interface files in `credible-sdk` (single source of truth):
-   - `crates/assertion-executor/interfaces/PhEvm.sol`
-   - `crates/assertion-executor/interfaces/TriggerRecorder.sol`
-2. Update `crates/assertion-executor/src/inspectors/sol_primitives.rs` to load from canonical Solidity files via `sol!(".../PhEvm.sol")` and `sol!(".../TriggerRecorder.sol")` (path form).
-3. Keep `deploy_da.rs` assertion source aligned with canonical interfaces:
-   - either inline-generate from canonical files during test setup, or
-   - add explicit regeneration step and guard check.
-4. Add focused tests for newly introduced interface methods/selectors to prevent accidental removals.
-5. Commit.
-
-### Phase 7: Declarative Cheatcodes P0 (Core)
-
-1. Implement tx-level shared indexes reused across all assertion functions in the same tx:
-   - call index, write index, log index, normalized transfer index, changed-slot index.
-2. Add `PhEvm` P0 scalar APIs:
-   - call facts: `anyCall`, `countCalls`, `allCallsBy`, `sumArgUint`, `getTriggerContext`
-   - keyed aggregates: `sumCallArgUintForAddress`, `uniqueCallArgAddresses`, `sumCallArgUintByAddress`,
-     `sumEventUintForTopicKey`, `uniqueEventTopicValues`, `sumEventUintByTopic`
-   - call-boundary facts: `loadAtCall`, `callerAt`, `slotDeltaAtCall`
-   - write/token facts: `anySlotWritten`, `allSlotWritesBy`, `erc20BalanceDiff`, `erc20SupplyDiff`,
-     `getERC20NetFlow`, `getERC20FlowByCall`, `erc4626TotalAssetsDiff`, `erc4626TotalSupplyDiff`,
-     `erc4626VaultAssetBalanceDiff`, `erc4626AssetsPerShareDiffBps`
-3. Add `ITriggerRecorder` filtered trigger registration APIs and `Assertion.sol` helper wrappers.
-4. Keep array-returning APIs as non-default escape hatches.
-5. Validate + benchmark:
-
-```bash
-cargo test -p assertion-executor --no-default-features --features "optimism test" --lib
-cargo bench -p assertion-executor --bench executor_transaction_perf -- --quick
-cargo bench -p assertion-executor --bench executor_avg_block_perf -- --quick
-```
-
-6. Commit.
-
-### Phase 8: Declarative Cheatcodes P1 (Known-Key First)
-
-1. Implement known-key deterministic diff APIs:
-   - `getChangedSlots`, `getSlotDiff`
-   - `didMappingKeyChange`, `mappingValueDiff`
-   - `didBalanceChange`, `balanceDiff`
-2. Validate + benchmark:
-
-```bash
-cargo test -p assertion-executor --no-default-features --features "optimism test" --lib
-cargo bench -p assertion-executor --bench executor_transaction_perf -- --quick
-```
-
-3. Commit.
-
-### Phase 9: Assertion Rewrite + Authoring Guardrails
-
-1. Add `credible-std` helper wrappers/presets for declarative usage:
-   - filter presets and policy predicates (`successOnly`, `topLevelOnly`, `allCallsDeltaGE`, etc.).
-2. Rewrite highest-ROI assertions first:
-   - `ethereum-vault-connector/assertions/src/AccountHealthAssertion.a.sol`
-   - `malda-lending/assertions/src/OutflowLimiterAssertion.a.sol`
-   - `morpho-vault-2/assertions/src/VaultV2ConfigAssertions.a.sol`
-   - `aave-v3-origin/assertions/src/production/BorrowingInvariantAssertions.a.sol`
-3. Add lint/docs guardrails to discourage manual loops over `getCallInputs/getLogs` without allowlist justification.
-4. Validate:
-
-```bash
-cargo test -p assertion-executor --no-default-features --features "optimism test" --lib
-```
-
-5. Commit.
-
-### Phase 10: Cross-Repo Interface Sync CI/Auto-PR (Deferred)
-
-1. In `credible-std` repo, add workflow to sync canonical interface files from `credible-sdk` and open PRs.
-2. In `credible-sdk`, only bump `testdata/mock-protocol/lib/credible-std` submodule pointer after upstream merge.
-3. Add required CI checks in each repo for drift prevention.
-
-### Phase 11: Runtime Performance Hardening Gate (Final)
-
-Goal: lock in latency wins from declarative cheatcodes under parallel execution.
-
-1. Build shared tx facts once, reuse across all assertion functions in the tx:
-   - `Arc<TxFacts>` on `PhEvmContext`.
-   - Fact indexes: first call by target, call range boundaries, write index, state-change index, log index, normalized transfer index.
-2. Replace O(journal * calls) write attribution with one-pass call-window attribution:
-   - derive `journal_idx -> innermost_call_id` via call start/end boundaries.
-   - use that for `allSlotWritesBy` and any caller-attributed write checks.
-3. Remove per-query full scans from hot precompiles:
-   - `anySlotWritten`, `allSlotWritesBy`, `getStateChanges` use indexed lookups.
-   - `anyCall`/`countCalls`/`allCallsBy`/`sumArgUint` use iterator/short-circuit paths (no intermediate `Vec` for scalar checks).
-4. Reduce per-function clone amplification in executor path:
-   - make `MultiForkDb` carry immutable post-tx journal as shared `Arc` and lazily clone only when creating forks.
-   - avoid per-contract linear `call_records()` scan for trigger context by using exact matched trigger call-id metadata.
-   - support multi-call semantics explicitly: selectors with N triggering calls execute N times with per-call `trigger_call_id`.
-5. Cache expensive encodings on tx scope:
-   - cache `getLogs` ABI encoding once per tx.
-   - optionally cache filtered array encodings for escape-hatch APIs when identical queries repeat.
-6. Add focused perf suites (when benchmarks are available again):
-   - `precompile_call_facts_hot`
-   - `precompile_write_policy_hot`
-   - `precompile_state_changes_hot`
-   - `tx_facts_build`
-   - `executor_clone_overhead`
-7. Validation gate:
-   - no remaining O(journal * calls) paths.
-   - no per-assertion full-journal scan in hot scalar precompiles.
-   - trigger context lookup is O(1) per assertion contract.
-   - benchmark deltas documented and neutral-to-positive before merge.
-
-### Commit Cadence and Template
-
-1. Commit after every phase.
-2. Each commit message should state:
-   - what changed,
-   - which tests ran,
-   - which benchmark(s) ran,
-   - observed delta summary.
-3. Example:
-   - `executor: skip empty selector assertion executions`
-   - `tests: assertion_store matcher suite`
-   - `bench: assertion_store_read quick (+X% / -Y%)`
-
-### Definition of Done
-
-1. All phase validations pass.
-2. No unrelated file is included in commits.
+Definition of done:
+1. No correctness regressions in assertion-executor test suites.
+2. No material perf regressions in targeted benches.
+3. Remaining deferred phases are explicitly marked as deferred with owner/context.
 3. Benchmarks show neutral-to-positive impact on tx validation latency.
 4. New behavior is covered by unit tests.
 5. Declarative cheatcodes from P0 and P1 are implemented and used in rewritten top-ROI assertions.

@@ -35,10 +35,15 @@ use revm::database::{
     EmptyDBTyped,
 };
 use std::{
+    collections::HashMap,
     convert::Infallible,
     path::{
         Path,
         PathBuf,
+    },
+    sync::{
+        OnceLock,
+        RwLock,
     },
 };
 
@@ -160,6 +165,56 @@ fn read_artifact(input: &str) -> serde_json::Value {
     serde_json::from_reader(file).expect("Failed to parse JSON")
 }
 
+#[derive(Clone)]
+struct ArtifactBytecodes {
+    bytecode: Bytes,
+    deployed_bytecode: Bytes,
+}
+
+fn artifact_bytecodes_cache() -> &'static RwLock<HashMap<String, ArtifactBytecodes>> {
+    static CACHE: OnceLock<RwLock<HashMap<String, ArtifactBytecodes>>> = OnceLock::new();
+    CACHE.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+fn decode_artifact_bytecodes(input: &str) -> ArtifactBytecodes {
+    let value = read_artifact(input);
+
+    let bytecode_hex = value["bytecode"]["object"]
+        .as_str()
+        .expect("Failed to read bytecode");
+    let deployed_bytecode_hex = value["deployedBytecode"]["object"]
+        .as_str()
+        .expect("Failed to read bytecode");
+
+    ArtifactBytecodes {
+        bytecode: hex::decode(bytecode_hex)
+            .expect("Failed to decode bytecode")
+            .into(),
+        deployed_bytecode: hex::decode(deployed_bytecode_hex)
+            .expect("Failed to decode bytecode")
+            .into(),
+    }
+}
+
+fn cached_artifact_bytecodes(input: &str) -> ArtifactBytecodes {
+    if let Some(entry) = artifact_bytecodes_cache()
+        .read()
+        .expect("artifact bytecode cache poisoned")
+        .get(input)
+        .cloned()
+    {
+        return entry;
+    }
+
+    let mut cache = artifact_bytecodes_cache()
+        .write()
+        .expect("artifact bytecode cache poisoned");
+    cache
+        .entry(input.to_owned())
+        .or_insert_with(|| decode_artifact_bytecodes(input))
+        .clone()
+}
+
 /// Reads deployment bytecode from a ../../testdata/mock-protocol artifact
 ///
 /// # Arguments
@@ -170,13 +225,7 @@ fn read_artifact(input: &str) -> serde_json::Value {
 /// Panics if the artifact cannot be read or decoded.
 #[must_use]
 pub fn bytecode(input: &str) -> Bytes {
-    let value = read_artifact(input);
-    let bytecode = value["bytecode"]["object"]
-        .as_str()
-        .expect("Failed to read bytecode");
-    hex::decode(bytecode)
-        .expect("Failed to decode bytecode")
-        .into()
+    cached_artifact_bytecodes(input).bytecode
 }
 
 /// Reads deployed bytecode from a ../../testdata/mock-protocol artifact
@@ -189,13 +238,7 @@ pub fn bytecode(input: &str) -> Bytes {
 /// Panics if the artifact cannot be read or decoded.
 #[must_use]
 pub fn deployed_bytecode(input: &str) -> Bytes {
-    let value = read_artifact(input);
-    let bytecode = value["deployedBytecode"]["object"]
-        .as_str()
-        .expect("Failed to read bytecode");
-    hex::decode(bytecode)
-        .expect("Failed to decode bytecode")
-        .into()
+    cached_artifact_bytecodes(input).deployed_bytecode
 }
 
 /// # Panics
@@ -285,4 +328,37 @@ pub async fn anvil_provider() -> (RootProvider<alloy_network::Ethereum>, AnvilIn
     let provider = provider.root().clone();
 
     (provider, anvil)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        COUNTER,
+        artifact_bytecodes_cache,
+        bytecode,
+        cached_artifact_bytecodes,
+        decode_artifact_bytecodes,
+        deployed_bytecode,
+    };
+
+    #[test]
+    fn artifact_bytecode_cache_matches_fresh_decode() {
+        let expected = decode_artifact_bytecodes(COUNTER);
+        let cached = cached_artifact_bytecodes(COUNTER);
+
+        assert_eq!(cached.bytecode, expected.bytecode);
+        assert_eq!(cached.deployed_bytecode, expected.deployed_bytecode);
+    }
+
+    #[test]
+    fn public_bytecode_helpers_return_cached_values() {
+        let expected = cached_artifact_bytecodes(COUNTER);
+
+        assert_eq!(bytecode(COUNTER), expected.bytecode);
+        assert_eq!(deployed_bytecode(COUNTER), expected.deployed_bytecode);
+        assert!(artifact_bytecodes_cache()
+            .read()
+            .expect("artifact bytecode cache poisoned")
+            .contains_key(COUNTER));
+    }
 }

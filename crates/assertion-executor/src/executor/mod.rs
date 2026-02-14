@@ -150,10 +150,7 @@ pub(super) struct SelectorInvocation {
 pub(super) fn expand_selector_invocations(
     fn_selectors: &[crate::store::SelectorWithTrigger],
 ) -> Vec<SelectorInvocation> {
-    let execution_capacity = fn_selectors
-        .iter()
-        .map(|swt| swt.trigger_calls.len().max(1))
-        .sum();
+    let execution_capacity = selector_invocation_count(fn_selectors);
     let mut executions = Vec::with_capacity(execution_capacity);
 
     for swt in fn_selectors {
@@ -173,6 +170,14 @@ pub(super) fn expand_selector_invocations(
     }
 
     executions
+}
+
+#[inline]
+fn selector_invocation_count(fn_selectors: &[crate::store::SelectorWithTrigger]) -> usize {
+    fn_selectors
+        .iter()
+        .map(|swt| swt.trigger_calls.len().max(1))
+        .sum()
 }
 
 #[derive(Debug, Clone)]
@@ -384,7 +389,11 @@ impl AssertionExecutor {
             assertion_executor_pool()
                 .install(|| assertions.into_par_iter().map(execute_one).collect())
         } else {
-            assertions.into_iter().map(execute_one).collect()
+            let mut results = Vec::with_capacity(assertion_count);
+            for assertion_for_execution in assertions {
+                results.push(execute_one(assertion_for_execution)?);
+            }
+            Ok(results)
         }
     }
 
@@ -640,7 +649,6 @@ impl AssertionExecutor {
             });
         }
 
-        let selector_executions = expand_selector_invocations(fn_selectors);
         let prepared = self.prepare_assertion_contract(
             assertion_contract,
             fn_selectors.len(),
@@ -648,6 +656,95 @@ impl AssertionExecutor {
             context,
         );
 
+        // Common hot path: one selector with at most one trigger call.
+        // Bypass expansion/allocation/scheduling overhead and execute directly.
+        if fn_selectors.len() == 1 {
+            let selector = &fn_selectors[0];
+            let direct_trigger_call_id = match selector.trigger_calls.as_slice() {
+                [] => Some(None),
+                [call_id] => Some(Some(*call_id)),
+                _ => None,
+            };
+
+            if let Some(trigger_call_id) = direct_trigger_call_id {
+                let mut inspector = prepared.inspector;
+                inspector.context.trigger_call_id = trigger_call_id;
+                let fn_selector = selector.selector;
+                let fn_result = self.execute_assertion_fn(AssertionExecutionParams {
+                    assertion_contract,
+                    fn_selector: &fn_selector,
+                    tx_arena_epoch,
+                    block_env: block_env.clone(),
+                    multi_fork_db: prepared.multi_fork_db,
+                    inspector,
+                })?;
+                let total_assertion_gas = fn_result.as_result().gas_used();
+                return Ok(AssertionContractExecution {
+                    adopter: context.adopter,
+                    assertion_fns_results: vec![fn_result],
+                    total_assertion_gas,
+                    total_assertion_funcs_ran: 1,
+                });
+            }
+        }
+
+        let execution_count = selector_invocation_count(fn_selectors);
+        let parallel_fns = should_parallelize(execution_count);
+        trace!(
+            target: "assertion-executor::execute_assertions",
+            assertion_contract_id = ?assertion_contract.id,
+            selector_count = fn_selectors.len(),
+            execution_count,
+            scheduling = if parallel_fns { "parallel" } else { "sequential" },
+            "Assertion fn scheduling decision"
+        );
+
+        if !parallel_fns {
+            let mut valid_results = Vec::with_capacity(execution_count);
+            let mut total_assertion_gas = 0;
+            for selector in fn_selectors {
+                if selector.trigger_calls.is_empty() {
+                    let mut inspector = prepared.inspector.clone();
+                    inspector.context.trigger_call_id = None;
+                    let fn_selector = selector.selector;
+                    let fn_result = self.execute_assertion_fn(AssertionExecutionParams {
+                        assertion_contract,
+                        fn_selector: &fn_selector,
+                        tx_arena_epoch,
+                        block_env: block_env.clone(),
+                        multi_fork_db: prepared.multi_fork_db.clone(),
+                        inspector,
+                    })?;
+                    total_assertion_gas += fn_result.as_result().gas_used();
+                    valid_results.push(fn_result);
+                } else {
+                    for &call_id in &selector.trigger_calls {
+                        let mut inspector = prepared.inspector.clone();
+                        inspector.context.trigger_call_id = Some(call_id);
+                        let fn_selector = selector.selector;
+                        let fn_result = self.execute_assertion_fn(AssertionExecutionParams {
+                            assertion_contract,
+                            fn_selector: &fn_selector,
+                            tx_arena_epoch,
+                            block_env: block_env.clone(),
+                            multi_fork_db: prepared.multi_fork_db.clone(),
+                            inspector,
+                        })?;
+                        total_assertion_gas += fn_result.as_result().gas_used();
+                        valid_results.push(fn_result);
+                    }
+                }
+            }
+            let total_assertion_funcs_ran = valid_results.len() as u64;
+            return Ok(AssertionContractExecution {
+                adopter: context.adopter,
+                assertion_fns_results: valid_results,
+                total_assertion_gas,
+                total_assertion_funcs_ran,
+            });
+        }
+
+        let selector_executions = expand_selector_invocations(fn_selectors);
         let execute_fn = |execution: &SelectorInvocation| {
             let mut inspector = prepared.inspector.clone();
             inspector.context.trigger_call_id = execution.trigger_call_id;
@@ -661,28 +758,12 @@ impl AssertionExecutor {
             })
         };
 
-        let execution_count = selector_executions.len();
-        let parallel_fns = should_parallelize(execution_count);
-        trace!(
-            target: "assertion-executor::execute_assertions",
-            assertion_contract_id = ?assertion_contract.id,
-            selector_count = fn_selectors.len(),
-            execution_count,
-            scheduling = if parallel_fns { "parallel" } else { "sequential" },
-            "Assertion fn scheduling decision"
-        );
-
         let current_span = tracing::Span::current();
         let results_vec: Vec<_> = current_span.in_scope(|| {
-            if parallel_fns {
-                assertion_executor_pool()
-                    .install(|| selector_executions.par_iter().map(execute_fn).collect())
-            } else {
-                selector_executions.iter().map(execute_fn).collect()
-            }
+            assertion_executor_pool()
+                .install(|| selector_executions.par_iter().map(execute_fn).collect())
         });
 
-        trace!(target: "assertion-executor::execute_assertions", execution_results=?results_vec.iter().map(|result| format!("{result:?}")).collect::<Vec<_>>(), "Assertion Execution Results");
         let mut valid_results = Vec::with_capacity(results_vec.len());
         let mut total_assertion_gas = 0;
         for result in results_vec {
@@ -690,6 +771,11 @@ impl AssertionExecutor {
             total_assertion_gas += fn_result.as_result().gas_used();
             valid_results.push(fn_result);
         }
+        trace!(
+            target: "assertion-executor::execute_assertions",
+            execution_results_count = valid_results.len(),
+            "Assertion Execution Results"
+        );
         let total_assertion_funcs_ran = valid_results.len() as u64;
 
         Ok(AssertionContractExecution {

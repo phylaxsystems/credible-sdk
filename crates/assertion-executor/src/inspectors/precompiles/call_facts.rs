@@ -89,6 +89,7 @@ pub(crate) fn candidate_call_indices(
     target: Address,
     selector: FixedBytes<4>,
 ) -> Option<&[usize]> {
+    // O(1) lookup built by CallTracer at record time.
     tracer
         .target_and_selector_indices
         .get(&crate::inspectors::tracer::TargetAndSelector { target, selector })
@@ -138,6 +139,40 @@ fn charge_return_words(
     Ok(())
 }
 
+#[inline]
+fn for_each_matching_call(
+    tracer: &CallTracer,
+    target: Address,
+    selector: FixedBytes<4>,
+    filter: &PhEvm::CallFilter,
+    mut f: impl FnMut(usize, &CallRecord) -> bool,
+) -> u64 {
+    // This helper centralizes the "index lookup -> depth/filter checks -> visit"
+    // pattern used by all scalar call-fact precompiles.
+    let mut visited = 0u64;
+    let call_records = tracer.call_records();
+    let scheme_filter = call_type_to_scheme(filter.callType);
+
+    if let Some(indices) = candidate_call_indices(tracer, target, selector) {
+        for &idx in indices {
+            visited = visited.saturating_add(1);
+            let Some(depth) = tracer.call_depth_at(idx) else {
+                continue;
+            };
+            let record = &call_records[idx];
+            if !call_matches_filter(record, depth, filter, scheme_filter) {
+                continue;
+            }
+            // Visitor can short-circuit (e.g. anyCall/allCallsBy violation).
+            if !f(idx, record) {
+                break;
+            }
+        }
+    }
+
+    visited
+}
+
 /// `anyCall(address target, bytes4 selector, CallFilter filter) -> bool`
 ///
 /// Returns true if at least one call matching the filter exists.
@@ -158,6 +193,9 @@ pub fn any_call(
         .get(0..4)
         .and_then(|bytes| bytes.try_into().ok())
         .unwrap_or_default();
+    // Support both overloads:
+    // - anyCall(target, selector, filter)
+    // - anyCall(target, selector) [defaults to successOnly]
     let (target, call_selector, filter) = if selector == PhEvm::anyCall_1Call::SELECTOR {
         let call =
             PhEvm::anyCall_1Call::abi_decode(input_bytes).map_err(CallFactsError::DecodeError)?;
@@ -169,23 +207,11 @@ pub fn any_call(
     };
 
     let tracer = ph_context.logs_and_traces.call_traces;
-    let call_records = tracer.call_records();
-    let scheme_filter = call_type_to_scheme(filter.callType);
-    let mut visited = 0u64;
     let mut found = false;
-
-    if let Some(indices) = candidate_call_indices(tracer, target, call_selector) {
-        for &idx in indices {
-            visited = visited.saturating_add(1);
-            let Some(depth) = tracer.call_depth_at(idx) else {
-                continue;
-            };
-            if call_matches_filter(&call_records[idx], depth, &filter, scheme_filter) {
-                found = true;
-                break;
-            }
-        }
-    }
+    let visited = for_each_matching_call(tracer, target, call_selector, &filter, |_, _| {
+        found = true;
+        false
+    });
 
     let filter_cost = visited.saturating_mul(PER_CALL_COST);
     if let Some(rax) = deduct_gas_and_check(&mut gas_left, filter_cost, gas_limit) {
@@ -216,6 +242,7 @@ pub fn count_calls(
         .get(0..4)
         .and_then(|bytes| bytes.try_into().ok())
         .unwrap_or_default();
+    // Support overload with default `successOnly` filter.
     let (target, call_selector, filter) = if selector == PhEvm::countCalls_1Call::SELECTOR {
         let call = PhEvm::countCalls_1Call::abi_decode(input_bytes)
             .map_err(CallFactsError::DecodeError)?;
@@ -227,22 +254,11 @@ pub fn count_calls(
     };
 
     let tracer = ph_context.logs_and_traces.call_traces;
-    let call_records = tracer.call_records();
-    let scheme_filter = call_type_to_scheme(filter.callType);
-    let mut visited = 0u64;
     let mut matched = 0u64;
-
-    if let Some(indices) = candidate_call_indices(tracer, target, call_selector) {
-        for &idx in indices {
-            visited = visited.saturating_add(1);
-            let Some(depth) = tracer.call_depth_at(idx) else {
-                continue;
-            };
-            if call_matches_filter(&call_records[idx], depth, &filter, scheme_filter) {
-                matched = matched.saturating_add(1);
-            }
-        }
-    }
+    let visited = for_each_matching_call(tracer, target, call_selector, &filter, |_, _| {
+        matched = matched.saturating_add(1);
+        true
+    });
 
     let filter_cost = visited.saturating_mul(PER_CALL_COST);
     if let Some(rax) = deduct_gas_and_check(&mut gas_left, filter_cost, gas_limit) {
@@ -313,6 +329,7 @@ pub fn all_calls_by(
         .get(0..4)
         .and_then(|bytes| bytes.try_into().ok())
         .unwrap_or_default();
+    // Support overload with default `successOnly` filter.
     let (target, call_selector, allowed_caller, filter) =
         if selector == PhEvm::allCallsBy_1Call::SELECTOR {
             let call = PhEvm::allCallsBy_1Call::abi_decode(input_bytes)
@@ -330,28 +347,14 @@ pub fn all_calls_by(
         };
 
     let tracer = ph_context.logs_and_traces.call_traces;
-    let call_records = tracer.call_records();
-    let scheme_filter = call_type_to_scheme(filter.callType);
-    let mut visited = 0u64;
     let mut result = true;
-
-    if let Some(indices) = candidate_call_indices(tracer, target, call_selector) {
-        for &idx in indices {
-            visited = visited.saturating_add(1);
-            let record = &call_records[idx];
-            let Some(depth) = tracer.call_depth_at(idx) else {
-                continue;
-            };
-            if !call_matches_filter(record, depth, &filter, scheme_filter) {
-                continue;
-            }
-
-            if record.inputs().caller != allowed_caller {
-                result = false;
-                break;
-            }
+    let visited = for_each_matching_call(tracer, target, call_selector, &filter, |_, record| {
+        if record.inputs().caller != allowed_caller {
+            result = false;
+            return false;
         }
-    }
+        true
+    });
 
     let filter_cost = visited.saturating_mul(PER_CALL_COST);
     if let Some(rax) = deduct_gas_and_check(&mut gas_left, filter_cost, gas_limit) {
@@ -383,6 +386,7 @@ pub fn sum_arg_uint(
         .get(0..4)
         .and_then(|bytes| bytes.try_into().ok())
         .unwrap_or_default();
+    // Support overload with default `successOnly` filter.
     let (target, call_selector, arg_index_raw, filter) =
         if selector == PhEvm::sumArgUint_1Call::SELECTOR {
             let call = PhEvm::sumArgUint_1Call::abi_decode(input_bytes)
@@ -408,6 +412,7 @@ pub fn sum_arg_uint(
     let byte_offset = arg_index
         .checked_mul(32)
         .ok_or(CallFactsError::ArgOffsetOverflow { arg_index })?;
+    // 4-byte function selector prefix + ABI word offset.
     let data_start = 4usize
         .checked_add(byte_offset)
         .ok_or(CallFactsError::ArgOffsetOverflow { arg_index })?;
@@ -415,42 +420,29 @@ pub fn sum_arg_uint(
         .checked_add(32)
         .ok_or(CallFactsError::ArgOffsetOverflow { arg_index })?;
 
-    let scheme_filter = call_type_to_scheme(filter.callType);
-    let call_records = tracer.call_records();
-    let mut visited = 0u64;
     let mut total = U256::ZERO;
-    if let Some(indices) = candidate_call_indices(tracer, target, call_selector) {
-        for &idx in indices {
-            visited = visited.saturating_add(1);
-            let record = &call_records[idx];
-            let Some(depth) = tracer.call_depth_at(idx) else {
-                continue;
-            };
-            if !call_matches_filter(record, depth, &filter, scheme_filter) {
-                continue;
-            }
-            let revm::interpreter::CallInput::Bytes(calldata) = &record.inputs().input else {
-                continue;
-            };
+    let visited = for_each_matching_call(tracer, target, call_selector, &filter, |_, record| {
+        let revm::interpreter::CallInput::Bytes(calldata) = &record.inputs().input else {
+            return true;
+        };
 
-            // Skip the 4-byte selector, then read 32 bytes at the arg offset.
-            if calldata.len() < data_end {
-                // Calldata too short for this argIndex - zero-extend.
-                let mut padded = [0u8; 32];
-                let available = calldata.len().saturating_sub(data_start);
-                if available > 0 {
-                    padded[..available]
-                        .copy_from_slice(&calldata[data_start..data_start + available]);
-                }
-                total = total.wrapping_add(U256::from_be_bytes(padded));
-            } else {
-                let word: [u8; 32] = calldata[data_start..data_end]
-                    .try_into()
-                    .unwrap_or_default();
-                total = total.wrapping_add(U256::from_be_bytes(word));
+        // Skip the 4-byte selector, then read 32 bytes at the arg offset.
+        if calldata.len() < data_end {
+            // Calldata too short for this argIndex - zero-extend.
+            let mut padded = [0u8; 32];
+            let available = calldata.len().saturating_sub(data_start);
+            if available > 0 {
+                padded[..available].copy_from_slice(&calldata[data_start..data_start + available]);
             }
+            total = total.wrapping_add(U256::from_be_bytes(padded));
+        } else {
+            let word: [u8; 32] = calldata[data_start..data_end]
+                .try_into()
+                .unwrap_or_default();
+            total = total.wrapping_add(U256::from_be_bytes(word));
         }
-    }
+        true
+    });
 
     let filter_cost = visited.saturating_mul(PER_CALL_COST);
     if let Some(rax) = deduct_gas_and_check(&mut gas_left, filter_cost, gas_limit) {
@@ -495,6 +487,7 @@ pub fn get_touched_contracts(
         }
 
         let target = record.inputs().target_address;
+        // Bound array-returning APIs to avoid pathological response payloads.
         if !targets.contains(&target) && targets.len() >= MAX_ARRAY_RESPONSE_ITEMS {
             return Err(CallFactsError::TooManyResults {
                 count: targets.len() + 1,
@@ -547,7 +540,8 @@ pub fn get_trigger_context(
                     depth: tracer.call_depth_at(call_id).unwrap_or(0),
                 }
             } else {
-                // Call ID set but not found - return zeroed context
+                // Defensive fallback: executor set a call id that no longer exists.
+                // We keep this non-throwing and return zero context for robustness.
                 PhEvm::TriggerContext {
                     callId: U256::ZERO,
                     caller: Address::ZERO,
@@ -559,6 +553,7 @@ pub fn get_trigger_context(
             }
         }
         None => {
+            // Non-call triggers (storage/balance) intentionally yield zero context.
             PhEvm::TriggerContext {
                 callId: U256::ZERO,
                 caller: Address::ZERO,

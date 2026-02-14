@@ -379,10 +379,38 @@ impl CallTracer {
                     self.target_and_selector_indices.remove(key);
                 }
             }
+        } else if entries_to_remove <= 1024 {
+            // Small-range fast path:
+            // Avoid allocating a temporary HashMap for common short suffix truncations.
+            // Repeated lookups are cheap here and keep the branch lean for small reverts.
+            let mut keys_to_remove: Vec<TargetAndSelector> = Vec::new();
+
+            for i in index..old_len {
+                let record = &self.call_records[i];
+                let key = &record.target_and_selector;
+                let pos = record.key_index();
+
+                let mut remove_key = false;
+                if let Some(indices) = self.target_and_selector_indices.get_mut(key)
+                    && indices.len() > pos
+                {
+                    indices.truncate(pos);
+                    remove_key = indices.is_empty();
+                }
+
+                if remove_key {
+                    keys_to_remove.push(key.clone());
+                }
+            }
+
+            for key in keys_to_remove {
+                self.target_and_selector_indices.remove(&key);
+            }
         } else {
             // General path: for each unique key in the truncated range, find the minimum position
             // (first occurrence), then truncate to that position.
-            let mut truncate_positions: HashMap<&TargetAndSelector, usize> = HashMap::new();
+            let mut truncate_positions: HashMap<&TargetAndSelector, usize, RandomState> =
+                HashMap::default();
             for i in index..old_len {
                 let record = &self.call_records[i];
                 let key = &record.target_and_selector;

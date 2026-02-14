@@ -334,6 +334,7 @@ impl<'a> PhEvmInspector<'a> {
             >,
     {
         let outcome = match selector {
+            // Fork/time-travel primitives.
             PhEvm::forkPreTxCall::SELECTOR => {
                 fork_pre_tx(
                     context,
@@ -388,6 +389,7 @@ impl<'a> PhEvmInspector<'a> {
                 sum_calls_slot_delta(context, &self.context, input_bytes, inputs.gas_limit)
                     .map_err(PrecompileError::CallBoundaryError)?
             }
+            // Fork-scoped token/vault view facts (require temporary fork switch).
             PhEvm::erc20BalanceAtCall::SELECTOR => {
                 erc20_balance_at(context, &self.context, input_bytes, inputs.gas_limit)
                     .map_err(PrecompileError::Erc4626FactsError)?
@@ -611,6 +613,7 @@ impl<'a> PhEvmInspector<'a> {
     ) -> Result<Option<PhevmOutcome>, PrecompileError<ExtDb>> {
         let gas_limit = inputs.gas_limit;
         let outcome = match selector {
+            // Call-trace scalar facts.
             PhEvm::anyCall_0Call::SELECTOR => {
                 any_call(&self.context, input_bytes, gas_limit)
                     .map_err(PrecompileError::CallFactsError)?
@@ -647,6 +650,7 @@ impl<'a> PhEvmInspector<'a> {
                 sum_arg_uint(&self.context, input_bytes, gas_limit)
                     .map_err(PrecompileError::CallFactsError)?
             }
+            // Keyed/grouped aggregate facts (calls + logs).
             PhEvm::sumCallArgUintForAddressCall::SELECTOR => {
                 sum_call_arg_uint_for_address(&self.context, input_bytes, gas_limit)
                     .map_err(PrecompileError::AggregateFactsError)?
@@ -687,6 +691,7 @@ impl<'a> PhEvmInspector<'a> {
                 sum_event_data_uint(&self.context, input_bytes, gas_limit)
                     .map_err(PrecompileError::AggregateFactsError)?
             }
+            // Write-policy predicates and trigger context.
             PhEvm::anySlotWrittenCall::SELECTOR => {
                 any_slot_written(&self.context, input_bytes, gas_limit)
                     .map_err(PrecompileError::WritePolicyError)?
@@ -699,6 +704,7 @@ impl<'a> PhEvmInspector<'a> {
                 get_trigger_context(&self.context, gas_limit)
                     .map_err(PrecompileError::CallFactsError)?
             }
+            // Tx-scope token flow/storage diff facts.
             PhEvm::erc20BalanceDiffCall::SELECTOR => {
                 erc20_balance_diff(&self.context, input_bytes, gas_limit)
                     .map_err(PrecompileError::Erc20FactsError)?
