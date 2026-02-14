@@ -211,7 +211,8 @@ struct AssertionValidationSummary {
 ///
 /// Separating preparation from parallel execution keeps the per-variant code
 /// (with/without custom inspector) to just a rayon `.map` body, while the
-/// setup (inserting persistent accounts, building the overlay db and phevm
+/// setup (inserting persistent accounts, building the overlay db, and wiring
+/// the `PhEvmInspector`) remains centralized in one place.
 struct PreparedAssertionContract<'ctx, Active> {
     multi_fork_db: MultiForkDb<ForkDb<Active>>,
     inspector: PhEvmInspector<'ctx>,
