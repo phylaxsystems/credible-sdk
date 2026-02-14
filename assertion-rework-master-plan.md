@@ -737,27 +737,72 @@ If we want immediate wins without waiting for the full roadmap:
 - All 247 tests pass (up from 213 baseline, includes fix for previously broken MockAssertion.json test)
 - Still TODO from plan: keyed aggregates (`sumCallArgUintForAddress`, etc.), ERC4626 helpers, trigger-time filtered registration
 
-### Phase 8: Declarative Cheatcodes (P1 Mapping + Diff Facts) -- NOT STARTED
-- Deterministic known-key facts:
-  - `getChangedSlots`, `getSlotDiff`
-  - `didMappingKeyChange`, `mappingValueDiff`
-  - `didBalanceChange`, `balanceDiff`
+### Phase 8: Declarative Cheatcodes (P1 Mapping + Diff Facts) -- DONE
+- Implemented 6 new deterministic known-key cheatcodes:
+  - `getChangedSlots(address)` — journal-scanned, returns only net-changed slots (sorted, deterministic)
+  - `getSlotDiff(address, bytes32)` — returns (pre, post, changed) tuple from journal first-had-value + state
+  - `didMappingKeyChange(address, bytes32, bytes32, uint256)` — keccak256(key++baseSlot)+fieldOffset slot computation
+  - `mappingValueDiff(address, bytes32, bytes32, uint256)` — returns (pre, post, changed) for mapping slot
+  - `didBalanceChange(address, address)` — Transfer event net-flow != 0
+  - `balanceDiff(address, address)` — equivalent to erc20BalanceDiff
+- New module: `slot_diffs.rs` (getChangedSlots, getSlotDiff, didMappingKeyChange, mappingValueDiff)
+- Extended `erc20_facts.rs` (didBalanceChange, balanceDiff)
+- 263 tests pass (16 new)
 
-### Phase 9: Assertion Rewrite + Helper Layer -- NOT STARTED
-- Add `credible-std` helper wrappers and filter presets (`successOnly`, `topLevelOnly`, etc.).
-- Rewrite highest-ROI assertions to use declarative APIs first:
-  - EVC, Malda, Morpho, Aave (then MYX/Lagoon/Etherex).
-- Add lint/docs guardrail: scalar/quantified APIs are default; array APIs are escape hatch.
+### Phase 9: Assertion Rewrite + Helper Layer -- DEFERRED (cross-repo)
+- Requires modifying `credible-std` (separate repo) for helper wrappers/presets.
+- Requires rewriting assertions in downstream repos (EVC, Malda, Morpho, Aave, etc.).
+- Canonical PhEvm.sol interface (34 methods) is ready for sync.
+- Deferred until Phase 10 cross-repo sync is in place.
 
 ### Phase 10: Cross-Repo Interface Sync Automation -- DEFERRED
 - `credible-std` is a separate repo; automation should run cross-repo via CI workflows and PR bots.
 - In `credible-sdk`, only submodule pointer bumps should be done after upstream `credible-std` updates.
 
-### Phase 11: Runtime Performance Hardening Gate -- NOT STARTED
-- Goal: ensure the new declarative cheatcodes are fast under parallel assertion-function fan-out.
-- Ship a shared immutable `TxFacts` object (built once per tx) and consume it from precompiles.
-- Eliminate known repeated-scan hotspots and per-function clone amplification.
-- Add focused perf benchmarks for call facts/write policy/tx-fact build/clone overhead once benchmarking is unblocked.
+### Phase 11: Runtime Performance Hardening Gate -- IN PROGRESS
+- **StorageChangeIndex**: DONE (`8ac766e`). Lazily-built index on `CallTracer` via `OnceLock` pre-indexes all `StorageChanged` journal entries by `(address, slot)`. Replaces O(journal) scans with O(1) lookups in `slot_diffs`, `state_changes`, and `write_policy` precompiles. 266 tests pass.
+- **Correctness + Robustness Fix Pack (from review findings)**: IN PROGRESS.
+  - [x] Fix `CallTracer` constructors to initialize `storage_change_index` (`tracer.rs`).
+  - [x] Fix `sumArgUint` unchecked arithmetic overflow/panic on large `argIndex` (`call_facts.rs`).
+  - [x] Fix `anySlotWritten` double-charge gas accounting bug (`write_policy.rs`).
+  - [x] Harden `allSlotWritesBy` writer attribution to select innermost call deterministically (reverse start-order match), including nested same-pre checkpoint edge case (`write_policy.rs`).
+  - [ ] Replace `allSlotWritesBy` remaining O(matching_writes * call_records) path with one-pass call-window attribution (`write_policy.rs`).
+  - [x] Harden `getERC20FlowByCall` against malformed checkpoint bounds (`erc20_facts.rs`).
+  - [x] Propagate call IDs for `AllCalls` selectors and dedupe per-selector call IDs (`assertion_store.rs`).
+  - [x] Remove repeated filtered `Vec` materialization in `anyCall/countCalls/allCallsBy/sumArgUint` (`call_facts.rs`).
+  - [x] Cache per-trigger selector call-id extraction once per adopter read (`assertion_store.rs`).
+  - [x] Multi-call execution semantics in executor (run selector once per triggering call ID, non-call selectors once).
+  - [x] Add/adjust tests for multi-call trigger context semantics (normal + inspector paths).
+  - [x] Commit fix pack + update status with commit IDs and validation commands.
+    - Commits:
+      - `cd6a6e2` — executor/precompile/store hardening + multi-call trigger context support.
+      - `bc272fd` — plan checklist progress tracking.
+    - Validation run:
+      - `cargo test -p assertion-executor@1.0.8 --no-default-features --features "optimism test" --lib` (268 passed).
+      - `cargo bench -p assertion-executor@1.0.8 --bench assertion_store_read -- --quick`.
+      - `cargo bench -p assertion-executor@1.0.8 --bench executor_transaction_perf -- --quick`.
+      - `cargo bench -p assertion-executor@1.0.8 --bench executor_avg_block_perf -- --quick`.
+  - [x] Add regression test for nested same-pre checkpoint write attribution (`write_policy.rs`):
+    - `test_all_slot_writes_by_nested_same_pre_attributed_to_innermost`
+  - [x] Re-run full (non-quick) benchmark suites and record outcome:
+    - `cargo bench -p assertion-executor@1.0.8 --bench assertion_store_read`
+    - `cargo bench -p assertion-executor@1.0.8 --bench executor_transaction_perf`
+    - `cargo bench -p assertion-executor@1.0.8 --bench executor_avg_block_perf`
+    - `cargo bench -p assertion-executor@1.0.8 --bench call-tracer-truncate`
+    - `cargo bench -p assertion-executor@1.0.8 --bench worst-case-op`
+    - Summary (latest runs on this branch):
+      - `assertion_store_read`: no significant change.
+      - `executor_transaction_perf`: mixed (ERC20 paths improved significantly in rerun; Uniswap/EOA paths show small-to-moderate regressions/noise).
+      - `executor_avg_block_perf`: mixed (3_aa improved; vanilla/100_aa regressed in latest run).
+      - `call-tracer-truncate` + `worst-case-op`: baseline timings captured; no prior baseline deltas printed for those suites.
+- Remaining items (not yet started):
+  - Items 1-2 (empty-selector short-circuits): Already exist in executor path (verified by code review).
+  - Item 3 (adaptive parallelism): Already implemented in Phases 3-4.
+  - Item 6 (log re-encoding caching): Not started.
+  - Item 7 (bounded array responses): Not started.
+  - Item 8 (trigger-time call-shape filtering): Not started.
+  - Item 9 (keyed/grouped aggregate indexes): Not started.
+  - Focused perf benchmarks: Blocked on benchmarking infrastructure.
 
 ## Detailed Implementation Plan (Execution)
 
@@ -976,7 +1021,8 @@ Goal: lock in latency wins from declarative cheatcodes under parallel execution.
    - `anyCall`/`countCalls`/`allCallsBy`/`sumArgUint` use iterator/short-circuit paths (no intermediate `Vec` for scalar checks).
 4. Reduce per-function clone amplification in executor path:
    - make `MultiForkDb` carry immutable post-tx journal as shared `Arc` and lazily clone only when creating forks.
-   - avoid per-contract linear `call_records()` scan for trigger context by using a precomputed target->first-call map (or exact matched trigger call id metadata).
+   - avoid per-contract linear `call_records()` scan for trigger context by using exact matched trigger call-id metadata.
+   - support multi-call semantics explicitly: selectors with N triggering calls execute N times with per-call `trigger_call_id`.
 5. Cache expensive encodings on tx scope:
    - cache `getLogs` ABI encoding once per tx.
    - optionally cache filtered array encodings for escape-hatch APIs when identical queries repeat.

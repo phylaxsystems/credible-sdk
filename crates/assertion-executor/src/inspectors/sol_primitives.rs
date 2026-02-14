@@ -133,6 +133,31 @@ mod tests {
                 "getERC20FlowByCall(address,address,uint256)",
                 PhEvm::getERC20FlowByCallCall::SELECTOR,
             ),
+            // P1: State/Mapping diff cheatcodes
+            (
+                "getChangedSlots(address)",
+                PhEvm::getChangedSlotsCall::SELECTOR,
+            ),
+            (
+                "getSlotDiff(address,bytes32)",
+                PhEvm::getSlotDiffCall::SELECTOR,
+            ),
+            (
+                "didMappingKeyChange(address,bytes32,bytes32,uint256)",
+                PhEvm::didMappingKeyChangeCall::SELECTOR,
+            ),
+            (
+                "mappingValueDiff(address,bytes32,bytes32,uint256)",
+                PhEvm::mappingValueDiffCall::SELECTOR,
+            ),
+            (
+                "didBalanceChange(address,address)",
+                PhEvm::didBalanceChangeCall::SELECTOR,
+            ),
+            (
+                "balanceDiff(address,address)",
+                PhEvm::balanceDiffCall::SELECTOR,
+            ),
         ];
 
         // Verify all selectors are non-zero (sanity check)
@@ -147,8 +172,8 @@ mod tests {
         // Verify we have the expected count of methods
         assert_eq!(
             expected_selectors.len(),
-            28,
-            "PhEvm interface should have exactly 28 methods"
+            34,
+            "PhEvm interface should have exactly 34 methods"
         );
     }
 

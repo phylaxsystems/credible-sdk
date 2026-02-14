@@ -51,6 +51,7 @@ use tracing::{
 };
 
 use rayon::prelude::{
+    IntoParallelRefIterator,
     IntoParallelIterator,
     ParallelIterator,
 };
@@ -59,6 +60,7 @@ use super::{
     AssertionExecutor,
     ExecuteForkedTxResult,
     assertion_executor_pool,
+    expand_selector_executions,
 };
 
 use crate::evm::build_evm::{
@@ -233,7 +235,12 @@ impl AssertionExecutor {
             forked_tx_result,
             tx_env,
             tx_arena_epoch,
-            |assertion_contract, fn_selectors, block_env, tx_fork_db, context, tx_arena_epoch| {
+            |assertion_contract,
+             fn_selectors: &[crate::store::SelectorWithTrigger],
+             block_env,
+             tx_fork_db,
+             context,
+             tx_arena_epoch| {
                 self.run_assertion_contract_with_inspector(
                     assertion_contract,
                     fn_selectors,
@@ -261,8 +268,9 @@ impl AssertionExecutor {
     ///
     /// Uses the same [`AssertionExecutor::prepare_assertion_contract`] setup, but each
     /// rayon task composes the caller's inspector with the phevm inspector so both
-    /// observe execution. Returns one cloned inspector per function selector alongside
-    /// the execution results.
+    /// observe execution. Selectors with multiple triggering calls are expanded into
+    /// one execution per triggering call context. Returns one cloned inspector per
+    /// execution alongside the results.
     #[instrument(
         skip_all,
         fields(assertion_id=%assertion_contract.id),
@@ -272,7 +280,7 @@ impl AssertionExecutor {
     fn run_assertion_contract_with_inspector<Active, I>(
         &self,
         assertion_contract: &AssertionContract,
-        fn_selectors: &[FixedBytes<4>],
+        fn_selectors: &[crate::store::SelectorWithTrigger],
         block_env: &BlockEnv,
         tx_fork_db: ForkDb<Active>,
         context: &PhEvmContext,
@@ -306,27 +314,35 @@ impl AssertionExecutor {
             ));
         }
 
-        let prepared =
-            self.prepare_assertion_contract(assertion_contract, fn_selectors, tx_fork_db, context);
+        let selector_executions = expand_selector_executions(fn_selectors);
+        let prepared = self.prepare_assertion_contract(
+            assertion_contract,
+            fn_selectors.len(),
+            tx_fork_db,
+            context,
+        );
 
-        let execute_fn = |fn_selector: &FixedBytes<4>| {
+        let execute_fn = |execution: &super::SelectorExecution| {
+            let mut phevm_inspector = prepared.inspector.clone();
+            phevm_inspector.context.trigger_call_id = execution.trigger_call_id;
             self.execute_assertion_fn_with_inspector(
                 assertion_contract,
-                *fn_selector,
+                execution.fn_selector,
                 block_env.clone(),
                 prepared.multi_fork_db.clone(),
-                prepared.inspector.clone(),
+                phevm_inspector,
                 inspector.clone(),
                 tx_arena_epoch,
             )
         };
 
-        let selector_count = fn_selectors.len();
-        let parallel_fns = selector_count >= super::PARALLEL_THRESHOLD;
+        let execution_count = selector_executions.len();
+        let parallel_fns = execution_count >= super::PARALLEL_THRESHOLD;
         trace!(
             target: "assertion-executor::execute_assertions",
             assertion_contract_id = ?assertion_contract.id,
-            selector_count,
+            selector_count = fn_selectors.len(),
+            execution_count,
             scheduling = if parallel_fns { "parallel" } else { "sequential" },
             "Assertion fn scheduling decision (inspector path)"
         );
@@ -335,10 +351,10 @@ impl AssertionExecutor {
         let results_vec: Vec<_> = current_span.in_scope(|| {
             if parallel_fns {
                 assertion_executor_pool().install(|| {
-                    fn_selectors.into_par_iter().map(execute_fn).collect()
+                    selector_executions.par_iter().map(execute_fn).collect()
                 })
             } else {
-                fn_selectors.iter().map(execute_fn).collect()
+                selector_executions.iter().map(execute_fn).collect()
             }
         });
 

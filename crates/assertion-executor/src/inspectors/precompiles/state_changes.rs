@@ -63,10 +63,14 @@ pub fn get_state_changes(
     let event = PhEvm::getStateChangesCall::abi_decode(input_bytes)
         .map_err(GetStateChangesError::CallDecodeError)?;
 
+    let index = context.logs_and_traces.call_traces.storage_change_index();
+    let journal = &context.logs_and_traces.call_traces.journal;
+
     let dif_bytes: Bytes = crate::arena::with_current_tx_arena(|arena| {
         let mut differences: Vec<U256, &Bump> = Vec::new_in(arena);
         get_differences(
-            &context.logs_and_traces.call_traces.journal,
+            journal,
+            index,
             event.contractAddress,
             event.slot.into(),
             &mut gas_left,
@@ -80,9 +84,10 @@ pub fn get_state_changes(
     Ok(PhevmOutcome::new(dif_bytes, gas_limit - gas_left))
 }
 
-/// Returns an array of different values for an account and slot, from the `JournaledState` passed.
+/// Returns an array of different values for an account and slot, using the pre-built index.
 fn get_differences<A: std::alloc::Allocator>(
     journal: &JournalInner<JournalEntry>,
+    index: &crate::inspectors::tracer::StorageChangeIndex,
     contract_address: Address,
     slot: U256,
     gas_left: &mut u64,
@@ -93,24 +98,24 @@ fn get_differences<A: std::alloc::Allocator>(
     const MEMORY_COST: u64 = 3;
     const PUSH_LAST: u64 = 6;
 
-    for entry in &journal.journal {
-        if let Some(rax) = deduct_gas_and_check(gas_left, JOURNAL_PROCESSING_COST, gas_limit) {
-            return Err(GetStateChangesError::OutOfGas(rax));
-        }
+    // Charge for journal scan proportional to journal size (same cost model)
+    let journal_len = journal.journal.len() as u64;
+    if let Some(rax) = deduct_gas_and_check(
+        gas_left,
+        journal_len.saturating_mul(JOURNAL_PROCESSING_COST),
+        gas_limit,
+    ) {
+        return Err(GetStateChangesError::OutOfGas(rax));
+    }
 
-        if let JournalEntry::StorageChanged {
-            address,
-            had_value,
-            key,
-        } = entry
-            && *address == contract_address
-            && key == &slot
-        {
+    // Use the index to find matching entries directly
+    if let Some(entries) = index.changes_for_key(&contract_address, &slot) {
+        for entry in entries {
             if let Some(rax) = deduct_gas_and_check(gas_left, MEMORY_COST, gas_limit) {
                 return Err(GetStateChangesError::OutOfGas(rax));
             }
 
-            differences.push(*had_value);
+            differences.push(entry.had_value);
         }
     }
 
@@ -482,6 +487,8 @@ mod test {
 
     #[test]
     fn test_get_differences_function() {
+        use crate::inspectors::tracer::StorageChangeIndex;
+
         let contract_address = random_address();
         let slot = random_u256();
         let value_updates = vec![U256::from(2), U256::from(3)];
@@ -496,10 +503,12 @@ mod test {
             &mut db,
         );
 
+        let index = StorageChangeIndex::build_from_journal(&journal);
         let mut gas_left = TEST_GAS;
         let mut differences = Vec::<U256>::new();
         let result = get_differences(
             &journal,
+            &index,
             contract_address,
             slot,
             &mut gas_left,

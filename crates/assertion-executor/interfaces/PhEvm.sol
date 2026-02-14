@@ -273,4 +273,55 @@ interface PhEvm {
     /// @param callId The call identifier to scope events to
     /// @return netFlow The signed net flow within the call's scope
     function getERC20FlowByCall(address token, address account, uint256 callId) external view returns (int256 netFlow);
+
+    // ─── P1: State/Mapping diff cheatcodes ───
+
+    /// @notice Get all storage slots that changed for a target address during the transaction
+    /// @dev Only returns slots where the final value differs from the pre-tx value
+    /// @param target The contract address to inspect
+    /// @return slots Array of storage slot keys that were modified
+    function getChangedSlots(address target) external view returns (bytes32[] memory slots);
+
+    /// @notice Get the pre and post values of a storage slot across the transaction
+    /// @dev If the slot was not modified, returns the loaded value (or zero) with changed=false
+    /// @param target The contract address to inspect
+    /// @param slot The storage slot to diff
+    /// @return pre The value before the transaction
+    /// @return post The value after the transaction
+    /// @return changed True if the value changed
+    function getSlotDiff(address target, bytes32 slot) external view returns (bytes32 pre, bytes32 post, bool changed);
+
+    /// @notice Check if a Solidity mapping entry's storage slot was modified
+    /// @dev Computes slot as keccak256(key ++ baseSlot) + fieldOffset per Solidity storage layout
+    /// @param target The contract address
+    /// @param baseSlot The storage slot of the mapping declaration
+    /// @param key The mapping key (left-padded to bytes32)
+    /// @param fieldOffset Struct field offset (0 for simple value mappings)
+    /// @return changed True if the computed slot was modified
+    function didMappingKeyChange(address target, bytes32 baseSlot, bytes32 key, uint256 fieldOffset) external view returns (bool changed);
+
+    /// @notice Get pre/post values for a Solidity mapping entry's storage slot
+    /// @dev Computes slot as keccak256(key ++ baseSlot) + fieldOffset per Solidity storage layout
+    /// @param target The contract address
+    /// @param baseSlot The storage slot of the mapping declaration
+    /// @param key The mapping key (left-padded to bytes32)
+    /// @param fieldOffset Struct field offset (0 for simple value mappings)
+    /// @return pre The value before the transaction
+    /// @return post The value after the transaction
+    /// @return changed True if the value changed
+    function mappingValueDiff(address target, bytes32 baseSlot, bytes32 key, uint256 fieldOffset) external view returns (bytes32 pre, bytes32 post, bool changed);
+
+    /// @notice Check if an ERC20 token balance changed for an account
+    /// @dev Based on Transfer event scanning, equivalent to erc20BalanceDiff != 0
+    /// @param token The ERC20 token contract address
+    /// @param account The account to check
+    /// @return changed True if the net balance changed
+    function didBalanceChange(address token, address account) external view returns (bool changed);
+
+    /// @notice Get the ERC20 balance change for an account across the transaction
+    /// @dev Equivalent to erc20BalanceDiff — computes net flow from Transfer events
+    /// @param token The ERC20 token contract address
+    /// @param account The account to check
+    /// @return delta The signed balance change
+    function balanceDiff(address token, address account) external view returns (int256 delta);
 }
