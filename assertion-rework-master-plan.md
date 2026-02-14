@@ -756,6 +756,18 @@ If we want immediate wins without waiting for the full roadmap:
     - Latest snapshots:
       - `assertion_store_read` vs `main_ref`: `hit_existing_assertion` near-neutral (`~+2.8%`), `miss_nonexistent_assertion` strongly improved (`~-95%`).
       - `call-tracer-truncate` vs fresh `main_ref2` (same-window A/B): `15k` improved (`~-6.1%`), `500` improved (`~-44.1%`), `500_deep_pending` improved (`~-25.7%`), `15k_deep_pending` regressed (`~+12.2%`) and remains noisy across reruns.
+  - [x] Post-pass benchmark/setup optimization (2026-02-14):
+    - Added artifact bytecode cache in `test_utils.rs` (`OnceLock<RwLock<HashMap<...>>>`) to avoid repeated artifact JSON reads/decodes in bench setup paths (`bytecode`, `deployed_bytecode`).
+    - Added unit tests for cache correctness:
+      - `artifact_bytecode_cache_matches_fresh_decode`
+      - `public_bytecode_helpers_return_cached_values`
+    - Evaluated and dropped `SmallVec` trigger-call storage experiment (no clear perf gain, extra complexity).
+    - Validation:
+      - `cargo test -p assertion-executor@1.0.8 --lib` (304 passed)
+      - Focused A/B medians (main `c68b725` vs branch `63b4570` + cache-only):
+        - `executor_avg_block_performance/avg_block_100_aa`: `23.794 ms` -> `25.055 ms` (`+5.30%`, regression)
+        - `assertion_store::read/hit_existing_assertion`: `654.32 ns` -> `695.70 ns` (`+6.32%`, regression)
+        - `executor_transaction_performance/erc20_vanilla`: `16.171 us` -> `10.630 us` (`-34.27%`, improvement)
 
 ## Execution Appendix (Condensed)
 
