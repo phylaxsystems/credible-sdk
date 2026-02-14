@@ -163,19 +163,19 @@ pub(super) fn expand_selector_invocations(
     let execution_capacity = selector_invocation_count(fn_selectors);
     let mut executions = Vec::with_capacity(execution_capacity);
 
-    for swt in fn_selectors {
-        if swt.trigger_calls.is_empty() {
+    for selector_with_trigger in fn_selectors {
+        if selector_with_trigger.trigger_calls.is_empty() {
             executions.push(SelectorInvocation {
-                fn_selector: swt.selector,
+                fn_selector: selector_with_trigger.selector,
                 trigger_call_id: None,
             });
         } else {
-            executions.extend(swt.trigger_calls.iter().copied().map(|call_id| {
-                SelectorInvocation {
-                    fn_selector: swt.selector,
+            for &call_id in &selector_with_trigger.trigger_calls {
+                executions.push(SelectorInvocation {
+                    fn_selector: selector_with_trigger.selector,
                     trigger_call_id: Some(call_id),
-                }
-            }));
+                });
+            }
         }
     }
 
@@ -183,7 +183,9 @@ pub(super) fn expand_selector_invocations(
 }
 
 #[inline]
-fn selector_invocation_count(fn_selectors: &[crate::store::SelectorWithTrigger]) -> usize {
+pub(super) fn selector_invocation_count(
+    fn_selectors: &[crate::store::SelectorWithTrigger],
+) -> usize {
     fn_selectors
         .iter()
         .map(|swt| swt.trigger_calls.len().max(1))
@@ -709,39 +711,44 @@ impl AssertionExecutor {
             "Assertion fn scheduling decision"
         );
 
+        // Sequential path is intentionally allocation-free for invocation expansion.
+        // This is the dominant case after introducing conservative fn-level parallelism.
+        // Important: we still preserve multi-call semantics by running once per
+        // trigger call id (or once with `None` for non-call triggers).
         if !parallel_fns {
             let mut valid_results = Vec::with_capacity(execution_count);
             let mut total_assertion_gas = 0;
+            // Shared execution body used for both trigger shapes:
+            // - selector without call ids
+            // - selector with one or more call ids
+            let mut run_one = |fn_selector: FixedBytes<4>,
+                               trigger_call_id: Option<usize>|
+             -> Result<
+                (),
+                AssertionExecutionError<<Active as DatabaseRef>::Error>,
+            > {
+                let mut inspector = prepared.inspector.clone();
+                // This is what powers `getTriggerContext()` inside assertions.
+                inspector.context.trigger_call_id = trigger_call_id;
+                let fn_result = self.execute_assertion_fn(AssertionExecutionParams {
+                    assertion_contract,
+                    fn_selector: &fn_selector,
+                    tx_arena_epoch,
+                    block_env: block_env.clone(),
+                    multi_fork_db: prepared.multi_fork_db.clone(),
+                    inspector,
+                })?;
+                total_assertion_gas += fn_result.as_result().gas_used();
+                valid_results.push(fn_result);
+                Ok(())
+            };
             for selector in fn_selectors {
                 if selector.trigger_calls.is_empty() {
-                    let mut inspector = prepared.inspector.clone();
-                    inspector.context.trigger_call_id = None;
-                    let fn_selector = selector.selector;
-                    let fn_result = self.execute_assertion_fn(AssertionExecutionParams {
-                        assertion_contract,
-                        fn_selector: &fn_selector,
-                        tx_arena_epoch,
-                        block_env: block_env.clone(),
-                        multi_fork_db: prepared.multi_fork_db.clone(),
-                        inspector,
-                    })?;
-                    total_assertion_gas += fn_result.as_result().gas_used();
-                    valid_results.push(fn_result);
+                    run_one(selector.selector, None)?;
                 } else {
+                    // AllCalls/filtered-call selectors execute once per matched call id.
                     for &call_id in &selector.trigger_calls {
-                        let mut inspector = prepared.inspector.clone();
-                        inspector.context.trigger_call_id = Some(call_id);
-                        let fn_selector = selector.selector;
-                        let fn_result = self.execute_assertion_fn(AssertionExecutionParams {
-                            assertion_contract,
-                            fn_selector: &fn_selector,
-                            tx_arena_epoch,
-                            block_env: block_env.clone(),
-                            multi_fork_db: prepared.multi_fork_db.clone(),
-                            inspector,
-                        })?;
-                        total_assertion_gas += fn_result.as_result().gas_used();
-                        valid_results.push(fn_result);
+                        run_one(selector.selector, Some(call_id))?;
                     }
                 }
             }

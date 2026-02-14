@@ -313,14 +313,81 @@ impl AssertionExecutor {
             ));
         }
 
-        let selector_executions = expand_selector_invocations(fn_selectors);
         let prepared = self.prepare_assertion_contract(
             assertion_contract,
             fn_selectors.len(),
             tx_fork_db,
             context,
         );
+        let execution_count = super::selector_invocation_count(fn_selectors);
+        let parallel_fns = super::should_parallelize_assertion_fns(execution_count);
+        trace!(
+            target: "assertion-executor::execute_assertions",
+            assertion_contract_id = ?assertion_contract.id,
+            selector_count = fn_selectors.len(),
+            execution_count,
+            scheduling = if parallel_fns { "parallel" } else { "sequential" },
+            "Assertion fn scheduling decision (inspector path)"
+        );
 
+        // Mirror the non-inspector path: avoid selector expansion allocation when
+        // execution stays sequential.
+        // This keeps behavior equivalent while reducing per-contract overhead in
+        // low/medium invocation-count scenarios.
+        if !parallel_fns {
+            let mut valid_results = Vec::with_capacity(execution_count);
+            let mut inspectors = Vec::with_capacity(execution_count);
+            let mut total_assertion_gas = 0;
+            // Single execution body for:
+            // - non-call-triggered selector run
+            // - each call-triggered selector invocation
+            let mut run_one = |fn_selector: FixedBytes<4>,
+                               trigger_call_id: Option<usize>|
+             -> Result<
+                (),
+                AssertionExecutionError<<Active as DatabaseRef>::Error>,
+            > {
+                let mut phevm_inspector = prepared.inspector.clone();
+                // Keep trigger context stable for custom inspector users as well.
+                phevm_inspector.context.trigger_call_id = trigger_call_id;
+                let (fn_result, fn_inspector) = self.execute_assertion_fn_with_inspector(
+                    assertion_contract,
+                    fn_selector,
+                    block_env.clone(),
+                    prepared.multi_fork_db.clone(),
+                    phevm_inspector,
+                    inspector.clone(),
+                    tx_arena_epoch,
+                )?;
+                total_assertion_gas += fn_result.as_result().gas_used();
+                valid_results.push(fn_result);
+                inspectors.push(fn_inspector);
+                Ok(())
+            };
+
+            for selector in fn_selectors {
+                if selector.trigger_calls.is_empty() {
+                    run_one(selector.selector, None)?;
+                } else {
+                    // Execute once per triggering call id to preserve multi-call semantics.
+                    for &call_id in &selector.trigger_calls {
+                        run_one(selector.selector, Some(call_id))?;
+                    }
+                }
+            }
+            let total_assertion_funcs_ran = valid_results.len() as u64;
+            return Ok((
+                AssertionContractExecution {
+                    adopter: context.adopter,
+                    assertion_fns_results: valid_results,
+                    total_assertion_gas,
+                    total_assertion_funcs_ran,
+                },
+                inspectors,
+            ));
+        }
+
+        let selector_executions = expand_selector_invocations(fn_selectors);
         let execute_fn = |execution: &super::SelectorInvocation| {
             let mut phevm_inspector = prepared.inspector.clone();
             phevm_inspector.context.trigger_call_id = execution.trigger_call_id;
@@ -335,25 +402,10 @@ impl AssertionExecutor {
             )
         };
 
-        let execution_count = selector_executions.len();
-        let parallel_fns = super::should_parallelize_assertion_fns(execution_count);
-        trace!(
-            target: "assertion-executor::execute_assertions",
-            assertion_contract_id = ?assertion_contract.id,
-            selector_count = fn_selectors.len(),
-            execution_count,
-            scheduling = if parallel_fns { "parallel" } else { "sequential" },
-            "Assertion fn scheduling decision (inspector path)"
-        );
-
         let current_span = tracing::Span::current();
         let results_vec: Vec<_> = current_span.in_scope(|| {
-            if parallel_fns {
-                assertion_executor_pool()
-                    .install(|| selector_executions.par_iter().map(execute_fn).collect())
-            } else {
-                selector_executions.iter().map(execute_fn).collect()
-            }
+            assertion_executor_pool()
+                .install(|| selector_executions.par_iter().map(execute_fn).collect())
         });
 
         trace!(target: "assertion-executor::execute_assertions", result_count=results_vec.len(), "Assertion Execution Results with Inspectors");

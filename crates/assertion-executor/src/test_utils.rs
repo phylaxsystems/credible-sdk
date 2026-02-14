@@ -356,9 +356,11 @@ mod tests {
 
         assert_eq!(bytecode(COUNTER), expected.bytecode);
         assert_eq!(deployed_bytecode(COUNTER), expected.deployed_bytecode);
-        assert!(artifact_bytecodes_cache()
-            .read()
-            .expect("artifact bytecode cache poisoned")
-            .contains_key(COUNTER));
+        assert!(
+            artifact_bytecodes_cache()
+                .read()
+                .expect("artifact bytecode cache poisoned")
+                .contains_key(COUNTER)
+        );
     }
 }
