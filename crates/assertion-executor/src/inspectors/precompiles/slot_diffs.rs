@@ -37,6 +37,24 @@ pub enum SlotDiffsError {
 
 const PER_JOURNAL_ENTRY_COST: u64 = 16;
 
+/// Charge scan gas using the shared slot-diff model.
+///
+/// Even though lookups use `StorageChangeIndex`, we keep a journal-proportional
+/// charge to preserve the existing economic model for large traces.
+#[inline]
+fn charge_journal_scan_gas(
+    ph_context: &PhEvmContext,
+    gas_left: &mut u64,
+    gas_limit: u64,
+) -> Result<(), SlotDiffsError> {
+    let journal_len = ph_context.post_tx_journal().journal.len() as u64;
+    let scan_cost = journal_len.saturating_mul(PER_JOURNAL_ENTRY_COST);
+    if let Some(rax) = deduct_gas_and_check(gas_left, scan_cost, gas_limit) {
+        return Err(SlotDiffsError::OutOfGas(rax));
+    }
+    Ok(())
+}
+
 /// Compute the storage slot for a Solidity mapping key.
 ///
 /// For `mapping(KeyType => ValueType)` at base slot `baseSlot`,
@@ -69,6 +87,7 @@ fn get_slot_pre_post(
     let journal = context.post_tx_journal();
 
     if let Some(pre) = index.first_had_value(&target, &slot) {
+        // Slot was written at least once; post value comes from final journal state.
         let post = journal
             .state
             .get(&target)
@@ -76,7 +95,8 @@ fn get_slot_pre_post(
             .map_or(pre, |s| s.present_value);
         (pre, post, pre != post)
     } else {
-        // Not changed — return loaded value or zero
+        // Slot never written in this tx. Surface current value (or zero if absent)
+        // as both pre/post to preserve `(pre, post, changed=false)` contract.
         let value = journal
             .state
             .get(&target)
@@ -111,12 +131,8 @@ pub fn get_changed_slots(
         .storage_change_index();
     let journal = ph_context.post_tx_journal();
 
-    // Charge gas proportional to journal size (same cost model, amortized build)
-    let journal_len = journal.journal.len() as u64;
-    let scan_cost = journal_len.saturating_mul(PER_JOURNAL_ENTRY_COST);
-    if let Some(rax) = deduct_gas_and_check(&mut gas_left, scan_cost, gas_limit) {
-        return Err(SlotDiffsError::OutOfGas(rax));
-    }
+    // Charge once for scan complexity before iterating candidate slots.
+    charge_journal_scan_gas(ph_context, &mut gas_left, gas_limit)?;
 
     // Use the pre-built index to find changed slots
     let mut changed_slots: Vec<FixedBytes<32>> = Vec::new();
@@ -124,6 +140,7 @@ pub fn get_changed_slots(
         && let Some(account) = journal.state.get(&call.target)
     {
         for slot in slots {
+            // `first_had_value` gives the pre-tx baseline for this slot key.
             if let Some(pre) = index.first_had_value(&call.target, slot) {
                 let post = account.storage.get(slot).map_or(pre, |s| s.present_value);
                 if pre != post {
@@ -139,7 +156,7 @@ pub fn get_changed_slots(
         }
     }
 
-    // slots_for_address returns sorted slots, so changed_slots is already sorted
+    // `slots_for_address` is sorted, so output order is deterministic.
     let encoded = changed_slots.abi_encode();
     Ok(PhevmOutcome::new(encoded.into(), gas_limit - gas_left))
 }
@@ -164,12 +181,7 @@ pub fn get_slot_diff(
 
     let slot: U256 = call.slot.into();
 
-    // Charge gas for journal scan
-    let journal_len = ph_context.post_tx_journal().journal.len() as u64;
-    let scan_cost = journal_len.saturating_mul(PER_JOURNAL_ENTRY_COST);
-    if let Some(rax) = deduct_gas_and_check(&mut gas_left, scan_cost, gas_limit) {
-        return Err(SlotDiffsError::OutOfGas(rax));
-    }
+    charge_journal_scan_gas(ph_context, &mut gas_left, gas_limit)?;
 
     let (pre, post, changed) = get_slot_pre_post(ph_context, call.target, slot);
 
@@ -199,12 +211,7 @@ pub fn did_mapping_key_change(
 
     let slot = compute_mapping_slot(call.baseSlot, call.key, call.fieldOffset);
 
-    // Charge gas for journal scan
-    let journal_len = ph_context.post_tx_journal().journal.len() as u64;
-    let scan_cost = journal_len.saturating_mul(PER_JOURNAL_ENTRY_COST);
-    if let Some(rax) = deduct_gas_and_check(&mut gas_left, scan_cost, gas_limit) {
-        return Err(SlotDiffsError::OutOfGas(rax));
-    }
+    charge_journal_scan_gas(ph_context, &mut gas_left, gas_limit)?;
 
     let (_, _, changed) = get_slot_pre_post(ph_context, call.target, slot);
 
@@ -232,12 +239,7 @@ pub fn mapping_value_diff(
 
     let slot = compute_mapping_slot(call.baseSlot, call.key, call.fieldOffset);
 
-    // Charge gas for journal scan
-    let journal_len = ph_context.post_tx_journal().journal.len() as u64;
-    let scan_cost = journal_len.saturating_mul(PER_JOURNAL_ENTRY_COST);
-    if let Some(rax) = deduct_gas_and_check(&mut gas_left, scan_cost, gas_limit) {
-        return Err(SlotDiffsError::OutOfGas(rax));
-    }
+    charge_journal_scan_gas(ph_context, &mut gas_left, gas_limit)?;
 
     let (pre, post, changed) = get_slot_pre_post(ph_context, call.target, slot);
 

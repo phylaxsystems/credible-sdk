@@ -53,6 +53,10 @@ pub enum AggregateFactsError {
 const PER_CALL_COST: u64 = 5;
 const PER_LOG_COST: u64 = 3;
 
+/// Convert an ABI argument index into a byte offset into calldata/log data.
+///
+/// For call args we pass `selector_prefix = 4` to skip the selector. For event
+/// data we pass `0` because there is no selector prefix.
 fn arg_start_offset(arg_index: U256, selector_prefix: usize) -> Result<usize, AggregateFactsError> {
     let arg_index_usize: usize = arg_index
         .try_into()
@@ -94,6 +98,60 @@ fn word_to_address(word: [u8; 32]) -> Address {
     Address::from_slice(&word[12..32])
 }
 
+/// Iterate candidate calls for `(target, selector)`, apply `CallFilter`, and run `f`
+/// only for matching records.
+///
+/// Returns the number of candidate records visited (for gas accounting).
+#[inline]
+fn for_each_matching_call(
+    tracer: &crate::inspectors::tracer::CallTracer,
+    target: Address,
+    selector: FixedBytes<4>,
+    filter: &PhEvm::CallFilter,
+    mut f: impl FnMut(&crate::inspectors::tracer::CallRecord) -> Result<(), AggregateFactsError>,
+) -> Result<u64, AggregateFactsError> {
+    let call_records = tracer.call_records();
+    let scheme_filter = call_type_to_scheme(filter.callType);
+    let mut visited = 0u64;
+
+    if let Some(indices) = candidate_call_indices(tracer, target, selector) {
+        for &idx in indices {
+            visited = visited.saturating_add(1);
+            let Some(depth) = tracer.call_depth_at(idx) else {
+                continue;
+            };
+            let record = &call_records[idx];
+            if !call_matches_filter(record, depth, filter, scheme_filter) {
+                continue;
+            }
+            f(record)?;
+        }
+    }
+
+    Ok(visited)
+}
+
+/// Resolve indexed logs for `(emitter, topic0)` and charge per-log scan gas once.
+#[inline]
+fn event_log_indices<'a>(
+    ph_context: &'a PhEvmContext,
+    emitter: Address,
+    topic0: FixedBytes<32>,
+    gas_left: &mut u64,
+    gas_limit: u64,
+) -> Result<&'a [usize], AggregateFactsError> {
+    let tracer = ph_context.logs_and_traces.call_traces;
+    let logs = ph_context.logs_and_traces.tx_logs;
+    let indices = tracer.log_indices_by_emitter_topic0(logs, emitter, topic0);
+
+    let log_cost = (indices.len() as u64).saturating_mul(PER_LOG_COST);
+    if let Some(rax) = deduct_gas_and_check(gas_left, log_cost, gas_limit) {
+        return Err(AggregateFactsError::OutOfGas(rax));
+    }
+
+    Ok(indices)
+}
+
 /// `sumCallArgUintForAddress(...) -> uint256`
 pub fn sum_call_arg_uint_for_address(
     ph_context: &PhEvmContext,
@@ -108,39 +166,29 @@ pub fn sum_call_arg_uint_for_address(
 
     let call = PhEvm::sumCallArgUintForAddressCall::abi_decode(input_bytes)
         .map_err(AggregateFactsError::DecodeError)?;
+    // Decode offsets once to keep per-record hot path as cheap as possible.
     let key_start = arg_start_offset(call.keyArgIndex, 4)?;
     let value_start = arg_start_offset(call.valueArgIndex, 4)?;
 
     let tracer = ph_context.logs_and_traces.call_traces;
-    let call_records = tracer.call_records();
-    let scheme_filter = call_type_to_scheme(call.filter.callType);
-    let mut visited = 0u64;
     let mut total = U256::ZERO;
 
-    if let Some(indices) = candidate_call_indices(tracer, call.target, call.selector) {
-        for &idx in indices {
-            visited = visited.saturating_add(1);
-            let record = &call_records[idx];
-            let Some(depth) = tracer.call_depth_at(idx) else {
-                continue;
-            };
-            if !call_matches_filter(record, depth, &call.filter, scheme_filter) {
-                continue;
-            }
-
+    // Sum values only for calls where the key argument matches `call.key`.
+    let visited =
+        for_each_matching_call(tracer, call.target, call.selector, &call.filter, |record| {
             let Some(key_word) = read_call_arg_word(record, key_start) else {
-                continue;
+                return Ok(());
             };
             if word_to_address(key_word) != call.key {
-                continue;
+                return Ok(());
             }
 
             let Some(value_word) = read_call_arg_word(record, value_start) else {
-                continue;
+                return Ok(());
             };
             total = total.wrapping_add(U256::from_be_bytes(value_word));
-        }
-    }
+            Ok(())
+        })?;
 
     let filter_cost = visited.saturating_mul(PER_CALL_COST);
     if let Some(rax) = deduct_gas_and_check(&mut gas_left, filter_cost, gas_limit) {
@@ -167,27 +215,17 @@ pub fn unique_call_arg_addresses(
 
     let call = PhEvm::uniqueCallArgAddressesCall::abi_decode(input_bytes)
         .map_err(AggregateFactsError::DecodeError)?;
+    // Address arg word location (after selector).
     let key_start = arg_start_offset(call.argIndex, 4)?;
 
     let tracer = ph_context.logs_and_traces.call_traces;
-    let call_records = tracer.call_records();
-    let scheme_filter = call_type_to_scheme(call.filter.callType);
-    let mut visited = 0u64;
     let mut unique = BTreeSet::new();
 
-    if let Some(indices) = candidate_call_indices(tracer, call.target, call.selector) {
-        for &idx in indices {
-            visited = visited.saturating_add(1);
-            let record = &call_records[idx];
-            let Some(depth) = tracer.call_depth_at(idx) else {
-                continue;
-            };
-            if !call_matches_filter(record, depth, &call.filter, scheme_filter) {
-                continue;
-            }
-
+    // Collect deterministic unique addresses (BTreeSet keeps sorted order).
+    let visited =
+        for_each_matching_call(tracer, call.target, call.selector, &call.filter, |record| {
             let Some(key_word) = read_call_arg_word(record, key_start) else {
-                continue;
+                return Ok(());
             };
             let key = word_to_address(key_word);
             if unique.len() >= MAX_ARRAY_RESPONSE_ITEMS && !unique.contains(&key) {
@@ -197,8 +235,8 @@ pub fn unique_call_arg_addresses(
                 });
             }
             unique.insert(key);
-        }
-    }
+            Ok(())
+        })?;
 
     let filter_cost = visited.saturating_mul(PER_CALL_COST);
     if let Some(rax) = deduct_gas_and_check(&mut gas_left, filter_cost, gas_limit) {
@@ -226,32 +264,22 @@ pub fn sum_call_arg_uint_by_address(
 
     let call = PhEvm::sumCallArgUintByAddressCall::abi_decode(input_bytes)
         .map_err(AggregateFactsError::DecodeError)?;
+    // Key/value can be any ABI positions, so both are indexed by arg number.
     let key_start = arg_start_offset(call.keyArgIndex, 4)?;
     let value_start = arg_start_offset(call.valueArgIndex, 4)?;
 
     let tracer = ph_context.logs_and_traces.call_traces;
-    let call_records = tracer.call_records();
-    let scheme_filter = call_type_to_scheme(call.filter.callType);
-    let mut visited = 0u64;
     let mut grouped: BTreeMap<Address, U256> = BTreeMap::new();
 
-    if let Some(indices) = candidate_call_indices(tracer, call.target, call.selector) {
-        for &idx in indices {
-            visited = visited.saturating_add(1);
-            let record = &call_records[idx];
-            let Some(depth) = tracer.call_depth_at(idx) else {
-                continue;
-            };
-            if !call_matches_filter(record, depth, &call.filter, scheme_filter) {
-                continue;
-            }
-
+    // Group by address key and sum value arg with overflow-safe wrapping semantics.
+    let visited =
+        for_each_matching_call(tracer, call.target, call.selector, &call.filter, |record| {
             let Some(key_word) = read_call_arg_word(record, key_start) else {
-                continue;
+                return Ok(());
             };
             let key = word_to_address(key_word);
             let Some(value_word) = read_call_arg_word(record, value_start) else {
-                continue;
+                return Ok(());
             };
             let value = U256::from_be_bytes(value_word);
             let next_count = grouped.len() + 1;
@@ -271,8 +299,8 @@ pub fn sum_call_arg_uint_by_address(
                     entry.insert(value);
                 }
             }
-        }
-    }
+            Ok(())
+        })?;
 
     let filter_cost = visited.saturating_mul(PER_CALL_COST);
     if let Some(rax) = deduct_gas_and_check(&mut gas_left, filter_cost, gas_limit) {
@@ -281,6 +309,7 @@ pub fn sum_call_arg_uint_by_address(
 
     let entries: Vec<PhEvm::AddressUint> = grouped
         .into_iter()
+        // Deterministic key order via BTreeMap iteration.
         .map(|(key, value)| PhEvm::AddressUint { key, value })
         .collect();
 
@@ -292,6 +321,7 @@ pub fn sum_call_arg_uint_by_address(
 
 fn validate_topic_index(topic_index: u8) -> Result<usize, AggregateFactsError> {
     let idx = topic_index as usize;
+    // EVM logs expose at most four topics: topic0..topic3.
     if idx > 3 {
         return Err(AggregateFactsError::InvalidTopicIndex { topic_index });
     }
@@ -312,14 +342,14 @@ pub fn count_events(
 
     let call = PhEvm::countEventsCall::abi_decode(input_bytes)
         .map_err(AggregateFactsError::DecodeError)?;
-    let tracer = ph_context.logs_and_traces.call_traces;
-    let logs = ph_context.logs_and_traces.tx_logs;
-    let log_indices = tracer.log_indices_by_emitter_topic0(logs, call.emitter, call.topic0);
-
-    let log_cost = (log_indices.len() as u64).saturating_mul(PER_LOG_COST);
-    if let Some(rax) = deduct_gas_and_check(&mut gas_left, log_cost, gas_limit) {
-        return Err(AggregateFactsError::OutOfGas(rax));
-    }
+    // Indexed lookup by (emitter, topic0) avoids full-log scans.
+    let log_indices = event_log_indices(
+        ph_context,
+        call.emitter,
+        call.topic0,
+        &mut gas_left,
+        gas_limit,
+    )?;
 
     Ok(PhevmOutcome::new(
         U256::from(log_indices.len()).abi_encode().into(),
@@ -341,14 +371,14 @@ pub fn any_event(
 
     let call =
         PhEvm::anyEventCall::abi_decode(input_bytes).map_err(AggregateFactsError::DecodeError)?;
-    let tracer = ph_context.logs_and_traces.call_traces;
-    let logs = ph_context.logs_and_traces.tx_logs;
-    let log_indices = tracer.log_indices_by_emitter_topic0(logs, call.emitter, call.topic0);
-
-    let log_cost = (log_indices.len() as u64).saturating_mul(PER_LOG_COST);
-    if let Some(rax) = deduct_gas_and_check(&mut gas_left, log_cost, gas_limit) {
-        return Err(AggregateFactsError::OutOfGas(rax));
-    }
+    // Reuse same indexed event source; terminal operation is just non-emptiness.
+    let log_indices = event_log_indices(
+        ph_context,
+        call.emitter,
+        call.topic0,
+        &mut gas_left,
+        gas_limit,
+    )?;
 
     Ok(PhevmOutcome::new(
         (!log_indices.is_empty()).abi_encode().into(),
@@ -370,20 +400,21 @@ pub fn sum_event_data_uint(
 
     let call = PhEvm::sumEventDataUintCall::abi_decode(input_bytes)
         .map_err(AggregateFactsError::DecodeError)?;
+    // Event data is raw ABI words with no selector prefix.
     let value_start = arg_start_offset(call.valueDataIndex, 0)?;
-
-    let tracer = ph_context.logs_and_traces.call_traces;
     let logs = ph_context.logs_and_traces.tx_logs;
-    let log_indices = tracer.log_indices_by_emitter_topic0(logs, call.emitter, call.topic0);
-
-    let log_cost = (log_indices.len() as u64).saturating_mul(PER_LOG_COST);
-    if let Some(rax) = deduct_gas_and_check(&mut gas_left, log_cost, gas_limit) {
-        return Err(AggregateFactsError::OutOfGas(rax));
-    }
+    let log_indices = event_log_indices(
+        ph_context,
+        call.emitter,
+        call.topic0,
+        &mut gas_left,
+        gas_limit,
+    )?;
 
     let mut total = U256::ZERO;
     for &idx in log_indices {
         let log = &logs[idx];
+        // Zero-extension keeps short/malformed data deterministic and non-panicking.
         let value = U256::from_be_bytes(read_zero_extended_word(&log.data.data, value_start));
         total = total.wrapping_add(value);
     }
@@ -408,21 +439,24 @@ pub fn sum_event_uint_for_topic_key(
 
     let call = PhEvm::sumEventUintForTopicKeyCall::abi_decode(input_bytes)
         .map_err(AggregateFactsError::DecodeError)?;
+    // `keyTopicIndex` selects which topic field acts as grouping key.
     let topic_idx = validate_topic_index(call.keyTopicIndex)?;
     let value_start = arg_start_offset(call.valueDataIndex, 0)?;
 
-    let tracer = ph_context.logs_and_traces.call_traces;
     let logs = ph_context.logs_and_traces.tx_logs;
-    let log_indices = tracer.log_indices_by_emitter_topic0(logs, call.emitter, call.topic0);
-    let log_cost = (log_indices.len() as u64).saturating_mul(PER_LOG_COST);
-    if let Some(rax) = deduct_gas_and_check(&mut gas_left, log_cost, gas_limit) {
-        return Err(AggregateFactsError::OutOfGas(rax));
-    }
+    let log_indices = event_log_indices(
+        ph_context,
+        call.emitter,
+        call.topic0,
+        &mut gas_left,
+        gas_limit,
+    )?;
 
     let mut total = U256::ZERO;
     for &idx in log_indices {
         let log = &logs[idx];
         let topics = log.data.topics();
+        // Ignore logs that do not expose the selected topic position/key.
         if topic_idx >= topics.len() || topics[topic_idx] != call.key {
             continue;
         }
@@ -450,20 +484,23 @@ pub fn unique_event_topic_values(
 
     let call = PhEvm::uniqueEventTopicValuesCall::abi_decode(input_bytes)
         .map_err(AggregateFactsError::DecodeError)?;
+    // Validate once, then perform cheap per-log existence checks.
     let topic_idx = validate_topic_index(call.topicIndex)?;
 
-    let tracer = ph_context.logs_and_traces.call_traces;
     let logs = ph_context.logs_and_traces.tx_logs;
-    let log_indices = tracer.log_indices_by_emitter_topic0(logs, call.emitter, call.topic0);
-    let log_cost = (log_indices.len() as u64).saturating_mul(PER_LOG_COST);
-    if let Some(rax) = deduct_gas_and_check(&mut gas_left, log_cost, gas_limit) {
-        return Err(AggregateFactsError::OutOfGas(rax));
-    }
+    let log_indices = event_log_indices(
+        ph_context,
+        call.emitter,
+        call.topic0,
+        &mut gas_left,
+        gas_limit,
+    )?;
 
     let mut unique = BTreeSet::new();
     for &idx in log_indices {
         let log = &logs[idx];
         let topics = log.data.topics();
+        // Some logs have fewer topics than requested index.
         if topic_idx >= topics.len() {
             continue;
         }
@@ -478,6 +515,7 @@ pub fn unique_event_topic_values(
     }
 
     let values: Vec<FixedBytes<32>> = unique.into_iter().collect();
+    // Deterministic order from BTreeSet.
     Ok(PhevmOutcome::new(
         values.abi_encode().into(),
         gas_limit - gas_left,
@@ -498,21 +536,24 @@ pub fn sum_event_uint_by_topic(
 
     let call = PhEvm::sumEventUintByTopicCall::abi_decode(input_bytes)
         .map_err(AggregateFactsError::DecodeError)?;
+    // Group key comes from topic; value comes from data word.
     let topic_idx = validate_topic_index(call.keyTopicIndex)?;
     let value_start = arg_start_offset(call.valueDataIndex, 0)?;
 
-    let tracer = ph_context.logs_and_traces.call_traces;
     let logs = ph_context.logs_and_traces.tx_logs;
-    let log_indices = tracer.log_indices_by_emitter_topic0(logs, call.emitter, call.topic0);
-    let log_cost = (log_indices.len() as u64).saturating_mul(PER_LOG_COST);
-    if let Some(rax) = deduct_gas_and_check(&mut gas_left, log_cost, gas_limit) {
-        return Err(AggregateFactsError::OutOfGas(rax));
-    }
+    let log_indices = event_log_indices(
+        ph_context,
+        call.emitter,
+        call.topic0,
+        &mut gas_left,
+        gas_limit,
+    )?;
 
     let mut grouped: BTreeMap<FixedBytes<32>, U256> = BTreeMap::new();
     for &idx in log_indices {
         let log = &logs[idx];
         let topics = log.data.topics();
+        // No key topic => skip.
         if topic_idx >= topics.len() {
             continue;
         }
@@ -539,6 +580,7 @@ pub fn sum_event_uint_by_topic(
 
     let entries: Vec<PhEvm::Bytes32Uint> = grouped
         .into_iter()
+        // Deterministic key order via BTreeMap.
         .map(|(key, value)| PhEvm::Bytes32Uint { key, value })
         .collect();
     Ok(PhevmOutcome::new(

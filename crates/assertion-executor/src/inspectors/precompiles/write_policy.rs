@@ -140,6 +140,9 @@ fn all_matching_writes_by_allowed_caller(
         return true;
     }
 
+    // Build deterministic traversal orders:
+    // - start_order: calls by increasing pre-checkpoint (activation order)
+    // - end_order: calls by increasing post-checkpoint (deactivation order)
     let mut start_order: Vec<usize> = call_records
         .iter()
         .enumerate()
@@ -154,6 +157,8 @@ fn all_matching_writes_by_allowed_caller(
             .map_or(usize::MAX, |checkpoint| checkpoint.journal_i)
     });
 
+    // Stack of currently-active calls. By push-on-start and pop-on-end, the
+    // tail is always the innermost call for current journal position.
     let mut active_calls: Vec<usize> = Vec::new();
     let mut start_i = 0usize;
     let mut end_i = 0usize;
@@ -161,6 +166,8 @@ fn all_matching_writes_by_allowed_caller(
     for entry in entries {
         let journal_idx = entry.journal_idx;
 
+        // First remove calls whose post-checkpoint is <= current write position.
+        // This guarantees inactive calls do not participate in attribution.
         while let Some(&call_idx) = end_order.get(end_i) {
             let Some(post_checkpoint) = call_records[call_idx].post_call_checkpoint() else {
                 end_i += 1;
@@ -170,17 +177,21 @@ fn all_matching_writes_by_allowed_caller(
                 break;
             }
 
+            // Fast path: expected LIFO close.
             if active_calls.last().copied() == Some(call_idx) {
                 active_calls.pop();
             } else if let Some(pos) = active_calls
                 .iter()
                 .rposition(|&active_idx| active_idx == call_idx)
             {
+                // Defensive path for irregular checkpoint layouts.
                 active_calls.remove(pos);
             }
             end_i += 1;
         }
 
+        // Then activate calls whose pre-checkpoint is <= current write position and
+        // whose post-checkpoint is still in the future.
         while let Some(&call_idx) = start_order.get(start_i) {
             let record = &call_records[call_idx];
             let pre = record.pre_call_checkpoint().journal_i;
@@ -196,10 +207,12 @@ fn all_matching_writes_by_allowed_caller(
             start_i += 1;
         }
 
+        // If no active call covers this write, attribution is undefined: reject.
         let Some(&innermost_call_idx) = active_calls.last() else {
             return false;
         };
 
+        // Enforce policy on the attributed writer.
         if call_records[innermost_call_idx].inputs().caller != allowed_caller {
             return false;
         }
