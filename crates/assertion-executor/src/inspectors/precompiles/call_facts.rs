@@ -89,6 +89,7 @@ pub(crate) fn candidate_call_indices(
     target: Address,
     selector: FixedBytes<4>,
 ) -> Option<&[usize]> {
+    // O(1) lookup built by CallTracer at record time.
     tracer
         .target_and_selector_indices
         .get(&crate::inspectors::tracer::TargetAndSelector { target, selector })
@@ -146,6 +147,8 @@ fn for_each_matching_call(
     filter: &PhEvm::CallFilter,
     mut f: impl FnMut(usize, &CallRecord) -> bool,
 ) -> u64 {
+    // This helper centralizes the "index lookup -> depth/filter checks -> visit"
+    // pattern used by all scalar call-fact precompiles.
     let mut visited = 0u64;
     let call_records = tracer.call_records();
     let scheme_filter = call_type_to_scheme(filter.callType);
@@ -160,6 +163,7 @@ fn for_each_matching_call(
             if !call_matches_filter(record, depth, filter, scheme_filter) {
                 continue;
             }
+            // Visitor can short-circuit (e.g. anyCall/allCallsBy violation).
             if !f(idx, record) {
                 break;
             }
@@ -189,6 +193,9 @@ pub fn any_call(
         .get(0..4)
         .and_then(|bytes| bytes.try_into().ok())
         .unwrap_or_default();
+    // Support both overloads:
+    // - anyCall(target, selector, filter)
+    // - anyCall(target, selector) [defaults to successOnly]
     let (target, call_selector, filter) = if selector == PhEvm::anyCall_1Call::SELECTOR {
         let call =
             PhEvm::anyCall_1Call::abi_decode(input_bytes).map_err(CallFactsError::DecodeError)?;
@@ -235,6 +242,7 @@ pub fn count_calls(
         .get(0..4)
         .and_then(|bytes| bytes.try_into().ok())
         .unwrap_or_default();
+    // Support overload with default `successOnly` filter.
     let (target, call_selector, filter) = if selector == PhEvm::countCalls_1Call::SELECTOR {
         let call = PhEvm::countCalls_1Call::abi_decode(input_bytes)
             .map_err(CallFactsError::DecodeError)?;
@@ -321,6 +329,7 @@ pub fn all_calls_by(
         .get(0..4)
         .and_then(|bytes| bytes.try_into().ok())
         .unwrap_or_default();
+    // Support overload with default `successOnly` filter.
     let (target, call_selector, allowed_caller, filter) =
         if selector == PhEvm::allCallsBy_1Call::SELECTOR {
             let call = PhEvm::allCallsBy_1Call::abi_decode(input_bytes)
@@ -377,6 +386,7 @@ pub fn sum_arg_uint(
         .get(0..4)
         .and_then(|bytes| bytes.try_into().ok())
         .unwrap_or_default();
+    // Support overload with default `successOnly` filter.
     let (target, call_selector, arg_index_raw, filter) =
         if selector == PhEvm::sumArgUint_1Call::SELECTOR {
             let call = PhEvm::sumArgUint_1Call::abi_decode(input_bytes)
@@ -402,6 +412,7 @@ pub fn sum_arg_uint(
     let byte_offset = arg_index
         .checked_mul(32)
         .ok_or(CallFactsError::ArgOffsetOverflow { arg_index })?;
+    // 4-byte function selector prefix + ABI word offset.
     let data_start = 4usize
         .checked_add(byte_offset)
         .ok_or(CallFactsError::ArgOffsetOverflow { arg_index })?;
@@ -476,6 +487,7 @@ pub fn get_touched_contracts(
         }
 
         let target = record.inputs().target_address;
+        // Bound array-returning APIs to avoid pathological response payloads.
         if !targets.contains(&target) && targets.len() >= MAX_ARRAY_RESPONSE_ITEMS {
             return Err(CallFactsError::TooManyResults {
                 count: targets.len() + 1,
@@ -528,7 +540,8 @@ pub fn get_trigger_context(
                     depth: tracer.call_depth_at(call_id).unwrap_or(0),
                 }
             } else {
-                // Call ID set but not found - return zeroed context
+                // Defensive fallback: executor set a call id that no longer exists.
+                // We keep this non-throwing and return zero context for robustness.
                 PhEvm::TriggerContext {
                     callId: U256::ZERO,
                     caller: Address::ZERO,
@@ -540,6 +553,7 @@ pub fn get_trigger_context(
             }
         }
         None => {
+            // Non-call triggers (storage/balance) intentionally yield zero context.
             PhEvm::TriggerContext {
                 callId: U256::ZERO,
                 caller: Address::ZERO,
