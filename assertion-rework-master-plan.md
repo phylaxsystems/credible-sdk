@@ -766,6 +766,9 @@ If we want immediate wins without waiting for the full roadmap:
       - `execute_triggered_assertions`: sequential branch now uses explicit loop instead of iterator `map(...).collect()`.
       - `run_assertion_contract`: sequential branch now executes selectors directly without materializing `selector_executions` vector.
       - Replaced expensive trace formatting allocation with count-only trace field.
+    - Samply profiling loop (`executor_avg_block_performance/avg_block_100_aa`):
+      - Confirmed artifact cache removed prior `serde_json`/`read_artifact` setup hotspot.
+      - New dominant user-space hotspots moved to executor runtime path (`AssertionExecutor::validate_transaction`, `execute_triggered_assertions`, `execute_assertions`) and REVM inspect loop.
     - Validation:
       - `cargo test -p assertion-executor@1.0.8 --lib` (306 passed)
       - Focused A/B medians (main `c68b725` vs branch `63b4570` + cache + executor sequential fast paths):
