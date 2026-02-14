@@ -14,12 +14,14 @@ use alloy_primitives::Bytes;
 
 use super::phevm::PhevmOutcome;
 
+pub mod aggregate_facts;
 pub mod assertion_adopter;
 pub mod call_boundary;
 pub mod call_facts;
 pub mod calls;
 pub mod console_log;
 pub mod erc20_facts;
+pub mod erc4626_facts;
 pub mod fork;
 pub mod get_logs;
 pub mod load;
@@ -32,6 +34,12 @@ pub use revm::interpreter::gas::COLD_SLOAD_COST;
 
 /// Base cost of calling phevm precompiles
 pub(crate) const BASE_COST: u64 = 15;
+
+/// Hard cap for array-returning precompiles.
+///
+/// Escape-hatch APIs (`getLogs`, `getCallInputs`, etc.) should never allocate
+/// unbounded vectors from adversarial traces.
+pub(crate) const MAX_ARRAY_RESPONSE_ITEMS: usize = 4_096;
 
 /// Deduct gas from the gas limit and check if we have OOG.
 pub(super) fn deduct_gas_and_check(

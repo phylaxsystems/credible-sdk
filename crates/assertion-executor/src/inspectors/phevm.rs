@@ -8,7 +8,21 @@ use crate::{
     inspectors::{
         inspector_result_to_call_outcome,
         precompiles::{
+            aggregate_facts::{
+                AggregateFactsError,
+                sum_call_arg_uint_by_address,
+                sum_call_arg_uint_for_address,
+                sum_event_uint_by_topic,
+                sum_event_uint_for_topic_key,
+                unique_call_arg_addresses,
+                unique_event_topic_values,
+            },
             assertion_adopter::get_assertion_adopter,
+            call_boundary::{
+                CallBoundaryError,
+                load_at_call,
+                slot_delta_at_call,
+            },
             call_facts::{
                 CallFactsError,
                 all_calls_by,
@@ -23,28 +37,6 @@ use crate::{
                 get_call_inputs,
             },
             console_log::ConsoleLogError,
-            fork::{
-                ForkError,
-                fork_post_call,
-                fork_post_tx,
-                fork_pre_call,
-                fork_pre_tx,
-            },
-            get_logs::get_logs,
-            load::{
-                LoadExternalSlotError,
-                load_external_slot,
-            },
-            state_changes::{
-                GetStateChangesError,
-                get_state_changes,
-            },
-            tx_object::load_tx_object,
-            call_boundary::{
-                CallBoundaryError,
-                load_at_call,
-                slot_delta_at_call,
-            },
             erc20_facts::{
                 Erc20FactsError,
                 balance_diff,
@@ -54,6 +46,28 @@ use crate::{
                 get_erc20_flow_by_call,
                 get_erc20_net_flow,
             },
+            erc4626_facts::{
+                Erc4626FactsError,
+                erc4626_assets_per_share_diff_bps,
+                erc4626_total_assets_diff,
+                erc4626_total_supply_diff,
+                erc4626_vault_asset_balance_diff,
+            },
+            fork::{
+                ForkError,
+                fork_post_call,
+                fork_post_tx,
+                fork_pre_call,
+                fork_pre_tx,
+            },
+            get_logs::{
+                GetLogsError,
+                get_logs,
+            },
+            load::{
+                LoadExternalSlotError,
+                load_external_slot,
+            },
             slot_diffs::{
                 SlotDiffsError,
                 did_mapping_key_change,
@@ -61,6 +75,11 @@ use crate::{
                 get_slot_diff,
                 mapping_value_diff,
             },
+            state_changes::{
+                GetStateChangesError,
+                get_state_changes,
+            },
+            tx_object::load_tx_object,
             write_policy::{
                 WritePolicyError,
                 all_slot_writes_by,
@@ -143,15 +162,18 @@ pub struct LogsAndTraces<'a> {
     pub call_traces: &'a CallTracer,
 }
 
+/// Index into `CallTracer.call_records`.
+pub type TriggerCallId = usize;
+
 #[derive(Debug, Clone)]
 pub struct PhEvmContext<'a> {
     pub logs_and_traces: &'a LogsAndTraces<'a>,
     pub adopter: Address,
     pub console_logs: Vec<String>,
     pub original_tx_env: &'a TxEnv,
-    /// The call ID (index into CallTracer.call_records) of the call that triggered
+    /// The call ID (index into `CallTracer.call_records`) of the call that triggered
     /// this assertion. `None` if the trigger was not a call (e.g. storage/balance change).
-    pub trigger_call_id: Option<usize>,
+    pub trigger_call_id: Option<TriggerCallId>,
 }
 
 impl<'a> PhEvmContext<'a> {
@@ -183,6 +205,8 @@ pub enum PrecompileError<ExtDb: DatabaseRef> {
     SelectorNotFound(FixedBytes<4>),
     #[error("Unexpected error, should be Infallible: {0}")]
     UnexpectedError(#[source] std::convert::Infallible),
+    #[error("Error getting logs: {0}")]
+    GetLogsError(#[source] GetLogsError),
     #[error("Error getting state changes: {0}")]
     GetStateChangesError(#[source] GetStateChangesError),
     #[error("Error getting call inputs: {0}")]
@@ -201,8 +225,12 @@ pub enum PrecompileError<ExtDb: DatabaseRef> {
     CallBoundaryError(#[source] CallBoundaryError),
     #[error("Error in ERC20 facts: {0}")]
     Erc20FactsError(#[source] Erc20FactsError),
+    #[error("Error in ERC4626 facts: {0}")]
+    Erc4626FactsError(#[source] Erc4626FactsError),
     #[error("Error in slot diffs: {0}")]
     SlotDiffsError(#[source] SlotDiffsError),
+    #[error("Error in aggregate facts: {0}")]
+    AggregateFactsError(#[source] AggregateFactsError),
 }
 
 /// `PhEvmInspector` is an inspector for supporting the `PhEvm` precompiles.
@@ -262,8 +290,10 @@ impl<'a> PhEvmInspector<'a> {
             return Ok(outcome);
         }
 
+        // Fact/query precompiles are pure trace readers (no fork mutation).
+        // Keep them after fork/call-input/misc dispatch for a clearer execution model.
         if let Some(outcome) =
-            self.execute_scalar_facts_precompile::<ExtDb>(selector, inputs, &input_bytes)?
+            self.execute_fact_query_precompile::<ExtDb>(selector, inputs, &input_bytes)?
         {
             return Ok(outcome);
         }
@@ -327,6 +357,32 @@ impl<'a> PhEvmInspector<'a> {
             PhEvm::slotDeltaAtCallCall::SELECTOR => {
                 slot_delta_at_call(context, &self.context, input_bytes, inputs.gas_limit)
                     .map_err(PrecompileError::CallBoundaryError)?
+            }
+            PhEvm::erc4626TotalAssetsDiffCall::SELECTOR => {
+                erc4626_total_assets_diff(context, &self.context, input_bytes, inputs.gas_limit)
+                    .map_err(PrecompileError::Erc4626FactsError)?
+            }
+            PhEvm::erc4626TotalSupplyDiffCall::SELECTOR => {
+                erc4626_total_supply_diff(context, &self.context, input_bytes, inputs.gas_limit)
+                    .map_err(PrecompileError::Erc4626FactsError)?
+            }
+            PhEvm::erc4626VaultAssetBalanceDiffCall::SELECTOR => {
+                erc4626_vault_asset_balance_diff(
+                    context,
+                    &self.context,
+                    input_bytes,
+                    inputs.gas_limit,
+                )
+                .map_err(PrecompileError::Erc4626FactsError)?
+            }
+            PhEvm::erc4626AssetsPerShareDiffBpsCall::SELECTOR => {
+                erc4626_assets_per_share_diff_bps(
+                    context,
+                    &self.context,
+                    input_bytes,
+                    inputs.gas_limit,
+                )
+                .map_err(PrecompileError::Erc4626FactsError)?
             }
             _ => return Ok(None),
         };
@@ -424,8 +480,7 @@ impl<'a> PhEvmInspector<'a> {
                     .map_err(PrecompileError::LoadExternalSlotError)?
             }
             PhEvm::getLogsCall::SELECTOR => {
-                get_logs(&self.context, inputs.gas_limit)
-                    .map_err(PrecompileError::UnexpectedError)?
+                get_logs(&self.context, inputs.gas_limit).map_err(PrecompileError::GetLogsError)?
             }
             PhEvm::getStateChangesCall::SELECTOR => {
                 self.run_get_state_changes::<ExtDb>(input_bytes, inputs.gas_limit)?
@@ -454,7 +509,12 @@ impl<'a> PhEvmInspector<'a> {
         Ok(Some(outcome))
     }
 
-    fn execute_scalar_facts_precompile<ExtDb: DatabaseRef>(
+    /// Dispatches read-only query/fact precompiles.
+    ///
+    /// These selectors derive declarative facts from captured traces
+    /// (calls, logs, slot diffs) and do not mutate fork state.
+    #[allow(clippy::too_many_lines)]
+    fn execute_fact_query_precompile<ExtDb: DatabaseRef>(
         &self,
         selector: [u8; 4],
         inputs: &CallInputs,
@@ -481,6 +541,30 @@ impl<'a> PhEvmInspector<'a> {
             PhEvm::sumArgUintCall::SELECTOR => {
                 sum_arg_uint(&self.context, input_bytes, gas_limit)
                     .map_err(PrecompileError::CallFactsError)?
+            }
+            PhEvm::sumCallArgUintForAddressCall::SELECTOR => {
+                sum_call_arg_uint_for_address(&self.context, input_bytes, gas_limit)
+                    .map_err(PrecompileError::AggregateFactsError)?
+            }
+            PhEvm::uniqueCallArgAddressesCall::SELECTOR => {
+                unique_call_arg_addresses(&self.context, input_bytes, gas_limit)
+                    .map_err(PrecompileError::AggregateFactsError)?
+            }
+            PhEvm::sumCallArgUintByAddressCall::SELECTOR => {
+                sum_call_arg_uint_by_address(&self.context, input_bytes, gas_limit)
+                    .map_err(PrecompileError::AggregateFactsError)?
+            }
+            PhEvm::sumEventUintForTopicKeyCall::SELECTOR => {
+                sum_event_uint_for_topic_key(&self.context, input_bytes, gas_limit)
+                    .map_err(PrecompileError::AggregateFactsError)?
+            }
+            PhEvm::uniqueEventTopicValuesCall::SELECTOR => {
+                unique_event_topic_values(&self.context, input_bytes, gas_limit)
+                    .map_err(PrecompileError::AggregateFactsError)?
+            }
+            PhEvm::sumEventUintByTopicCall::SELECTOR => {
+                sum_event_uint_by_topic(&self.context, input_bytes, gas_limit)
+                    .map_err(PrecompileError::AggregateFactsError)?
             }
             PhEvm::anySlotWrittenCall::SELECTOR => {
                 any_slot_written(&self.context, input_bytes, gas_limit)

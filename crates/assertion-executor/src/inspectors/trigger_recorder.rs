@@ -47,6 +47,8 @@ pub const TRIGGER_RECORDER: Address = address!("55BB9AD8Dc1EE06D47279fC2B23Cd755
 ///
 /// `Call` { `trigger_selector`: `FixedBytes<4>` } - Triggers on specific function calls matching the 4-byte selector
 /// `AllCalls` - Triggers on any function call to the contract
+/// `CallFiltered` - Triggers on selector-matching calls that also satisfy the call-shape filter
+/// `AllCallsFiltered` - Triggers on any call that satisfies the call-shape filter
 /// `BalanceChange` - Triggers when the contract's ETH balance changes
 /// `StorageChange` { `trigger_slot`: `FixedBytes<32>` } - Triggers when a specific storage slot is modified
 /// `AllStorageChanges` - Triggers on any storage modification in the contract
@@ -54,11 +56,41 @@ pub const TRIGGER_RECORDER: Address = address!("55BB9AD8Dc1EE06D47279fC2B23Cd755
 /// These triggers are used to determine when an assertion should be executed.
 /// The trigger recorder keeps track of which triggers are registered for each contract.
 #[derive(Clone, Debug, PartialEq, Hash, Eq, Serialize, Deserialize)]
+pub struct TriggerFilter {
+    pub call_type: u8,
+    pub min_depth: u32,
+    pub max_depth: u32,
+    pub top_level_only: bool,
+}
+
+impl From<ITriggerRecorder::TriggerFilter> for TriggerFilter {
+    fn from(value: ITriggerRecorder::TriggerFilter) -> Self {
+        Self {
+            call_type: value.callType,
+            min_depth: value.minDepth,
+            max_depth: value.maxDepth,
+            top_level_only: value.topLevelOnly,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Hash, Eq, Serialize, Deserialize)]
 pub enum TriggerType {
-    Call { trigger_selector: FixedBytes<4> },
+    Call {
+        trigger_selector: FixedBytes<4>,
+    },
     AllCalls,
+    CallFiltered {
+        trigger_selector: FixedBytes<4>,
+        filter: TriggerFilter,
+    },
+    AllCallsFiltered {
+        filter: TriggerFilter,
+    },
     BalanceChange,
-    StorageChange { trigger_slot: FixedBytes<32> },
+    StorageChange {
+        trigger_slot: FixedBytes<32>,
+    },
     AllStorageChanges,
 }
 
@@ -105,6 +137,29 @@ impl TriggerRecorder {
                 self.add_trigger(
                     TriggerType::Call {
                         trigger_selector: call.triggerSelector,
+                    },
+                    call.fnSelector,
+                );
+            }
+
+            ITriggerRecorder::registerCallTrigger_2Call::SELECTOR => {
+                let call = ITriggerRecorder::registerCallTrigger_2Call::abi_decode(input_bytes)
+                    .map_err(RecordError::CallDecodeError)?;
+                self.add_trigger(
+                    TriggerType::AllCallsFiltered {
+                        filter: call.filter.into(),
+                    },
+                    call.fnSelector,
+                );
+            }
+
+            ITriggerRecorder::registerCallTrigger_3Call::SELECTOR => {
+                let call = ITriggerRecorder::registerCallTrigger_3Call::abi_decode(input_bytes)
+                    .map_err(RecordError::CallDecodeError)?;
+                self.add_trigger(
+                    TriggerType::CallFiltered {
+                        trigger_selector: call.triggerSelector,
+                        filter: call.filter.into(),
                     },
                     call.fnSelector,
                 );
@@ -391,6 +446,96 @@ mod test {
         assert!(recorder.triggers[&TriggerType::AllCalls].contains(&selector1));
         assert!(recorder.triggers[&TriggerType::AllCalls].contains(&selector2));
         assert!(recorder.triggers[&TriggerType::AllCalls].contains(&selector3));
+    }
+
+    #[test]
+    fn test_record_trigger_all_calls_filtered() {
+        let mut recorder = TriggerRecorder::default();
+        let fn_selector = fixed_bytes!("DEADBEEF");
+        let filter = ITriggerRecorder::TriggerFilter {
+            callType: 3,
+            minDepth: 1,
+            maxDepth: 2,
+            topLevelOnly: false,
+        };
+
+        let input = ITriggerRecorder::registerCallTrigger_2Call {
+            fnSelector: fn_selector,
+            filter,
+        }
+        .abi_encode();
+
+        recorder.record_trigger(&input).unwrap();
+
+        assert_eq!(recorder.triggers.len(), 1);
+        assert!(
+            recorder
+                .triggers
+                .contains_key(&TriggerType::AllCallsFiltered {
+                    filter: TriggerFilter {
+                        call_type: 3,
+                        min_depth: 1,
+                        max_depth: 2,
+                        top_level_only: false,
+                    }
+                })
+        );
+        assert!(
+            recorder.triggers[&TriggerType::AllCallsFiltered {
+                filter: TriggerFilter {
+                    call_type: 3,
+                    min_depth: 1,
+                    max_depth: 2,
+                    top_level_only: false,
+                }
+            }]
+                .contains(&fn_selector)
+        );
+    }
+
+    #[test]
+    fn test_record_trigger_selector_filtered() {
+        let mut recorder = TriggerRecorder::default();
+        let fn_selector = fixed_bytes!("DEADBEEF");
+        let trigger_selector = fixed_bytes!("F18C388A");
+        let filter = ITriggerRecorder::TriggerFilter {
+            callType: 2,
+            minDepth: 0,
+            maxDepth: 4,
+            topLevelOnly: true,
+        };
+
+        let input = ITriggerRecorder::registerCallTrigger_3Call {
+            fnSelector: fn_selector,
+            triggerSelector: trigger_selector,
+            filter,
+        }
+        .abi_encode();
+
+        recorder.record_trigger(&input).unwrap();
+
+        assert_eq!(recorder.triggers.len(), 1);
+        assert!(recorder.triggers.contains_key(&TriggerType::CallFiltered {
+            trigger_selector,
+            filter: TriggerFilter {
+                call_type: 2,
+                min_depth: 0,
+                max_depth: 4,
+                top_level_only: true,
+            },
+        }));
+        assert!(
+            recorder.triggers[&TriggerType::CallFiltered {
+                trigger_selector,
+                filter: TriggerFilter {
+                    call_type: 2,
+                    min_depth: 0,
+                    max_depth: 4,
+                    top_level_only: true,
+                },
+            }]
+                .contains(&fn_selector)
+        );
     }
 
     #[test]

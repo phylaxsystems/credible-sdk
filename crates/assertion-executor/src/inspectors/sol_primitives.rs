@@ -32,10 +32,11 @@ mod tests {
     use super::*;
     use alloy_sol_types::SolCall;
 
-    /// Guards against accidental removal or modification of PhEvm interface methods.
+    /// Guards against accidental removal or modification of `PhEvm` interface methods.
     /// If any selector changes, it means the ABI has changed and downstream
     /// credible-std must be updated in sync.
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn test_phevm_interface_selectors_are_stable() {
         // Each selector is the first 4 bytes of keccak256(signature).
         // These values are ABI-critical and must not change.
@@ -44,10 +45,7 @@ mod tests {
             ("forkPostTx()", PhEvm::forkPostTxCall::SELECTOR),
             ("forkPreCall(uint256)", PhEvm::forkPreCallCall::SELECTOR),
             ("forkPostCall(uint256)", PhEvm::forkPostCallCall::SELECTOR),
-            (
-                "load(address,bytes32)",
-                PhEvm::loadCall::SELECTOR,
-            ),
+            ("load(address,bytes32)", PhEvm::loadCall::SELECTOR),
             ("getLogs()", PhEvm::getLogsCall::SELECTOR),
             (
                 "getAllCallInputs(address,bytes4)",
@@ -96,6 +94,30 @@ mod tests {
                 "sumArgUint(address,bytes4,uint256,(uint8,uint32,uint32,bool))",
                 PhEvm::sumArgUintCall::SELECTOR,
             ),
+            (
+                "sumCallArgUintForAddress(address,bytes4,uint256,address,uint256,(uint8,uint32,uint32,bool))",
+                PhEvm::sumCallArgUintForAddressCall::SELECTOR,
+            ),
+            (
+                "uniqueCallArgAddresses(address,bytes4,uint256,(uint8,uint32,uint32,bool))",
+                PhEvm::uniqueCallArgAddressesCall::SELECTOR,
+            ),
+            (
+                "sumCallArgUintByAddress(address,bytes4,uint256,uint256,(uint8,uint32,uint32,bool))",
+                PhEvm::sumCallArgUintByAddressCall::SELECTOR,
+            ),
+            (
+                "sumEventUintForTopicKey(address,bytes32,uint8,bytes32,uint256)",
+                PhEvm::sumEventUintForTopicKeyCall::SELECTOR,
+            ),
+            (
+                "uniqueEventTopicValues(address,bytes32,uint8)",
+                PhEvm::uniqueEventTopicValuesCall::SELECTOR,
+            ),
+            (
+                "sumEventUintByTopic(address,bytes32,uint8,uint256)",
+                PhEvm::sumEventUintByTopicCall::SELECTOR,
+            ),
             // Storage write-policy cheatcodes
             (
                 "anySlotWritten(address,bytes32)",
@@ -115,7 +137,10 @@ mod tests {
                 PhEvm::slotDeltaAtCallCall::SELECTOR,
             ),
             // Trigger context cheatcode
-            ("getTriggerContext()", PhEvm::getTriggerContextCall::SELECTOR),
+            (
+                "getTriggerContext()",
+                PhEvm::getTriggerContextCall::SELECTOR,
+            ),
             // ERC20 fact cheatcodes
             (
                 "erc20BalanceDiff(address,address)",
@@ -132,6 +157,22 @@ mod tests {
             (
                 "getERC20FlowByCall(address,address,uint256)",
                 PhEvm::getERC20FlowByCallCall::SELECTOR,
+            ),
+            (
+                "erc4626TotalAssetsDiff(address)",
+                PhEvm::erc4626TotalAssetsDiffCall::SELECTOR,
+            ),
+            (
+                "erc4626TotalSupplyDiff(address)",
+                PhEvm::erc4626TotalSupplyDiffCall::SELECTOR,
+            ),
+            (
+                "erc4626VaultAssetBalanceDiff(address)",
+                PhEvm::erc4626VaultAssetBalanceDiffCall::SELECTOR,
+            ),
+            (
+                "erc4626AssetsPerShareDiffBps(address)",
+                PhEvm::erc4626AssetsPerShareDiffBpsCall::SELECTOR,
             ),
             // P1: State/Mapping diff cheatcodes
             (
@@ -163,8 +204,7 @@ mod tests {
         // Verify all selectors are non-zero (sanity check)
         for (name, selector) in &expected_selectors {
             assert_ne!(
-                *selector,
-                [0u8; 4],
+                *selector, [0u8; 4],
                 "Selector for {name} should not be zero"
             );
         }
@@ -172,12 +212,12 @@ mod tests {
         // Verify we have the expected count of methods
         assert_eq!(
             expected_selectors.len(),
-            34,
-            "PhEvm interface should have exactly 34 methods"
+            44,
+            "PhEvm interface should have exactly 44 methods"
         );
     }
 
-    /// Guards against accidental removal or modification of ITriggerRecorder interface methods.
+    /// Guards against accidental removal or modification of `ITriggerRecorder` interface methods.
     #[test]
     fn test_trigger_recorder_interface_selectors_are_stable() {
         let expected_selectors: Vec<(&str, [u8; 4])> = vec![
@@ -188,6 +228,14 @@ mod tests {
             (
                 "registerCallTrigger(bytes4,bytes4)",
                 ITriggerRecorder::registerCallTrigger_1Call::SELECTOR,
+            ),
+            (
+                "registerCallTrigger(bytes4,(uint8,uint32,uint32,bool))",
+                ITriggerRecorder::registerCallTrigger_2Call::SELECTOR,
+            ),
+            (
+                "registerCallTrigger(bytes4,bytes4,(uint8,uint32,uint32,bool))",
+                ITriggerRecorder::registerCallTrigger_3Call::SELECTOR,
             ),
             (
                 "registerStorageChangeTrigger(bytes4)",
@@ -205,16 +253,15 @@ mod tests {
 
         for (name, selector) in &expected_selectors {
             assert_ne!(
-                *selector,
-                [0u8; 4],
+                *selector, [0u8; 4],
                 "Selector for {name} should not be zero"
             );
         }
 
         assert_eq!(
             expected_selectors.len(),
-            5,
-            "ITriggerRecorder interface should have exactly 5 methods"
+            7,
+            "ITriggerRecorder interface should have exactly 7 methods"
         );
     }
 
@@ -225,6 +272,21 @@ mod tests {
         assert_ne!(
             ITriggerRecorder::registerCallTrigger_0Call::SELECTOR,
             ITriggerRecorder::registerCallTrigger_1Call::SELECTOR,
+            "registerCallTrigger overloads must have distinct selectors"
+        );
+        assert_ne!(
+            ITriggerRecorder::registerCallTrigger_0Call::SELECTOR,
+            ITriggerRecorder::registerCallTrigger_2Call::SELECTOR,
+            "registerCallTrigger overloads must have distinct selectors"
+        );
+        assert_ne!(
+            ITriggerRecorder::registerCallTrigger_1Call::SELECTOR,
+            ITriggerRecorder::registerCallTrigger_3Call::SELECTOR,
+            "registerCallTrigger overloads must have distinct selectors"
+        );
+        assert_ne!(
+            ITriggerRecorder::registerCallTrigger_2Call::SELECTOR,
+            ITriggerRecorder::registerCallTrigger_3Call::SELECTOR,
             "registerCallTrigger overloads must have distinct selectors"
         );
 

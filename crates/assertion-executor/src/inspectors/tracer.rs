@@ -13,6 +13,7 @@ use crate::{
     },
     store::AssertionStore,
 };
+use rapidhash::fast::RandomState;
 use revm::{
     Database,
     Inspector,
@@ -27,6 +28,7 @@ use revm::{
         CreateInputs,
         CreateOutcome,
     },
+    primitives::Log,
 };
 use std::{
     collections::{
@@ -43,9 +45,12 @@ use tracing::error;
 /// assertion execution context. Multiple precompiles (`getChangedSlots`, `getSlotDiff`,
 /// `anySlotWritten`, `allSlotWritesBy`, `getStateChanges`, etc.) all scan the same journal
 /// for `StorageChanged` entries. This index scans once and provides O(1) lookups.
+///
+/// Although the journal already contains this information, the index exists to avoid
+/// repeating full scans in every precompile call within the same tx/assertion run.
 #[derive(Clone, Debug)]
 pub struct StorageChangeIndex {
-    /// Maps (address, slot) -> list of (journal_idx, had_value) entries in journal order.
+    /// Maps (address, slot) -> list of (`journal_idx`, `had_value`) entries in journal order.
     changes_by_key: HashMap<(Address, U256), Vec<StorageChangeEntry>>,
     /// Maps address -> sorted vec of slots that had any `StorageChanged` entry.
     slots_by_address: HashMap<Address, Vec<U256>>,
@@ -63,8 +68,7 @@ pub struct StorageChangeEntry {
 impl StorageChangeIndex {
     /// Build the index by scanning the journal once.
     fn build(journal: &JournalInner<JournalEntry>) -> Self {
-        let mut changes_by_key: HashMap<(Address, U256), Vec<StorageChangeEntry>> =
-            HashMap::new();
+        let mut changes_by_key: HashMap<(Address, U256), Vec<StorageChangeEntry>> = HashMap::new();
         let mut slots_set: HashMap<Address, HashSet<U256>> = HashMap::new();
 
         for (journal_idx, entry) in journal.journal.iter().enumerate() {
@@ -118,19 +122,17 @@ impl StorageChangeIndex {
     /// Get all slots that had `StorageChanged` entries for an address (sorted).
     #[inline]
     pub fn slots_for_address(&self, address: &Address) -> Option<&[U256]> {
-        self.slots_by_address.get(address).map(|v| v.as_slice())
+        self.slots_by_address
+            .get(address)
+            .map(std::vec::Vec::as_slice)
     }
 
     /// Get all `StorageChanged` entries for (address, slot) in journal order.
     #[inline]
-    pub fn changes_for_key(
-        &self,
-        address: &Address,
-        slot: &U256,
-    ) -> Option<&[StorageChangeEntry]> {
+    pub fn changes_for_key(&self, address: &Address, slot: &U256) -> Option<&[StorageChangeEntry]> {
         self.changes_by_key
             .get(&(*address, *slot))
-            .map(|v| v.as_slice())
+            .map(std::vec::Vec::as_slice)
     }
 
     /// Build an index from a journal. Public for tests that need direct access.
@@ -154,6 +156,20 @@ pub enum CallTracerError {
     SledError,
 }
 
+#[derive(Clone, Debug, Default)]
+struct CallTracerLazyState {
+    /// Lazily-built index of journal `StorageChanged` entries.
+    /// Initialized on first precompile access during assertion execution.
+    /// Uses `OnceLock` so it can be built from `&self` (shared reference).
+    storage_change_index: OnceLock<StorageChangeIndex>,
+    /// Lazily-cached ABI encoding of tx logs for `getLogs()`.
+    /// Shared across all assertion fns for the same traced tx.
+    encoded_logs_cache: OnceLock<Bytes>,
+    /// Lazily-built index of tx logs by `(emitter, topic0)`.
+    /// Used by event-derived fact precompiles to avoid repeated full-log scans.
+    log_index_by_emitter_topic0: OnceLock<HashMap<(Address, FixedBytes<32>), Vec<usize>>>,
+}
+
 #[derive(Clone, Debug)]
 pub struct CallTracer {
     /// All call records, consolidating call inputs, checkpoints, and indexing data.
@@ -175,13 +191,12 @@ pub struct CallTracer {
     /// Push on `call_start`, pop on `call_end`.
     pending_post_call_writes: Vec<usize>,
     /// Maps (target, selector) keys to indices in `call_records` for fast lookup.
-    pub target_and_selector_indices: HashMap<TargetAndSelector, Vec<usize>>,
+    pub target_and_selector_indices: HashMap<TargetAndSelector, Vec<usize>, RandomState>,
     /// Result of call tracing operations. Check after tracing to detect errors.
     pub result: Result<(), CallTracerError>,
-    /// Lazily-built index of journal `StorageChanged` entries.
-    /// Initialized on first precompile access during assertion execution.
-    /// Uses `OnceLock` so it can be built from `&self` (shared reference).
-    storage_change_index: OnceLock<StorageChangeIndex>,
+    /// Cold lazy caches used by precompiles during assertion execution.
+    /// Kept behind a Box to keep hot call-tracing fields compact.
+    lazy_state: Box<CallTracerLazyState>,
 }
 
 impl Default for CallTracer {
@@ -191,10 +206,10 @@ impl Default for CallTracer {
             assertion_store: None,
             journal: JournalInner::new(),
             pending_post_call_writes: Vec::new(),
-            target_and_selector_indices: HashMap::new(),
+            target_and_selector_indices: HashMap::default(),
             result: Ok(()),
             adopter_cache: HashMap::new(),
-            storage_change_index: OnceLock::new(),
+            lazy_state: Box::default(),
         }
     }
 }
@@ -207,10 +222,10 @@ impl CallTracer {
             assertion_store: Some(assertion_store),
             journal: JournalInner::new(),
             pending_post_call_writes: Vec::new(),
-            target_and_selector_indices: HashMap::new(),
+            target_and_selector_indices: HashMap::default(),
             result: Ok(()),
             adopter_cache: HashMap::new(),
-            storage_change_index: OnceLock::new(),
+            lazy_state: Box::default(),
         }
     }
 
@@ -254,14 +269,17 @@ impl CallTracer {
         // In case where we are hit with a non-AA call, we want to ignore its calldata,
         // but we still have to store the rest of it to preserve the journal depth.
         if is_aa {
-            // Coerce the bytes at the time of recording the call,
-            // in case they are of the SharedBuffer variant
-            inputs.input = CallInput::Bytes(Bytes::from(input_bytes.to_vec()));
+            // Coerce only when needed (SharedBuffer). If already Bytes, keep in place.
+            if !matches!(inputs.input, CallInput::Bytes(_)) {
+                inputs.input = CallInput::Bytes(Bytes::from(input_bytes.to_vec()));
+            }
         } else {
             inputs.input = CallInput::Bytes(Bytes::default());
         }
 
         let index = self.call_records.len();
+        #[allow(clippy::cast_possible_truncation)]
+        let depth = self.pending_post_call_writes.len() as u16;
 
         // Push to stack - tracks pending calls awaiting post_call_checkpoint
         self.pending_post_call_writes.push(index);
@@ -276,28 +294,24 @@ impl CallTracer {
             selector,
         };
 
-        // Track position within the key's Vec for O(1) truncation
-        let position = self
-            .target_and_selector_indices
-            .get(&key)
-            .map_or(0, Vec::len);
-
-        self.target_and_selector_indices
-            .entry(key.clone())
-            .or_default()
-            .push(index);
-
-        // Depth = number of pending calls (i.e. nesting level at time of this call).
-        // pending_post_call_writes was already pushed above, so subtract 1.
-        let depth = (self.pending_post_call_writes.len() - 1) as u32;
+        // Track position within the key's Vec for O(1) truncation.
+        // Use a single hash-table lookup via Entry API.
+        let position = {
+            let indices = self
+                .target_and_selector_indices
+                .entry(key.clone())
+                .or_default();
+            let pos = indices.len();
+            indices.push(index);
+            pos
+        };
 
         self.call_records.push(CallRecord {
             inputs,
             target_and_selector: key,
-            key_index: position,
+            key_index_and_depth: CallRecord::pack_key_index_and_depth(position, depth),
             pre_call_checkpoint,
             post_call_checkpoint: None,
-            depth,
         });
     }
 
@@ -358,7 +372,7 @@ impl CallTracer {
             // O(1) HashMap lookup + O(1) Vec truncate
             let record = &self.call_records[index];
             let key = &record.target_and_selector;
-            let pos = record.key_index;
+            let pos = record.key_index();
             if let Some(indices) = self.target_and_selector_indices.get_mut(key) {
                 indices.truncate(pos);
                 if indices.is_empty() {
@@ -372,7 +386,7 @@ impl CallTracer {
             for i in index..old_len {
                 let record = &self.call_records[i];
                 let key = &record.target_and_selector;
-                let pos = record.key_index;
+                let pos = record.key_index();
                 truncate_positions
                     .entry(key)
                     .and_modify(|min| *min = (*min).min(pos))
@@ -419,24 +433,24 @@ impl CallTracer {
         target: Address,
         selector: FixedBytes<4>,
     ) -> Vec<CallInputsWithId<'_>> {
-        // No filtering needed since all recorded calls are valid
-        match self
-            .target_and_selector_indices
+        self.call_ids_for(target, selector)
+            .iter()
+            .map(|&index| {
+                CallInputsWithId {
+                    call_input: self.call_records[index].inputs(),
+                    id: index,
+                }
+            })
+            .collect()
+    }
+
+    /// Returns call-record IDs matching `(target, selector)` in journal order.
+    #[inline]
+    #[must_use]
+    pub fn call_ids_for(&self, target: Address, selector: FixedBytes<4>) -> &[usize] {
+        self.target_and_selector_indices
             .get(&TargetAndSelector { target, selector })
-        {
-            Some(indices) => {
-                indices
-                    .iter()
-                    .map(|&index| {
-                        CallInputsWithId {
-                            call_input: self.call_records[index].inputs(),
-                            id: index,
-                        }
-                    })
-                    .collect()
-            }
-            None => vec![],
-        }
+            .map_or(&[], Vec::as_slice)
     }
 
     /// Check if a call is valid for forking (not inside a reverted subtree)
@@ -460,6 +474,12 @@ impl CallTracer {
     #[must_use]
     pub fn call_records(&self) -> &[CallRecord] {
         &self.call_records
+    }
+
+    /// Returns the call depth for a specific call index.
+    #[must_use]
+    pub fn call_depth_at(&self, index: usize) -> Option<u32> {
+        self.call_records.get(index).map(CallRecord::depth)
     }
 
     /// Returns the pre-call checkpoint for a specific call index.
@@ -509,13 +529,12 @@ impl CallTracer {
                 value: CallValue::default(),
             },
             target_and_selector: key,
-            key_index: 0,
+            key_index_and_depth: CallRecord::pack_key_index_and_depth(0, 0),
             pre_call_checkpoint: JournalCheckpoint {
                 log_i: 0,
                 journal_i: 0,
             },
             post_call_checkpoint: None,
-            depth: 0,
         });
     }
 
@@ -574,8 +593,49 @@ impl CallTracer {
     /// Subsequent calls return the cached index in O(1).
     #[must_use]
     pub fn storage_change_index(&self) -> &StorageChangeIndex {
-        self.storage_change_index
+        self.lazy_state
+            .storage_change_index
             .get_or_init(|| StorageChangeIndex::build(&self.journal))
+    }
+
+    /// Returns cached `getLogs()` ABI bytes, initializing once on first use.
+    #[must_use]
+    pub fn encoded_logs_or_init<F>(&self, init: F) -> &Bytes
+    where
+        F: FnOnce() -> Bytes,
+    {
+        self.lazy_state.encoded_logs_cache.get_or_init(init)
+    }
+
+    /// Returns tx log indices for a given `(emitter, topic0)`, building the index once.
+    #[must_use]
+    pub fn log_indices_by_emitter_topic0(
+        &self,
+        tx_logs: &[Log],
+        emitter: Address,
+        topic0: FixedBytes<32>,
+    ) -> &[usize] {
+        let index = self.lazy_state.log_index_by_emitter_topic0.get_or_init(|| {
+            let mut map: HashMap<(Address, FixedBytes<32>), Vec<usize>> = HashMap::new();
+            for (idx, log) in tx_logs.iter().enumerate() {
+                if let Some(first_topic) = log.data.topics().first() {
+                    map.entry((log.address, (*first_topic)))
+                        .or_default()
+                        .push(idx);
+                }
+            }
+            map
+        });
+        index
+            .get(&(emitter, topic0))
+            .map_or(&[] as &[usize], Vec::as_slice)
+    }
+
+    /// Returns true if tx log ABI bytes have been cached.
+    #[cfg(any(test, feature = "test"))]
+    #[must_use]
+    pub fn has_encoded_logs_cache(&self) -> bool {
+        self.lazy_state.encoded_logs_cache.get().is_some()
     }
 
     /// Test helper to set checkpoints for the last inserted call record.
@@ -601,19 +661,30 @@ pub struct CallRecord {
     inputs: CallInputs,
     /// The (target, selector) key used for indexing this call.
     target_and_selector: TargetAndSelector,
-    /// Index within the key's Vec in `target_and_selector_indices`.
-    /// Enables O(1) truncation on reverts.
-    key_index: usize,
+    /// Packed call metadata:
+    /// - upper bits: index within the key's Vec in `target_and_selector_indices`
+    /// - lower 16 bits: call depth
+    key_index_and_depth: u64,
     /// Journal checkpoint at the start of the call.
     pre_call_checkpoint: JournalCheckpoint,
     /// Journal checkpoint at the end of the call, None until `call_end`.
     post_call_checkpoint: Option<JournalCheckpoint>,
-    /// Call nesting depth (0 = top-level call).
-    /// Recorded from `pending_post_call_writes.len()` at call start time.
-    depth: u32,
 }
 
 impl CallRecord {
+    const DEPTH_BITS: u64 = 16;
+    const DEPTH_MASK: u64 = (1 << Self::DEPTH_BITS) - 1;
+
+    #[inline]
+    fn pack_key_index_and_depth(key_index: usize, depth: u16) -> u64 {
+        ((key_index as u64) << Self::DEPTH_BITS) | u64::from(depth)
+    }
+
+    #[inline]
+    fn key_index(&self) -> usize {
+        (self.key_index_and_depth >> Self::DEPTH_BITS) as usize
+    }
+
     /// Returns the call inputs for this call.
     pub fn inputs(&self) -> &CallInputs {
         &self.inputs
@@ -636,7 +707,7 @@ impl CallRecord {
 
     /// Returns the call nesting depth (0 = top-level call).
     pub fn depth(&self) -> u32 {
-        self.depth
+        (self.key_index_and_depth & Self::DEPTH_MASK) as u32
     }
 }
 

@@ -4,6 +4,7 @@ use crate::{
         phevm::PhEvmContext,
         precompiles::{
             BASE_COST,
+            MAX_ARRAY_RESPONSE_ITEMS,
             deduct_gas_and_check,
         },
         sol_primitives::PhEvm::CallInputs as PhEvmCallInputs,
@@ -30,6 +31,8 @@ pub enum GetCallInputsError {
         "Expected Bytes in CallInput input. This should be restricted to only CallInput::Bytes by the call tracer."
     )]
     ExpectedBytes,
+    #[error("getCallInputs response has {count} calls, exceeds max {max}")]
+    TooManyCallInputs { count: usize, max: usize },
     #[error("Out of gas")]
     OutOfGas(PhevmOutcome),
 }
@@ -65,6 +68,13 @@ pub fn get_call_inputs(
 
     if let Some(scheme_filter) = scheme_filter {
         call_inputs.retain(|call_input| call_input.call_input.scheme == scheme_filter);
+    }
+
+    if call_inputs.len() > MAX_ARRAY_RESPONSE_ITEMS {
+        return Err(GetCallInputsError::TooManyCallInputs {
+            count: call_inputs.len(),
+            max: MAX_ARRAY_RESPONSE_ITEMS,
+        });
     }
 
     let encoded: Bytes = crate::arena::with_current_tx_arena(|arena| {
@@ -357,6 +367,28 @@ mod test {
             mock_call_inputs[1].0.target_address
         );
         assert_eq!(decoded[1].input, mock_call_inputs[1].1.slice(4..));
+    }
+
+    #[tokio::test]
+    async fn test_get_call_inputs_errors_when_response_exceeds_bound() {
+        let target = random_address();
+        let selector = random_selector();
+        let get_call_inputs = create_get_call_input(target, selector);
+
+        let mock_call_inputs: Vec<_> = (0..=MAX_ARRAY_RESPONSE_ITEMS)
+            .map(|_| create_random_call_input::<1>(target, selector))
+            .collect();
+        let call_tracer = create_call_tracer_with_inputs(mock_call_inputs);
+
+        let err = test_with_inputs_and_tracer(&get_call_inputs, &call_tracer)
+            .expect_err("expected TooManyCallInputs");
+        match err {
+            GetCallInputsError::TooManyCallInputs { count, max } => {
+                assert_eq!(count, MAX_ARRAY_RESPONSE_ITEMS + 1);
+                assert_eq!(max, MAX_ARRAY_RESPONSE_ITEMS);
+            }
+            other => panic!("expected TooManyCallInputs, got {other:?}"),
+        }
     }
 
     #[tokio::test]

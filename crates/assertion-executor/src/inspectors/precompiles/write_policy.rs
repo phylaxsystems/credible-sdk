@@ -1,3 +1,10 @@
+//! Storage-write policy predicates.
+//!
+//! These precompiles intentionally expose boolean policy checks (`any`, `all`).
+//! Value-oriented queries belong to `getSlotDiff`/`load`.
+
+#![allow(clippy::missing_errors_doc)]
+
 use crate::inspectors::{
     phevm::{
         PhEvmContext,
@@ -24,12 +31,19 @@ pub enum WritePolicyError {
     OutOfGas(PhevmOutcome),
 }
 
+/// Per-journal-entry scan charge for write-policy predicates.
+///
+/// The shared storage index amortizes scan work across precompiles; this charge keeps
+/// gas proportional to trace size and aligned with prior behavior.
 const PER_ENTRY_COST: u64 = 5;
 
 /// `anySlotWritten(address target, bytes32 slot) -> bool`
 ///
 /// Checks the storage change index for any `StorageChanged` matching the target and slot.
 /// Returns true if any matching storage change was found. O(1) via pre-built index.
+///
+/// This intentionally returns a predicate (not a value). Use `getSlotDiff`/`load`
+/// when assertions need the actual slot contents.
 pub fn any_slot_written(
     ph_context: &PhEvmContext,
     input_bytes: &[u8],
@@ -48,7 +62,10 @@ pub fn any_slot_written(
     let target = call.target;
     let slot: U256 = call.slot.into();
 
-    let index = ph_context.logs_and_traces.call_traces.storage_change_index();
+    let index = ph_context
+        .logs_and_traces
+        .call_traces
+        .storage_change_index();
 
     // Charge gas proportional to journal size (same cost model)
     let journal_len = ph_context.logs_and_traces.call_traces.journal.journal.len() as u64;
@@ -70,6 +87,7 @@ pub fn any_slot_written(
 /// that its caller matches `allowedCaller`.
 ///
 /// Returns true if no writes occurred, or all writes were by the allowed caller (vacuous truth).
+/// Name is predicate-oriented ("all ... by") rather than collection-oriented.
 pub fn all_slot_writes_by(
     ph_context: &PhEvmContext,
     input_bytes: &[u8],
@@ -101,8 +119,8 @@ pub fn all_slot_writes_by(
     }
 
     // Use the index to get only matching storage changes, then attribute each to a call
-    let result = index.changes_for_key(&target, &slot).map_or(true, |entries| {
-        all_writes_by_allowed_caller(entries, call_records, allowed_caller)
+    let result = index.changes_for_key(&target, &slot).is_none_or(|entries| {
+        all_matching_writes_by_allowed_caller(entries, call_records, allowed_caller)
     });
 
     let encoded = result.abi_encode();
@@ -111,9 +129,9 @@ pub fn all_slot_writes_by(
 
 /// Checks whether all matching writes are attributed to `allowed_caller`.
 ///
-/// Runs in O(call_records log call_records + matching_writes) by sweeping sorted call
+/// Runs in `O(call_records` log `call_records` + `matching_writes`) by sweeping sorted call
 /// start/end checkpoints once while iterating matching writes in journal order.
-fn all_writes_by_allowed_caller(
+fn all_matching_writes_by_allowed_caller(
     entries: &[crate::inspectors::tracer::StorageChangeEntry],
     call_records: &[crate::inspectors::tracer::CallRecord],
     allowed_caller: alloy_primitives::Address,
@@ -133,8 +151,7 @@ fn all_writes_by_allowed_caller(
     end_order.sort_by_key(|&idx| {
         call_records[idx]
             .post_call_checkpoint()
-            .map(|checkpoint| checkpoint.journal_i)
-            .unwrap_or(usize::MAX)
+            .map_or(usize::MAX, |checkpoint| checkpoint.journal_i)
     });
 
     let mut active_calls: Vec<usize> = Vec::new();
@@ -155,8 +172,9 @@ fn all_writes_by_allowed_caller(
 
             if active_calls.last().copied() == Some(call_idx) {
                 active_calls.pop();
-            } else if let Some(pos) =
-                active_calls.iter().rposition(|&active_idx| active_idx == call_idx)
+            } else if let Some(pos) = active_calls
+                .iter()
+                .rposition(|&active_idx| active_idx == call_idx)
             {
                 active_calls.remove(pos);
             }

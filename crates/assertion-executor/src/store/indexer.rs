@@ -116,10 +116,10 @@ sol! {
 ///
 ///    let provider = ProviderBuilder::new()
 ///    .network::<Ethereum>() // Change for other networks, like Optimism.
-///    .on_ws(WsConnect::new("wss://127.0.0.1:0001"))
+///    .connect_ws(WsConnect::new("wss://127.0.0.1:0001"))
 ///    .await
 ///    .unwrap();
-///    let provider = provider.root().clone().boxed();
+///    let provider = provider.root().clone();
 ///
 ///
 ///    let config = IndexerCfg {
