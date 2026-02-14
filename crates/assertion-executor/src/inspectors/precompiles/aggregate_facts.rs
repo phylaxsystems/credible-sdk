@@ -298,6 +298,102 @@ fn validate_topic_index(topic_index: u8) -> Result<usize, AggregateFactsError> {
     Ok(idx)
 }
 
+/// `countEvents(address emitter, bytes32 topic0) -> uint256`
+pub fn count_events(
+    ph_context: &PhEvmContext,
+    input_bytes: &[u8],
+    gas: u64,
+) -> Result<PhevmOutcome, AggregateFactsError> {
+    let gas_limit = gas;
+    let mut gas_left = gas;
+    if let Some(rax) = deduct_gas_and_check(&mut gas_left, BASE_COST, gas_limit) {
+        return Err(AggregateFactsError::OutOfGas(rax));
+    }
+
+    let call = PhEvm::countEventsCall::abi_decode(input_bytes)
+        .map_err(AggregateFactsError::DecodeError)?;
+    let tracer = ph_context.logs_and_traces.call_traces;
+    let logs = ph_context.logs_and_traces.tx_logs;
+    let log_indices = tracer.log_indices_by_emitter_topic0(logs, call.emitter, call.topic0);
+
+    let log_cost = (log_indices.len() as u64).saturating_mul(PER_LOG_COST);
+    if let Some(rax) = deduct_gas_and_check(&mut gas_left, log_cost, gas_limit) {
+        return Err(AggregateFactsError::OutOfGas(rax));
+    }
+
+    Ok(PhevmOutcome::new(
+        U256::from(log_indices.len()).abi_encode().into(),
+        gas_limit - gas_left,
+    ))
+}
+
+/// `anyEvent(address emitter, bytes32 topic0) -> bool`
+pub fn any_event(
+    ph_context: &PhEvmContext,
+    input_bytes: &[u8],
+    gas: u64,
+) -> Result<PhevmOutcome, AggregateFactsError> {
+    let gas_limit = gas;
+    let mut gas_left = gas;
+    if let Some(rax) = deduct_gas_and_check(&mut gas_left, BASE_COST, gas_limit) {
+        return Err(AggregateFactsError::OutOfGas(rax));
+    }
+
+    let call =
+        PhEvm::anyEventCall::abi_decode(input_bytes).map_err(AggregateFactsError::DecodeError)?;
+    let tracer = ph_context.logs_and_traces.call_traces;
+    let logs = ph_context.logs_and_traces.tx_logs;
+    let log_indices = tracer.log_indices_by_emitter_topic0(logs, call.emitter, call.topic0);
+
+    let log_cost = (log_indices.len() as u64).saturating_mul(PER_LOG_COST);
+    if let Some(rax) = deduct_gas_and_check(&mut gas_left, log_cost, gas_limit) {
+        return Err(AggregateFactsError::OutOfGas(rax));
+    }
+
+    Ok(PhevmOutcome::new(
+        (!log_indices.is_empty()).abi_encode().into(),
+        gas_limit - gas_left,
+    ))
+}
+
+/// `sumEventDataUint(address emitter, bytes32 topic0, uint256 valueDataIndex) -> uint256`
+pub fn sum_event_data_uint(
+    ph_context: &PhEvmContext,
+    input_bytes: &[u8],
+    gas: u64,
+) -> Result<PhevmOutcome, AggregateFactsError> {
+    let gas_limit = gas;
+    let mut gas_left = gas;
+    if let Some(rax) = deduct_gas_and_check(&mut gas_left, BASE_COST, gas_limit) {
+        return Err(AggregateFactsError::OutOfGas(rax));
+    }
+
+    let call = PhEvm::sumEventDataUintCall::abi_decode(input_bytes)
+        .map_err(AggregateFactsError::DecodeError)?;
+    let value_start = arg_start_offset(call.valueDataIndex, 0)?;
+
+    let tracer = ph_context.logs_and_traces.call_traces;
+    let logs = ph_context.logs_and_traces.tx_logs;
+    let log_indices = tracer.log_indices_by_emitter_topic0(logs, call.emitter, call.topic0);
+
+    let log_cost = (log_indices.len() as u64).saturating_mul(PER_LOG_COST);
+    if let Some(rax) = deduct_gas_and_check(&mut gas_left, log_cost, gas_limit) {
+        return Err(AggregateFactsError::OutOfGas(rax));
+    }
+
+    let mut total = U256::ZERO;
+    for &idx in log_indices {
+        let log = &logs[idx];
+        let value = U256::from_be_bytes(read_zero_extended_word(&log.data.data, value_start));
+        total = total.wrapping_add(value);
+    }
+
+    Ok(PhevmOutcome::new(
+        total.abi_encode().into(),
+        gas_limit - gas_left,
+    ))
+}
+
 /// `sumEventUintForTopicKey(...) -> uint256`
 pub fn sum_event_uint_for_topic_key(
     ph_context: &PhEvmContext,
@@ -541,6 +637,7 @@ mod test {
             minDepth: 0,
             maxDepth: 0,
             topLevelOnly: false,
+            successOnly: false,
         }
     }
 
@@ -771,6 +868,23 @@ mod test {
             assert_eq!(grouped_values[0].value, U256::from(13));
             assert_eq!(grouped_values[1].key, key2);
             assert_eq!(grouped_values[1].value, U256::from(7));
+
+            let count_input = PhEvm::countEventsCall { emitter, topic0 }.abi_encode();
+            let count = count_events(context, &count_input, u64::MAX).unwrap();
+            assert_eq!(U256::abi_decode(count.bytes()).unwrap(), U256::from(3));
+
+            let any_input = PhEvm::anyEventCall { emitter, topic0 }.abi_encode();
+            let any = any_event(context, &any_input, u64::MAX).unwrap();
+            assert!(bool::abi_decode(any.bytes()).unwrap());
+
+            let sum_data_input = PhEvm::sumEventDataUintCall {
+                emitter,
+                topic0,
+                valueDataIndex: U256::ZERO,
+            }
+            .abi_encode();
+            let sum_data = sum_event_data_uint(context, &sum_data_input, u64::MAX).unwrap();
+            assert_eq!(U256::abi_decode(sum_data.bytes()).unwrap(), U256::from(20));
         });
     }
 

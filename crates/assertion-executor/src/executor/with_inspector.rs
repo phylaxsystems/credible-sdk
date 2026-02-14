@@ -51,7 +51,6 @@ use tracing::{
 };
 
 use rayon::prelude::{
-    IntoParallelIterator,
     IntoParallelRefIterator,
     ParallelIterator,
 };
@@ -230,7 +229,7 @@ impl AssertionExecutor {
         for<'db> I: Inspector<OpCtx<'db, MultiForkDb<ForkDb<Active>>>>,
     {
         let results = self.execute_triggered_assertions(
-            block_env,
+            &block_env,
             tx_fork_db,
             forked_tx_result,
             tx_env,
@@ -439,6 +438,7 @@ mod tests {
                 test_utils::MockDb,
             },
         },
+        primitives::U256,
         store::{
             AssertionState,
             AssertionStore,

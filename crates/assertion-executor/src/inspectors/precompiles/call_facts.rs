@@ -13,6 +13,7 @@ use crate::inspectors::{
     },
     precompiles::{
         BASE_COST,
+        MAX_ARRAY_RESPONSE_ITEMS,
         deduct_gas_and_check,
     },
     sol_primitives::PhEvm,
@@ -32,6 +33,7 @@ use alloy_sol_types::{
     SolValue,
 };
 use revm::interpreter::CallScheme;
+use std::collections::BTreeSet;
 
 #[derive(thiserror::Error, Debug)]
 pub enum CallFactsError {
@@ -45,6 +47,8 @@ pub enum CallFactsError {
     InvalidArgIndex { arg_index: U256 },
     #[error("argIndex {arg_index} overflows calldata offset computation")]
     ArgOffsetOverflow { arg_index: usize },
+    #[error("response has {count} unique targets, exceeds max {max}")]
+    TooManyResults { count: usize, max: usize },
 }
 
 /// Per-visited-call filter cost used by call-fact precompiles.
@@ -56,6 +60,17 @@ const PER_CALL_COST: u64 = 5;
 const PER_RETURN_WORD_COST: u64 = 3;
 const SCALAR_RETURN_WORDS: u64 = 1;
 const TRIGGER_CONTEXT_RETURN_WORDS: u64 = 6;
+
+#[inline]
+fn default_success_filter() -> PhEvm::CallFilter {
+    PhEvm::CallFilter {
+        callType: 0,
+        minDepth: 0,
+        maxDepth: 0,
+        topLevelOnly: false,
+        successOnly: true,
+    }
+}
 
 /// Maps the CallFilter.callType field to an optional `CallScheme` filter.
 /// 0 = any, 1 = CALL, 2 = STATICCALL, 3 = DELEGATECALL, 4 = CALLCODE
@@ -86,6 +101,11 @@ pub(crate) fn call_matches_filter(
     filter: &PhEvm::CallFilter,
     scheme_filter: Option<CallScheme>,
 ) -> bool {
+    if filter.successOnly {
+        // `CallTracer` truncates reverted subtrees at record-time, so retained
+        // call records are successful by construction.
+    }
+
     if let Some(scheme) = scheme_filter
         && record.inputs().scheme != scheme
     {
@@ -134,21 +154,33 @@ pub fn any_call(
         return Err(CallFactsError::OutOfGas(rax));
     }
 
-    let call = PhEvm::anyCallCall::abi_decode(input_bytes).map_err(CallFactsError::DecodeError)?;
+    let selector: [u8; 4] = input_bytes
+        .get(0..4)
+        .and_then(|bytes| bytes.try_into().ok())
+        .unwrap_or_default();
+    let (target, call_selector, filter) = if selector == PhEvm::anyCall_1Call::SELECTOR {
+        let call =
+            PhEvm::anyCall_1Call::abi_decode(input_bytes).map_err(CallFactsError::DecodeError)?;
+        (call.target, call.selector, default_success_filter())
+    } else {
+        let call =
+            PhEvm::anyCall_0Call::abi_decode(input_bytes).map_err(CallFactsError::DecodeError)?;
+        (call.target, call.selector, call.filter)
+    };
 
     let tracer = ph_context.logs_and_traces.call_traces;
     let call_records = tracer.call_records();
-    let scheme_filter = call_type_to_scheme(call.filter.callType);
+    let scheme_filter = call_type_to_scheme(filter.callType);
     let mut visited = 0u64;
     let mut found = false;
 
-    if let Some(indices) = candidate_call_indices(tracer, call.target, call.selector) {
+    if let Some(indices) = candidate_call_indices(tracer, target, call_selector) {
         for &idx in indices {
             visited = visited.saturating_add(1);
             let Some(depth) = tracer.call_depth_at(idx) else {
                 continue;
             };
-            if call_matches_filter(&call_records[idx], depth, &call.filter, scheme_filter) {
+            if call_matches_filter(&call_records[idx], depth, &filter, scheme_filter) {
                 found = true;
                 break;
             }
@@ -180,22 +212,33 @@ pub fn count_calls(
         return Err(CallFactsError::OutOfGas(rax));
     }
 
-    let call =
-        PhEvm::countCallsCall::abi_decode(input_bytes).map_err(CallFactsError::DecodeError)?;
+    let selector: [u8; 4] = input_bytes
+        .get(0..4)
+        .and_then(|bytes| bytes.try_into().ok())
+        .unwrap_or_default();
+    let (target, call_selector, filter) = if selector == PhEvm::countCalls_1Call::SELECTOR {
+        let call = PhEvm::countCalls_1Call::abi_decode(input_bytes)
+            .map_err(CallFactsError::DecodeError)?;
+        (call.target, call.selector, default_success_filter())
+    } else {
+        let call = PhEvm::countCalls_0Call::abi_decode(input_bytes)
+            .map_err(CallFactsError::DecodeError)?;
+        (call.target, call.selector, call.filter)
+    };
 
     let tracer = ph_context.logs_and_traces.call_traces;
     let call_records = tracer.call_records();
-    let scheme_filter = call_type_to_scheme(call.filter.callType);
+    let scheme_filter = call_type_to_scheme(filter.callType);
     let mut visited = 0u64;
     let mut matched = 0u64;
 
-    if let Some(indices) = candidate_call_indices(tracer, call.target, call.selector) {
+    if let Some(indices) = candidate_call_indices(tracer, target, call_selector) {
         for &idx in indices {
             visited = visited.saturating_add(1);
             let Some(depth) = tracer.call_depth_at(idx) else {
                 continue;
             };
-            if call_matches_filter(&call_records[idx], depth, &call.filter, scheme_filter) {
+            if call_matches_filter(&call_records[idx], depth, &filter, scheme_filter) {
                 matched = matched.saturating_add(1);
             }
         }
@@ -266,27 +309,44 @@ pub fn all_calls_by(
         return Err(CallFactsError::OutOfGas(rax));
     }
 
-    let call =
-        PhEvm::allCallsByCall::abi_decode(input_bytes).map_err(CallFactsError::DecodeError)?;
+    let selector: [u8; 4] = input_bytes
+        .get(0..4)
+        .and_then(|bytes| bytes.try_into().ok())
+        .unwrap_or_default();
+    let (target, call_selector, allowed_caller, filter) =
+        if selector == PhEvm::allCallsBy_1Call::SELECTOR {
+            let call = PhEvm::allCallsBy_1Call::abi_decode(input_bytes)
+                .map_err(CallFactsError::DecodeError)?;
+            (
+                call.target,
+                call.selector,
+                call.allowedCaller,
+                default_success_filter(),
+            )
+        } else {
+            let call = PhEvm::allCallsBy_0Call::abi_decode(input_bytes)
+                .map_err(CallFactsError::DecodeError)?;
+            (call.target, call.selector, call.allowedCaller, call.filter)
+        };
 
     let tracer = ph_context.logs_and_traces.call_traces;
     let call_records = tracer.call_records();
-    let scheme_filter = call_type_to_scheme(call.filter.callType);
+    let scheme_filter = call_type_to_scheme(filter.callType);
     let mut visited = 0u64;
     let mut result = true;
 
-    if let Some(indices) = candidate_call_indices(tracer, call.target, call.selector) {
+    if let Some(indices) = candidate_call_indices(tracer, target, call_selector) {
         for &idx in indices {
             visited = visited.saturating_add(1);
             let record = &call_records[idx];
             let Some(depth) = tracer.call_depth_at(idx) else {
                 continue;
             };
-            if !call_matches_filter(record, depth, &call.filter, scheme_filter) {
+            if !call_matches_filter(record, depth, &filter, scheme_filter) {
                 continue;
             }
 
-            if record.inputs().caller != call.allowedCaller {
+            if record.inputs().caller != allowed_caller {
                 result = false;
                 break;
             }
@@ -319,13 +379,30 @@ pub fn sum_arg_uint(
         return Err(CallFactsError::OutOfGas(rax));
     }
 
-    let call =
-        PhEvm::sumArgUintCall::abi_decode(input_bytes).map_err(CallFactsError::DecodeError)?;
+    let selector: [u8; 4] = input_bytes
+        .get(0..4)
+        .and_then(|bytes| bytes.try_into().ok())
+        .unwrap_or_default();
+    let (target, call_selector, arg_index_raw, filter) =
+        if selector == PhEvm::sumArgUint_1Call::SELECTOR {
+            let call = PhEvm::sumArgUint_1Call::abi_decode(input_bytes)
+                .map_err(CallFactsError::DecodeError)?;
+            (
+                call.target,
+                call.selector,
+                call.argIndex,
+                default_success_filter(),
+            )
+        } else {
+            let call = PhEvm::sumArgUint_0Call::abi_decode(input_bytes)
+                .map_err(CallFactsError::DecodeError)?;
+            (call.target, call.selector, call.argIndex, call.filter)
+        };
 
     let tracer = ph_context.logs_and_traces.call_traces;
-    let arg_index: usize = call.argIndex.try_into().map_err(|_| {
+    let arg_index: usize = arg_index_raw.try_into().map_err(|_| {
         CallFactsError::InvalidArgIndex {
-            arg_index: call.argIndex,
+            arg_index: arg_index_raw,
         }
     })?;
     let byte_offset = arg_index
@@ -338,18 +415,18 @@ pub fn sum_arg_uint(
         .checked_add(32)
         .ok_or(CallFactsError::ArgOffsetOverflow { arg_index })?;
 
-    let scheme_filter = call_type_to_scheme(call.filter.callType);
+    let scheme_filter = call_type_to_scheme(filter.callType);
     let call_records = tracer.call_records();
     let mut visited = 0u64;
     let mut total = U256::ZERO;
-    if let Some(indices) = candidate_call_indices(tracer, call.target, call.selector) {
+    if let Some(indices) = candidate_call_indices(tracer, target, call_selector) {
         for &idx in indices {
             visited = visited.saturating_add(1);
             let record = &call_records[idx];
             let Some(depth) = tracer.call_depth_at(idx) else {
                 continue;
             };
-            if !call_matches_filter(record, depth, &call.filter, scheme_filter) {
+            if !call_matches_filter(record, depth, &filter, scheme_filter) {
                 continue;
             }
             let revm::interpreter::CallInput::Bytes(calldata) = &record.inputs().input else {
@@ -382,6 +459,57 @@ pub fn sum_arg_uint(
     charge_return_words(&mut gas_left, gas_limit, SCALAR_RETURN_WORDS)?;
 
     let encoded = total.abi_encode();
+    Ok(PhevmOutcome::new(encoded.into(), gas_limit - gas_left))
+}
+
+/// `getTouchedContracts(CallFilter filter) -> address[]`
+///
+/// Returns unique target addresses touched by calls that match the filter.
+pub fn get_touched_contracts(
+    ph_context: &PhEvmContext,
+    input_bytes: &[u8],
+    gas: u64,
+) -> Result<PhevmOutcome, CallFactsError> {
+    let gas_limit = gas;
+    let mut gas_left = gas;
+
+    if let Some(rax) = deduct_gas_and_check(&mut gas_left, BASE_COST, gas_limit) {
+        return Err(CallFactsError::OutOfGas(rax));
+    }
+
+    let call = PhEvm::getTouchedContractsCall::abi_decode(input_bytes)
+        .map_err(CallFactsError::DecodeError)?;
+    let filter = call.filter;
+    let scheme_filter = call_type_to_scheme(filter.callType);
+    let tracer = ph_context.logs_and_traces.call_traces;
+    let mut visited = 0u64;
+    let mut targets = BTreeSet::new();
+
+    for (idx, record) in tracer.call_records().iter().enumerate() {
+        visited = visited.saturating_add(1);
+        let Some(depth) = tracer.call_depth_at(idx) else {
+            continue;
+        };
+        if !call_matches_filter(record, depth, &filter, scheme_filter) {
+            continue;
+        }
+
+        let target = record.inputs().target_address;
+        if !targets.contains(&target) && targets.len() >= MAX_ARRAY_RESPONSE_ITEMS {
+            return Err(CallFactsError::TooManyResults {
+                count: targets.len() + 1,
+                max: MAX_ARRAY_RESPONSE_ITEMS,
+            });
+        }
+        targets.insert(target);
+    }
+
+    let filter_cost = visited.saturating_mul(PER_CALL_COST);
+    if let Some(rax) = deduct_gas_and_check(&mut gas_left, filter_cost, gas_limit) {
+        return Err(CallFactsError::OutOfGas(rax));
+    }
+
+    let encoded = targets.into_iter().collect::<Vec<_>>().abi_encode();
     Ok(PhevmOutcome::new(encoded.into(), gas_limit - gas_left))
 }
 
@@ -509,6 +637,7 @@ mod test {
             minDepth: 0,
             maxDepth: 0,
             topLevelOnly: false,
+            successOnly: false,
         }
     }
 
@@ -525,7 +654,7 @@ mod test {
         let target = address!("1111111111111111111111111111111111111111");
         let selector = FixedBytes::<4>::from([0x12, 0x34, 0x56, 0x78]);
 
-        let input = PhEvm::anyCallCall {
+        let input = PhEvm::anyCall_0Call {
             target,
             selector,
             filter: default_filter(),
@@ -556,7 +685,7 @@ mod test {
         let tx_env = crate::primitives::TxEnv::default();
         let context = make_ph_context(&logs_and_traces, &tx_env);
 
-        let input = PhEvm::anyCallCall {
+        let input = PhEvm::anyCall_0Call {
             target,
             selector,
             filter: default_filter(),
@@ -589,7 +718,7 @@ mod test {
         let context = make_ph_context(&logs_and_traces, &tx_env);
 
         // Query with wrong selector
-        let input = PhEvm::anyCallCall {
+        let input = PhEvm::anyCall_0Call {
             target,
             selector: wrong_selector,
             filter: default_filter(),
@@ -624,7 +753,7 @@ mod test {
         let tx_env = crate::primitives::TxEnv::default();
         let context = make_ph_context(&logs_and_traces, &tx_env);
 
-        let input = PhEvm::countCallsCall {
+        let input = PhEvm::countCalls_0Call {
             target,
             selector,
             filter: default_filter(),
@@ -664,7 +793,7 @@ mod test {
         let context = make_ph_context(&logs_and_traces, &tx_env);
 
         // Filter for DELEGATECALL only (callType=3)
-        let input = PhEvm::countCallsCall {
+        let input = PhEvm::countCalls_0Call {
             target,
             selector,
             filter: PhEvm::CallFilter {
@@ -672,6 +801,7 @@ mod test {
                 minDepth: 0,
                 maxDepth: 0,
                 topLevelOnly: false,
+                successOnly: false,
             },
         };
         let encoded = input.abi_encode();
@@ -712,7 +842,7 @@ mod test {
         let context = make_ph_context(&logs_and_traces, &tx_env);
 
         // Filter for minDepth=1 only
-        let input = PhEvm::countCallsCall {
+        let input = PhEvm::countCalls_0Call {
             target,
             selector,
             filter: PhEvm::CallFilter {
@@ -720,6 +850,7 @@ mod test {
                 minDepth: 1,
                 maxDepth: 0,
                 topLevelOnly: false,
+                successOnly: false,
             },
         };
         let encoded = input.abi_encode();
@@ -799,7 +930,7 @@ mod test {
         let tx_env = crate::primitives::TxEnv::default();
         let context = make_ph_context(&logs_and_traces, &tx_env);
 
-        let input = PhEvm::anyCallCall {
+        let input = PhEvm::anyCall_0Call {
             target,
             selector,
             filter: default_filter(),
@@ -837,7 +968,7 @@ mod test {
         let tx_env = crate::primitives::TxEnv::default();
         let context = make_ph_context(&logs_and_traces, &tx_env);
 
-        let input = PhEvm::allCallsByCall {
+        let input = PhEvm::allCallsBy_0Call {
             target,
             selector,
             allowedCaller: caller,
@@ -878,7 +1009,7 @@ mod test {
         let tx_env = crate::primitives::TxEnv::default();
         let context = make_ph_context(&logs_and_traces, &tx_env);
 
-        let input = PhEvm::allCallsByCall {
+        let input = PhEvm::allCallsBy_0Call {
             target,
             selector,
             allowedCaller: caller1,
@@ -900,7 +1031,7 @@ mod test {
         let tx_env = crate::primitives::TxEnv::default();
         let context = make_ph_context(&logs_and_traces, &tx_env);
 
-        let input = PhEvm::allCallsByCall {
+        let input = PhEvm::allCallsBy_0Call {
             target: address!("1111111111111111111111111111111111111111"),
             selector: FixedBytes::<4>::from([0x12, 0x34, 0x56, 0x78]),
             allowedCaller: address!("2222222222222222222222222222222222222222"),
@@ -952,7 +1083,7 @@ mod test {
         let tx_env = crate::primitives::TxEnv::default();
         let context = make_ph_context(&logs_and_traces, &tx_env);
 
-        let input = PhEvm::sumArgUintCall {
+        let input = PhEvm::sumArgUint_0Call {
             target,
             selector,
             argIndex: U256::from(0),
@@ -1005,7 +1136,7 @@ mod test {
         let tx_env = crate::primitives::TxEnv::default();
         let context = make_ph_context(&logs_and_traces, &tx_env);
 
-        let input = PhEvm::sumArgUintCall {
+        let input = PhEvm::sumArgUint_0Call {
             target,
             selector,
             argIndex: U256::from(1), // arg1
@@ -1056,7 +1187,7 @@ mod test {
         let tx_env = crate::primitives::TxEnv::default();
         let context = make_ph_context(&logs_and_traces, &tx_env);
 
-        let input = PhEvm::sumArgUintCall {
+        let input = PhEvm::sumArgUint_0Call {
             target,
             selector,
             argIndex: U256::from(0),
@@ -1082,7 +1213,7 @@ mod test {
         let tx_env = crate::primitives::TxEnv::default();
         let context = make_ph_context(&logs_and_traces, &tx_env);
 
-        let input = PhEvm::sumArgUintCall {
+        let input = PhEvm::sumArgUint_0Call {
             target,
             selector,
             argIndex: U256::from(usize::MAX),
@@ -1148,5 +1279,189 @@ mod test {
         assert_eq!(decoded.codeAddress, Address::ZERO);
         assert_eq!(decoded.selector, FixedBytes::<4>::ZERO);
         assert_eq!(decoded.depth, 0);
+    }
+
+    #[test]
+    fn test_any_call_default_overload_uses_no_filter_signature() {
+        let target = address!("1111111111111111111111111111111111111111");
+        let caller = address!("2222222222222222222222222222222222222222");
+        let selector = FixedBytes::<4>::from([0x12, 0x34, 0x56, 0x78]);
+
+        let mut tracer = CallTracer::default();
+        let mut journal = JournalInner::new();
+        journal.depth = 0;
+        let (inputs, bytes) = make_call_inputs(target, caller, selector, CallScheme::Call);
+        tracer.record_call_start(inputs, &bytes, &mut journal);
+        tracer.record_call_end(&mut journal, false);
+
+        let logs_and_traces = LogsAndTraces {
+            tx_logs: &[],
+            call_traces: &tracer,
+        };
+        let tx_env = crate::primitives::TxEnv::default();
+        let context = make_ph_context(&logs_and_traces, &tx_env);
+
+        let input = PhEvm::anyCall_1Call { target, selector };
+        let encoded = input.abi_encode();
+        let result = any_call(&context, &encoded, 1_000_000).unwrap();
+        let decoded = bool::abi_decode(result.bytes()).unwrap();
+        assert!(decoded);
+    }
+
+    #[test]
+    fn test_count_calls_default_overload_uses_no_filter_signature() {
+        let target = address!("1111111111111111111111111111111111111111");
+        let caller = address!("2222222222222222222222222222222222222222");
+        let selector = FixedBytes::<4>::from([0x12, 0x34, 0x56, 0x78]);
+
+        let mut tracer = CallTracer::default();
+        let mut journal = JournalInner::new();
+        for _ in 0..2 {
+            journal.depth = 0;
+            let (inputs, bytes) = make_call_inputs(target, caller, selector, CallScheme::Call);
+            tracer.record_call_start(inputs, &bytes, &mut journal);
+            tracer.record_call_end(&mut journal, false);
+        }
+
+        let logs_and_traces = LogsAndTraces {
+            tx_logs: &[],
+            call_traces: &tracer,
+        };
+        let tx_env = crate::primitives::TxEnv::default();
+        let context = make_ph_context(&logs_and_traces, &tx_env);
+
+        let input = PhEvm::countCalls_1Call { target, selector };
+        let encoded = input.abi_encode();
+        let result = count_calls(&context, &encoded, 1_000_000).unwrap();
+        let decoded = U256::abi_decode(result.bytes()).unwrap();
+        assert_eq!(decoded, U256::from(2));
+    }
+
+    #[test]
+    fn test_all_calls_by_default_overload_uses_no_filter_signature() {
+        let target = address!("1111111111111111111111111111111111111111");
+        let caller = address!("2222222222222222222222222222222222222222");
+        let selector = FixedBytes::<4>::from([0x12, 0x34, 0x56, 0x78]);
+
+        let mut tracer = CallTracer::default();
+        let mut journal = JournalInner::new();
+        journal.depth = 0;
+        let (inputs, bytes) = make_call_inputs(target, caller, selector, CallScheme::Call);
+        tracer.record_call_start(inputs, &bytes, &mut journal);
+        tracer.record_call_end(&mut journal, false);
+
+        let logs_and_traces = LogsAndTraces {
+            tx_logs: &[],
+            call_traces: &tracer,
+        };
+        let tx_env = crate::primitives::TxEnv::default();
+        let context = make_ph_context(&logs_and_traces, &tx_env);
+
+        let input = PhEvm::allCallsBy_1Call {
+            target,
+            selector,
+            allowedCaller: caller,
+        };
+        let encoded = input.abi_encode();
+        let result = all_calls_by(&context, &encoded, 1_000_000).unwrap();
+        let decoded = bool::abi_decode(result.bytes()).unwrap();
+        assert!(decoded);
+    }
+
+    #[test]
+    fn test_sum_arg_uint_default_overload_uses_no_filter_signature() {
+        let target = address!("1111111111111111111111111111111111111111");
+        let caller = address!("2222222222222222222222222222222222222222");
+        let selector = FixedBytes::<4>::from([0x12, 0x34, 0x56, 0x78]);
+
+        let mut tracer = CallTracer::default();
+        let mut journal = JournalInner::new();
+
+        // selector + arg0 = 7
+        let mut calldata = selector.to_vec();
+        calldata.extend_from_slice(&U256::from(7).to_be_bytes::<32>());
+        let input_bytes: Bytes = calldata.into();
+        let inputs = CallInputs {
+            input: CallInput::Bytes(input_bytes.clone()),
+            return_memory_offset: 0..0,
+            gas_limit: 0,
+            bytecode_address: target,
+            known_bytecode: None,
+            target_address: target,
+            caller,
+            value: CallValue::default(),
+            scheme: CallScheme::Call,
+            is_static: false,
+        };
+
+        journal.depth = 0;
+        tracer.record_call_start(inputs, &input_bytes, &mut journal);
+        tracer.record_call_end(&mut journal, false);
+
+        let logs_and_traces = LogsAndTraces {
+            tx_logs: &[],
+            call_traces: &tracer,
+        };
+        let tx_env = crate::primitives::TxEnv::default();
+        let context = make_ph_context(&logs_and_traces, &tx_env);
+
+        let input = PhEvm::sumArgUint_1Call {
+            target,
+            selector,
+            argIndex: U256::ZERO,
+        };
+        let encoded = input.abi_encode();
+        let result = sum_arg_uint(&context, &encoded, 1_000_000).unwrap();
+        let decoded = U256::abi_decode(result.bytes()).unwrap();
+        assert_eq!(decoded, U256::from(7));
+    }
+
+    #[test]
+    fn test_get_touched_contracts_filters_by_depth() {
+        let target_a = address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let target_b = address!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        let caller = address!("2222222222222222222222222222222222222222");
+        let selector = FixedBytes::<4>::from([0xde, 0xad, 0xbe, 0xef]);
+
+        let mut tracer = CallTracer::default();
+        let mut journal = JournalInner::new();
+
+        // Root call to A
+        journal.depth = 0;
+        let (root_inputs, root_bytes) =
+            make_call_inputs(target_a, caller, selector, CallScheme::Call);
+        tracer.record_call_start(root_inputs, &root_bytes, &mut journal);
+
+        // Nested call to B
+        journal.depth = 1;
+        let (nested_inputs, nested_bytes) =
+            make_call_inputs(target_b, caller, selector, CallScheme::Call);
+        tracer.record_call_start(nested_inputs, &nested_bytes, &mut journal);
+        tracer.record_call_end(&mut journal, false);
+
+        journal.depth = 0;
+        tracer.record_call_end(&mut journal, false);
+
+        let logs_and_traces = LogsAndTraces {
+            tx_logs: &[],
+            call_traces: &tracer,
+        };
+        let tx_env = crate::primitives::TxEnv::default();
+        let context = make_ph_context(&logs_and_traces, &tx_env);
+
+        let input = PhEvm::getTouchedContractsCall {
+            filter: PhEvm::CallFilter {
+                callType: 0,
+                minDepth: 1,
+                maxDepth: 0,
+                topLevelOnly: false,
+                successOnly: false,
+            },
+        };
+        let encoded = input.abi_encode();
+        let result = get_touched_contracts(&context, &encoded, 1_000_000).unwrap();
+        let decoded = <Vec<Address>>::abi_decode(result.bytes()).unwrap();
+
+        assert_eq!(decoded, vec![target_b]);
     }
 }

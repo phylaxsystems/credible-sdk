@@ -68,6 +68,8 @@ interface PhEvm {
         uint32 maxDepth;
         /// @notice If true, only consider top-level calls (depth == 0)
         bool topLevelOnly;
+        /// @notice If true, only consider successful calls
+        bool successOnly;
     }
 
     /// @notice Specifies a point relative to a call's execution
@@ -75,6 +77,12 @@ interface PhEvm {
     enum CallPoint {
         PreCall,
         PostCall
+    }
+
+    /// @notice Specifies pre/post transaction boundary
+    enum TxPoint {
+        PreTx,
+        PostTx
     }
 
     /// @notice Context about the trigger that caused this assertion to run
@@ -194,12 +202,20 @@ interface PhEvm {
     /// @return found True if at least one matching call was recorded
     function anyCall(address target, bytes4 selector, CallFilter calldata filter) external view returns (bool found);
 
+    /// @notice Check if any successful call matching (target, selector) exists
+    /// @dev Uses default filter: successOnly=true, no callType/depth restrictions
+    function anyCall(address target, bytes4 selector) external view returns (bool found);
+
     /// @notice Count calls matching (target, selector, filter)
     /// @param target The target contract address
     /// @param selector The function selector to match
     /// @param filter Criteria for narrowing down which calls to consider
     /// @return count Number of matching calls
     function countCalls(address target, bytes4 selector, CallFilter calldata filter) external view returns (uint256 count);
+
+    /// @notice Count successful calls matching (target, selector)
+    /// @dev Uses default filter: successOnly=true, no callType/depth restrictions
+    function countCalls(address target, bytes4 selector) external view returns (uint256 count);
 
     /// @notice Get the caller of a specific call by its ID
     /// @param callId The call identifier (index in the call trace)
@@ -214,6 +230,10 @@ interface PhEvm {
     /// @return ok True if no calls match, or all matching calls have the allowed caller
     function allCallsBy(address target, bytes4 selector, address allowedCaller, CallFilter calldata filter) external view returns (bool ok);
 
+    /// @notice Check if all successful matching calls were made by a specific caller
+    /// @dev Uses default filter: successOnly=true, no callType/depth restrictions
+    function allCallsBy(address target, bytes4 selector, address allowedCaller) external view returns (bool ok);
+
     /// @notice Sum a uint256 argument across all matching calls
     /// @param target The target contract address
     /// @param selector The function selector to match
@@ -221,6 +241,10 @@ interface PhEvm {
     /// @param filter Criteria for narrowing down which calls to consider
     /// @return total The sum of the argument values across matching calls
     function sumArgUint(address target, bytes4 selector, uint256 argIndex, CallFilter calldata filter) external view returns (uint256 total);
+
+    /// @notice Sum a uint256 argument across successful calls
+    /// @dev Uses default filter: successOnly=true, no callType/depth restrictions
+    function sumArgUint(address target, bytes4 selector, uint256 argIndex) external view returns (uint256 total);
 
     /// @notice Sum a uint256 argument for calls where an address argument equals `key`
     /// @param target The target contract address
@@ -316,6 +340,27 @@ interface PhEvm {
     /// @return ok True if no writes occurred, or all writes were by the allowed caller
     function allSlotWritesBy(address target, bytes32 slot, address allowedCaller) external view returns (bool ok);
 
+    /// @notice Return unique touched contract targets under a call filter
+    /// @param filter Criteria for narrowing down which calls to consider
+    /// @return targets Unique touched target addresses in deterministic sorted order
+    function getTouchedContracts(CallFilter calldata filter) external view returns (address[] memory targets);
+
+    /// @notice Count logs by emitter and topic0
+    /// @return count Number of matching logs
+    function countEvents(address emitter, bytes32 topic0) external view returns (uint256 count);
+
+    /// @notice Check if any log exists for emitter and topic0
+    /// @return found True if at least one matching log exists
+    function anyEvent(address emitter, bytes32 topic0) external view returns (bool found);
+
+    /// @notice Sum uint256 data words across logs by emitter/topic0
+    /// @param valueDataIndex ABI word index in log data for uint256 value (0-based)
+    /// @return total Sum of matching values
+    function sumEventDataUint(address emitter, bytes32 topic0, uint256 valueDataIndex)
+        external
+        view
+        returns (uint256 total);
+
     // ─── Call-boundary state cheatcodes ───
 
     /// @notice Load a storage slot at a specific call boundary
@@ -332,6 +377,33 @@ interface PhEvm {
     /// @param callId The call identifier
     /// @return delta The signed difference (post - pre)
     function slotDeltaAtCall(address target, bytes32 slot, uint256 callId) external view returns (int256 delta);
+
+    /// @notice Check that all matching calls keep slot delta >= minDelta
+    /// @dev Delta is computed as post-call minus pre-call for each matching call
+    function allCallsSlotDeltaGE(
+        address target,
+        bytes4 selector,
+        bytes32 slot,
+        int256 minDelta,
+        CallFilter calldata filter
+    ) external view returns (bool ok);
+
+    /// @notice Check that all matching calls keep slot delta <= maxDelta
+    /// @dev Delta is computed as post-call minus pre-call for each matching call
+    function allCallsSlotDeltaLE(
+        address target,
+        bytes4 selector,
+        bytes32 slot,
+        int256 maxDelta,
+        CallFilter calldata filter
+    ) external view returns (bool ok);
+
+    /// @notice Sum slot deltas across matching calls
+    /// @dev Delta is computed as post-call minus pre-call for each matching call
+    function sumCallsSlotDelta(address target, bytes4 selector, bytes32 slot, CallFilter calldata filter)
+        external
+        view
+        returns (int256 total);
 
     // ─── Trigger context cheatcode ───
 
@@ -351,6 +423,45 @@ interface PhEvm {
     /// @param token The ERC20 token contract address
     /// @return delta The signed supply change (post - pre)
     function erc20SupplyDiff(address token) external view returns (int256 delta);
+
+    /// @notice Get ERC20 balance at pre/post tx boundary
+    function erc20BalanceAt(address token, address account, TxPoint point) external view returns (uint256 balance);
+
+    /// @notice Get ERC20 totalSupply at pre/post tx boundary
+    function erc20SupplyAt(address token, TxPoint point) external view returns (uint256 supply);
+
+    /// @notice Get ERC20 allowance at pre/post tx boundary
+    function erc20AllowanceAt(address token, address owner, address spender, TxPoint point)
+        external
+        view
+        returns (uint256 allowance_);
+
+    /// @notice Get ERC20 allowance diff across tx (post - pre), plus endpoints
+    function erc20AllowanceDiff(address token, address owner, address spender)
+        external
+        view
+        returns (int256 diff, uint256 pre, uint256 post);
+
+    /// @notice Get ERC20 balance delta scoped to a single call (post-call - pre-call)
+    function erc20BalanceDeltaAtCall(address token, address account, uint256 callId)
+        external
+        view
+        returns (int256 delta);
+
+    /// @notice Get ERC20 totalSupply delta scoped to a single call (post-call - pre-call)
+    function erc20SupplyDeltaAtCall(address token, uint256 callId) external view returns (int256 delta);
+
+    /// @notice Get ERC20 allowance at a call boundary
+    function erc20AllowanceAtCall(address token, address owner, address spender, uint256 callId, CallPoint point)
+        external
+        view
+        returns (uint256 allowance_);
+
+    /// @notice Get ERC20 allowance delta scoped to a single call (post-call - pre-call)
+    function erc20AllowanceDeltaAtCall(address token, address owner, address spender, uint256 callId)
+        external
+        view
+        returns (int256 delta);
 
     /// @notice Get the net ERC20 token flow for an account from Transfer events
     /// @param token The ERC20 token contract address
@@ -388,6 +499,16 @@ interface PhEvm {
     /// @param vault The ERC4626 vault address
     /// @return deltaBps Signed change in assets-per-share ratio in bps
     function erc4626AssetsPerShareDiffBps(address vault) external view returns (int256 deltaBps);
+
+    /// @notice Get ERC4626 totalAssets delta scoped to a single call (post-call - pre-call)
+    function erc4626TotalAssetsDeltaAtCall(address vault, uint256 callId) external view returns (int256 delta);
+
+    /// @notice Get ERC4626 totalSupply delta scoped to a single call (post-call - pre-call)
+    function erc4626TotalSupplyDeltaAtCall(address vault, uint256 callId) external view returns (int256 delta);
+
+    /// @notice Get the delta in vault asset token balance scoped to a single call
+    /// @dev Uses vault.asset() and ERC20(asset).balanceOf(vault) at pre/post call boundaries.
+    function erc4626VaultAssetBalanceDeltaAtCall(address vault, uint256 callId) external view returns (int256 delta);
 
     // ─── P1: State/Mapping diff cheatcodes ───
 

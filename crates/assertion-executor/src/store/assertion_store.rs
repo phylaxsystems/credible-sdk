@@ -79,6 +79,11 @@ fn call_id_matches_filter(tracer: &CallTracer, call_id: usize, filter: &TriggerF
         return false;
     };
 
+    if filter.success_only {
+        // `CallTracer` truncates reverted subtrees, so retained calls are
+        // successful by construction.
+    }
+
     if let Some(scheme_filter) = call_type_to_scheme(filter.call_type)
         && record.inputs().scheme != scheme_filter
     {
@@ -2275,6 +2280,7 @@ mod tests {
                     min_depth: 0,
                     max_depth: 0,
                     top_level_only: false,
+                    success_only: false,
                 },
             },
             vec![assertion_selector].into_iter().collect(),
@@ -2338,6 +2344,7 @@ mod tests {
                     min_depth: 1,
                     max_depth: 0,
                     top_level_only: false,
+                    success_only: false,
                 },
             },
             vec![assertion_selector].into_iter().collect(),

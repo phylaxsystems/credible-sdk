@@ -61,6 +61,7 @@ pub struct TriggerFilter {
     pub min_depth: u32,
     pub max_depth: u32,
     pub top_level_only: bool,
+    pub success_only: bool,
 }
 
 impl From<ITriggerRecorder::TriggerFilter> for TriggerFilter {
@@ -70,6 +71,7 @@ impl From<ITriggerRecorder::TriggerFilter> for TriggerFilter {
             min_depth: value.minDepth,
             max_depth: value.maxDepth,
             top_level_only: value.topLevelOnly,
+            success_only: value.successOnly,
         }
     }
 }
@@ -163,6 +165,29 @@ impl TriggerRecorder {
                     },
                     call.fnSelector,
                 );
+            }
+
+            ITriggerRecorder::registerCallTriggers_0Call::SELECTOR => {
+                let call = ITriggerRecorder::registerCallTriggers_0Call::abi_decode(input_bytes)
+                    .map_err(RecordError::CallDecodeError)?;
+                for trigger_selector in call.triggerSelectors {
+                    self.add_trigger(TriggerType::Call { trigger_selector }, call.fnSelector);
+                }
+            }
+
+            ITriggerRecorder::registerCallTriggers_1Call::SELECTOR => {
+                let call = ITriggerRecorder::registerCallTriggers_1Call::abi_decode(input_bytes)
+                    .map_err(RecordError::CallDecodeError)?;
+                let filter: TriggerFilter = call.filter.into();
+                for trigger_selector in call.triggerSelectors {
+                    self.add_trigger(
+                        TriggerType::CallFiltered {
+                            trigger_selector,
+                            filter: filter.clone(),
+                        },
+                        call.fnSelector,
+                    );
+                }
             }
 
             ITriggerRecorder::registerStorageChangeTrigger_0Call::SELECTOR => {
@@ -457,6 +482,7 @@ mod test {
             minDepth: 1,
             maxDepth: 2,
             topLevelOnly: false,
+            successOnly: true,
         };
 
         let input = ITriggerRecorder::registerCallTrigger_2Call {
@@ -477,6 +503,7 @@ mod test {
                         min_depth: 1,
                         max_depth: 2,
                         top_level_only: false,
+                        success_only: true,
                     }
                 })
         );
@@ -487,6 +514,7 @@ mod test {
                     min_depth: 1,
                     max_depth: 2,
                     top_level_only: false,
+                    success_only: true,
                 }
             }]
                 .contains(&fn_selector)
@@ -503,6 +531,7 @@ mod test {
             minDepth: 0,
             maxDepth: 4,
             topLevelOnly: true,
+            successOnly: false,
         };
 
         let input = ITriggerRecorder::registerCallTrigger_3Call {
@@ -522,6 +551,7 @@ mod test {
                 min_depth: 0,
                 max_depth: 4,
                 top_level_only: true,
+                success_only: false,
             },
         }));
         assert!(
@@ -532,10 +562,81 @@ mod test {
                     min_depth: 0,
                     max_depth: 4,
                     top_level_only: true,
+                    success_only: false,
                 },
             }]
                 .contains(&fn_selector)
         );
+    }
+
+    #[test]
+    fn test_record_trigger_multi_selector_unfiltered() {
+        let mut recorder = TriggerRecorder::default();
+        let fn_selector = fixed_bytes!("DEADBEEF");
+        let trigger_selectors = vec![fixed_bytes!("AAAAAAAA"), fixed_bytes!("BBBBBBBB")];
+
+        let input = ITriggerRecorder::registerCallTriggers_0Call {
+            fnSelector: fn_selector,
+            triggerSelectors: trigger_selectors.clone(),
+        }
+        .abi_encode();
+
+        recorder.record_trigger(&input).unwrap();
+
+        assert_eq!(recorder.triggers.len(), 2);
+        for selector in trigger_selectors {
+            assert!(
+                recorder.triggers.contains_key(&TriggerType::Call {
+                    trigger_selector: selector,
+                }),
+                "missing selector trigger"
+            );
+            assert!(
+                recorder.triggers[&TriggerType::Call {
+                    trigger_selector: selector,
+                }]
+                    .contains(&fn_selector)
+            );
+        }
+    }
+
+    #[test]
+    fn test_record_trigger_multi_selector_filtered() {
+        let mut recorder = TriggerRecorder::default();
+        let fn_selector = fixed_bytes!("DEADBEEF");
+        let trigger_selectors = vec![fixed_bytes!("AAAAAAAA"), fixed_bytes!("BBBBBBBB")];
+        let filter = ITriggerRecorder::TriggerFilter {
+            callType: 1,
+            minDepth: 0,
+            maxDepth: 0,
+            topLevelOnly: false,
+            successOnly: true,
+        };
+
+        let input = ITriggerRecorder::registerCallTriggers_1Call {
+            fnSelector: fn_selector,
+            triggerSelectors: trigger_selectors.clone(),
+            filter,
+        }
+        .abi_encode();
+
+        recorder.record_trigger(&input).unwrap();
+
+        assert_eq!(recorder.triggers.len(), 2);
+        for selector in trigger_selectors {
+            let trigger = TriggerType::CallFiltered {
+                trigger_selector: selector,
+                filter: TriggerFilter {
+                    call_type: 1,
+                    min_depth: 0,
+                    max_depth: 0,
+                    top_level_only: false,
+                    success_only: true,
+                },
+            };
+            assert!(recorder.triggers.contains_key(&trigger));
+            assert!(recorder.triggers[&trigger].contains(&fn_selector));
+        }
     }
 
     #[test]

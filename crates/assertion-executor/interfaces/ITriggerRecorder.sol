@@ -21,6 +21,8 @@ interface ITriggerRecorder {
         uint32 maxDepth;
         /// @notice If true, only trigger on top-level calls (depth == 0)
         bool topLevelOnly;
+        /// @notice If true, only trigger on successful calls
+        bool successOnly;
     }
 
     /// @notice Records a call trigger for the specified assertion function.
@@ -44,6 +46,19 @@ interface ITriggerRecorder {
     /// @param triggerSelector The function selector of the trigger function.
     /// @param filter The call-shape filter applied at trigger time.
     function registerCallTrigger(bytes4 fnSelector, bytes4 triggerSelector, TriggerFilter calldata filter)
+        external
+        view;
+
+    /// @notice Registers multiple selector-specific call triggers.
+    /// @param fnSelector The function selector of the assertion function.
+    /// @param triggerSelectors The function selectors of trigger functions.
+    function registerCallTriggers(bytes4 fnSelector, bytes4[] calldata triggerSelectors) external view;
+
+    /// @notice Registers multiple selector-specific call triggers with a filter.
+    /// @param fnSelector The function selector of the assertion function.
+    /// @param triggerSelectors The function selectors of trigger functions.
+    /// @param filter The call-shape filter applied at trigger time.
+    function registerCallTriggers(bytes4 fnSelector, bytes4[] calldata triggerSelectors, TriggerFilter calldata filter)
         external
         view;
 
