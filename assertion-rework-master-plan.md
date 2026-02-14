@@ -774,6 +774,8 @@ If we want immediate wins without waiting for the full roadmap:
       - Reduced duplicated selector execution code in sequential paths via shared local execution closures.
       - Added explicit inline comments around trigger-context and multi-call semantics in executor hot paths.
       - Kept allocation-heavy selector expansion only on the parallel path.
+      - `f41e0d6`: collapsed duplicated inspector-path scheduling flow into one execution vector path (parallel/sequential switch), and fixed incomplete `PreparedAssertionContract` docs.
+      - `5cdc4ef`: removed duplicated write-policy gas-charging branches via small helpers, deduped zero-trigger-context construction, and removed unused `JournalMissing` error variant.
     - Samply profiling loop (`executor_avg_block_performance/avg_block_100_aa`):
       - Confirmed artifact cache removed prior `serde_json`/`read_artifact` setup hotspot.
       - New dominant user-space hotspots moved to executor runtime path (`AssertionExecutor::validate_transaction`, `execute_triggered_assertions`, `execute_assertions`) and REVM inspect loop.
@@ -786,6 +788,9 @@ If we want immediate wins without waiting for the full roadmap:
       - Post-cleanup local rerun snapshots (current branch, Criterion continuation):
         - `executor_avg_block_performance/avg_block_100_aa`: `[21.377 ms 21.523 ms 21.771 ms]` (no significant change)
         - `assertion_store::read/hit_existing_assertion`: `[686.29 ns 689.18 ns 692.11 ns]` (no significant change)
+      - Latest local snapshots after cleanup commits:
+        - `cargo test -p assertion-executor@1.0.8 --lib`: `306 passed`
+        - `executor_avg_block_performance/avg_block_100_aa`: `[21.101 ms 21.186 ms 21.255 ms]` (no significant change)
 
 ## Execution Appendix (Condensed)
 
