@@ -56,12 +56,19 @@ use crate::{
             erc4626_facts::{
                 Erc4626FactsError,
                 erc20_allowance_at,
+                erc20_allowance_at_call,
+                erc20_allowance_delta_at_call,
                 erc20_allowance_diff,
                 erc20_balance_at,
+                erc20_balance_delta_at_call,
                 erc20_supply_at,
+                erc20_supply_delta_at_call,
                 erc4626_assets_per_share_diff_bps,
+                erc4626_total_assets_delta_at_call,
                 erc4626_total_assets_diff,
+                erc4626_total_supply_delta_at_call,
                 erc4626_total_supply_diff,
+                erc4626_vault_asset_balance_delta_at_call,
                 erc4626_vault_asset_balance_diff,
             },
             fork::{
@@ -397,16 +404,59 @@ impl<'a> PhEvmInspector<'a> {
                 erc20_allowance_diff(context, &self.context, input_bytes, inputs.gas_limit)
                     .map_err(PrecompileError::Erc4626FactsError)?
             }
+            PhEvm::erc20BalanceDeltaAtCallCall::SELECTOR => {
+                erc20_balance_delta_at_call(context, &self.context, input_bytes, inputs.gas_limit)
+                    .map_err(PrecompileError::Erc4626FactsError)?
+            }
+            PhEvm::erc20SupplyDeltaAtCallCall::SELECTOR => {
+                erc20_supply_delta_at_call(context, &self.context, input_bytes, inputs.gas_limit)
+                    .map_err(PrecompileError::Erc4626FactsError)?
+            }
+            PhEvm::erc20AllowanceAtCallCall::SELECTOR => {
+                erc20_allowance_at_call(context, &self.context, input_bytes, inputs.gas_limit)
+                    .map_err(PrecompileError::Erc4626FactsError)?
+            }
+            PhEvm::erc20AllowanceDeltaAtCallCall::SELECTOR => {
+                erc20_allowance_delta_at_call(context, &self.context, input_bytes, inputs.gas_limit)
+                    .map_err(PrecompileError::Erc4626FactsError)?
+            }
             PhEvm::erc4626TotalAssetsDiffCall::SELECTOR => {
                 erc4626_total_assets_diff(context, &self.context, input_bytes, inputs.gas_limit)
                     .map_err(PrecompileError::Erc4626FactsError)?
+            }
+            PhEvm::erc4626TotalAssetsDeltaAtCallCall::SELECTOR => {
+                erc4626_total_assets_delta_at_call(
+                    context,
+                    &self.context,
+                    input_bytes,
+                    inputs.gas_limit,
+                )
+                .map_err(PrecompileError::Erc4626FactsError)?
             }
             PhEvm::erc4626TotalSupplyDiffCall::SELECTOR => {
                 erc4626_total_supply_diff(context, &self.context, input_bytes, inputs.gas_limit)
                     .map_err(PrecompileError::Erc4626FactsError)?
             }
+            PhEvm::erc4626TotalSupplyDeltaAtCallCall::SELECTOR => {
+                erc4626_total_supply_delta_at_call(
+                    context,
+                    &self.context,
+                    input_bytes,
+                    inputs.gas_limit,
+                )
+                .map_err(PrecompileError::Erc4626FactsError)?
+            }
             PhEvm::erc4626VaultAssetBalanceDiffCall::SELECTOR => {
                 erc4626_vault_asset_balance_diff(
+                    context,
+                    &self.context,
+                    input_bytes,
+                    inputs.gas_limit,
+                )
+                .map_err(PrecompileError::Erc4626FactsError)?
+            }
+            PhEvm::erc4626VaultAssetBalanceDeltaAtCallCall::SELECTOR => {
+                erc4626_vault_asset_balance_delta_at_call(
                     context,
                     &self.context,
                     input_bytes,
@@ -536,8 +586,8 @@ impl<'a> PhEvmInspector<'a> {
                         &mut self.context,
                     )
                     .map(PhevmOutcome::from)
-                    .map_err(PrecompileError::ConsoleLogError),
-                )?);
+                    .map_err(PrecompileError::ConsoleLogError)?,
+                ));
 
                 #[cfg(not(feature = "phoundry"))]
                 return Ok(Some(PhevmOutcome::from(Bytes::default())));

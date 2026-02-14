@@ -442,6 +442,27 @@ interface PhEvm {
         view
         returns (int256 diff, uint256 pre, uint256 post);
 
+    /// @notice Get ERC20 balance delta scoped to a single call (post-call - pre-call)
+    function erc20BalanceDeltaAtCall(address token, address account, uint256 callId)
+        external
+        view
+        returns (int256 delta);
+
+    /// @notice Get ERC20 totalSupply delta scoped to a single call (post-call - pre-call)
+    function erc20SupplyDeltaAtCall(address token, uint256 callId) external view returns (int256 delta);
+
+    /// @notice Get ERC20 allowance at a call boundary
+    function erc20AllowanceAtCall(address token, address owner, address spender, uint256 callId, CallPoint point)
+        external
+        view
+        returns (uint256 allowance_);
+
+    /// @notice Get ERC20 allowance delta scoped to a single call (post-call - pre-call)
+    function erc20AllowanceDeltaAtCall(address token, address owner, address spender, uint256 callId)
+        external
+        view
+        returns (int256 delta);
+
     /// @notice Get the net ERC20 token flow for an account from Transfer events
     /// @param token The ERC20 token contract address
     /// @param account The account to compute net flow for
@@ -478,6 +499,16 @@ interface PhEvm {
     /// @param vault The ERC4626 vault address
     /// @return deltaBps Signed change in assets-per-share ratio in bps
     function erc4626AssetsPerShareDiffBps(address vault) external view returns (int256 deltaBps);
+
+    /// @notice Get ERC4626 totalAssets delta scoped to a single call (post-call - pre-call)
+    function erc4626TotalAssetsDeltaAtCall(address vault, uint256 callId) external view returns (int256 delta);
+
+    /// @notice Get ERC4626 totalSupply delta scoped to a single call (post-call - pre-call)
+    function erc4626TotalSupplyDeltaAtCall(address vault, uint256 callId) external view returns (int256 delta);
+
+    /// @notice Get the delta in vault asset token balance scoped to a single call
+    /// @dev Uses vault.asset() and ERC20(asset).balanceOf(vault) at pre/post call boundaries.
+    function erc4626VaultAssetBalanceDeltaAtCall(address vault, uint256 callId) external view returns (int256 delta);
 
     // ─── P1: State/Mapping diff cheatcodes ───
 

@@ -205,6 +205,22 @@ mod tests {
                 PhEvm::erc20AllowanceDiffCall::SELECTOR,
             ),
             (
+                "erc20BalanceDeltaAtCall(address,address,uint256)",
+                PhEvm::erc20BalanceDeltaAtCallCall::SELECTOR,
+            ),
+            (
+                "erc20SupplyDeltaAtCall(address,uint256)",
+                PhEvm::erc20SupplyDeltaAtCallCall::SELECTOR,
+            ),
+            (
+                "erc20AllowanceAtCall(address,address,address,uint256,uint8)",
+                PhEvm::erc20AllowanceAtCallCall::SELECTOR,
+            ),
+            (
+                "erc20AllowanceDeltaAtCall(address,address,address,uint256)",
+                PhEvm::erc20AllowanceDeltaAtCallCall::SELECTOR,
+            ),
+            (
                 "getERC20NetFlow(address,address)",
                 PhEvm::getERC20NetFlowCall::SELECTOR,
             ),
@@ -227,6 +243,18 @@ mod tests {
             (
                 "erc4626AssetsPerShareDiffBps(address)",
                 PhEvm::erc4626AssetsPerShareDiffBpsCall::SELECTOR,
+            ),
+            (
+                "erc4626TotalAssetsDeltaAtCall(address,uint256)",
+                PhEvm::erc4626TotalAssetsDeltaAtCallCall::SELECTOR,
+            ),
+            (
+                "erc4626TotalSupplyDeltaAtCall(address,uint256)",
+                PhEvm::erc4626TotalSupplyDeltaAtCallCall::SELECTOR,
+            ),
+            (
+                "erc4626VaultAssetBalanceDeltaAtCall(address,uint256)",
+                PhEvm::erc4626VaultAssetBalanceDeltaAtCallCall::SELECTOR,
             ),
             // P1: State/Mapping diff cheatcodes
             (
@@ -266,8 +294,8 @@ mod tests {
         // Verify we have the expected count of methods
         assert_eq!(
             expected_selectors.len(),
-            59,
-            "PhEvm interface should have exactly 59 methods"
+            66,
+            "PhEvm interface should have exactly 66 methods"
         );
     }
 

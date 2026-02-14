@@ -68,6 +68,10 @@ pub enum Erc4626FactsError {
     ReturnDecodeError(#[source] alloy_sol_types::Error),
     #[error("Out of gas")]
     OutOfGas(PhevmOutcome),
+    #[error("Call ID {call_id} is out of bounds (total calls: {total})")]
+    CallIdOutOfBounds { call_id: U256, total: usize },
+    #[error("Cannot fork to call {call_id}: call is inside a reverted subtree")]
+    CallInsideRevertedSubtree { call_id: usize },
     #[error("MultiForkDb error during ERC4626 view call")]
     MultiForkError(#[source] MultiForkError),
     #[error("ERC4626 view call execution failed: {0}")]
@@ -95,6 +99,38 @@ fn tx_point_to_fork(point: PhEvm::TxPoint) -> ForkId {
     } else {
         ForkId::PostTx
     }
+}
+
+fn call_point_to_fork(call_id: usize, point: PhEvm::CallPoint) -> ForkId {
+    let point_u8: u8 = point.into();
+    if point_u8 == 0 {
+        ForkId::PreCall(call_id)
+    } else {
+        ForkId::PostCall(call_id)
+    }
+}
+
+fn resolve_forkable_call_id(
+    ph_context: &PhEvmContext,
+    call_id: U256,
+) -> Result<usize, Erc4626FactsError> {
+    let tracer = ph_context.logs_and_traces.call_traces;
+    let total = tracer.call_records().len();
+    let call_id_usize: usize = call_id
+        .try_into()
+        .map_err(|_| Erc4626FactsError::CallIdOutOfBounds { call_id, total })?;
+
+    if call_id_usize >= total {
+        return Err(Erc4626FactsError::CallIdOutOfBounds { call_id, total });
+    }
+
+    if !tracer.is_call_forkable(call_id_usize) {
+        return Err(Erc4626FactsError::CallInsideRevertedSubtree {
+            call_id: call_id_usize,
+        });
+    }
+
+    Ok(call_id_usize)
 }
 
 fn assets_per_share_bps(total_assets: U256, total_supply: U256) -> U256 {
@@ -140,7 +176,9 @@ where
     let tx_gas_limit = (*gas_left).clamp(BASE_COST, MAX_VIEW_CALL_GAS);
     let tx_env = TxEnv {
         kind: TxKind::Call(target),
-        caller: ph_context.adopter,
+        // Use a deterministic, nonce-zero caller for synthetic view calls to avoid
+        // nonce coupling with assertion adopter accounts.
+        caller: Address::ZERO,
         data: calldata,
         gas_limit: tx_gas_limit,
         chain_id: Some(chain_id),
@@ -710,9 +748,360 @@ where
     ))
 }
 
+/// `erc20BalanceDeltaAtCall(address token, address account, uint256 callId) -> int256`
+pub fn erc20_balance_delta_at_call<'db, ExtDb, CTX>(
+    evm_context: &mut CTX,
+    ph_context: &PhEvmContext,
+    input_bytes: &[u8],
+    gas: u64,
+) -> Result<PhevmOutcome, Erc4626FactsError>
+where
+    ExtDb: DatabaseRef + Clone + DatabaseCommit + 'db,
+    CTX:
+        ContextTr<Db = &'db mut MultiForkDb<ExtDb>, Journal = Journal<&'db mut MultiForkDb<ExtDb>>>,
+{
+    let gas_limit = gas;
+    let mut gas_left = gas;
+    if let Some(rax) = deduct_gas_and_check(&mut gas_left, BASE_COST, gas_limit) {
+        return Err(Erc4626FactsError::OutOfGas(rax));
+    }
+
+    let call = PhEvm::erc20BalanceDeltaAtCallCall::abi_decode(input_bytes)
+        .map_err(Erc4626FactsError::DecodeError)?;
+    let call_id = resolve_forkable_call_id(ph_context, call.callId)?;
+    let pre = read_erc20_balance_at_fork::<ExtDb, CTX>(
+        evm_context,
+        ph_context,
+        ForkId::PreCall(call_id),
+        call.token,
+        call.account,
+        &mut gas_left,
+        gas_limit,
+    )?;
+    let post = read_erc20_balance_at_fork::<ExtDb, CTX>(
+        evm_context,
+        ph_context,
+        ForkId::PostCall(call_id),
+        call.token,
+        call.account,
+        &mut gas_left,
+        gas_limit,
+    )?;
+
+    Ok(PhevmOutcome::new(
+        signed_diff(post, pre).abi_encode().into(),
+        gas_limit - gas_left,
+    ))
+}
+
+/// `erc20SupplyDeltaAtCall(address token, uint256 callId) -> int256`
+pub fn erc20_supply_delta_at_call<'db, ExtDb, CTX>(
+    evm_context: &mut CTX,
+    ph_context: &PhEvmContext,
+    input_bytes: &[u8],
+    gas: u64,
+) -> Result<PhevmOutcome, Erc4626FactsError>
+where
+    ExtDb: DatabaseRef + Clone + DatabaseCommit + 'db,
+    CTX:
+        ContextTr<Db = &'db mut MultiForkDb<ExtDb>, Journal = Journal<&'db mut MultiForkDb<ExtDb>>>,
+{
+    let gas_limit = gas;
+    let mut gas_left = gas;
+    if let Some(rax) = deduct_gas_and_check(&mut gas_left, BASE_COST, gas_limit) {
+        return Err(Erc4626FactsError::OutOfGas(rax));
+    }
+
+    let call = PhEvm::erc20SupplyDeltaAtCallCall::abi_decode(input_bytes)
+        .map_err(Erc4626FactsError::DecodeError)?;
+    let call_id = resolve_forkable_call_id(ph_context, call.callId)?;
+    let pre = read_erc20_supply_at_fork::<ExtDb, CTX>(
+        evm_context,
+        ph_context,
+        ForkId::PreCall(call_id),
+        call.token,
+        &mut gas_left,
+        gas_limit,
+    )?;
+    let post = read_erc20_supply_at_fork::<ExtDb, CTX>(
+        evm_context,
+        ph_context,
+        ForkId::PostCall(call_id),
+        call.token,
+        &mut gas_left,
+        gas_limit,
+    )?;
+
+    Ok(PhevmOutcome::new(
+        signed_diff(post, pre).abi_encode().into(),
+        gas_limit - gas_left,
+    ))
+}
+
+/// `erc20AllowanceAtCall(address token, address owner, address spender, uint256 callId, CallPoint point) -> uint256`
+pub fn erc20_allowance_at_call<'db, ExtDb, CTX>(
+    evm_context: &mut CTX,
+    ph_context: &PhEvmContext,
+    input_bytes: &[u8],
+    gas: u64,
+) -> Result<PhevmOutcome, Erc4626FactsError>
+where
+    ExtDb: DatabaseRef + Clone + DatabaseCommit + 'db,
+    CTX:
+        ContextTr<Db = &'db mut MultiForkDb<ExtDb>, Journal = Journal<&'db mut MultiForkDb<ExtDb>>>,
+{
+    let gas_limit = gas;
+    let mut gas_left = gas;
+    if let Some(rax) = deduct_gas_and_check(&mut gas_left, BASE_COST, gas_limit) {
+        return Err(Erc4626FactsError::OutOfGas(rax));
+    }
+
+    let call = PhEvm::erc20AllowanceAtCallCall::abi_decode(input_bytes)
+        .map_err(Erc4626FactsError::DecodeError)?;
+    let call_id = resolve_forkable_call_id(ph_context, call.callId)?;
+    let allowance_ = read_erc20_allowance_at_fork::<ExtDb, CTX>(
+        evm_context,
+        ph_context,
+        call_point_to_fork(call_id, call.point),
+        call.token,
+        call.owner,
+        call.spender,
+        &mut gas_left,
+        gas_limit,
+    )?;
+
+    Ok(PhevmOutcome::new(
+        allowance_.abi_encode().into(),
+        gas_limit - gas_left,
+    ))
+}
+
+/// `erc20AllowanceDeltaAtCall(address token, address owner, address spender, uint256 callId) -> int256`
+pub fn erc20_allowance_delta_at_call<'db, ExtDb, CTX>(
+    evm_context: &mut CTX,
+    ph_context: &PhEvmContext,
+    input_bytes: &[u8],
+    gas: u64,
+) -> Result<PhevmOutcome, Erc4626FactsError>
+where
+    ExtDb: DatabaseRef + Clone + DatabaseCommit + 'db,
+    CTX:
+        ContextTr<Db = &'db mut MultiForkDb<ExtDb>, Journal = Journal<&'db mut MultiForkDb<ExtDb>>>,
+{
+    let gas_limit = gas;
+    let mut gas_left = gas;
+    if let Some(rax) = deduct_gas_and_check(&mut gas_left, BASE_COST, gas_limit) {
+        return Err(Erc4626FactsError::OutOfGas(rax));
+    }
+
+    let call = PhEvm::erc20AllowanceDeltaAtCallCall::abi_decode(input_bytes)
+        .map_err(Erc4626FactsError::DecodeError)?;
+    let call_id = resolve_forkable_call_id(ph_context, call.callId)?;
+    let pre = read_erc20_allowance_at_fork::<ExtDb, CTX>(
+        evm_context,
+        ph_context,
+        ForkId::PreCall(call_id),
+        call.token,
+        call.owner,
+        call.spender,
+        &mut gas_left,
+        gas_limit,
+    )?;
+    let post = read_erc20_allowance_at_fork::<ExtDb, CTX>(
+        evm_context,
+        ph_context,
+        ForkId::PostCall(call_id),
+        call.token,
+        call.owner,
+        call.spender,
+        &mut gas_left,
+        gas_limit,
+    )?;
+
+    Ok(PhevmOutcome::new(
+        signed_diff(post, pre).abi_encode().into(),
+        gas_limit - gas_left,
+    ))
+}
+
+/// `erc4626TotalAssetsDeltaAtCall(address vault, uint256 callId) -> int256`
+pub fn erc4626_total_assets_delta_at_call<'db, ExtDb, CTX>(
+    evm_context: &mut CTX,
+    ph_context: &PhEvmContext,
+    input_bytes: &[u8],
+    gas: u64,
+) -> Result<PhevmOutcome, Erc4626FactsError>
+where
+    ExtDb: DatabaseRef + Clone + DatabaseCommit + 'db,
+    CTX:
+        ContextTr<Db = &'db mut MultiForkDb<ExtDb>, Journal = Journal<&'db mut MultiForkDb<ExtDb>>>,
+{
+    let gas_limit = gas;
+    let mut gas_left = gas;
+    if let Some(rax) = deduct_gas_and_check(&mut gas_left, BASE_COST, gas_limit) {
+        return Err(Erc4626FactsError::OutOfGas(rax));
+    }
+
+    let call = PhEvm::erc4626TotalAssetsDeltaAtCallCall::abi_decode(input_bytes)
+        .map_err(Erc4626FactsError::DecodeError)?;
+    let call_id = resolve_forkable_call_id(ph_context, call.callId)?;
+    let pre = read_vault_total_assets_at_fork::<ExtDb, CTX>(
+        evm_context,
+        ph_context,
+        ForkId::PreCall(call_id),
+        call.vault,
+        &mut gas_left,
+        gas_limit,
+    )?;
+    let post = read_vault_total_assets_at_fork::<ExtDb, CTX>(
+        evm_context,
+        ph_context,
+        ForkId::PostCall(call_id),
+        call.vault,
+        &mut gas_left,
+        gas_limit,
+    )?;
+
+    Ok(PhevmOutcome::new(
+        signed_diff(post, pre).abi_encode().into(),
+        gas_limit - gas_left,
+    ))
+}
+
+/// `erc4626TotalSupplyDeltaAtCall(address vault, uint256 callId) -> int256`
+pub fn erc4626_total_supply_delta_at_call<'db, ExtDb, CTX>(
+    evm_context: &mut CTX,
+    ph_context: &PhEvmContext,
+    input_bytes: &[u8],
+    gas: u64,
+) -> Result<PhevmOutcome, Erc4626FactsError>
+where
+    ExtDb: DatabaseRef + Clone + DatabaseCommit + 'db,
+    CTX:
+        ContextTr<Db = &'db mut MultiForkDb<ExtDb>, Journal = Journal<&'db mut MultiForkDb<ExtDb>>>,
+{
+    let gas_limit = gas;
+    let mut gas_left = gas;
+    if let Some(rax) = deduct_gas_and_check(&mut gas_left, BASE_COST, gas_limit) {
+        return Err(Erc4626FactsError::OutOfGas(rax));
+    }
+
+    let call = PhEvm::erc4626TotalSupplyDeltaAtCallCall::abi_decode(input_bytes)
+        .map_err(Erc4626FactsError::DecodeError)?;
+    let call_id = resolve_forkable_call_id(ph_context, call.callId)?;
+    let pre = read_erc20_supply_at_fork::<ExtDb, CTX>(
+        evm_context,
+        ph_context,
+        ForkId::PreCall(call_id),
+        call.vault,
+        &mut gas_left,
+        gas_limit,
+    )?;
+    let post = read_erc20_supply_at_fork::<ExtDb, CTX>(
+        evm_context,
+        ph_context,
+        ForkId::PostCall(call_id),
+        call.vault,
+        &mut gas_left,
+        gas_limit,
+    )?;
+
+    Ok(PhevmOutcome::new(
+        signed_diff(post, pre).abi_encode().into(),
+        gas_limit - gas_left,
+    ))
+}
+
+/// `erc4626VaultAssetBalanceDeltaAtCall(address vault, uint256 callId) -> int256`
+pub fn erc4626_vault_asset_balance_delta_at_call<'db, ExtDb, CTX>(
+    evm_context: &mut CTX,
+    ph_context: &PhEvmContext,
+    input_bytes: &[u8],
+    gas: u64,
+) -> Result<PhevmOutcome, Erc4626FactsError>
+where
+    ExtDb: DatabaseRef + Clone + DatabaseCommit + 'db,
+    CTX:
+        ContextTr<Db = &'db mut MultiForkDb<ExtDb>, Journal = Journal<&'db mut MultiForkDb<ExtDb>>>,
+{
+    let gas_limit = gas;
+    let mut gas_left = gas;
+    if let Some(rax) = deduct_gas_and_check(&mut gas_left, BASE_COST, gas_limit) {
+        return Err(Erc4626FactsError::OutOfGas(rax));
+    }
+
+    let call = PhEvm::erc4626VaultAssetBalanceDeltaAtCallCall::abi_decode(input_bytes)
+        .map_err(Erc4626FactsError::DecodeError)?;
+    let call_id = resolve_forkable_call_id(ph_context, call.callId)?;
+    let pre_fork = ForkId::PreCall(call_id);
+    let post_fork = ForkId::PostCall(call_id);
+    let pre_asset = read_vault_asset_at_fork::<ExtDb, CTX>(
+        evm_context,
+        ph_context,
+        pre_fork,
+        call.vault,
+        &mut gas_left,
+        gas_limit,
+    )?;
+    let post_asset = read_vault_asset_at_fork::<ExtDb, CTX>(
+        evm_context,
+        ph_context,
+        post_fork,
+        call.vault,
+        &mut gas_left,
+        gas_limit,
+    )?;
+    if pre_asset != post_asset {
+        return Err(Erc4626FactsError::VaultAssetChanged {
+            vault: call.vault,
+            pre: pre_asset,
+            post: post_asset,
+        });
+    }
+
+    let pre_balance = read_erc20_balance_at_fork::<ExtDb, CTX>(
+        evm_context,
+        ph_context,
+        pre_fork,
+        pre_asset,
+        call.vault,
+        &mut gas_left,
+        gas_limit,
+    )?;
+    let post_balance = read_erc20_balance_at_fork::<ExtDb, CTX>(
+        evm_context,
+        ph_context,
+        post_fork,
+        pre_asset,
+        call.vault,
+        &mut gas_left,
+        gas_limit,
+    )?;
+
+    Ok(PhevmOutcome::new(
+        signed_diff(post_balance, pre_balance).abi_encode().into(),
+        gas_limit - gas_left,
+    ))
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::inspectors::{
+        phevm::{
+            LogsAndTraces,
+            PhEvmContext,
+        },
+        tracer::CallTracer,
+    };
+    use alloy_primitives::Address;
+
+    fn make_ph_context<'a>(
+        logs_and_traces: &'a LogsAndTraces<'a>,
+        tx_env: &'a crate::primitives::TxEnv,
+    ) -> PhEvmContext<'a> {
+        PhEvmContext::new(logs_and_traces, Address::ZERO, tx_env)
+    }
 
     #[test]
     fn test_assets_per_share_bps_zero_supply() {
@@ -741,5 +1130,34 @@ mod test {
     fn test_tx_point_to_fork_mapping() {
         assert_eq!(tx_point_to_fork(PhEvm::TxPoint::PreTx), ForkId::PreTx);
         assert_eq!(tx_point_to_fork(PhEvm::TxPoint::PostTx), ForkId::PostTx);
+    }
+
+    #[test]
+    fn test_call_point_to_fork_mapping() {
+        assert_eq!(
+            call_point_to_fork(7, PhEvm::CallPoint::PreCall),
+            ForkId::PreCall(7)
+        );
+        assert_eq!(
+            call_point_to_fork(7, PhEvm::CallPoint::PostCall),
+            ForkId::PostCall(7)
+        );
+    }
+
+    #[test]
+    fn test_resolve_forkable_call_id_out_of_bounds() {
+        let tracer = CallTracer::default();
+        let logs_and_traces = LogsAndTraces {
+            tx_logs: &[],
+            call_traces: &tracer,
+        };
+        let tx_env = crate::primitives::TxEnv::default();
+        let context = make_ph_context(&logs_and_traces, &tx_env);
+
+        let result = resolve_forkable_call_id(&context, U256::ZERO);
+        assert!(
+            matches!(result, Err(Erc4626FactsError::CallIdOutOfBounds { .. })),
+            "Expected CallIdOutOfBounds, got {result:?}"
+        );
     }
 }
