@@ -100,6 +100,7 @@ mod test {
             adopter: Address::ZERO,
             console_logs: vec![],
             original_tx_env: tx_env,
+            trigger_call_id: None,
         }
     }
 

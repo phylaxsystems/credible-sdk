@@ -289,27 +289,57 @@ impl AssertionExecutor {
         for<'db> I: Inspector<EthCtx<'db, MultiForkDb<ForkDb<Active>>>>,
         for<'db> I: Inspector<OpCtx<'db, MultiForkDb<ForkDb<Active>>>>,
     {
+        if fn_selectors.is_empty() {
+            debug!(
+                target: "assertion-executor::execute_assertions",
+                assertion_contract_id = ?assertion_contract.id,
+                "Skipping assertion contract with no matched selectors (inspector path)"
+            );
+            return Ok((
+                AssertionContractExecution {
+                    adopter: context.adopter,
+                    assertion_fns_results: vec![],
+                    total_assertion_gas: 0,
+                    total_assertion_funcs_ran: 0,
+                },
+                vec![],
+            ));
+        }
+
         let prepared =
             self.prepare_assertion_contract(assertion_contract, fn_selectors, tx_fork_db, context);
 
+        let execute_fn = |fn_selector: &FixedBytes<4>| {
+            self.execute_assertion_fn_with_inspector(
+                assertion_contract,
+                *fn_selector,
+                block_env.clone(),
+                prepared.multi_fork_db.clone(),
+                prepared.inspector.clone(),
+                inspector.clone(),
+                tx_arena_epoch,
+            )
+        };
+
+        let selector_count = fn_selectors.len();
+        let parallel_fns = selector_count >= super::PARALLEL_THRESHOLD;
+        trace!(
+            target: "assertion-executor::execute_assertions",
+            assertion_contract_id = ?assertion_contract.id,
+            selector_count,
+            scheduling = if parallel_fns { "parallel" } else { "sequential" },
+            "Assertion fn scheduling decision (inspector path)"
+        );
+
         let current_span = tracing::Span::current();
         let results_vec: Vec<_> = current_span.in_scope(|| {
-            assertion_executor_pool().install(|| {
-                fn_selectors
-                    .into_par_iter()
-                    .map(|fn_selector| {
-                        self.execute_assertion_fn_with_inspector(
-                            assertion_contract,
-                            *fn_selector,
-                            block_env.clone(),
-                            prepared.multi_fork_db.clone(),
-                            prepared.inspector.clone(),
-                            inspector.clone(),
-                            tx_arena_epoch,
-                        )
-                    })
-                    .collect()
-            })
+            if parallel_fns {
+                assertion_executor_pool().install(|| {
+                    fn_selectors.into_par_iter().map(execute_fn).collect()
+                })
+            } else {
+                fn_selectors.iter().map(execute_fn).collect()
+            }
         });
 
         trace!(target: "assertion-executor::execute_assertions", result_count=results_vec.len(), "Assertion Execution Results with Inspectors");
