@@ -122,11 +122,19 @@ async fn run_once(args: &Args) -> Result<()> {
 
     // Validate Geth version for prestateTracer diffMode EIP-6780 correctness
     validate_geth_version(&provider).await?;
-    let writer_reader = StateWriter::new(
+    let writer_reader = match StateWriter::new(
         args.mdbx_path.as_str(),
         CircularBufferConfig::new(args.state_depth)?,
-    )
-    .context("failed to initialize database client")?;
+    ) {
+        Ok(writer_reader) => {
+            metrics::set_db_healthy(true);
+            writer_reader
+        }
+        Err(err) => {
+            metrics::set_db_healthy(false);
+            return Err(err).context("failed to initialize database client");
+        }
+    };
 
     // Load genesis from file (required to seed initial state)
     let file_path = &args.file_to_genesis;
