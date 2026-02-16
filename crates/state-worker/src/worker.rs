@@ -82,6 +82,20 @@ where
         }
     }
 
+    fn update_sync_metrics(next_block: u64, head_block: u64) {
+        let lag_blocks = if next_block > head_block {
+            0
+        } else {
+            head_block.saturating_sub(next_block).saturating_add(1)
+        };
+        let is_syncing = lag_blocks > 0;
+
+        metrics::set_head_block(head_block);
+        metrics::set_sync_lag_blocks(lag_blocks);
+        metrics::set_syncing(is_syncing);
+        metrics::set_following_head(!is_syncing);
+    }
+
     /// Drive the catch-up + streaming loop. We keep retrying the subscription
     /// because websocket connections can drop in practice.
     pub async fn run(
@@ -149,10 +163,16 @@ where
             return Ok(block);
         }
 
-        let current = self
-            .writer_reader
-            .latest_block_number()
-            .context("failed to read current block from the database")?;
+        let current = match self.writer_reader.latest_block_number() {
+            Ok(current) => {
+                metrics::set_db_healthy(true);
+                current
+            }
+            Err(err) => {
+                metrics::set_db_healthy(false);
+                return Err(anyhow!(err)).context("failed to read current block from the database");
+            }
+        };
 
         Ok(current.map_or(0, |b| b + 1))
     }
@@ -165,6 +185,7 @@ where
     ) -> Result<bool> {
         loop {
             let head = self.provider.get_block_number().await?;
+            Self::update_sync_metrics(*next_block, head);
 
             if *next_block > head {
                 return Ok(false);
@@ -174,6 +195,7 @@ where
                 // Process the block fully before checking shutdown
                 self.process_block(*next_block).await?;
                 *next_block += 1;
+                Self::update_sync_metrics(*next_block, head);
 
                 // Check for shutdown after the block is complete
                 if shutdown_rx.try_recv().is_ok() {
@@ -192,6 +214,8 @@ where
     ) -> Result<()> {
         let subscription = self.provider.subscribe_blocks().await?;
         let mut stream = subscription.into_stream();
+        metrics::set_syncing(false);
+        metrics::set_following_head(true);
 
         loop {
             tokio::select! {
@@ -213,6 +237,8 @@ where
                                 continue;
                             }
 
+                            Self::update_sync_metrics(*next_block, block_number);
+
                             // If we are missing a block, log a warning and return error.
                             // The run() loop tracks consecutive failures and escalates to
                             // critical if we cannot recover after MAX_MISSING_BLOCK_RETRIES.
@@ -226,6 +252,7 @@ where
                             while *next_block <= block_number {
                                 self.process_block(*next_block).await?;
                                 *next_block += 1;
+                                Self::update_sync_metrics(*next_block, block_number);
                             }
                         }
                         None => {
@@ -259,10 +286,12 @@ where
 
         match self.writer_reader.commit_block(&update) {
             Ok(stats) => {
+                metrics::set_db_healthy(true);
                 metrics::record_commit(block_number, &stats);
             }
             Err(err) => {
                 critical!(error = ?err, block_number, "failed to persist block");
+                metrics::set_db_healthy(false);
                 metrics::record_block_failure();
                 return Err(anyhow!("failed to persist block {block_number}"));
             }
@@ -333,7 +362,18 @@ where
             return Ok(());
         };
 
-        let already_exists = self.writer_reader.latest_block_number()?.is_some();
+        let already_exists = match self.writer_reader.latest_block_number() {
+            Ok(current) => {
+                metrics::set_db_healthy(true);
+                current.is_some()
+            }
+            Err(err) => {
+                metrics::set_db_healthy(false);
+                return Err(anyhow!(err)).context(
+                    "failed to read current block from database during genesis hydration",
+                );
+            }
+        };
 
         if already_exists {
             info!("block 0 already exists in database; skipping genesis hydration");
@@ -365,10 +405,12 @@ where
 
         match self.writer_reader.commit_block(&update) {
             Ok(stats) => {
+                metrics::set_db_healthy(true);
                 metrics::record_commit(0, &stats);
             }
             Err(err) => {
                 critical!(error = ?err, block_number = 0, "failed to persist genesis block");
+                metrics::set_db_healthy(false);
                 metrics::record_block_failure();
                 return Err(anyhow!("failed to persist genesis block"));
             }

@@ -37,6 +37,13 @@ use metrics::{
 /// - `state_worker_blocks_committed_total`: Total number of blocks committed
 /// - `state_worker_total_accounts_written`: Cumulative accounts written
 /// - `state_worker_total_storage_slots_written`: Cumulative storage slots written
+///
+/// ### Health / sync gauges
+/// - `state_worker_db_healthy`: Whether DB access is healthy (`1` healthy, `0` unhealthy)
+/// - `state_worker_head_block`: Latest chain head observed by the worker
+/// - `state_worker_sync_lag_blocks`: Number of blocks the worker is behind head
+/// - `state_worker_is_syncing`: Whether the worker is catching up to head
+/// - `state_worker_is_following_head`: Whether the worker is tailing the head in steady-state
 pub fn record_commit(block_number: u64, stats: &CommitStats) {
     // Gauges for current block stats
     gauge!("state_worker_accounts_written").set(usize_to_f64(stats.accounts_written));
@@ -72,6 +79,42 @@ pub fn record_block_failure() {
     counter!("state_worker_block_failures_total").increment(1);
 }
 
+/// Record whether DB access is currently healthy.
+///
+/// Committed as a `Gauge`: `state_worker_db_healthy`
+pub fn set_db_healthy(is_healthy: bool) {
+    gauge!("state_worker_db_healthy").set(bool_to_f64(is_healthy));
+}
+
+/// Record the latest head block observed from the execution client.
+///
+/// Committed as a `Gauge`: `state_worker_head_block`
+pub fn set_head_block(block_number: u64) {
+    gauge!("state_worker_head_block").set(u64_to_f64(block_number));
+}
+
+/// Record how far the worker is behind the observed chain head.
+///
+/// Committed as a `Gauge`: `state_worker_sync_lag_blocks`
+pub fn set_sync_lag_blocks(lag_blocks: u64) {
+    gauge!("state_worker_sync_lag_blocks").set(u64_to_f64(lag_blocks));
+}
+
+/// Record whether the worker is currently catching up to chain head.
+///
+/// Committed as a `Gauge`: `state_worker_is_syncing`
+pub fn set_syncing(is_syncing: bool) {
+    gauge!("state_worker_is_syncing").set(bool_to_f64(is_syncing));
+}
+
+/// Record whether the worker is currently following the chain head in
+/// steady-state streaming mode.
+///
+/// Committed as a `Gauge`: `state_worker_is_following_head`
+pub fn set_following_head(is_following_head: bool) {
+    gauge!("state_worker_is_following_head").set(bool_to_f64(is_following_head));
+}
+
 fn usize_to_f64(value: usize) -> f64 {
     let capped = u32::try_from(value).unwrap_or(u32::MAX);
     f64::from(capped)
@@ -80,4 +123,8 @@ fn usize_to_f64(value: usize) -> f64 {
 fn u64_to_f64(value: u64) -> f64 {
     let capped = u32::try_from(value).unwrap_or(u32::MAX);
     f64::from(capped)
+}
+
+fn bool_to_f64(value: bool) -> f64 {
+    if value { 1.0 } else { 0.0 }
 }
