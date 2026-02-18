@@ -45,7 +45,7 @@ jobs:
   rust-base:
     name: Rust Base Nextest
     needs: setup
-    uses: phylaxsystems/actions/.github/workflows/rust-base.yaml@madd-sscache-opt-rust-ci
+    uses: phylaxsystems/actions/.github/workflows/rust-base.yaml@add-sscache-opt-rust-ci
     with:
       runner-group: "big-bois-x86"
       rust-channel: ${{ needs.setup.outputs.rust-nightly }}
