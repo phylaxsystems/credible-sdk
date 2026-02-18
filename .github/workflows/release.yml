@@ -163,6 +163,7 @@ jobs:
       artifact_name: pcl-binaries-${{ needs.create-tag.outputs.version }}
       rust-channel: "nightly"
       package: "pcl"
+      enable-sccache: true
 
   build-assertion-da:
     needs: create-tag
@@ -174,6 +175,7 @@ jobs:
       artifact_name: assertion-da-binaries-${{ needs.create-tag.outputs.version }}
       rust-channel: "nightly"
       package: "assertion-da-server"
+      enable-sccache: true
 
   build-sidecar:
     needs: create-tag
@@ -185,6 +187,7 @@ jobs:
       artifact_name: sidecar-binaries-${{ needs.create-tag.outputs.version }}
       rust-channel: "nightly"
       package: "sidecar"
+      enable-sccache: true
 
   combine-artifacts:
     needs: [create-tag, build-pcl, build-assertion-da, build-sidecar]

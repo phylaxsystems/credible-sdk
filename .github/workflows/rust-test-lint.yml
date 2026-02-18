@@ -45,7 +45,7 @@ jobs:
   rust-base:
     name: Rust Base Nextest
     needs: setup
-    uses: phylaxsystems/actions/.github/workflows/rust-base.yaml@main
+    uses: phylaxsystems/actions/.github/workflows/rust-base.yaml@madd-sscache-opt-rust-ci
     with:
       runner-group: "big-bois-x86"
       rust-channel: ${{ needs.setup.outputs.rust-nightly }}
@@ -57,6 +57,7 @@ jobs:
       foundry-command: "forge clean --root testdata/mock-protocol && forge build --root testdata/mock-protocol && FOUNDRY_PROFILE=assertions forge build --root testdata/mock-protocol"
       test-args: "--exclude mdbx --exclude state-worker --no-tests=warn"
       deny-checks: "advisories"
+      enable-sccache: true
       feature-sets: '[
         "--no-default-features --features test",
         "--no-default-features --features test --features optimism"
@@ -80,6 +81,8 @@ jobs:
         with:
           toolchain: ${{ needs.setup.outputs.rust-nightly }}
 
+      - uses: mozilla-actions/sccache-action@v0.0.9
+
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ${{ needs.setup.outputs.rust-nightly }}-base
@@ -95,4 +98,7 @@ jobs:
         run: forge clean --root testdata/mock-protocol && forge build --root testdata/mock-protocol && FOUNDRY_PROFILE=assertions forge build --root testdata/mock-protocol
 
       - name: Run state-worker tests
+        env:
+          SCCACHE_GHA_ENABLED: "true"
+          RUSTC_WRAPPER: "sccache"
         run: cargo nextest run --package mdbx --package state-worker --locked --cargo-profile release --test-threads=2
