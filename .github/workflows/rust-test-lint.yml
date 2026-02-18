@@ -43,7 +43,7 @@ jobs:
         run: echo "rust-nightly=${{ env.RUST_NIGHTLY_VERSION }}" >> $GITHUB_OUTPUT
 
   rust-base:
-    name: Rust Base Nextest
+    name: Rust Test & Lint
     needs: setup
     uses: phylaxsystems/actions/.github/workflows/rust-base.yaml@add-sscache-opt-rust-ci
     with:
@@ -72,6 +72,9 @@ jobs:
     needs: setup
     runs-on:
       group: big-bois-x86
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: "sccache"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -98,7 +101,4 @@ jobs:
         run: forge clean --root testdata/mock-protocol && forge build --root testdata/mock-protocol && FOUNDRY_PROFILE=assertions forge build --root testdata/mock-protocol
 
       - name: Run state-worker tests
-        env:
-          SCCACHE_GHA_ENABLED: "true"
-          RUSTC_WRAPPER: "sccache"
         run: cargo nextest run --package mdbx --package state-worker --locked --cargo-profile release --test-threads=2
