@@ -61,15 +61,10 @@ impl TransactionsResults {
 
         // New transaction
         let transactions_len = self.transactions.len();
-        let (accepted_txs_len, transaction_results_pending_requests_len, transaction_results_len) =
-            self.transactions_state.get_all_lengths();
+        let (accepted_txs_len, transaction_results_len) = self.transactions_state.get_all_lengths();
         self.metrics.set_engine_transaction_length(transactions_len);
         self.metrics
             .set_engine_transactions_state_accepted_txs_length(accepted_txs_len);
-        self.metrics
-            .set_engine_transactions_state_transaction_results_pending_requests_length(
-                transaction_results_pending_requests_len,
-            );
         self.metrics
             .set_engine_transactions_state_transaction_results_length(transaction_results_len);
         if transactions_len >= self.max_capacity {

@@ -35,14 +35,6 @@ use std::{
 
 const DEFAULT_CONFIG: &str = include_str!("../../default_config.json");
 
-fn default_pending_receive_ttl_ms() -> Duration {
-    Duration::from_secs(2)
-}
-
-fn default_pending_request_ttl_ms() -> Duration {
-    Duration::from_secs(2)
-}
-
 fn default_accepted_txs_ttl_ms() -> Duration {
     Duration::from_secs(2)
 }
@@ -218,9 +210,6 @@ pub struct CredibleConfigFile {
     pub state_oracle_deployment_block: Option<u64>,
     /// Maximum capacity for transaction results
     pub transaction_results_max_capacity: Option<usize>,
-    /// Maximum time (ms) to keep transaction result request channels alive.
-    #[serde_as(as = "Option<DurationMilliSeconds<u64>>")]
-    pub transaction_results_pending_requests_ttl_ms: Option<Duration>,
     /// Maximum time (ms) to keep accepted transactions without results.
     #[serde_as(as = "Option<DurationMilliSeconds<u64>>")]
     pub accepted_txs_ttl_ms: Option<Duration>,
@@ -270,10 +259,6 @@ pub struct CredibleConfig {
     pub state_oracle_deployment_block: u64,
     /// Maximum capacity for transaction results
     pub transaction_results_max_capacity: usize,
-    /// Maximum time (ms) to keep transaction result request channels alive.
-    #[serde(default = "default_pending_request_ttl_ms")]
-    #[serde_as(as = "DurationMilliSeconds<u64>")]
-    pub transaction_results_pending_requests_ttl_ms: Duration,
     /// Maximum time (ms) to keep accepted transactions without results.
     #[serde(default = "default_accepted_txs_ttl_ms")]
     #[serde_as(as = "DurationMilliSeconds<u64>")]
@@ -297,9 +282,6 @@ pub struct TransportConfigFile {
     pub health_bind_addr: Option<String>,
     /// Maximum number of events ID in the transport layer buffer before dropping new events.
     pub event_id_buffer_capacity: Option<usize>,
-    /// Maximum time (ms) a pending transaction receive entry may live before forced eviction.
-    #[serde_as(as = "Option<DurationMilliSeconds<u64>>")]
-    pub pending_receive_ttl_ms: Option<Duration>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -442,8 +424,6 @@ fn resolve_credible(credible_file: &CredibleConfigFile) -> Result<CredibleConfig
         state_oracle: required.state_oracle,
         state_oracle_deployment_block: required.state_oracle_deployment_block,
         transaction_results_max_capacity: required.transaction_results_max_capacity,
-        transaction_results_pending_requests_ttl_ms: ttls
-            .transaction_results_pending_requests_ttl_ms,
         accepted_txs_ttl_ms: ttls.accepted_txs_ttl_ms,
         #[cfg(feature = "cache_validation")]
         cache_checker_ws_url: required.cache_checker_ws_url,
@@ -468,11 +448,6 @@ fn resolve_transport(
         event_id_buffer_capacity: parse_env("SIDECAR_EVENT_ID_BUFFER_CAPACITY")?
             .or(transport_file.event_id_buffer_capacity)
             .unwrap_or_else(|| GrpcTransportConfig::default().event_id_buffer_capacity),
-        // Ensure pending_receive_ttl is never zero to avoid infinite waits
-        pending_receive_ttl: parse_env_duration_ms("SIDECAR_PENDING_RECEIVE_TTL_MS")?
-            .or(transport_file.pending_receive_ttl_ms)
-            .unwrap_or_else(|| GrpcTransportConfig::default().pending_receive_ttl)
-            .max(Duration::from_millis(1)),
     })
 }
 
@@ -539,7 +514,6 @@ struct CredibleOptional {
 }
 
 struct CredibleTtls {
-    transaction_results_pending_requests_ttl_ms: Duration,
     accepted_txs_ttl_ms: Duration,
 }
 
@@ -645,11 +619,6 @@ fn resolve_credible_optional(
 
 fn resolve_credible_ttls(credible_file: &CredibleConfigFile) -> Result<CredibleTtls, ConfigError> {
     Ok(CredibleTtls {
-        transaction_results_pending_requests_ttl_ms: parse_env_duration_ms(
-            "SIDECAR_TRANSACTION_RESULTS_PENDING_REQUESTS_TTL_MS",
-        )?
-        .or(credible_file.transaction_results_pending_requests_ttl_ms)
-        .unwrap_or_else(default_pending_request_ttl_ms),
         accepted_txs_ttl_ms: parse_env_duration_ms("SIDECAR_ACCEPTED_TXS_TTL_MS")?
             .or(credible_file.accepted_txs_ttl_ms)
             .unwrap_or_else(default_accepted_txs_ttl_ms),

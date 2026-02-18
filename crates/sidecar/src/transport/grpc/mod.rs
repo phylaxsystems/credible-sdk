@@ -39,10 +39,7 @@ use crate::{
         TransactionResultEvent,
         TransactionsState,
     },
-    transport::{
-        Transport,
-        transactions_results::QueryTransactionsResults,
-    },
+    transport::Transport,
     utils::ErrorRecoverability,
 };
 use async_trait::async_trait;
@@ -128,7 +125,7 @@ pub struct GrpcTransport {
     /// Shutdown cancellation token
     shutdown_token: CancellationToken,
     /// Shared transaction results state
-    transactions_results: QueryTransactionsResults,
+    transactions_state: Arc<TransactionsState>,
     /// Receiver for transaction result events from the engine.
     /// This allows streaming results to gRPC subscribers.
     result_event_rx: Option<flume::Receiver<TransactionResultEvent>>,
@@ -155,10 +152,7 @@ impl Transport for GrpcTransport {
             tx_sender,
             bind_addr,
             shutdown_token: CancellationToken::new(),
-            transactions_results: QueryTransactionsResults::new(
-                state_results,
-                config.pending_receive_ttl,
-            ),
+            transactions_state: state_results,
             result_event_rx: None,
             event_id_buffer_capacity: config.event_id_buffer_capacity,
         })
@@ -175,7 +169,7 @@ impl Transport for GrpcTransport {
 
         let service = server::GrpcService::new(
             self.tx_sender.clone(),
-            self.transactions_results.clone(),
+            self.transactions_state.clone(),
             self.result_event_rx.clone(),
             self.event_id_buffer_capacity,
         );
@@ -229,10 +223,7 @@ impl GrpcTransport {
             tx_sender,
             bind_addr,
             shutdown_token: CancellationToken::new(),
-            transactions_results: QueryTransactionsResults::new(
-                state_results,
-                config.pending_receive_ttl,
-            ),
+            transactions_state: state_results,
             result_event_rx: Some(result_event_rx),
             event_id_buffer_capacity: config.event_id_buffer_capacity,
         })

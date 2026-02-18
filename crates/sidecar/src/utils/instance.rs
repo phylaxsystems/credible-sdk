@@ -29,7 +29,6 @@ use crate::{
         BlockExecutionId,
         TxExecutionId,
     },
-    transactions_state::RequestTransactionResult,
 };
 use alloy::{
     eips::eip7702::{
@@ -108,7 +107,6 @@ type TestDbError = std::convert::Infallible;
 #[derive(Debug)]
 enum WaitError {
     Timeout,
-    ChannelClosed,
 }
 
 pub struct EngineThreadHandle {
@@ -461,9 +459,6 @@ impl<T: TestTransport> LocalInstance<T> {
             loop {
                 match self.wait_for_transaction_result(tx_execution_id).await {
                     Ok(result) => return Ok(result),
-                    Err(WaitError::ChannelClosed) => {
-                        return Err("transaction result channel closed".to_string());
-                    }
                     Err(WaitError::Timeout) => {
                         tokio::time::sleep(Self::CONDITION_POLL_INTERVAL).await;
                     }
@@ -505,19 +500,20 @@ impl<T: TestTransport> LocalInstance<T> {
         &self,
         tx_execution_id: &TxExecutionId,
     ) -> Result<TransactionResult, WaitError> {
-        match self
-            .transaction_results
-            .request_transaction_result(tx_execution_id)
-        {
-            RequestTransactionResult::Result(result) => Ok(result),
-            RequestTransactionResult::Channel(mut receiver) => {
-                match tokio::time::timeout(Self::TRANSACTION_RESULT_TIMEOUT, receiver.recv()).await
-                {
-                    Ok(Ok(result)) => Ok(result),
-                    Ok(Err(_)) => Err(WaitError::ChannelClosed),
-                    Err(_) => Err(WaitError::Timeout),
-                }
+        let started_at = Instant::now();
+        loop {
+            if let Some(result) = self
+                .transaction_results
+                .get_transaction_result_cloned(tx_execution_id)
+            {
+                return Ok(result);
             }
+
+            if started_at.elapsed() >= Self::TRANSACTION_RESULT_TIMEOUT {
+                return Err(WaitError::Timeout);
+            }
+
+            tokio::time::sleep(Self::CONDITION_POLL_INTERVAL).await;
         }
     }
 
@@ -1327,9 +1323,6 @@ impl<T: TestTransport> LocalInstance<T> {
             match rax {
                 Ok(()) => return Ok(false), // should never be hit
                 Err(WaitError::Timeout) => return Ok(true),
-                Err(WaitError::ChannelClosed) => {
-                    return Err("transaction result channel closed".to_string());
-                }
             }
         }
     }
