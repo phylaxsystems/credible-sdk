@@ -518,7 +518,6 @@ mod tests {
     use clap::Parser;
     use mockito::Server;
     use std::{
-        io::Write,
         time::{
             SystemTime,
             UNIX_EPOCH,
@@ -557,23 +556,6 @@ mod tests {
             )],
             positional_assertions: vec![],
         }
-    }
-
-    /// Helper to capture stdout for testing
-    #[allow(dead_code, unused_variables, unused_mut)]
-    fn capture_stdout<F>(f: F) -> String
-    where
-        F: FnOnce(),
-    {
-        let mut output = Vec::new();
-        {
-            let mut writer = std::io::BufWriter::new(&mut output);
-            let original_stdout = std::io::stdout();
-            let mut handle = original_stdout.lock();
-            let _ = handle.write_all(b"");
-            f();
-        }
-        String::from_utf8(output).unwrap()
     }
 
     #[tokio::test(flavor = "multi_thread")]
