@@ -36,7 +36,7 @@ use sidecar::{
     config::{
         init_assertion_store,
         init_executor_config,
-        init_indexer_config,
+        init_shovel_consumer_config,
     },
     critical,
     da_reachability::run_da_reachability_monitor,
@@ -523,14 +523,14 @@ fn handle_observer_exit(
     }
 }
 
-fn handle_indexer_exit(result: Result<(), assertion_executor::store::IndexerError>) {
+fn handle_indexer_exit(result: Result<(), assertion_executor::store::ShovelConsumerError>) {
     if let Err(e) = result {
         let recoverable = ErrorRecoverability::from(&e).is_recoverable();
         record_error_recoverability(recoverable);
         if recoverable {
-            tracing::error!(error = ?e, "Indexer exited");
+            tracing::error!(error = ?e, "Shovel consumer exited");
         } else {
-            critical!(error = ?e, "Indexer exited");
+            critical!(error = ?e, "Shovel consumer exited");
         }
     }
 }
@@ -538,7 +538,7 @@ fn handle_indexer_exit(result: Result<(), assertion_executor::store::IndexerErro
 async fn run_async_components(
     transport: &mut GrpcTransport,
     health_server: &mut HealthServer,
-    indexer_cfg: assertion_executor::store::IndexerCfg,
+    consumer_cfg: assertion_executor::store::ShovelConsumerCfg,
     engine_exited: tokio::sync::oneshot::Receiver<Result<(), sidecar::engine::EngineError>>,
     seq_exited: tokio::sync::oneshot::Receiver<
         Result<(), sidecar::event_sequencing::EventSequencingError>,
@@ -578,7 +578,7 @@ async fn run_async_components(
                 critical!(error = ?e, "Health server exited");
             }
         }
-        result = indexer::run_indexer(indexer_cfg) => {
+        result = indexer::run_shovel_consumer(consumer_cfg) => {
             handle_indexer_exit(result);
         }
     }
@@ -701,19 +701,18 @@ async fn run_sidecar_once(
     let mut health_server = HealthServer::new(health_bind_addr);
 
     let da_client = DaClient::new(&config.credible.assertion_da_rpc_url)?;
-    let indexer_cfg = init_indexer_config(
+    let consumer_cfg = init_shovel_consumer_config(
         config,
         assertion_store.clone(),
         executor_config,
         da_client.clone(),
-    )
-    .await?;
+    );
     let da_reachability_handle = spawn_da_reachability_monitor(config, da_client);
 
     let should_shutdown = Box::pin(run_async_components(
         &mut transport,
         &mut health_server,
-        indexer_cfg,
+        consumer_cfg,
         engine_exited,
         seq_exited,
         observer_exited_rx,

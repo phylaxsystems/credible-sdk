@@ -70,6 +70,50 @@ services:
       linea:
         ipv4_address: 11.11.11.210
 
+  shovel-postgres:
+    image: postgres:15-alpine
+    container_name: shovel-postgres
+    hostname: shovel-postgres
+    environment:
+      POSTGRES_USER: shovel
+      POSTGRES_PASSWORD: shovel
+      POSTGRES_DB: shovel
+    volumes:
+      - shovel-pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shovel"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      linea:
+        ipv4_address: 11.11.11.208
+
+  shovel:
+    build:
+      context: ../../../shovel
+      dockerfile: ./cmd/shovel/Dockerfile
+    container_name: shovel
+    hostname: shovel
+    environment:
+      DATABASE_URL: "postgres://shovel:shovel@shovel-postgres:5432/shovel"
+      ETH_RPC_URL: "http://sequencer:8545"
+      STATE_ORACLE_ADDRESS: "6dD3f12ce435f69DCeDA7e31605C02Bb5422597b"
+    volumes:
+      - ./config/shovel/config.json:/app/config.json:ro
+    command: shovel -config /app/config.json -l 0.0.0.0:8546 -v
+    ports:
+      - "18546:8546"
+    depends_on:
+      shovel-postgres:
+        condition: service_healthy
+      sequencer:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      linea:
+        ipv4_address: 11.11.11.209
+
   assertion-da:
     image: ghcr.io/phylaxsystems/credible-sdk/assertion-da-dev:sha-01b3374
     container_name: assertion-da
@@ -113,6 +157,8 @@ services:
         condition: service_healthy
       assertion-da:
         condition: service_started
+      shovel-postgres:
+        condition: service_healthy
       otel-collector:
         condition: service_started
     command:
@@ -228,6 +274,7 @@ networks:
 volumes:
   assertion-store:
   sidecar-store:
+  shovel-pg-data:
   prometheus-data:
   grafana-data:
   loki-data:

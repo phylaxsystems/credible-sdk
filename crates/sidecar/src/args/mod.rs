@@ -5,12 +5,9 @@ use crate::{
     args::cli::SidecarArgs,
     transport::grpc::config::GrpcTransportConfig,
 };
-use assertion_executor::{
-    primitives::{
-        Address,
-        SpecId,
-    },
-    store::BlockTag,
+use assertion_executor::primitives::{
+    Address,
+    SpecId,
 };
 use clap::Parser;
 use serde::{
@@ -194,10 +191,8 @@ pub struct CredibleConfigFile {
     pub flush_every_ms: Option<usize>,
     /// HTTP URL of the assertion DA
     pub assertion_da_rpc_url: Option<String>,
-    /// WS URL the RPC store will use to index assertions
-    pub indexer_rpc_url: Option<String>,
-    /// Path to the indexer database (separate from main assertion store)
-    pub indexer_db_path: Option<String>,
+    /// Postgres connection string for the Shovel-populated database
+    pub shovel_pg_url: Option<String>,
     /// Path to the rpc store db
     pub assertion_store_db_path: Option<String>,
     /// Path to the transaction observer database
@@ -210,12 +205,10 @@ pub struct CredibleConfigFile {
     pub transaction_observer_endpoint_rps_max: Option<usize>,
     /// Poll interval for incident publishing in milliseconds
     pub transaction_observer_poll_interval_ms: Option<u64>,
-    /// Block tag to use for indexing assertions.
-    pub block_tag: Option<BlockTag>,
-    /// Contract address of the state oracle contract, used to query assertion info
+    /// Contract address of the state oracle contract
     pub state_oracle: Option<Address>,
-    /// Block number of the state oracle deployment
-    pub state_oracle_deployment_block: Option<u64>,
+    /// Fallback polling interval in milliseconds for the Shovel PG consumer
+    pub shovel_poll_interval_ms: Option<u64>,
     /// Maximum capacity for transaction results
     pub transaction_results_max_capacity: Option<usize>,
     /// Maximum time (ms) to keep transaction result request channels alive.
@@ -246,10 +239,8 @@ pub struct CredibleConfig {
     pub flush_every_ms: Option<usize>,
     /// HTTP URL of the assertion DA
     pub assertion_da_rpc_url: String,
-    /// WS URL the RPC store will use to index assertions
-    pub indexer_rpc_url: String,
-    /// Path to the indexer database (separate from main assertion store)
-    pub indexer_db_path: String,
+    /// Postgres connection string for the Shovel-populated database
+    pub shovel_pg_url: String,
     /// Path to the rpc store db
     pub assertion_store_db_path: String,
     /// Path to the transaction observer database
@@ -262,12 +253,10 @@ pub struct CredibleConfig {
     pub transaction_observer_endpoint_rps_max: Option<usize>,
     /// Poll interval for incident publishing in milliseconds
     pub transaction_observer_poll_interval_ms: Option<u64>,
-    /// Block tag to use for indexing assertions.
-    pub block_tag: BlockTag,
-    /// Contract address of the state oracle contract, used to query assertion info
+    /// Contract address of the state oracle contract
     pub state_oracle: Address,
-    /// Block number of the state oracle deployment
-    pub state_oracle_deployment_block: u64,
+    /// Fallback polling interval in milliseconds for the Shovel PG consumer
+    pub shovel_poll_interval_ms: Option<u64>,
     /// Maximum capacity for transaction results
     pub transaction_results_max_capacity: usize,
     /// Maximum time (ms) to keep transaction result request channels alive.
@@ -430,17 +419,15 @@ fn resolve_credible(credible_file: &CredibleConfigFile) -> Result<CredibleConfig
         cache_capacity_bytes: optional.cache_capacity_bytes,
         flush_every_ms: optional.flush_every_ms,
         assertion_da_rpc_url: required.assertion_da_rpc_url,
-        indexer_rpc_url: required.indexer_rpc_url,
-        indexer_db_path: required.indexer_db_path,
+        shovel_pg_url: required.shovel_pg_url,
         assertion_store_db_path: required.assertion_store_db_path,
         transaction_observer_db_path: optional.transaction_observer_db_path,
         transaction_observer_endpoint: optional.transaction_observer_endpoint,
         transaction_observer_auth_token: optional.transaction_observer_auth_token,
         transaction_observer_endpoint_rps_max: optional.transaction_observer_endpoint_rps_max,
         transaction_observer_poll_interval_ms: optional.transaction_observer_poll_interval_ms,
-        block_tag: required.block_tag,
         state_oracle: required.state_oracle,
-        state_oracle_deployment_block: required.state_oracle_deployment_block,
+        shovel_poll_interval_ms: optional.shovel_poll_interval_ms,
         transaction_results_max_capacity: required.transaction_results_max_capacity,
         transaction_results_pending_requests_ttl_ms: ttls
             .transaction_results_pending_requests_ttl_ms,
@@ -516,12 +503,9 @@ fn resolve_state(state_file: &StateConfigFile) -> Result<StateConfig, ConfigErro
 struct CredibleRequired {
     assertion_gas_limit: u64,
     assertion_da_rpc_url: String,
-    indexer_rpc_url: String,
-    indexer_db_path: String,
+    shovel_pg_url: String,
     assertion_store_db_path: String,
-    block_tag: BlockTag,
     state_oracle: Address,
-    state_oracle_deployment_block: u64,
     transaction_results_max_capacity: usize,
     #[cfg(feature = "cache_validation")]
     cache_checker_ws_url: String,
@@ -536,6 +520,7 @@ struct CredibleOptional {
     transaction_observer_auth_token: Option<SecretString>,
     transaction_observer_endpoint_rps_max: Option<usize>,
     transaction_observer_poll_interval_ms: Option<u64>,
+    shovel_poll_interval_ms: Option<u64>,
 }
 
 struct CredibleTtls {
@@ -562,36 +547,20 @@ fn resolve_credible_required(
             "SIDECAR_ASSERTION_DA_RPC_URL",
             "credible.assertion_da_rpc_url",
         )?,
-        indexer_rpc_url: required_or_env(
-            credible_file.indexer_rpc_url.clone(),
-            "SIDECAR_INDEXER_RPC_URL",
-            "credible.indexer_rpc_url",
-        )?,
-        indexer_db_path: required_or_env(
-            credible_file.indexer_db_path.clone(),
-            "SIDECAR_INDEXER_DB_PATH",
-            "credible.indexer_db_path",
+        shovel_pg_url: required_or_env(
+            credible_file.shovel_pg_url.clone(),
+            "SIDECAR_SHOVEL_PG_URL",
+            "credible.shovel_pg_url",
         )?,
         assertion_store_db_path: required_or_env(
             credible_file.assertion_store_db_path.clone(),
             "SIDECAR_ASSERTION_STORE_DB_PATH",
             "credible.assertion_store_db_path",
         )?,
-        block_tag: required_or_env_with(
-            credible_file.block_tag,
-            "SIDECAR_BLOCK_TAG",
-            "credible.block_tag",
-            parse_block_tag,
-        )?,
         state_oracle: required_or_env(
             credible_file.state_oracle,
             "SIDECAR_STATE_ORACLE",
             "credible.state_oracle",
-        )?,
-        state_oracle_deployment_block: required_or_env(
-            credible_file.state_oracle_deployment_block,
-            "SIDECAR_STATE_ORACLE_DEPLOYMENT_BLOCK",
-            "credible.state_oracle_deployment_block",
         )?,
         transaction_results_max_capacity: required_or_env(
             credible_file.transaction_results_max_capacity,
@@ -639,6 +608,10 @@ fn resolve_credible_optional(
         transaction_observer_poll_interval_ms: optional_or_env(
             credible_file.transaction_observer_poll_interval_ms,
             "SIDECAR_TRANSACTION_OBSERVER_POLL_INTERVAL_MS",
+        )?,
+        shovel_poll_interval_ms: optional_or_env(
+            credible_file.shovel_poll_interval_ms,
+            "SIDECAR_SHOVEL_POLL_INTERVAL_MS",
         )?,
     })
 }
@@ -774,15 +747,6 @@ fn parse_spec_id(value: &str) -> Result<SpecId, String> {
     serde_json::from_str(&json).map_err(|e| e.to_string())
 }
 
-fn parse_block_tag(value: &str) -> Result<BlockTag, String> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "latest" => Ok(BlockTag::Latest),
-        "safe" => Ok(BlockTag::Safe),
-        "finalized" => Ok(BlockTag::Finalized),
-        other => Err(format!("Invalid block tag: {other}")),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -830,17 +794,14 @@ mod tests {
         EnvGuard { key, prev }
     }
 
-    const REQUIRED_ENV_KEYS: [&str; 13] = [
+    const REQUIRED_ENV_KEYS: [&str; 10] = [
         "SIDECAR_CHAIN_SPEC_ID",
         "SIDECAR_CHAIN_ID",
         "SIDECAR_ASSERTION_GAS_LIMIT",
         "SIDECAR_ASSERTION_DA_RPC_URL",
-        "SIDECAR_INDEXER_RPC_URL",
-        "SIDECAR_INDEXER_DB_PATH",
+        "SIDECAR_SHOVEL_PG_URL",
         "SIDECAR_ASSERTION_STORE_DB_PATH",
-        "SIDECAR_BLOCK_TAG",
         "SIDECAR_STATE_ORACLE",
-        "SIDECAR_STATE_ORACLE_DEPLOYMENT_BLOCK",
         "SIDECAR_TRANSACTION_RESULTS_MAX_CAPACITY",
         "SIDECAR_TRANSPORT_BIND_ADDR",
         "SIDECAR_STATE_MINIMUM_STATE_DIFF",
@@ -868,15 +829,12 @@ mod tests {
             set_env_var("SIDECAR_CHAIN_ID", "1"),
             set_env_var("SIDECAR_ASSERTION_GAS_LIMIT", "30000000"),
             set_env_var("SIDECAR_ASSERTION_DA_RPC_URL", "http://localhost:8545"),
-            set_env_var("SIDECAR_INDEXER_RPC_URL", "ws://localhost:8546"),
-            set_env_var("SIDECAR_INDEXER_DB_PATH", "/tmp/indexer.db"),
+            set_env_var("SIDECAR_SHOVEL_PG_URL", "postgres:///shovel"),
             set_env_var("SIDECAR_ASSERTION_STORE_DB_PATH", "/tmp/store.db"),
-            set_env_var("SIDECAR_BLOCK_TAG", "latest"),
             set_env_var(
                 "SIDECAR_STATE_ORACLE",
                 "0x1234567890123456789012345678901234567890",
             ),
-            set_env_var("SIDECAR_STATE_ORACLE_DEPLOYMENT_BLOCK", "100"),
             set_env_var("SIDECAR_TRANSACTION_RESULTS_MAX_CAPACITY", "10000"),
             set_env_var("SIDECAR_TRANSPORT_BIND_ADDR", "127.0.0.1:3000"),
             set_env_var("SIDECAR_STATE_MINIMUM_STATE_DIFF", "10"),
@@ -899,17 +857,15 @@ mod tests {
     "cache_capacity_bytes": 268435456,
     "flush_every_ms": 5000,
     "assertion_da_rpc_url": "http://localhost:8545",
-    "indexer_rpc_url": "ws://localhost:8546",
-    "indexer_db_path": "/tmp/indexer.db",
+    "shovel_pg_url": "postgres:///shovel",
     "assertion_store_db_path": "/tmp/store.db",
     "transaction_observer_db_path": "/tmp/observer.db",
     "transaction_observer_endpoint": "http://localhost:3001/api/v1/enforcer/incidents",
     "transaction_observer_auth_token": "test-token",
     "transaction_observer_endpoint_rps_max": 50,
     "transaction_observer_poll_interval_ms": 1000,
-    "block_tag": "latest",
     "state_oracle": "0x1234567890123456789012345678901234567890",
-    "state_oracle_deployment_block": 100,
+    "shovel_poll_interval_ms": 1000,
     "transaction_results_max_capacity": 10000
   },
   "transport": {
@@ -958,8 +914,7 @@ mod tests {
             config.credible.assertion_da_rpc_url,
             "http://localhost:8545"
         );
-        assert_eq!(config.credible.indexer_rpc_url, "ws://localhost:8546");
-        assert_eq!(config.credible.indexer_db_path, "/tmp/indexer.db");
+        assert_eq!(config.credible.shovel_pg_url, "postgres:///shovel");
         assert_eq!(config.credible.assertion_store_db_path, "/tmp/store.db");
         assert_eq!(
             config.credible.transaction_observer_db_path,
@@ -981,7 +936,6 @@ mod tests {
             config.credible.transaction_observer_poll_interval_ms,
             Some(1000)
         );
-        assert_eq!(config.credible.state_oracle_deployment_block, 100);
         assert_eq!(config.credible.transaction_results_max_capacity, 10000);
 
         // Verify transport config
@@ -1077,15 +1031,12 @@ mod tests {
         let _chain_id = set_env_var("SIDECAR_CHAIN_ID", "1");
         let _gas_limit = set_env_var("SIDECAR_ASSERTION_GAS_LIMIT", "30000000");
         let _da_url = set_env_var("SIDECAR_ASSERTION_DA_RPC_URL", "http://localhost:8545");
-        let _indexer_rpc = set_env_var("SIDECAR_INDEXER_RPC_URL", "ws://localhost:8546");
-        let _indexer_db = set_env_var("SIDECAR_INDEXER_DB_PATH", "/tmp/indexer.db");
+        let _shovel_pg = set_env_var("SIDECAR_SHOVEL_PG_URL", "postgres:///shovel");
         let _store_db = set_env_var("SIDECAR_ASSERTION_STORE_DB_PATH", "/tmp/store.db");
-        let _block_tag = set_env_var("SIDECAR_BLOCK_TAG", "latest");
         let _state_oracle = set_env_var(
             "SIDECAR_STATE_ORACLE",
             "0x1234567890123456789012345678901234567890",
         );
-        let _state_oracle_block = set_env_var("SIDECAR_STATE_ORACLE_DEPLOYMENT_BLOCK", "100");
         let _tx_results = set_env_var("SIDECAR_TRANSACTION_RESULTS_MAX_CAPACITY", "10000");
         let _bind_addr = set_env_var("SIDECAR_TRANSPORT_BIND_ADDR", "127.0.0.1:3000");
         let _min_state_diff = set_env_var("SIDECAR_STATE_MINIMUM_STATE_DIFF", "10");
@@ -1105,7 +1056,7 @@ mod tests {
 
         let _envs = set_required_envs_defaults();
         let _env_override = set_env_var("SIDECAR_TRANSPORT_BIND_ADDR", "127.0.0.1:9999");
-        let _env_tag = set_env_var("SIDECAR_BLOCK_TAG", "safe");
+        let _env_pg = set_env_var("SIDECAR_SHOVEL_PG_URL", "postgres:///override");
 
         let mut temp_file = NamedTempFile::new().unwrap();
         write!(
@@ -1118,12 +1069,9 @@ mod tests {
   "credible": {{
     "assertion_gas_limit": 30000000,
     "assertion_da_rpc_url": "http://localhost:8545",
-    "indexer_rpc_url": "ws://localhost:8546",
-    "indexer_db_path": "/tmp/indexer.db",
+    "shovel_pg_url": "postgres:///shovel",
     "assertion_store_db_path": "/tmp/store.db",
-    "block_tag": "finalized",
     "state_oracle": "0x1234567890123456789012345678901234567890",
-    "state_oracle_deployment_block": 100,
     "transaction_results_max_capacity": 10000
   }},
   "transport": {{
@@ -1141,7 +1089,7 @@ mod tests {
 
         let config = Config::from_file(temp_file.path()).unwrap();
         assert_eq!(config.transport.bind_addr, "127.0.0.1:9999");
-        assert_eq!(config.credible.block_tag, BlockTag::Safe);
+        assert_eq!(config.credible.shovel_pg_url, "postgres:///override");
     }
 
     #[test]
@@ -1291,17 +1239,14 @@ mod tests {
   "credible": {{
     "assertion_gas_limit": 30000000,
     "assertion_da_rpc_url": "http://localhost:8545",
-    "indexer_rpc_url": "ws://localhost:8546",
-    "indexer_db_path": "/tmp/indexer.db",
+    "shovel_pg_url": "postgres:///shovel",
     "assertion_store_db_path": "/tmp/store.db",
     "transaction_observer_db_path": "/tmp/observer.db",
     "transaction_observer_endpoint": "http://localhost:3001/api/v1/enforcer/incidents",
     "transaction_observer_auth_token": "test-token",
     "transaction_observer_endpoint_rps_max": 50,
     "transaction_observer_poll_interval_ms": 1000,
-    "block_tag": "latest",
     "state_oracle": "0x1234567890123456789012345678901234567890",
-    "state_oracle_deployment_block": 100,
     "transaction_results_max_capacity": 10000
   }},
   "transport": {{
@@ -1346,17 +1291,14 @@ mod tests {
     "cache_capacity_bytes": 268435456,
     "flush_every_ms": 5000,
     "assertion_da_rpc_url": "http://localhost:8545",
-    "indexer_rpc_url": "ws://localhost:8546",
-    "indexer_db_path": "/tmp/indexer.db",
+    "shovel_pg_url": "postgres:///shovel",
     "assertion_store_db_path": "/tmp/store.db",
     "transaction_observer_db_path": "/tmp/observer.db",
     "transaction_observer_endpoint": "http://localhost:3001/api/v1/enforcer/incidents",
     "transaction_observer_auth_token": "test-token",
     "transaction_observer_endpoint_rps_max": 50,
     "transaction_observer_poll_interval_ms": 1000,
-    "block_tag": "Latest",
     "state_oracle": "0x1234567890123456789012345678901234567890",
-    "state_oracle_deployment_block": 100,
     "transaction_results_max_capacity": 10000
   }},
   "transport": {{
@@ -1397,17 +1339,14 @@ mod tests {
   "credible": {{
     "assertion_gas_limit": 30000000,
     "assertion_da_rpc_url": "http://localhost:8545",
-    "indexer_rpc_url": "ws://localhost:8546",
-    "indexer_db_path": "/tmp/indexer.db",
+    "shovel_pg_url": "postgres:///shovel",
     "assertion_store_db_path": "/tmp/store.db",
     "transaction_observer_db_path": "/tmp/observer.db",
     "transaction_observer_endpoint": "http://localhost:3001/api/v1/enforcer/incidents",
     "transaction_observer_auth_token": "test-token",
     "transaction_observer_endpoint_rps_max": 50,
     "transaction_observer_poll_interval_ms": 1000,
-    "block_tag": "latest",
     "state_oracle": "0x1234567890123456789012345678901234567890",
-    "state_oracle_deployment_block": 100,
     "transaction_results_max_capacity": 10000
   }},
   "transport": {{
@@ -1442,17 +1381,14 @@ mod tests {
   "credible": {{
     "assertion_gas_limit": 30000000,
     "assertion_da_rpc_url": "http://localhost:8545",
-    "indexer_rpc_url": "ws://localhost:8546",
-    "indexer_db_path": "/tmp/indexer.db",
+    "shovel_pg_url": "postgres:///shovel",
     "assertion_store_db_path": "/tmp/store.db",
     "transaction_observer_db_path": "/tmp/observer.db",
     "transaction_observer_endpoint": "http://localhost:3001/api/v1/enforcer/incidents",
     "transaction_observer_auth_token": "test-token",
     "transaction_observer_endpoint_rps_max": 50,
     "transaction_observer_poll_interval_ms": 1000,
-    "block_tag": "latest",
     "state_oracle": "0x1234567890123456789012345678901234567890",
-    "state_oracle_deployment_block": 100,
     "transaction_results_max_capacity": 10000
   }},
   "transport": {{
@@ -1503,17 +1439,14 @@ mod tests {
   "credible": {{
     "assertion_gas_limit": 30000000,
     "assertion_da_rpc_url": "http://localhost:8545",
-    "indexer_rpc_url": "ws://localhost:8546",
-    "indexer_db_path": "/tmp/indexer.db",
+    "shovel_pg_url": "postgres:///shovel",
     "assertion_store_db_path": "/tmp/store.db",
     "transaction_observer_db_path": "/tmp/observer.db",
     "transaction_observer_endpoint": "http://localhost:3001/api/v1/enforcer/incidents",
     "transaction_observer_auth_token": "test-token",
     "transaction_observer_endpoint_rps_max": 50,
     "transaction_observer_poll_interval_ms": 1000,
-    "block_tag": "latest",
     "state_oracle": "0x1234567890123456789012345678901234567890",
-    "state_oracle_deployment_block": 100,
     "transaction_results_max_capacity": 10000
   }},
   "transport": {{
@@ -1580,17 +1513,14 @@ mod tests {
   "credible": {{
     "assertion_gas_limit": 30000000,
     "assertion_da_rpc_url": "http://localhost:8545",
-    "indexer_rpc_url": "ws://localhost:8546",
-    "indexer_db_path": "/tmp/indexer.db",
+    "shovel_pg_url": "postgres:///shovel",
     "assertion_store_db_path": "/tmp/store.db",
     "transaction_observer_db_path": "/tmp/observer.db",
     "transaction_observer_endpoint": "http://localhost:3001/api/v1/enforcer/incidents",
     "transaction_observer_auth_token": "test-token",
     "transaction_observer_endpoint_rps_max": 50,
     "transaction_observer_poll_interval_ms": 1000,
-    "block_tag": "latest",
     "state_oracle": "0x1234567890123456789012345678901234567890",
-    "state_oracle_deployment_block": 100,
     "transaction_results_max_capacity": 10000
   }},
   "transport": {{

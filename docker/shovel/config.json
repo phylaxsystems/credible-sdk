@@ -1,0 +1,76 @@
+{
+  "pg_url": "$DATABASE_URL",
+  "eth_sources": [
+    {
+      "name": "local",
+      "chain_id": 1337,
+      "url": "$ETH_RPC_URL"
+    }
+  ],
+  "integrations": [
+    {
+      "name": "assertion_added",
+      "enabled": true,
+      "sources": [{"name": "local"}],
+      "table": {
+        "name": "assertion_events",
+        "columns": [
+          {"name": "log_addr", "type": "bytea"},
+          {"name": "assertion_adopter", "type": "bytea"},
+          {"name": "assertion_id", "type": "bytea"},
+          {"name": "activation_block", "type": "numeric"}
+        ]
+      },
+      "block": [
+        {
+          "name": "log_addr",
+          "column": "log_addr",
+          "filter_op": "contains",
+          "filter_arg": ["$STATE_ORACLE_ADDRESS"]
+        }
+      ],
+      "event": {
+        "name": "AssertionAdded",
+        "type": "event",
+        "anonymous": false,
+        "inputs": [
+          {"indexed": false, "name": "assertionAdopter", "type": "address", "column": "assertion_adopter"},
+          {"indexed": false, "name": "assertionId", "type": "bytes32", "column": "assertion_id"},
+          {"indexed": false, "name": "activationBlock", "type": "uint256", "column": "activation_block"}
+        ]
+      }
+    },
+    {
+      "name": "assertion_removed",
+      "enabled": true,
+      "sources": [{"name": "local"}],
+      "table": {
+        "name": "assertion_events",
+        "columns": [
+          {"name": "log_addr", "type": "bytea"},
+          {"name": "assertion_adopter", "type": "bytea"},
+          {"name": "assertion_id", "type": "bytea"},
+          {"name": "activation_block", "type": "numeric"}
+        ]
+      },
+      "block": [
+        {
+          "name": "log_addr",
+          "column": "log_addr",
+          "filter_op": "contains",
+          "filter_arg": ["$STATE_ORACLE_ADDRESS"]
+        }
+      ],
+      "event": {
+        "name": "AssertionRemoved",
+        "type": "event",
+        "anonymous": false,
+        "inputs": [
+          {"indexed": false, "name": "assertionAdopter", "type": "address", "column": "assertion_adopter"},
+          {"indexed": false, "name": "assertionId", "type": "bytes32", "column": "assertion_id"},
+          {"indexed": false, "name": "deactivationBlock", "type": "uint256", "column": "activation_block"}
+        ]
+      }
+    }
+  ]
+}

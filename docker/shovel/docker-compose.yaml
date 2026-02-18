@@ -1,0 +1,39 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: shovel-postgres
+    environment:
+      POSTGRES_USER: shovel
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-shovel}
+      POSTGRES_DB: shovel
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shovel"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  shovel:
+    build:
+      context: ../../../shovel
+      dockerfile: ./cmd/shovel/Dockerfile
+    container_name: shovel
+    environment:
+      DATABASE_URL: "postgres://shovel:${POSTGRES_PASSWORD:-shovel}@postgres:5432/shovel"
+      ETH_RPC_URL: "${ETH_RPC_URL:?Set ETH_RPC_URL to the chain RPC endpoint}"
+      STATE_ORACLE_ADDRESS: "${STATE_ORACLE_ADDRESS:?Set STATE_ORACLE_ADDRESS without 0x prefix}"
+    volumes:
+      - ./config.json:/app/config.json:ro
+    command: shovel -config /app/config.json -l 0.0.0.0:8546 -v
+    ports:
+      - "${SHOVEL_DASHBOARD_PORT:-8547}:8546"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pg_data:

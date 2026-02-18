@@ -1,19 +1,14 @@
 //! Configuration module for initializing sidecar components
 
 use crate::args::Config;
-use alloy_provider::{
-    Provider,
-    ProviderBuilder,
-    WsConnect,
-};
 use assertion_da_client::DaClient;
 use assertion_executor::{
     ExecutorConfig,
     store::{
         AssertionStore,
         AssertionStoreError,
-        IndexerCfg,
         PruneConfig,
+        ShovelConsumerCfg,
     },
 };
 use tracing::{
@@ -76,60 +71,25 @@ pub fn init_assertion_store(config: &Config) -> Result<AssertionStore, Assertion
     ))
 }
 
-/// Initialize `IndexerCfg` from `SidecarArgs`
-pub async fn init_indexer_config(
+/// Initialize `ShovelConsumerCfg` from sidecar config
+pub fn init_shovel_consumer_config(
     config: &Config,
     store: AssertionStore,
     executor_config: &ExecutorConfig,
     da_client: DaClient,
-) -> anyhow::Result<IndexerCfg> {
-    trace!(
-        state_oracle = ?config.credible.state_oracle,
-        state_oracle_deployment_block = ?config.credible.state_oracle_deployment_block,
-        da_url = ?config.credible.assertion_da_rpc_url,
-        indexer_rpc = ?config.credible.indexer_rpc_url,
-        indexer_db_path = ?config.credible.indexer_db_path,
-        block_tag = ?config.credible.block_tag,
-        "Initializing indexer"
-    );
-
-    // Initialize provider for blockchain connection
-    let ws_connect = WsConnect::new(&config.credible.indexer_rpc_url);
-    let provider = ProviderBuilder::new().connect_ws(ws_connect).await?;
-    let provider = provider.root().clone();
-
-    // Initialize indexer database
-    let mut indexer_db_config = sled::Config::new();
-    indexer_db_config = indexer_db_config.path(&config.credible.indexer_db_path);
-
-    if let Some(cache_capacity) = config.credible.cache_capacity_bytes {
-        indexer_db_config = indexer_db_config.cache_capacity_bytes(cache_capacity);
-    }
-
-    if let Some(flush_ms) = config.credible.flush_every_ms {
-        indexer_db_config = indexer_db_config.flush_every_ms(Some(flush_ms));
-    }
-
-    let indexer_db = indexer_db_config.open()?;
-
+) -> ShovelConsumerCfg {
     debug!(
-        state_oracle = ?config.credible.state_oracle,
-        state_oracle_deployment_block = ?config.credible.state_oracle_deployment_block,
+        shovel_pg_url = ?config.credible.shovel_pg_url,
         da_url = ?config.credible.assertion_da_rpc_url,
-        indexer_rpc = ?config.credible.indexer_rpc_url,
-        indexer_db_path = ?config.credible.indexer_db_path,
-        block_tag = ?config.credible.block_tag,
-        "Initialized IndexerCfg"
+        poll_interval_ms = ?config.credible.shovel_poll_interval_ms,
+        "Initializing ShovelConsumerCfg"
     );
 
-    Ok(IndexerCfg {
-        state_oracle: config.credible.state_oracle,
-        state_oracle_deployment_block: config.credible.state_oracle_deployment_block,
+    ShovelConsumerCfg {
+        pg_url: config.credible.shovel_pg_url.clone(),
         da_client,
         executor_config: executor_config.clone(),
         store,
-        provider,
-        db: indexer_db,
-        await_tag: config.credible.block_tag,
-    })
+        poll_interval_ms: config.credible.shovel_poll_interval_ms.unwrap_or(1000),
+    }
 }

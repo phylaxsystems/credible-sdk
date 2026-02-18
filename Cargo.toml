@@ -83,6 +83,7 @@ hyper-util = "0.1.19"
 bincode = "1.3.3"
 tokio-stream = "0.1.17"
 sled = { version = "1.0.0-alpha.124" }
+tokio-postgres = "0.7"
 hex = "0.4.3"
 tempfile = { version = "3.23.0" }
 wiremock = "0.6.5"
