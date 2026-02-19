@@ -26,6 +26,8 @@ use tracing::{
     warn,
 };
 
+const DEFAULT_ACCEPTED_TXS_TTL: Duration = Duration::from_secs(600);
+
 /// Event emitted when a transaction result is available.
 #[derive(Debug, Clone)]
 pub struct TransactionResultEvent {
@@ -46,7 +48,7 @@ pub struct TransactionsState {
 
 impl TransactionsState {
     pub fn new() -> Arc<Self> {
-        Self::new_with_ttls(Duration::from_secs(600))
+        Self::new_with_ttls(DEFAULT_ACCEPTED_TXS_TTL)
     }
 
     pub fn new_with_ttls(accepted_txs_ttl: Duration) -> Arc<Self> {
@@ -68,7 +70,7 @@ impl TransactionsState {
     pub fn with_result_sender(
         result_event_sender: flume::Sender<TransactionResultEvent>,
     ) -> Arc<Self> {
-        Self::with_result_sender_and_ttls(result_event_sender, Duration::from_secs(600))
+        Self::with_result_sender_and_ttls(result_event_sender, DEFAULT_ACCEPTED_TXS_TTL)
     }
 
     pub fn with_result_sender_and_ttls(
@@ -86,6 +88,7 @@ impl TransactionsState {
         state
     }
 
+    /// Stores a transaction result and clears its accepted in-flight marker.
     pub fn add_transaction_result(
         &self,
         tx_execution_id: TxExecutionId,
@@ -106,6 +109,7 @@ impl TransactionsState {
         }
     }
 
+    /// Removes a stored transaction result by execution ID.
     pub fn remove_transaction_result(&self, tx_execution_id: &TxExecutionId) {
         self.transaction_results.remove(tx_execution_id);
     }
@@ -117,12 +121,14 @@ impl TransactionsState {
         self.accepted_txs.clear();
     }
 
+    /// Marks a transaction event as accepted and starts TTL tracking for it.
     pub fn add_accepted_tx(&self, tx_queue_contents: &TxQueueContents) {
         if let TxQueueContents::Tx(tx) = tx_queue_contents {
             self.accepted_txs.insert(tx.tx_execution_id, Instant::now());
         }
     }
 
+    /// Returns `(accepted_txs_len, transaction_results_len)` for metrics and monitoring.
     pub fn get_all_lengths(&self) -> (usize, usize) {
         (self.accepted_txs.len(), self.transaction_results.len())
     }
@@ -133,6 +139,7 @@ impl TransactionsState {
             || self.transaction_results.contains_key(tx_execution_id)
     }
 
+    /// Returns a borrowed transaction result if present.
     pub fn get_transaction_result(
         &self,
         tx_execution_id: &TxExecutionId,
@@ -140,6 +147,7 @@ impl TransactionsState {
         self.transaction_results.get(tx_execution_id)
     }
 
+    /// Returns a cloned transaction result if present.
     #[inline]
     pub fn get_transaction_result_cloned(
         &self,
@@ -149,6 +157,7 @@ impl TransactionsState {
             .map(|result| result.clone())
     }
 
+    /// Returns a reference to the full transaction results map.
     pub fn get_all_transaction_result(&self) -> &DashMap<TxExecutionId, TransactionResult> {
         &self.transaction_results
     }
@@ -224,11 +233,13 @@ mod tests {
         thread,
     };
 
+    /// Helper function to create a test transaction execution id
     fn create_test_tx_execution_id(byte: u8) -> TxExecutionId {
         let tx_hash = B256::from([byte; 32]);
         TxExecutionId::new(U256::from(byte), 0, tx_hash, 0)
     }
 
+    /// Helper function to create a test transaction result
     fn create_test_transaction_result() -> TransactionResult {
         TransactionResult::ValidationCompleted {
             execution_result: ExecutionResult::Success {
@@ -242,6 +253,7 @@ mod tests {
         }
     }
 
+    /// Helper function to create a test `TxQueueContents` with transaction
     fn create_test_tx_queue_contents(tx_execution_id: TxExecutionId) -> TxQueueContents {
         TxQueueContents::Tx(QueueTransaction {
             tx_execution_id,
@@ -411,6 +423,7 @@ mod tests {
     }
 
     #[tokio::test]
+    /// Ensures concurrent pollers eventually observe a result inserted after a short delay.
     async fn concurrent_pollers_observe_result_after_delayed_write() {
         let state = TransactionsState::new();
         let tx_execution_id = create_test_tx_execution_id(99);
