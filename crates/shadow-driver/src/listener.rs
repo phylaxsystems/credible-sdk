@@ -28,7 +28,10 @@ use anyhow::{
     Result,
     anyhow,
 };
-use futures::StreamExt;
+use futures_util::{
+    StreamExt,
+    future::join_all,
+};
 use sidecar::transport::grpc::pb::{
     AccessListItem as ProtoAccessListItem,
     Authorization as ProtoAuthorization,
@@ -1404,7 +1407,7 @@ impl Listener {
             })
             .collect();
 
-        let receipt_results = futures::future::join_all(receipt_futures).await;
+        let receipt_results = join_all(receipt_futures).await;
 
         info!(
             "Fetched {} transaction receipts from provider for block {block_number}",

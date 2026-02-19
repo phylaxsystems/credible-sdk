@@ -71,10 +71,7 @@ use assertion_executor::primitives::{
     TxKind,
     U256,
 };
-use futures::stream::{
-    FuturesUnordered,
-    StreamExt,
-};
+use futures_util::stream::{StreamExt, FuturesUnordered};
 use metrics::{
     counter,
     histogram,

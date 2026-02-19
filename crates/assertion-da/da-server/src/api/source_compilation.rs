@@ -8,8 +8,10 @@ use bollard::{
         WaitContainerOptions,
     },
 };
-use futures::TryStreamExt;
-use futures_util::stream::StreamExt;
+use futures_util::{
+    TryStreamExt,
+    stream::StreamExt,
+};
 use metrics;
 use regex::Regex;
 use serde_json::Value;

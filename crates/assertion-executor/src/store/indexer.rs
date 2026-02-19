@@ -11,7 +11,10 @@ use alloy_rpc_types::{
     Log,
 };
 use alloy_transport::TransportError;
-use futures::StreamExt;
+use futures_util::{
+    StreamExt,
+    stream,
+};
 use std::collections::HashMap;
 
 use alloy_network_primitives::HeaderResponse;
@@ -43,8 +46,6 @@ use alloy::primitives::{
     U256,
 };
 
-use clap::ValueEnum;
-
 use crate::{
     ExecutorConfig,
     metrics,
@@ -64,14 +65,12 @@ use crate::{
         check_if_reorged,
     },
 };
-
 use assertion_da_client::{
     DaClient,
     DaClientError,
     DaFetchResponse,
 };
-
-use futures::stream;
+use clap::ValueEnum;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 

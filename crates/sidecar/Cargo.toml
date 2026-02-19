@@ -43,7 +43,7 @@ sled = { workspace = true }
 reqwest = { workspace = true, features = ["blocking", "json", "rustls-tls"] }
 rustls = { workspace = true }
 metrics = { workspace = true }
-futures = { workspace = true }
+futures-util.workspace = true
 hex = { workspace = true }
 moka = { version = "0.12.11", features = ["sync"] }
 alloy-rpc-types-trace = { workspace = true, optional = true }

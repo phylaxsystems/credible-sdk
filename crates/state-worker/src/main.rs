@@ -32,7 +32,7 @@ use crate::{
     worker::StateWorker,
 };
 
-use futures::FutureExt;
+use futures_util::FutureExt;
 use rust_tracing::trace;
 use tracing::{
     info,
