@@ -19,7 +19,7 @@ alloy-provider = { workspace = true }
 # misc
 anyhow = { workspace = true }
 clap = { workspace = true }
-futures = { workspace = true }
+futures-util.workspace = true
 tokio = { workspace = true }
 tracing = { workspace = true }
 rust-tracing = { workspace = true }

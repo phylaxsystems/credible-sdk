@@ -261,7 +261,7 @@ mod tests {
         Bytes,
         U256,
     };
-    use futures::StreamExt;
+    use futures_util::StreamExt;
     use std::{
         net::SocketAddr,
         time::Duration,

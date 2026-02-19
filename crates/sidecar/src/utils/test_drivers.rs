@@ -76,7 +76,7 @@ use assertion_executor::{
     },
 };
 use async_trait::async_trait;
-use futures::StreamExt;
+use futures_util::StreamExt;
 use int_test_utils::node_protocol_mock_server::DualProtocolMockServer;
 use revm::{
     database::CacheDB,

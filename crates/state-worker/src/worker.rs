@@ -25,7 +25,7 @@ use anyhow::{
     Result,
     anyhow,
 };
-use futures::StreamExt;
+use futures_util::StreamExt;
 use mdbx::{
     BlockStateUpdate,
     Reader,

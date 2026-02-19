@@ -20,7 +20,7 @@ tracing = { workspace = true }
 alloy = { workspace = true }
 alloy-provider = { workspace = true }
 alloy-rpc-types-trace = { workspace = true }
-futures = { workspace = true }
+futures-util = { workspace = true }
 revm = { workspace = true }
 hex = { workspace = true }
 rust-tracing = { workspace = true }

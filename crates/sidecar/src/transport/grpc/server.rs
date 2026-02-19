@@ -71,7 +71,7 @@ use assertion_executor::primitives::{
     TxKind,
     U256,
 };
-use futures::stream::{
+use futures_util::stream::{
     FuturesUnordered,
     StreamExt,
 };

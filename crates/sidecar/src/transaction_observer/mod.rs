@@ -6,7 +6,7 @@ mod tests;
 
 use crate::utils::ErrorRecoverability;
 use dapp_api_client::Client as DappClient;
-use futures::stream::{
+use futures_util::stream::{
     FuturesUnordered,
     StreamExt,
 };

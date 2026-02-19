@@ -24,7 +24,7 @@ use assertion_executor::primitives::{
     B256,
     Bytecode,
 };
-use futures::StreamExt;
+use futures_util::StreamExt;
 use parking_lot::RwLock;
 use revm::{
     DatabaseRef,

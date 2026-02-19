@@ -1,18 +1,3 @@
-use dashmap::DashMap;
-use futures::future;
-use metrics::histogram;
-use std::{
-    fmt::Debug,
-    sync::Mutex,
-    time::Duration,
-};
-use thiserror::Error;
-use tokio::{
-    sync::broadcast,
-    task::JoinHandle,
-    time::Instant,
-};
-
 use crate::{
     engine::queue::TxQueueContents,
     execution_ids::TxExecutionId,
@@ -22,7 +7,23 @@ use crate::{
         TransactionsState,
     },
 };
-use std::sync::Arc;
+use dashmap::DashMap;
+use futures_util::future;
+use metrics::histogram;
+use std::{
+    fmt::Debug,
+    sync::{
+        Arc,
+        Mutex,
+    },
+    time::Duration,
+};
+use thiserror::Error;
+use tokio::{
+    sync::broadcast,
+    task::JoinHandle,
+    time::Instant,
+};
 use tracing::{
     debug,
     warn,
@@ -611,7 +612,7 @@ mod tests {
             handles.push(handle);
         }
 
-        let results: Vec<bool> = futures::future::join_all(handles)
+        let results: Vec<bool> = future::join_all(handles)
             .await
             .into_iter()
             .map(|r| r.unwrap())
@@ -654,7 +655,7 @@ mod tests {
                 handles.push(handle);
             }
 
-            futures::future::join_all(handles).await
+            future::join_all(handles).await
         })
         .await;
 
