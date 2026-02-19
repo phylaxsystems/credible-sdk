@@ -1,16 +1,3 @@
-use dashmap::DashMap;
-use metrics::histogram;
-use std::{
-    fmt::Debug,
-    sync::Mutex,
-    time::Duration,
-};
-use thiserror::Error;
-use tokio::{
-    sync::broadcast,
-    task::JoinHandle,
-    time::Instant,
-};
 use crate::{
     engine::queue::TxQueueContents,
     execution_ids::TxExecutionId,
@@ -20,8 +7,23 @@ use crate::{
         TransactionsState,
     },
 };
+use dashmap::DashMap;
 use futures_util::future;
-use std::sync::Arc;
+use metrics::histogram;
+use std::{
+    fmt::Debug,
+    sync::{
+        Arc,
+        Mutex,
+    },
+    time::Duration,
+};
+use thiserror::Error;
+use tokio::{
+    sync::broadcast,
+    task::JoinHandle,
+    time::Instant,
+};
 use tracing::{
     debug,
     warn,
