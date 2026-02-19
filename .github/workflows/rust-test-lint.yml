@@ -43,7 +43,7 @@ jobs:
         run: echo "rust-nightly=${{ env.RUST_NIGHTLY_VERSION }}" >> $GITHUB_OUTPUT
 
   rust-base:
-    name: Rust Base Nextest
+    name: Rust Test & Lint
     needs: setup
     uses: phylaxsystems/actions/.github/workflows/rust-base.yaml@main
     with:
@@ -57,6 +57,7 @@ jobs:
       foundry-command: "forge clean --root testdata/mock-protocol && forge build --root testdata/mock-protocol && FOUNDRY_PROFILE=assertions forge build --root testdata/mock-protocol"
       test-args: "--exclude mdbx --exclude state-worker --no-tests=warn"
       deny-checks: "advisories"
+      enable-sccache: true
       feature-sets: '[
         "--no-default-features --features test",
         "--no-default-features --features test --features optimism"
@@ -71,6 +72,10 @@ jobs:
     needs: setup
     runs-on:
       group: big-bois-x86
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: "sccache"
+      CARGO_INCREMENTAL: "0"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -80,10 +85,7 @@ jobs:
         with:
           toolchain: ${{ needs.setup.outputs.rust-nightly }}
 
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: ${{ needs.setup.outputs.rust-nightly }}-base
-          key: default
+      - uses: mozilla-actions/sccache-action@v0.0.9
 
       - uses: taiki-e/install-action@nextest
 

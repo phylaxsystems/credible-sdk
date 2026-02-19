@@ -57,11 +57,6 @@ impl TestSetup {
         self.assertion_specs = assertion_specs;
     }
 
-    #[allow(dead_code)]
-    pub fn set_json(&mut self, json: bool) {
-        self.json = json;
-    }
-
     pub async fn build(&self) -> Result<TestRunner, DaSubmitError> {
         let (handle, da_url) = deploy_test_da(SigningKey::random(&mut OsRng)).await;
         let assertion_specs = if self.assertion_specs.is_empty() {
