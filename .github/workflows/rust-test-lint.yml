@@ -75,6 +75,7 @@ jobs:
     env:
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: "sccache"
+      CARGO_INCREMENTAL: "0"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -85,11 +86,6 @@ jobs:
           toolchain: ${{ needs.setup.outputs.rust-nightly }}
 
       - uses: mozilla-actions/sccache-action@v0.0.9
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: ${{ needs.setup.outputs.rust-nightly }}-base
-          key: default
 
       - uses: taiki-e/install-action@nextest
 
