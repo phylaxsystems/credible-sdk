@@ -45,15 +45,13 @@ use crate::{
         },
     },
     execution_ids::TxExecutionId,
-    transactions_state::TransactionResultEvent,
+    transactions_state::{
+        TransactionResultEvent,
+        TransactionsState,
+    },
     transport::{
         event_id_deduplication::EventIdBuffer,
         rpc_metrics::RpcRequestDuration,
-        transactions_results::{
-            AcceptedState,
-            QueryTransactionsResults,
-            wait_for_pending_transactions,
-        },
     },
 };
 use alloy::{
@@ -608,7 +606,7 @@ impl Drop for GrpcServiceInner {
 #[derive(Clone)]
 pub struct GrpcService {
     tx_sender: TransactionQueueSender,
-    transactions_results: QueryTransactionsResults,
+    transactions_state: Arc<TransactionsState>,
     inner: Arc<GrpcServiceInner>,
 }
 
@@ -619,7 +617,7 @@ impl GrpcService {
     /// transaction result events and broadcasts them to gRPC subscribers.
     pub fn new(
         tx_sender: TransactionQueueSender,
-        transactions_results: QueryTransactionsResults,
+        transactions_state: Arc<TransactionsState>,
         result_event_rx: Option<flume::Receiver<TransactionResultEvent>>,
         event_buffer_capacity: usize,
     ) -> Self {
@@ -656,7 +654,7 @@ impl GrpcService {
 
         Self {
             tx_sender,
-            transactions_results,
+            transactions_state,
             inner,
         }
     }
@@ -764,9 +762,7 @@ impl GrpcService {
                     .map_err(|e| Status::invalid_argument(format!("invalid transaction: {e}")))?;
 
                 if let TxQueueContents::Tx(ref tx) = queue_tx
-                    && self
-                        .transactions_results
-                        .is_tx_received_now(&tx.tx_execution_id)
+                    && self.transactions_state.is_tx_received(&tx.tx_execution_id)
                 {
                     warn!(
                         tx_hash = ?tx.tx_execution_id.tx_hash,
@@ -775,7 +771,7 @@ impl GrpcService {
                     return Ok(());
                 }
 
-                self.transactions_results.add_accepted_tx(&queue_tx);
+                self.transactions_state.add_accepted_tx(&queue_tx);
                 self.send_queue_event(queue_tx)?;
             }
             EventVariant::Reorg(reorg) => {
@@ -804,7 +800,7 @@ impl GrpcService {
                     tx_execution_id,
                     tx_hashes,
                 });
-                self.transactions_results.add_accepted_tx(&event);
+                self.transactions_state.add_accepted_tx(&event);
                 self.tx_sender
                     .send(event)
                     .map_err(|_| Status::internal(error_messages::QUEUE_REORG_FAILED))?;
@@ -816,119 +812,42 @@ impl GrpcService {
     }
 
     #[inline]
-    async fn fetch_transaction_result(
+    fn fetch_transaction_result(
         &self,
-        tx_execution_id: TxExecutionId,
-    ) -> Result<PbTransactionResult, Status> {
+        tx_execution_id: &TxExecutionId,
+    ) -> Option<PbTransactionResult> {
         let fetch_started_at = Instant::now();
-        let result = match self
-            .transactions_results
-            .request_transaction_result(&tx_execution_id)
-        {
-            crate::transactions_state::RequestTransactionResult::Result(r) => r,
-            crate::transactions_state::RequestTransactionResult::Channel(mut rx) => {
-                rx.recv()
-                    .await
-                    .map_err(|_| Status::internal("engine unavailable"))?
-            }
-        };
-
-        let pb_result = encode_transaction_result(tx_execution_id, &result);
+        let result = self
+            .transactions_state
+            .get_transaction_result_cloned(tx_execution_id)?;
+        let pb_result = encode_transaction_result(*tx_execution_id, &result);
         histogram!("sidecar_fetch_transaction_result_duration").record(fetch_started_at.elapsed());
-
-        Ok(pb_result)
+        Some(pb_result)
     }
 
-    /// Collect transaction results with parallel fetching.
-    /// Optimized to minimize clones - only clones hash bytes when actually needed for errors.
-    async fn collect_results_parallel<'a, I>(
-        &self,
-        ids: I,
-    ) -> Result<(Vec<PbTransactionResult>, Vec<Vec<u8>>), Status>
+    /// Collect transaction results using immediate, non-blocking lookups.
+    fn collect_results_parallel<'a, I>(&self, ids: I) -> (Vec<PbTransactionResult>, Vec<Vec<u8>>)
     where
         I: IntoIterator<Item = &'a PbTxExecutionId>,
     {
         let iter = ids.into_iter();
         let (lower_bound, _) = iter.size_hint();
-
-        // Phase 1: Parse all IDs and categorize
-        // Store references to avoid cloning until necessary
-        let mut ready_ids = Vec::with_capacity(lower_bound);
-        let mut waiters: Vec<(TxExecutionId, Vec<u8>, _)> = Vec::new();
+        let mut results = Vec::with_capacity(lower_bound);
         let mut not_found = Vec::new();
 
         for pb_id in iter {
             match decode_tx_execution_id(pb_id) {
                 Ok(tx_execution_id) => {
-                    match self.transactions_results.is_tx_received(&tx_execution_id) {
-                        AcceptedState::Yes => ready_ids.push(tx_execution_id),
-                        AcceptedState::NotYet(rx) => {
-                            info!(
-                                target = "transport::grpc",
-                                tx_execution_id = ?tx_execution_id,
-                                "Transaction not yet received, waiting for it"
-                            );
-                            // Clone hash bytes only when needed for waiting
-                            waiters.push((tx_execution_id, pb_id.tx_hash.clone(), rx));
-                        }
+                    match self.fetch_transaction_result(&tx_execution_id) {
+                        Some(result) => results.push(result),
+                        None => not_found.push(pb_id.tx_hash.clone()),
                     }
                 }
-                // Only clone on parse error
                 Err(_) => not_found.push(pb_id.tx_hash.clone()),
             }
         }
 
-        // Phase 2: Fetch ready results in parallel using FuturesUnordered
-        let results_capacity = ready_ids.len() + waiters.len();
-        let mut results = Vec::with_capacity(results_capacity);
-
-        if !ready_ids.is_empty() {
-            let mut futures: FuturesUnordered<_> = ready_ids
-                .into_iter()
-                .map(|id| self.fetch_transaction_result(id))
-                .collect();
-
-            while let Some(res) = futures.next().await {
-                results.push(res?);
-            }
-        }
-
-        // Phase 3: Handle pending transactions
-        if !waiters.is_empty() {
-            // Convert to owned data only for the wait operation
-            let waiters_owned: Vec<_> = waiters
-                .into_iter()
-                .map(|(id, hash, rx)| ((id, hash), rx))
-                .collect();
-
-            let wait_outcomes = wait_for_pending_transactions(waiters_owned).await;
-
-            // Collect IDs that became ready
-            let mut pending_ready_ids = Vec::with_capacity(wait_outcomes.len());
-
-            for ((tx_execution_id, hash), wait_result) in wait_outcomes {
-                match wait_result {
-                    Ok(Ok(true)) => pending_ready_ids.push(tx_execution_id),
-                    Ok(Ok(false) | Err(_)) | Err(_) => {
-                        not_found.push(hash);
-                    }
-                }
-            }
-
-            // Fetch pending-but-now-ready results in parallel
-            if !pending_ready_ids.is_empty() {
-                let mut pending_futures: FuturesUnordered<_> = pending_ready_ids
-                    .into_iter()
-                    .map(|id| self.fetch_transaction_result(id))
-                    .collect();
-
-                while let Some(res) = pending_futures.next().await {
-                    results.push(res?);
-                }
-            }
-        }
-
-        Ok((results, not_found))
+        (results, not_found)
     }
 }
 
@@ -1120,9 +1039,7 @@ impl SidecarTransport for GrpcService {
             "GetTransactions received"
         );
 
-        let (results, not_found) = self
-            .collect_results_parallel(payload.tx_execution_ids.iter())
-            .await?;
+        let (results, not_found) = self.collect_results_parallel(payload.tx_execution_ids.iter());
 
         Ok(Response::new(GetTransactionsResponse {
             results,
@@ -1158,9 +1075,7 @@ impl SidecarTransport for GrpcService {
 
         let hash_bytes = pb_id.tx_hash.clone();
 
-        let (mut results, mut not_found) = self
-            .collect_results_parallel(std::iter::once(&pb_id))
-            .await?;
+        let (mut results, mut not_found) = self.collect_results_parallel(std::iter::once(&pb_id));
 
         if let Some(result) = results.pop() {
             debug!(
@@ -1195,4 +1110,210 @@ pub fn convert_pb_tx_env_to_revm(pb_tx_env: &TransactionEnv) -> Result<TxEnv, Gr
 #[inline]
 pub fn to_queue_tx(t: &Transaction) -> Result<TxQueueContents, GrpcDecodeError> {
     decode_transaction(t)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::queue::QueueTransaction;
+    use revm::context::TxEnv;
+    use std::time::Duration;
+
+    fn make_pb_tx_execution_id(tx_execution_id: TxExecutionId) -> PbTxExecutionId {
+        encode_tx_execution_id(tx_execution_id)
+    }
+
+    fn make_tx_execution_id(byte: u8) -> TxExecutionId {
+        TxExecutionId::new(U256::from(1), 0, B256::from([byte; 32]), 0)
+    }
+
+    fn make_service(state: Arc<TransactionsState>) -> GrpcService {
+        let (tx_sender, _rx) = flume::unbounded();
+        let service = GrpcService::new(tx_sender, state, None, 128);
+        service
+            .inner
+            .commit_head_seen
+            .store(true, Ordering::Release);
+        service
+    }
+
+    #[tokio::test]
+    async fn get_transaction_returns_not_found_without_waiting_for_accepted_tx() {
+        let state = TransactionsState::new();
+        let tx_execution_id = make_tx_execution_id(7);
+        state.add_accepted_tx(&TxQueueContents::Tx(QueueTransaction {
+            tx_execution_id,
+            tx_env: TxEnv::default(),
+            prev_tx_hash: None,
+        }));
+
+        let service = make_service(state);
+        let response = service
+            .get_transaction(Request::new(GetTransactionRequest {
+                tx_execution_id: Some(make_pb_tx_execution_id(tx_execution_id)),
+            }))
+            .await
+            .expect("get_transaction should succeed")
+            .into_inner();
+
+        match response.outcome {
+            Some(GetTransactionOutcome::NotFound(hash)) => {
+                assert_eq!(hash, tx_execution_id.tx_hash.as_slice().to_vec());
+            }
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn get_transaction_returns_result_when_present() {
+        let state = TransactionsState::new();
+        let tx_execution_id = make_tx_execution_id(8);
+        let result = TransactionResult::ValidationError("boom".to_string());
+        state.add_transaction_result(tx_execution_id, &result);
+
+        let service = make_service(state);
+        let response = service
+            .get_transaction(Request::new(GetTransactionRequest {
+                tx_execution_id: Some(make_pb_tx_execution_id(tx_execution_id)),
+            }))
+            .await
+            .expect("get_transaction should succeed")
+            .into_inner();
+
+        match response.outcome {
+            Some(GetTransactionOutcome::Result(result)) => {
+                assert_eq!(result.status, ResultStatus::Failed as i32);
+            }
+            other => panic!("expected Result, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn get_transactions_returns_mixed_immediate_outcomes_without_waiting() {
+        let state = TransactionsState::new();
+        let ready_tx = make_tx_execution_id(11);
+        let accepted_only_tx = make_tx_execution_id(12);
+        state.add_transaction_result(ready_tx, &TransactionResult::ValidationError("boom".into()));
+        state.add_accepted_tx(&TxQueueContents::Tx(QueueTransaction {
+            tx_execution_id: accepted_only_tx,
+            tx_env: TxEnv::default(),
+            prev_tx_hash: None,
+        }));
+
+        let service = make_service(state);
+        let response = service
+            .get_transactions(Request::new(GetTransactionsRequest {
+                tx_execution_ids: vec![
+                    make_pb_tx_execution_id(ready_tx),
+                    make_pb_tx_execution_id(accepted_only_tx),
+                ],
+            }))
+            .await
+            .expect("get_transactions should succeed")
+            .into_inner();
+
+        assert_eq!(
+            response.results.len(),
+            1,
+            "only ready result should be returned"
+        );
+        assert_eq!(
+            response.not_found,
+            vec![accepted_only_tx.tx_hash.as_slice().to_vec()],
+            "accepted-only tx should return immediate not_found"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_transaction_transitions_from_not_found_to_result_when_engine_finishes() {
+        let state = TransactionsState::new();
+        let tx_execution_id = make_tx_execution_id(13);
+        state.add_accepted_tx(&TxQueueContents::Tx(QueueTransaction {
+            tx_execution_id,
+            tx_env: TxEnv::default(),
+            prev_tx_hash: None,
+        }));
+        let service = make_service(state.clone());
+
+        let first = service
+            .get_transaction(Request::new(GetTransactionRequest {
+                tx_execution_id: Some(make_pb_tx_execution_id(tx_execution_id)),
+            }))
+            .await
+            .expect("first get_transaction should succeed")
+            .into_inner();
+        assert!(
+            matches!(first.outcome, Some(GetTransactionOutcome::NotFound(_))),
+            "accepted-only transaction should initially be reported as not_found"
+        );
+
+        state.add_transaction_result(
+            tx_execution_id,
+            &TransactionResult::ValidationError("boom".into()),
+        );
+
+        let second = service
+            .get_transaction(Request::new(GetTransactionRequest {
+                tx_execution_id: Some(make_pb_tx_execution_id(tx_execution_id)),
+            }))
+            .await
+            .expect("second get_transaction should succeed")
+            .into_inner();
+        assert!(
+            matches!(second.outcome, Some(GetTransactionOutcome::Result(_))),
+            "once result is inserted, the same transaction should return result"
+        );
+    }
+
+    #[tokio::test]
+    async fn polling_get_transaction_eventually_observes_result_under_concurrent_insert() {
+        let state = TransactionsState::new();
+        let tx_execution_id = make_tx_execution_id(14);
+        state.add_accepted_tx(&TxQueueContents::Tx(QueueTransaction {
+            tx_execution_id,
+            tx_env: TxEnv::default(),
+            prev_tx_hash: None,
+        }));
+        let service = make_service(state.clone());
+
+        let writer = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            state.add_transaction_result(
+                tx_execution_id,
+                &TransactionResult::ValidationError("boom".into()),
+            );
+        });
+
+        let started_at = Instant::now();
+        let mut saw_not_found = false;
+        loop {
+            let response = service
+                .get_transaction(Request::new(GetTransactionRequest {
+                    tx_execution_id: Some(make_pb_tx_execution_id(tx_execution_id)),
+                }))
+                .await
+                .expect("polling get_transaction should succeed")
+                .into_inner();
+
+            match response.outcome {
+                Some(GetTransactionOutcome::NotFound(_)) => {
+                    saw_not_found = true;
+                }
+                Some(GetTransactionOutcome::Result(_)) => break,
+                None => panic!("response must include an outcome"),
+            }
+
+            assert!(
+                started_at.elapsed() < Duration::from_secs(1),
+                "polling should observe the result within timeout"
+            );
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+
+        writer.await.expect("writer task should complete");
+        assert!(
+            saw_not_found,
+            "polling sequence should include not_found before result appears"
+        );
+    }
 }

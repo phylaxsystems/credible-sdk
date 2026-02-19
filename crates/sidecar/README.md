@@ -80,11 +80,9 @@ Each field is resolved independently with the following order:
 
 Defaults still apply to these fields if missing from both file and env:
 
-- `credible.transaction_results_pending_requests_ttl_ms`
 - `credible.accepted_txs_ttl_ms`
 - `transport.health_bind_addr`
 - `transport.event_id_buffer_capacity`
-- `transport.pending_receive_ttl_ms`
 
 The configuration file can now omit any field. If a required field is missing from the file and env, the sidecar will
 exit with a configuration error.
@@ -115,7 +113,6 @@ Credible:
 - `credible.state_oracle` -> `SIDECAR_STATE_ORACLE`
 - `credible.state_oracle_deployment_block` -> `SIDECAR_STATE_ORACLE_DEPLOYMENT_BLOCK`
 - `credible.transaction_results_max_capacity` -> `SIDECAR_TRANSACTION_RESULTS_MAX_CAPACITY`
-- `credible.transaction_results_pending_requests_ttl_ms` -> `SIDECAR_TRANSACTION_RESULTS_PENDING_REQUESTS_TTL_MS`
 - `credible.accepted_txs_ttl_ms` -> `SIDECAR_ACCEPTED_TXS_TTL_MS`
 - `credible.assertion_store_prune_config_interval_ms` -> `SIDECAR_ASSERTION_STORE_PRUNE_INTERVAL_MS`
 - `credible.assertion_store_prune_config_retention_blocks` -> `SIDECAR_ASSERTION_STORE_PRUNE_RETENTION_BLOCKS`
@@ -126,7 +123,6 @@ Transport:
 - `transport.bind_addr` -> `SIDECAR_TRANSPORT_BIND_ADDR`
 - `transport.health_bind_addr` -> `SIDECAR_HEALTH_BIND_ADDR`
 - `transport.event_id_buffer_capacity` -> `SIDECAR_EVENT_ID_BUFFER_CAPACITY`
-- `transport.pending_receive_ttl_ms` -> `SIDECAR_PENDING_RECEIVE_TTL_MS`
 
 State:
 - `state.sources` -> `SIDECAR_STATE_SOURCES` (JSON array)
@@ -223,7 +219,6 @@ The configuration file is a JSON file with the following schema:
         "state_oracle",
         "state_oracle_deployment_block",
         "transaction_results_max_capacity",
-        "transaction_results_pending_requests_ttl_ms",
         "accepted_txs_ttl_ms",
         "assertion_store_prune_config_interval_ms",
         "assertion_store_prune_config_retention_blocks"
@@ -373,14 +368,6 @@ The configuration file is a JSON file with the following schema:
             10000
           ]
         },
-        "transaction_results_pending_requests_ttl_ms": {
-          "type": "integer",
-          "description": "Maximum time (ms) to keep transaction result request channels alive",
-          "minimum": 1,
-          "examples": [
-            600000
-          ]
-        },
         "accepted_txs_ttl_ms": {
           "type": "integer",
           "description": "Maximum time (ms) to keep accepted transactions without results",
@@ -425,7 +412,6 @@ The configuration file is a JSON file with the following schema:
         "bind_addr",
         "health_bind_addr",
         "event_id_buffer_capacity",
-        "pending_receive_ttl_ms"
       ],
       "properties": {
         "protocol": {
@@ -462,13 +448,6 @@ The configuration file is a JSON file with the following schema:
           "description": "Maximum number of events ID in the transport layer buffer before dropping new events.",
           "examples": [
             "1000"
-          ]
-        },
-        "pending_receive_ttl_ms": {
-          "type": "integer",
-          "description": "Maximum time (ms) a pending transaction receive entry may live before forced eviction.",
-          "examples": [
-            "5000"
           ]
         }
       },
@@ -628,14 +607,12 @@ The default configuration can be found in [default_config.json](default_config.j
     "state_oracle": "0x6dD3f12ce435f69DCeDA7e31605C02Bb5422597b",
     "state_oracle_deployment_block": 0,
     "transaction_results_max_capacity": 1000,
-    "transaction_results_pending_requests_ttl_ms": 600000,
     "accepted_txs_ttl_ms": 600000
   },
   "transport": {
     "protocol": "grpc",
     "bind_addr": "0.0.0.0:50051",
     "health_bind_addr": "0.0.0.0:9547",
-    "pending_receive_ttl_ms": 5000
   },
   "state": {
     "sources": [

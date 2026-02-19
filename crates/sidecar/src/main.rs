@@ -410,22 +410,12 @@ async fn build_sources_from_config(config: &Config) -> anyhow::Result<Vec<Arc<dy
     Ok(sources)
 }
 
-fn result_ttls(config: &Config) -> (Duration, Duration) {
-    let pending_requests_ttl = if config
-        .credible
-        .transaction_results_pending_requests_ttl_ms
-        .is_zero()
-    {
-        Duration::from_secs(2)
-    } else {
-        config.credible.transaction_results_pending_requests_ttl_ms
-    };
-    let accepted_txs_ttl = if config.credible.accepted_txs_ttl_ms.is_zero() {
+fn result_ttl(config: &Config) -> Duration {
+    if config.credible.accepted_txs_ttl_ms.is_zero() {
         Duration::from_secs(2)
     } else {
         config.credible.accepted_txs_ttl_ms
-    };
-    (pending_requests_ttl, accepted_txs_ttl)
+    }
 }
 
 async fn observer_exit_future(
@@ -639,12 +629,9 @@ async fn run_sidecar_once(
     };
 
     let (result_tx, result_rx) = unbounded();
-    let (pending_requests_ttl, accepted_txs_ttl) = result_ttls(config);
-    let engine_state_results = TransactionsState::with_result_sender_and_ttls(
-        result_tx,
-        pending_requests_ttl,
-        accepted_txs_ttl,
-    );
+    let accepted_txs_ttl = result_ttl(config);
+    let engine_state_results =
+        TransactionsState::with_result_sender_and_ttls(result_tx, accepted_txs_ttl);
     let result_event_rx = Some(result_rx);
 
     let mut transport = create_transport_from_args(

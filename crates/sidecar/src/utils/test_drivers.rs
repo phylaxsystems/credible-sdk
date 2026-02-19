@@ -876,7 +876,6 @@ impl LocalInstanceGrpcDriver {
             bind_addr: address.to_string(),
             health_bind_addr: "127.0.0.1:0".to_string(),
             event_id_buffer_capacity,
-            pending_receive_ttl: Duration::from_secs(5),
         }
     }
 
