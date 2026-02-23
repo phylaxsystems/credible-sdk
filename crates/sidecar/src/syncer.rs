@@ -91,17 +91,17 @@ impl<S: EventSource> AssertionSyncer<S> {
         );
 
         // Check if the external indexer head moved backward ie possible reorg handling upstream
-        if let Ok(Some(head)) = self.event_source.get_indexer_head().await {
-            if head < self.last_synced_block {
-                warn!(
-                    target = "sidecar::syncer",
-                    indexer_head = head,
-                    last_synced_block = self.last_synced_block,
-                    "Event source head moved backward, possible reorg upstream. Skipping cycle."
-                );
-                metrics::record_event_source_head_regression();
-                return Ok(());
-            }
+        if let Ok(Some(head)) = self.event_source.get_indexer_head().await
+            && head < self.last_synced_block
+        {
+            warn!(
+                target = "sidecar::syncer",
+                indexer_head = head,
+                last_synced_block = self.last_synced_block,
+                "Event source head moved backward, possible reorg upstream. Skipping cycle."
+            );
+            metrics::record_event_source_head_regression();
+            return Ok(());
         }
 
         // Fetch added and removed events concurrently
