@@ -1,10 +1,12 @@
 //! Configuration module for initializing sidecar components
 
-use crate::args::Config;
-use alloy_provider::{
-    Provider,
-    ProviderBuilder,
-    WsConnect,
+use crate::{
+    args::Config,
+    graphql_event_source::{
+        GraphqlEventSource,
+        GraphqlEventSourceConfig,
+    },
+    syncer::SyncerCfg,
 };
 use assertion_da_client::DaClient;
 use assertion_executor::{
@@ -12,14 +14,14 @@ use assertion_executor::{
     store::{
         AssertionStore,
         AssertionStoreError,
-        IndexerCfg,
+        EventSource,
+        EventSourceError,
         PruneConfig,
     },
 };
 use tracing::{
     debug,
     info,
-    trace,
 };
 
 /// Initialize `ExecutorConfig` from `SidecarArgs`
@@ -76,60 +78,36 @@ pub fn init_assertion_store(config: &Config) -> Result<AssertionStore, Assertion
     ))
 }
 
-/// Initialize `IndexerCfg` from `SidecarArgs`
-pub async fn init_indexer_config(
+/// Initialize `SyncerCfg` from config.
+///
+/// Creates the event source and syncer configuration for assertion events.
+/// Performs an initial health check to verify the event source is reachable.
+pub async fn init_syncer_config(
     config: &Config,
     store: AssertionStore,
     executor_config: &ExecutorConfig,
     da_client: DaClient,
-) -> anyhow::Result<IndexerCfg> {
-    trace!(
-        state_oracle = ?config.credible.state_oracle,
-        state_oracle_deployment_block = ?config.credible.state_oracle_deployment_block,
-        da_url = ?config.credible.assertion_da_rpc_url,
-        indexer_rpc = ?config.credible.indexer_rpc_url,
-        indexer_db_path = ?config.credible.indexer_db_path,
-        block_tag = ?config.credible.block_tag,
-        "Initializing indexer"
+) -> Result<SyncerCfg<GraphqlEventSource>, EventSourceError> {
+    let event_source = GraphqlEventSource::new(GraphqlEventSourceConfig {
+        graphql_url: config.credible.event_source_url.clone(),
+    });
+
+    let poll_interval = config.credible.poll_interval;
+
+    // Verify the event source is reachable before proceeding
+    event_source.health_check().await?;
+
+    info!(
+        event_source_url = ?config.credible.event_source_url,
+        poll_interval_ms = poll_interval.as_millis(),
+        "Initialized SyncerCfg (event source healthy)"
     );
 
-    // Initialize provider for blockchain connection
-    let ws_connect = WsConnect::new(&config.credible.indexer_rpc_url);
-    let provider = ProviderBuilder::new().connect_ws(ws_connect).await?;
-    let provider = provider.root().clone();
-
-    // Initialize indexer database
-    let mut indexer_db_config = sled::Config::new();
-    indexer_db_config = indexer_db_config.path(&config.credible.indexer_db_path);
-
-    if let Some(cache_capacity) = config.credible.cache_capacity_bytes {
-        indexer_db_config = indexer_db_config.cache_capacity_bytes(cache_capacity);
-    }
-
-    if let Some(flush_ms) = config.credible.flush_every_ms {
-        indexer_db_config = indexer_db_config.flush_every_ms(Some(flush_ms));
-    }
-
-    let indexer_db = indexer_db_config.open()?;
-
-    debug!(
-        state_oracle = ?config.credible.state_oracle,
-        state_oracle_deployment_block = ?config.credible.state_oracle_deployment_block,
-        da_url = ?config.credible.assertion_da_rpc_url,
-        indexer_rpc = ?config.credible.indexer_rpc_url,
-        indexer_db_path = ?config.credible.indexer_db_path,
-        block_tag = ?config.credible.block_tag,
-        "Initialized IndexerCfg"
-    );
-
-    Ok(IndexerCfg {
-        state_oracle: config.credible.state_oracle,
-        state_oracle_deployment_block: config.credible.state_oracle_deployment_block,
+    Ok(SyncerCfg {
+        event_source,
+        store,
         da_client,
         executor_config: executor_config.clone(),
-        store,
-        provider,
-        db: indexer_db,
-        await_tag: config.credible.block_tag,
+        poll_interval,
     })
 }

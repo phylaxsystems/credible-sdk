@@ -18,6 +18,7 @@ metrics = { workspace = true }
 futures-util.workspace = true
 dashmap = { workspace = true }
 bumpalo = { version = "3.19.1", features = ["allocator_api"] }
+async-trait.workspace = true
 
 # ETH deps
 alloy = { workspace = true }

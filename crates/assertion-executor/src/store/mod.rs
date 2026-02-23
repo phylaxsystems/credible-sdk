@@ -18,12 +18,12 @@ pub use assertion_store::{
     PruneConfig,
 };
 
-mod indexer;
-pub use indexer::{
-    BlockTag,
-    Indexer,
-    IndexerCfg,
-    IndexerError,
+mod event_source;
+pub use event_source::{
+    AssertionAddedEvent,
+    AssertionRemovedEvent,
+    EventSource,
+    EventSourceError,
 };
 
 use crate::{

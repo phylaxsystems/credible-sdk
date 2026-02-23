@@ -1599,6 +1599,7 @@ dependencies = [
  "anyhow",
  "assertion-da-client 1.0.9",
  "assertion-executor 1.0.9",
+ "async-trait",
  "benchmark-utils",
  "bincode",
  "bumpalo",

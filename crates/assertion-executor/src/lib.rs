@@ -33,7 +33,7 @@ pub mod evm;
 
 pub mod utils;
 
-mod metrics;
+pub mod metrics;
 
 #[cfg(any(test, feature = "test"))]
 pub mod test_utils;
