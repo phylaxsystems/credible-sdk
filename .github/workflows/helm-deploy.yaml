@@ -123,7 +123,7 @@ jobs:
             --set-string stateWorker.image.repository="${STATE_WORKER_IMAGE_REPO}" \
             --set-string stateWorker.image.tag="${IMAGE_TAG}" \
             --wait \
-            --timeout 2m 2>&1 | tee /tmp/helm-upgrade.log
+            --timeout 5m 2>&1 | tee /tmp/helm-upgrade.log
 
       - name: Deployment failure summary
         if: ${{ always() && steps.helm-deploy.outcome == 'failure' }}
