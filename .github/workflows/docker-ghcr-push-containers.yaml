@@ -105,6 +105,7 @@ jobs:
       version-tag: ${{ needs.get-version.outputs.version }}
 
   helm-deploy:
+    if: github.ref == 'refs/heads/main'
     needs:
       - docker-ghcr-push-sidecar
       - docker-ghcr-push-state-worker
