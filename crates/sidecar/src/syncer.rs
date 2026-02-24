@@ -312,3 +312,596 @@ pub enum SyncerError {
     #[error("Assertion contract extraction error: {0}")]
     ExtractionError(#[from] FnSelectorExtractorError),
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy::primitives::{
+        Address,
+        B256,
+        keccak256,
+    };
+    use assertion_executor::{
+        store::{
+            AssertionAddedEvent,
+            AssertionRemovedEvent,
+            AssertionStore,
+            EventSource,
+            EventSourceError,
+        },
+        test_utils,
+    };
+    use async_trait::async_trait;
+    use httpmock::MockServer;
+    use std::sync::Mutex;
+
+    struct MockEventSource {
+        added_events: Mutex<Vec<AssertionAddedEvent>>,
+        removed_events: Mutex<Vec<AssertionRemovedEvent>>,
+        head: Mutex<Option<u64>>,
+        head_error: Mutex<bool>,
+    }
+
+    impl MockEventSource {
+        fn new() -> Self {
+            Self {
+                added_events: Mutex::new(Vec::new()),
+                removed_events: Mutex::new(Vec::new()),
+                head: Mutex::new(None),
+                head_error: Mutex::new(false),
+            }
+        }
+
+        fn set_events(&self, added: Vec<AssertionAddedEvent>, removed: Vec<AssertionRemovedEvent>) {
+            *self.added_events.lock().unwrap() = added;
+            *self.removed_events.lock().unwrap() = removed;
+        }
+
+        fn set_head(&self, block: u64) {
+            *self.head.lock().unwrap() = Some(block);
+        }
+
+        fn set_head_error(&self, fail: bool) {
+            *self.head_error.lock().unwrap() = fail;
+        }
+    }
+
+    #[async_trait]
+    impl EventSource for MockEventSource {
+        async fn fetch_added_events(
+            &self,
+            _since_block: u64,
+        ) -> Result<Vec<AssertionAddedEvent>, EventSourceError> {
+            Ok(self.added_events.lock().unwrap().drain(..).collect())
+        }
+
+        async fn fetch_removed_events(
+            &self,
+            _since_block: u64,
+        ) -> Result<Vec<AssertionRemovedEvent>, EventSourceError> {
+            Ok(self.removed_events.lock().unwrap().drain(..).collect())
+        }
+
+        async fn get_indexer_head(&self) -> Result<Option<u64>, EventSourceError> {
+            if *self.head_error.lock().unwrap() {
+                return Err(EventSourceError::RequestFailed(
+                    "mock head error".to_string(),
+                ));
+            }
+            Ok(*self.head.lock().unwrap())
+        }
+    }
+
+    // Mock DA JSON-RPC endpoint returning the given bytecode and constructor args.
+    fn mock_da_for_bytecode(
+        server: &MockServer,
+        _assertion_id: B256,
+        bytecode: &[u8],
+        constructor_args: &[u8],
+    ) {
+        let hex_bytecode = format!("0x{}", hex::encode(bytecode));
+        let hex_args = format!("0x{}", hex::encode(constructor_args));
+
+        server.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .body_includes("da_get_assertion");
+            then.status(200).json_body(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                    "solidity_source": "",
+                    "bytecode": hex_bytecode,
+                    "prover_signature": "0x",
+                    "encoded_constructor_args": hex_args,
+                    "constructor_abi_signature": "constructor()"
+                }
+            }));
+        });
+    }
+
+    // Build a syncer with ephemeral store, default config, and the given mock source.
+    fn create_test_syncer(
+        source: MockEventSource,
+        da_url: &str,
+    ) -> AssertionSyncer<MockEventSource> {
+        let store = AssertionStore::new_ephemeral();
+        let da_client = DaClient::new(da_url).unwrap();
+        let cfg = SyncerCfg {
+            event_source: source,
+            store,
+            da_client,
+            executor_config: ExecutorConfig::default(),
+            poll_interval: Duration::from_millis(10),
+        };
+        AssertionSyncer::new(cfg)
+    }
+
+    // Build an AssertionAddedEvent with assertion_id = keccak256(bytecode).
+    fn make_added_event(
+        bytecode: &[u8],
+        adopter: Address,
+        block: u64,
+        activation_block: u64,
+    ) -> AssertionAddedEvent {
+        AssertionAddedEvent {
+            block,
+            assertion_adopter: adopter,
+            assertion_id: keccak256(bytecode),
+            activation_block,
+        }
+    }
+
+    // Load SimpleCounterAssertion deployment bytecode from test artifacts.
+    fn counter_bytecode() -> Bytes {
+        test_utils::bytecode(test_utils::SIMPLE_ASSERTION_COUNTER)
+    }
+
+    #[tokio::test]
+    async fn test_syncer_creation() {
+        let server = MockServer::start();
+        let syncer = create_test_syncer(MockEventSource::new(), &server.base_url());
+        assert_eq!(syncer.last_synced_block, 0);
+    }
+
+    #[tokio::test]
+    async fn test_process_added_event() {
+        let bc = counter_bytecode();
+        let adopter = Address::repeat_byte(0xAA);
+        let assertion_id = keccak256(&bc);
+
+        let server = MockServer::start();
+        mock_da_for_bytecode(&server, assertion_id, &bc, &[]);
+
+        let syncer = create_test_syncer(MockEventSource::new(), &server.base_url());
+
+        let event = AssertionAddedEvent {
+            block: 10,
+            assertion_adopter: adopter,
+            assertion_id,
+            activation_block: 15,
+        };
+
+        let result = syncer.process_added_event(&event).await.unwrap();
+        let modification = result.expect("should produce Add modification");
+        match modification {
+            PendingModification::Add {
+                assertion_adopter: aa,
+                assertion_contract,
+                activation_block,
+                ..
+            } => {
+                assert_eq!(aa, adopter);
+                assert_eq!(activation_block, 15);
+                assert_eq!(assertion_contract.id, keccak256(&bc));
+            }
+            _ => panic!("expected PendingModification::Add"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_process_added_event_with_constructor_args() {
+        let bc = counter_bytecode();
+        let constructor_args = [0u8; 32];
+        // assertion_id = keccak(bytecode || constructor_args)
+        let mut full_bytecode = bc.to_vec();
+        full_bytecode.extend_from_slice(&constructor_args);
+        let full_assertion_id = keccak256(&full_bytecode);
+
+        let adopter = Address::repeat_byte(0xBB);
+        let server = MockServer::start();
+        mock_da_for_bytecode(&server, full_assertion_id, &bc, &constructor_args);
+
+        let syncer = create_test_syncer(MockEventSource::new(), &server.base_url());
+
+        let event = AssertionAddedEvent {
+            block: 5,
+            assertion_adopter: adopter,
+            assertion_id: full_assertion_id,
+            activation_block: 10,
+        };
+
+        let result = syncer.process_added_event(&event).await.unwrap();
+        let modification = result.expect("should produce Add modification");
+        match &modification {
+            PendingModification::Add {
+                assertion_contract, ..
+            } => {
+                assert_eq!(assertion_contract.id, keccak256(&full_bytecode));
+            }
+            _ => panic!("expected PendingModification::Add"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_process_removed_event() {
+        let bc = counter_bytecode();
+        let adopter = Address::repeat_byte(0xCC);
+        let assertion_id = keccak256(&bc);
+
+        let server = MockServer::start();
+        mock_da_for_bytecode(&server, assertion_id, &bc, &[]);
+
+        let source = MockEventSource::new();
+        source.set_events(vec![make_added_event(&bc, adopter, 10, 10)], vec![]);
+        source.set_head(10);
+
+        let mut syncer = create_test_syncer(source, &server.base_url());
+        syncer.sync_once().await.unwrap();
+        assert_eq!(syncer.store.get_assertions_for_contract(adopter).len(), 1);
+
+        // cycle 2: remove the assertion
+        syncer.event_source.set_events(
+            vec![],
+            vec![AssertionRemovedEvent {
+                block: 20,
+                assertion_adopter: adopter,
+                assertion_id,
+                deactivation_block: 25,
+            }],
+        );
+        syncer.event_source.set_head(20);
+        syncer.sync_once().await.unwrap();
+
+        let assertions = syncer.store.get_assertions_for_contract(adopter);
+        assert_eq!(assertions.len(), 1);
+        assert_eq!(assertions[0].inactivation_block, Some(25));
+    }
+
+    #[tokio::test]
+    async fn test_process_events_applied_to_store() {
+        let bc = counter_bytecode();
+        let adopter = Address::repeat_byte(0xDD);
+        let assertion_id = keccak256(&bc);
+
+        let server = MockServer::start();
+        mock_da_for_bytecode(&server, assertion_id, &bc, &[]);
+
+        let source = MockEventSource::new();
+        source.set_events(vec![make_added_event(&bc, adopter, 10, 12)], vec![]);
+        source.set_head(10);
+
+        let mut syncer = create_test_syncer(source, &server.base_url());
+        syncer.sync_once().await.unwrap();
+
+        let assertions = syncer.store.get_assertions_for_contract(adopter);
+        assert_eq!(assertions.len(), 1);
+        assert_eq!(assertions[0].activation_block, 12);
+        assert_eq!(assertions[0].assertion_contract.id, keccak256(&bc));
+    }
+
+    #[tokio::test]
+    async fn test_syncer_initial_sync() {
+        let server = MockServer::start();
+        let source = MockEventSource::new();
+        source.set_head(0);
+
+        let mut syncer = create_test_syncer(source, &server.base_url());
+        assert_eq!(syncer.last_synced_block, 0);
+
+        syncer.sync_once().await.unwrap();
+        // head=0, no events => last_synced_block stays at 0
+        assert_eq!(syncer.last_synced_block, 0);
+    }
+
+    #[tokio::test]
+    async fn test_add_remove_across_cycles() {
+        let bc = counter_bytecode();
+        let adopter = Address::repeat_byte(0x01);
+        let assertion_id = keccak256(&bc);
+
+        let server = MockServer::start();
+        mock_da_for_bytecode(&server, assertion_id, &bc, &[]);
+
+        let source = MockEventSource::new();
+        source.set_events(vec![make_added_event(&bc, adopter, 10, 10)], vec![]);
+        source.set_head(10);
+
+        let mut syncer = create_test_syncer(source, &server.base_url());
+        syncer.sync_once().await.unwrap();
+
+        let assertions = syncer.store.get_assertions_for_contract(adopter);
+        assert_eq!(assertions.len(), 1);
+        assert!(assertions[0].inactivation_block.is_none());
+
+        // cycle 2: remove the assertion
+        syncer.event_source.set_events(
+            vec![],
+            vec![AssertionRemovedEvent {
+                block: 20,
+                assertion_adopter: adopter,
+                assertion_id,
+                deactivation_block: 25,
+            }],
+        );
+        syncer.event_source.set_head(20);
+        syncer.sync_once().await.unwrap();
+
+        let assertions = syncer.store.get_assertions_for_contract(adopter);
+        assert_eq!(assertions.len(), 1);
+        assert_eq!(assertions[0].inactivation_block, Some(25));
+    }
+
+    #[tokio::test]
+    async fn test_add_remove_same_cycle() {
+        let bc = counter_bytecode();
+        let adopter = Address::repeat_byte(0x02);
+        let assertion_id = keccak256(&bc);
+
+        let server = MockServer::start();
+        mock_da_for_bytecode(&server, assertion_id, &bc, &[]);
+
+        let source = MockEventSource::new();
+        source.set_events(
+            vec![make_added_event(&bc, adopter, 10, 10)],
+            vec![AssertionRemovedEvent {
+                block: 10,
+                assertion_adopter: adopter,
+                assertion_id,
+                deactivation_block: 15,
+            }],
+        );
+        source.set_head(10);
+
+        let mut syncer = create_test_syncer(source, &server.base_url());
+        syncer.sync_once().await.unwrap();
+
+        let assertions = syncer.store.get_assertions_for_contract(adopter);
+        assert_eq!(assertions.len(), 1);
+        assert_eq!(assertions[0].inactivation_block, Some(15));
+    }
+
+    #[tokio::test]
+    async fn test_large_batch() {
+        let bc = counter_bytecode();
+        let batch_size = 200usize;
+
+        let server = MockServer::start();
+        let hex_bytecode = format!("0x{}", hex::encode(&bc));
+
+        // One mock per request-id so DaClient's id-validation passes.
+        // Match `"id":N}` with trailing `}` to avoid substring collisions (e.g. id:1 vs id:10).
+        for req_id in 1..=batch_size {
+            server.mock(|when, then| {
+                when.method(httpmock::Method::POST)
+                    .body_includes("da_get_assertion")
+                    .body_includes(&format!("\"id\":{req_id}}}"));
+                then.status(200).json_body(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "result": {
+                        "solidity_source": "",
+                        "bytecode": hex_bytecode,
+                        "prover_signature": "0x",
+                        "encoded_constructor_args": "0x",
+                        "constructor_abi_signature": "constructor()"
+                    }
+                }));
+            });
+        }
+
+        // each adopter gets a unique address via the 2 low bytes
+        let events: Vec<AssertionAddedEvent> = (0..batch_size)
+            .map(|i| {
+                let mut addr_bytes = [0u8; 20];
+                addr_bytes[18] = (i >> 8) as u8;
+                addr_bytes[19] = (i & 0xFF) as u8;
+                make_added_event(&bc, Address::new(addr_bytes), 10, 10)
+            })
+            .collect();
+
+        let source = MockEventSource::new();
+        source.set_events(events, vec![]);
+        source.set_head(10);
+
+        let mut syncer = create_test_syncer(source, &server.base_url());
+        syncer.sync_once().await.unwrap();
+
+        for i in 0..batch_size {
+            let mut addr_bytes = [0u8; 20];
+            addr_bytes[18] = (i >> 8) as u8;
+            addr_bytes[19] = (i & 0xFF) as u8;
+            let assertions = syncer
+                .store
+                .get_assertions_for_contract(Address::new(addr_bytes));
+            assert_eq!(assertions.len(), 1, "adopter {i} should have 1 assertion");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_storage_is_persisted() {
+        let bc = counter_bytecode();
+        let adopter = Address::repeat_byte(0x03);
+        let assertion_id = keccak256(&bc);
+
+        let server = MockServer::start();
+        mock_da_for_bytecode(&server, assertion_id, &bc, &[]);
+
+        let source = MockEventSource::new();
+        source.set_events(vec![make_added_event(&bc, adopter, 10, 10)], vec![]);
+        source.set_head(10);
+
+        let mut syncer = create_test_syncer(source, &server.base_url());
+        syncer.sync_once().await.unwrap();
+
+        let assertions = syncer.store.get_assertions_for_contract(adopter);
+        assert_eq!(assertions.len(), 1);
+        assert!(!assertions[0].assertion_contract.deployed_code.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_triggers_are_persisted() {
+        let bc = counter_bytecode();
+        let adopter = Address::repeat_byte(0x04);
+        let assertion_id = keccak256(&bc);
+
+        let server = MockServer::start();
+        mock_da_for_bytecode(&server, assertion_id, &bc, &[]);
+
+        let source = MockEventSource::new();
+        source.set_events(vec![make_added_event(&bc, adopter, 10, 10)], vec![]);
+        source.set_head(10);
+
+        let mut syncer = create_test_syncer(source, &server.base_url());
+        syncer.sync_once().await.unwrap();
+
+        let assertions = syncer.store.get_assertions_for_contract(adopter);
+        assert_eq!(assertions.len(), 1);
+        assert!(!assertions[0].trigger_recorder.triggers.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_activation_block_is_expected() {
+        let bc = counter_bytecode();
+        let adopter = Address::repeat_byte(0x05);
+        let assertion_id = keccak256(&bc);
+
+        let server = MockServer::start();
+        mock_da_for_bytecode(&server, assertion_id, &bc, &[]);
+
+        let source = MockEventSource::new();
+        source.set_events(vec![make_added_event(&bc, adopter, 10, 42)], vec![]);
+        source.set_head(10);
+
+        let mut syncer = create_test_syncer(source, &server.base_url());
+        syncer.sync_once().await.unwrap();
+
+        let assertions = syncer.store.get_assertions_for_contract(adopter);
+        assert_eq!(assertions.len(), 1);
+        assert_eq!(assertions[0].activation_block, 42);
+        assert_eq!(assertions[0].inactivation_block, None);
+
+        // cycle 2: remove, verify activation_block is preserved
+        syncer.event_source.set_events(
+            vec![],
+            vec![AssertionRemovedEvent {
+                block: 50,
+                assertion_adopter: adopter,
+                assertion_id,
+                deactivation_block: 99,
+            }],
+        );
+        syncer.event_source.set_head(50);
+        syncer.sync_once().await.unwrap();
+
+        let assertions = syncer.store.get_assertions_for_contract(adopter);
+        assert_eq!(assertions[0].activation_block, 42);
+        assert_eq!(assertions[0].inactivation_block, Some(99));
+    }
+
+    #[tokio::test]
+    async fn test_malformed_assertion_skipped() {
+        // 0xDEADBEEF is not valid EVM bytecode
+        let garbage = vec![0xDE, 0xAD, 0xBE, 0xEF];
+        let assertion_id = keccak256(&garbage);
+        let adopter = Address::repeat_byte(0x06);
+
+        let server = MockServer::start();
+        mock_da_for_bytecode(&server, assertion_id, &garbage, &[]);
+
+        let source = MockEventSource::new();
+        source.set_events(
+            vec![AssertionAddedEvent {
+                block: 10,
+                assertion_adopter: adopter,
+                assertion_id,
+                activation_block: 10,
+            }],
+            vec![],
+        );
+        source.set_head(10);
+
+        let mut syncer = create_test_syncer(source, &server.base_url());
+        syncer.sync_once().await.unwrap();
+
+        // syncer skips malformed assertion but still advances
+        assert!(syncer.store.get_assertions_for_contract(adopter).is_empty());
+        assert_eq!(syncer.last_synced_block, 10);
+    }
+
+    #[tokio::test]
+    async fn test_head_regression_skips_cycle() {
+        let bc = counter_bytecode();
+        let adopter = Address::repeat_byte(0x07);
+        let assertion_id = keccak256(&bc);
+
+        let server = MockServer::start();
+        mock_da_for_bytecode(&server, assertion_id, &bc, &[]);
+
+        let source = MockEventSource::new();
+        source.set_events(vec![make_added_event(&bc, adopter, 10, 10)], vec![]);
+        source.set_head(10);
+
+        let mut syncer = create_test_syncer(source, &server.base_url());
+        syncer.sync_once().await.unwrap();
+        assert_eq!(syncer.last_synced_block, 10);
+
+        // regress head from 10 to 5
+        syncer.event_source.set_head(5);
+        syncer.event_source.set_events(
+            vec![make_added_event(&bc, Address::repeat_byte(0x08), 11, 11)],
+            vec![],
+        );
+        syncer.sync_once().await.unwrap();
+
+        // events were not processed, block didn't advance
+        assert_eq!(syncer.last_synced_block, 10);
+        assert!(
+            syncer
+                .store
+                .get_assertions_for_contract(Address::repeat_byte(0x08))
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_empty_cycle_advances_head() {
+        let server = MockServer::start();
+        let source = MockEventSource::new();
+        source.set_head(50);
+
+        let mut syncer = create_test_syncer(source, &server.base_url());
+        syncer.sync_once().await.unwrap();
+        assert_eq!(syncer.last_synced_block, 50);
+    }
+
+    #[tokio::test]
+    async fn test_head_fetch_error_logged() {
+        let bytecode = counter_bytecode();
+        let adopter = Address::repeat_byte(0x09);
+        let assertion_id = keccak256(&bytecode);
+
+        let server = MockServer::start();
+        mock_da_for_bytecode(&server, assertion_id, &bytecode, &[]);
+
+        let source = MockEventSource::new();
+        source.set_head_error(true);
+        source.set_events(vec![make_added_event(&bytecode, adopter, 10, 10)], vec![]);
+
+        let mut syncer = create_test_syncer(source, &server.base_url());
+        syncer.sync_once().await.unwrap();
+
+        // events still processed despite head fetch failure
+        assert_eq!(syncer.store.get_assertions_for_contract(adopter).len(), 1);
+        assert_eq!(syncer.last_synced_block, 10);
+    }
+}
