@@ -114,14 +114,7 @@ impl EventSource for GraphqlEventSource {
             .assertion_addeds
             .nodes
             .into_iter()
-            .map(|node| {
-                AssertionAddedEvent {
-                    block: node.block.cast_unsigned(),
-                    assertion_adopter: node.assertion_adopter,
-                    assertion_id: node.assertion_id,
-                    activation_block: node.activation_block,
-                }
-            })
+            .map(Into::into)
             .collect())
     }
 
@@ -154,14 +147,7 @@ impl EventSource for GraphqlEventSource {
             .assertion_removeds
             .nodes
             .into_iter()
-            .map(|node| {
-                AssertionRemovedEvent {
-                    block: node.block.cast_unsigned(),
-                    assertion_adopter: node.assertion_adopter,
-                    assertion_id: node.assertion_id,
-                    deactivation_block: node.deactivation_block,
-                }
-            })
+            .map(Into::into)
             .collect())
     }
 
@@ -232,6 +218,17 @@ struct AssertionAddedNode {
     activation_block: u64,
 }
 
+impl From<AssertionAddedNode> for AssertionAddedEvent {
+    fn from(node: AssertionAddedNode) -> Self {
+        Self {
+            block: node.block.cast_unsigned(),
+            assertion_adopter: node.assertion_adopter,
+            assertion_id: node.assertion_id,
+            activation_block: node.activation_block,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AssertionRemovedsData {
@@ -246,6 +243,17 @@ struct AssertionRemovedNode {
     assertion_id: B256,
     #[serde(deserialize_with = "deserialize_bigint_string")]
     deactivation_block: u64,
+}
+
+impl From<AssertionRemovedNode> for AssertionRemovedEvent {
+    fn from(node: AssertionRemovedNode) -> Self {
+        Self {
+            block: node.block.cast_unsigned(),
+            assertion_adopter: node.assertion_adopter,
+            assertion_id: node.assertion_id,
+            deactivation_block: node.deactivation_block,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
