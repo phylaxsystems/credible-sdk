@@ -35,6 +35,13 @@ use tracing::{
     warn,
 };
 
+/// Maximum number of consecutive retries before declaring the indexer unreachable.
+const MAX_RETRIES: u32 = 5;
+/// Initial backoff duration between retries.
+const INITIAL_BACKOFF: Duration = Duration::from_secs(1);
+/// Maximum backoff duration between retries.
+const MAX_BACKOFF: Duration = Duration::from_secs(60);
+
 /// Configuration for the assertion syncer.
 pub struct SyncerCfg<S: EventSource> {
     pub event_source: S,
@@ -93,18 +100,8 @@ impl<S: EventSource> AssertionSyncer<S> {
             "Polling for new events"
         );
 
-        // Fetch indexer head once per cycle
-        let indexer_head = match self.event_source.get_indexer_head().await {
-            Ok(head) => head,
-            Err(e) => {
-                error!(
-                    target = "sidecar::syncer",
-                    error = ?e,
-                    "Failed to fetch indexer head"
-                );
-                None
-            }
-        };
+        // Fetch indexer head with backoff retries
+        let indexer_head = self.fetch_indexer_head_with_retry().await?;
 
         // Check if the external indexer head moved backward ie possible reorg handling upstream
         if let Some(head) = indexer_head
@@ -168,6 +165,37 @@ impl<S: EventSource> AssertionSyncer<S> {
         metrics::set_syncing(false);
 
         Ok(())
+    }
+
+    // Fetch the indexer head with exponential backoff retries.
+    async fn fetch_indexer_head_with_retry(&self) -> Result<Option<u64>, SyncerError> {
+        let mut backoff = INITIAL_BACKOFF;
+
+        for attempt in 1..=MAX_RETRIES {
+            match self.event_source.get_indexer_head().await {
+                Ok(head) => return Ok(head),
+                Err(e) => {
+                    warn!(
+                        target = "sidecar::syncer",
+                        error = ?e,
+                        attempt,
+                        max_retries = MAX_RETRIES,
+                        "Failed to fetch indexer head, retrying"
+                    );
+                    if attempt < MAX_RETRIES {
+                        tokio::time::sleep(backoff).await;
+                        backoff = (backoff * 2).min(MAX_BACKOFF);
+                    }
+                }
+            }
+        }
+
+        error!(
+            target = "sidecar::syncer",
+            max_retries = MAX_RETRIES,
+            "Indexer unreachable after exhausting retries"
+        );
+        Err(SyncerError::IndexerUnreachable)
     }
 
     /// Process added and removed events into store modifications.
@@ -291,8 +319,10 @@ pub async fn run_syncer<S: EventSource>(cfg: SyncerCfg<S>) -> Result<(), SyncerE
 impl From<&SyncerError> for ErrorRecoverability {
     fn from(e: &SyncerError) -> Self {
         match e {
-            // Store errors are unrecoverable
-            SyncerError::Store(_) => ErrorRecoverability::Unrecoverable,
+            // Store errors and indexer unreachable (retries exhausted) are unrecoverable
+            SyncerError::Store(_) | SyncerError::IndexerUnreachable => {
+                ErrorRecoverability::Unrecoverable
+            }
             // Network, DA, and extraction errors are recoverable — will retry on next poll
             SyncerError::EventSource(_)
             | SyncerError::DaClient(_)
@@ -311,6 +341,8 @@ pub enum SyncerError {
     Store(#[from] AssertionStoreError),
     #[error("Assertion contract extraction error: {0}")]
     ExtractionError(#[from] FnSelectorExtractorError),
+    #[error("Indexer unreachable after {MAX_RETRIES} retries")]
+    IndexerUnreachable,
 }
 
 #[cfg(test)]
@@ -885,23 +917,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_head_fetch_error_logged() {
-        let bytecode = counter_bytecode();
-        let adopter = Address::repeat_byte(0x09);
-        let assertion_id = keccak256(&bytecode);
+    async fn test_indexer_unreachable_after_max_retries() {
+        tokio::time::pause();
 
         let server = MockServer::start();
-        mock_da_for_bytecode(&server, assertion_id, &bytecode, &[]);
-
         let source = MockEventSource::new();
         source.set_head_error(true);
-        source.set_events(vec![make_added_event(&bytecode, adopter, 10, 10)], vec![]);
 
         let mut syncer = create_test_syncer(source, &server.base_url());
-        syncer.sync_once().await.unwrap();
+        let result = syncer.sync_once().await;
 
-        // events still processed despite head fetch failure
-        assert_eq!(syncer.store.get_assertions_for_contract(adopter).len(), 1);
-        assert_eq!(syncer.last_synced_block, 10);
+        assert!(
+            matches!(result, Err(SyncerError::IndexerUnreachable)),
+            "Expected IndexerUnreachable, got: {result:?}"
+        );
     }
 }
