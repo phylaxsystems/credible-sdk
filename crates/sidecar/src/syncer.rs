@@ -494,7 +494,7 @@ mod tests {
                 assert_eq!(activation_block, 15);
                 assert_eq!(assertion_contract.id, keccak256(&bc));
             }
-            _ => panic!("expected PendingModification::Add"),
+            PendingModification::Remove { .. } => panic!("expected PendingModification::Add"),
         }
     }
 
@@ -528,7 +528,7 @@ mod tests {
             } => {
                 assert_eq!(assertion_contract.id, keccak256(&full_bytecode));
             }
-            _ => panic!("expected PendingModification::Add"),
+            PendingModification::Remove { .. } => panic!("expected PendingModification::Add"),
         }
     }
 
@@ -684,7 +684,7 @@ mod tests {
             server.mock(|when, then| {
                 when.method(httpmock::Method::POST)
                     .body_includes("da_get_assertion")
-                    .body_includes(&format!("\"id\":{req_id}}}"));
+                    .body_includes(format!("\"id\":{req_id}}}"));
                 then.status(200).json_body(serde_json::json!({
                     "jsonrpc": "2.0",
                     "id": req_id,
@@ -703,8 +703,8 @@ mod tests {
         let events: Vec<AssertionAddedEvent> = (0..batch_size)
             .map(|i| {
                 let mut addr_bytes = [0u8; 20];
-                addr_bytes[18] = (i >> 8) as u8;
-                addr_bytes[19] = (i & 0xFF) as u8;
+                addr_bytes[18] = u8::try_from(i >> 8).unwrap();
+                addr_bytes[19] = u8::try_from(i & 0xFF).unwrap();
                 make_added_event(&bc, Address::new(addr_bytes), 10, 10)
             })
             .collect();
@@ -718,8 +718,8 @@ mod tests {
 
         for i in 0..batch_size {
             let mut addr_bytes = [0u8; 20];
-            addr_bytes[18] = (i >> 8) as u8;
-            addr_bytes[19] = (i & 0xFF) as u8;
+            addr_bytes[18] = u8::try_from(i >> 8).unwrap();
+            addr_bytes[19] = u8::try_from(i & 0xFF).unwrap();
             let assertions = syncer
                 .store
                 .get_assertions_for_contract(Address::new(addr_bytes));
