@@ -78,6 +78,4 @@ pub enum EventSourceError {
     RequestFailed(String),
     #[error("Response parse error: {0}")]
     ParseError(String),
-    #[error("Event source unavailable: {0}")]
-    Unavailable(String),
 }
