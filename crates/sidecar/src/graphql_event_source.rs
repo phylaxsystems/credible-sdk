@@ -18,6 +18,9 @@ use serde::{
     Deserialize,
     Deserializer,
 };
+use std::time::Duration;
+
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Event source that queries a GraphQL API
 /// served by the sidecar-indexer.
@@ -29,8 +32,12 @@ pub struct GraphqlEventSource {
 impl GraphqlEventSource {
     /// Create a new GraphQL event source from the given config.
     pub fn new(config: GraphqlEventSourceConfig) -> Self {
+        let client = Client::builder()
+            .timeout(REQUEST_TIMEOUT)
+            .build()
+            .unwrap_or_default();
         Self {
-            client: Client::new(),
+            client,
             graphql_url: config.graphql_url,
         }
     }
