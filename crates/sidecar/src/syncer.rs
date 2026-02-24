@@ -6,6 +6,7 @@
 
 use crate::utils::ErrorRecoverability;
 use alloy::primitives::Bytes;
+use futures_util::future::join_all;
 use assertion_da_client::{
     DaClient,
     DaClientError,
@@ -144,12 +145,18 @@ impl<S: EventSource> AssertionSyncer<S> {
         let mut max_block = since;
         let mut modifications = Vec::new();
 
-        // Process added events -> PendingModification::Add
-        for event in &added_events {
-            max_block = max_block.max(event.block);
-            metrics::record_assertions_seen(1);
+        // Process added events concurrently -> PendingModification::Add
+        metrics::record_assertions_seen(added_events.len() as u64);
+        let da_results = join_all(
+            added_events
+                .iter()
+                .map(|event| self.process_added_event(event)),
+        )
+        .await;
 
-            match self.process_added_event(event).await {
+        for (event, result) in added_events.iter().zip(da_results) {
+            max_block = max_block.max(event.block);
+            match result {
                 Ok(Some(modification)) => modifications.push(modification),
                 Ok(None) => {
                     warn!(
