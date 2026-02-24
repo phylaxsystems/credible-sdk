@@ -61,6 +61,14 @@ impl GraphqlEventSource {
             .await
             .map_err(|e| EventSourceError::RequestFailed(e.to_string()))?;
 
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(EventSourceError::RequestFailed(format!(
+                "HTTP {status}: {body}"
+            )));
+        }
+
         let gql_response: GraphqlResponse<T> = response
             .json()
             .await
