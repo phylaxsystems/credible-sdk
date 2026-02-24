@@ -17,6 +17,7 @@ use reqwest::Client;
 use serde::{
     Deserialize,
     Deserializer,
+    Serialize,
 };
 use std::time::Duration;
 
@@ -43,15 +44,12 @@ impl GraphqlEventSource {
     }
 
     /// Execute a GraphQL query and deserialize the response.
-    async fn execute_query<T: serde::de::DeserializeOwned>(
+    async fn execute_query<T: serde::de::DeserializeOwned, V: Serialize>(
         &self,
         query: &str,
-        variables: serde_json::Value,
+        variables: V,
     ) -> Result<T, EventSourceError> {
-        let body = serde_json::json!({
-            "query": query,
-            "variables": variables,
-        });
+        let body = GraphqlRequest { query, variables };
 
         let response = self
             .client
@@ -107,7 +105,9 @@ impl EventSource for GraphqlEventSource {
             }
         ";
 
-        let variables = serde_json::json!({ "sinceBlock": since_block.cast_signed() });
+        let variables = BlockFilterVars {
+            since_block: since_block.cast_signed(),
+        };
         let data: AssertionAddedsData = self.execute_query(query, variables).await?;
 
         Ok(data
@@ -145,7 +145,9 @@ impl EventSource for GraphqlEventSource {
             }
         ";
 
-        let variables = serde_json::json!({ "sinceBlock": since_block.cast_signed() });
+        let variables = BlockFilterVars {
+            since_block: since_block.cast_signed(),
+        };
         let data: AssertionRemovedsData = self.execute_query(query, variables).await?;
 
         Ok(data
@@ -172,10 +174,22 @@ impl EventSource for GraphqlEventSource {
             }
         ";
 
-        let data: MetaData = self.execute_query(query, serde_json::json!({})).await?;
+        let data: MetaData = self.execute_query(query, ()).await?;
 
         Ok(data._meta.block.map(|b| b.number.cast_unsigned()))
     }
+}
+
+#[derive(Serialize)]
+struct GraphqlRequest<'a, V: Serialize> {
+    query: &'a str,
+    variables: V,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BlockFilterVars {
+    since_block: i64,
 }
 
 // GraphQL response types
