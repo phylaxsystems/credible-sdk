@@ -90,8 +90,11 @@ impl<S: EventSource> AssertionSyncer<S> {
             "Polling for new events"
         );
 
+        // Fetch indexer head once per cycle
+        let indexer_head = self.event_source.get_indexer_head().await.ok().flatten();
+
         // Check if the external indexer head moved backward ie possible reorg handling upstream
-        if let Ok(Some(head)) = self.event_source.get_indexer_head().await
+        if let Some(head) = indexer_head
             && head < self.last_synced_block
         {
             warn!(
@@ -120,7 +123,7 @@ impl<S: EventSource> AssertionSyncer<S> {
                 "No new events"
             );
             // Still update last_synced_block from the indexer head
-            if let Ok(Some(head)) = self.event_source.get_indexer_head().await
+            if let Some(head) = indexer_head
                 && head > self.last_synced_block
             {
                 self.last_synced_block = head;
