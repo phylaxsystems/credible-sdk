@@ -16,6 +16,7 @@ use assertion_executor::{
     metrics,
     store::{
         AssertionAddedEvent,
+        AssertionRemovedEvent,
         AssertionStore,
         AssertionStoreError,
         EventSource,
@@ -29,6 +30,7 @@ use futures_util::future::join_all;
 use std::time::Duration;
 use tracing::{
     debug,
+    error,
     info,
     warn,
 };
@@ -92,7 +94,17 @@ impl<S: EventSource> AssertionSyncer<S> {
         );
 
         // Fetch indexer head once per cycle
-        let indexer_head = self.event_source.get_indexer_head().await.ok().flatten();
+        let indexer_head = match self.event_source.get_indexer_head().await {
+            Ok(head) => head,
+            Err(e) => {
+                error!(
+                    target = "sidecar::syncer",
+                    error = ?e,
+                    "Failed to fetch indexer head"
+                );
+                None
+            }
+        };
 
         // Check if the external indexer head moved backward ie possible reorg handling upstream
         if let Some(head) = indexer_head
@@ -142,6 +154,30 @@ impl<S: EventSource> AssertionSyncer<S> {
             "Processing new events"
         );
 
+        let mut max_block = self
+            .process_events(&added_events, &removed_events, since)
+            .await?;
+
+        // Advance to the indexer head if it's ahead of the latest event block
+        if let Some(head) = indexer_head {
+            max_block = max_block.max(head);
+        }
+        self.last_synced_block = max_block;
+        self.store.set_current_block(max_block);
+        metrics::set_head_block(max_block);
+        metrics::set_syncing(false);
+
+        Ok(())
+    }
+
+    /// Process added and removed events into store modifications.
+    /// Returns the maximum block number seen across all events.
+    async fn process_events(
+        &self,
+        added_events: &[AssertionAddedEvent],
+        removed_events: &[AssertionRemovedEvent],
+        since: u64,
+    ) -> Result<u64, SyncerError> {
         let mut max_block = since;
         let mut modifications = Vec::new();
 
@@ -177,7 +213,7 @@ impl<S: EventSource> AssertionSyncer<S> {
         }
 
         // Process removed events -> PendingModification::Remove
-        for event in &removed_events {
+        for event in removed_events {
             max_block = max_block.max(event.block);
 
             modifications.push(PendingModification::Remove {
@@ -195,12 +231,7 @@ impl<S: EventSource> AssertionSyncer<S> {
             metrics::record_assertions_moved(count);
         }
 
-        self.last_synced_block = max_block;
-        self.store.set_current_block(max_block);
-        metrics::set_head_block(max_block);
-        metrics::set_syncing(false);
-
-        Ok(())
+        Ok(max_block)
     }
 
     /// Process a single `AssertionAdded` event:
