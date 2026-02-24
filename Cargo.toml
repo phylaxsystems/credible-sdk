@@ -22,6 +22,7 @@ members = [
     "crates/credible-utils",
     "crates/eip-system-calls",
     "scripts/geth_snapshot",
+    "scripts/verifier",
 ]
 exclude = ["fuzz"]
 resolver = "2"
@@ -37,7 +38,7 @@ repository = "https://github.com/phylaxsystems/credible-sdk"
 [workspace.dependencies]
 rust-tracing = { git = "https://github.com/phylaxsystems/rust-tracing.git", tag = "0.1.3", default-features = false }
 
-# dapp 
+# dapp
 dapp-api-client = { path = "crates/dapp-api-client" }
 
 # credible-utils
