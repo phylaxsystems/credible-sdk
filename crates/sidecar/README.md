@@ -101,7 +101,7 @@ Credible:
 - `credible.cache_capacity_bytes` -> `SIDECAR_CACHE_CAPACITY_BYTES`
 - `credible.flush_every_ms` -> `SIDECAR_FLUSH_EVERY_MS`
 - `credible.assertion_da_rpc_url` -> `SIDECAR_ASSERTION_DA_RPC_URL`
-- `credible.indexer_rpc_url` -> `SIDECAR_INDEXER_RPC_URL`
+- `credible.event_source_url` -> `SIDECAR_EVENT_SOURCE_URL`
 - `credible.indexer_db_path` -> `SIDECAR_INDEXER_DB_PATH`
 - `credible.assertion_store_db_path` -> `SIDECAR_ASSERTION_STORE_DB_PATH`
 - `credible.transaction_observer_db_path` -> `SIDECAR_TRANSACTION_OBSERVER_DB_PATH`
@@ -207,7 +207,7 @@ The configuration file is a JSON file with the following schema:
       "required": [
         "assertion_gas_limit",
         "assertion_da_rpc_url",
-        "indexer_rpc_url",
+        "event_source_url",
         "indexer_db_path",
         "assertion_store_db_path",
         "transaction_observer_db_path",
@@ -259,7 +259,7 @@ The configuration file is a JSON file with the following schema:
             "https://mainnet.infura.io/v3/YOUR-PROJECT-ID"
           ]
         },
-        "indexer_rpc_url": {
+        "event_source_url": {
           "type": "string",
           "description": "WebSocket URL the RPC store will use to index assertions",
           "format": "uri",
@@ -595,7 +595,7 @@ The default configuration can be found in [default_config.json](default_config.j
     "cache_capacity_bytes": 256000000,
     "flush_every_ms": 5000,
     "assertion_da_rpc_url": "http://127.0.0.1:5001",
-    "indexer_rpc_url": "ws://127.0.0.1:8546",
+    "event_source_url": "ws://127.0.0.1:8546",
     "indexer_db_path": ".local/sidecar-host/indexer_database",
     "assertion_store_db_path": ".local/sidecar-host/assertion_store_database",
     "transaction_observer_db_path": ".local/sidecar-host/transaction_observer_database",
