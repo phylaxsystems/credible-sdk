@@ -14,7 +14,10 @@ use assertion_executor::store::{
 };
 use async_trait::async_trait;
 use reqwest::Client;
-use serde::Deserialize;
+use serde::{
+    Deserialize,
+    Deserializer,
+};
 
 /// Event source that queries a GraphQL API
 /// served by the sidecar-indexer.
@@ -92,18 +95,19 @@ impl EventSource for GraphqlEventSource {
         let variables = serde_json::json!({ "sinceBlock": since_block.cast_signed() });
         let data: AssertionAddedsData = self.execute_query(query, variables).await?;
 
-        data.assertion_addeds
+        Ok(data
+            .assertion_addeds
             .nodes
             .into_iter()
             .map(|node| {
-                Ok(AssertionAddedEvent {
+                AssertionAddedEvent {
                     block: node.block.cast_unsigned(),
-                    assertion_adopter: parse_field(&node.assertion_adopter, "assertionAdopter")?,
-                    assertion_id: parse_field(&node.assertion_id, "assertionId")?,
-                    activation_block: parse_field(&node.activation_block, "activationBlock")?,
-                })
+                    assertion_adopter: node.assertion_adopter,
+                    assertion_id: node.assertion_id,
+                    activation_block: node.activation_block,
+                }
             })
-            .collect()
+            .collect())
     }
 
     async fn fetch_removed_events(
@@ -129,18 +133,19 @@ impl EventSource for GraphqlEventSource {
         let variables = serde_json::json!({ "sinceBlock": since_block.cast_signed() });
         let data: AssertionRemovedsData = self.execute_query(query, variables).await?;
 
-        data.assertion_removeds
+        Ok(data
+            .assertion_removeds
             .nodes
             .into_iter()
             .map(|node| {
-                Ok(AssertionRemovedEvent {
+                AssertionRemovedEvent {
                     block: node.block.cast_unsigned(),
-                    assertion_adopter: parse_field(&node.assertion_adopter, "assertionAdopter")?,
-                    assertion_id: parse_field(&node.assertion_id, "assertionId")?,
-                    deactivation_block: parse_field(&node.deactivation_block, "deactivationBlock")?,
-                })
+                    assertion_adopter: node.assertion_adopter,
+                    assertion_id: node.assertion_id,
+                    deactivation_block: node.deactivation_block,
+                }
             })
-            .collect()
+            .collect())
     }
 
     async fn get_indexer_head(&self) -> Result<Option<u64>, EventSourceError> {
@@ -192,9 +197,10 @@ struct AssertionAddedsData {
 #[serde(rename_all = "camelCase")]
 struct AssertionAddedNode {
     block: i64,
-    assertion_adopter: String,
-    assertion_id: String,
-    activation_block: String, // BigInt comes as string from PostGraphile
+    assertion_adopter: Address,
+    assertion_id: B256,
+    #[serde(deserialize_with = "deserialize_bigint_string")]
+    activation_block: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -207,9 +213,10 @@ struct AssertionRemovedsData {
 #[serde(rename_all = "camelCase")]
 struct AssertionRemovedNode {
     block: i64,
-    assertion_adopter: String,
-    assertion_id: String,
-    deactivation_block: String,
+    assertion_adopter: Address,
+    assertion_id: B256,
+    #[serde(deserialize_with = "deserialize_bigint_string")]
+    deactivation_block: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -227,14 +234,10 @@ struct MetaBlockInner {
     number: i64,
 }
 
-// Parse a string field from GraphQL into the target type.
-fn parse_field<T: std::str::FromStr>(value: &str, field: &str) -> Result<T, EventSourceError>
-where
-    T::Err: std::fmt::Display,
-{
-    value
-        .parse::<T>()
-        .map_err(|e| EventSourceError::ParseError(format!("{field}: {e}")))
+// Deserializes a `PostGraphile` BigInt into `u64`.
+fn deserialize_bigint_string<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u64, D::Error> {
+    let s = String::deserialize(deserializer)?;
+    s.parse::<u64>().map_err(serde::de::Error::custom)
 }
 
 #[cfg(test)]
