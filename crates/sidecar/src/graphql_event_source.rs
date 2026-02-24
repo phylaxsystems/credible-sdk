@@ -98,18 +98,9 @@ impl EventSource for GraphqlEventSource {
             .map(|node| {
                 Ok(AssertionAddedEvent {
                     block: node.block.cast_unsigned(),
-                    assertion_adopter: node
-                        .assertion_adopter
-                        .parse::<Address>()
-                        .map_err(|e| EventSourceError::ParseError(e.to_string()))?,
-                    assertion_id: node
-                        .assertion_id
-                        .parse::<B256>()
-                        .map_err(|e| EventSourceError::ParseError(e.to_string()))?,
-                    activation_block: node
-                        .activation_block
-                        .parse::<u64>()
-                        .map_err(|e| EventSourceError::ParseError(e.to_string()))?,
+                    assertion_adopter: parse_field(&node.assertion_adopter, "assertionAdopter")?,
+                    assertion_id: parse_field(&node.assertion_id, "assertionId")?,
+                    activation_block: parse_field(&node.activation_block, "activationBlock")?,
                 })
             })
             .collect()
@@ -144,18 +135,9 @@ impl EventSource for GraphqlEventSource {
             .map(|node| {
                 Ok(AssertionRemovedEvent {
                     block: node.block.cast_unsigned(),
-                    assertion_adopter: node
-                        .assertion_adopter
-                        .parse::<Address>()
-                        .map_err(|e| EventSourceError::ParseError(e.to_string()))?,
-                    assertion_id: node
-                        .assertion_id
-                        .parse::<B256>()
-                        .map_err(|e| EventSourceError::ParseError(e.to_string()))?,
-                    deactivation_block: node
-                        .deactivation_block
-                        .parse::<u64>()
-                        .map_err(|e| EventSourceError::ParseError(e.to_string()))?,
+                    assertion_adopter: parse_field(&node.assertion_adopter, "assertionAdopter")?,
+                    assertion_id: parse_field(&node.assertion_id, "assertionId")?,
+                    deactivation_block: parse_field(&node.deactivation_block, "deactivationBlock")?,
                 })
             })
             .collect()
@@ -243,6 +225,16 @@ struct MetaBlock {
 #[derive(Debug, Deserialize)]
 struct MetaBlockInner {
     number: i64,
+}
+
+// Parse a string field from GraphQL into the target type.
+fn parse_field<T: std::str::FromStr>(value: &str, field: &str) -> Result<T, EventSourceError>
+where
+    T::Err: std::fmt::Display,
+{
+    value
+        .parse::<T>()
+        .map_err(|e| EventSourceError::ParseError(format!("{field}: {e}")))
 }
 
 #[cfg(test)]
