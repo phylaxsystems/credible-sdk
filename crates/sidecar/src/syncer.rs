@@ -1,4 +1,4 @@
-//! # `indexer`
+//! # `syncer`
 //!
 //! Contains the assertion syncer that polls an external event source (e.g. GraphQL API)
 //! for assertion events, fetches bytecode from the DA layer, and updates the local
