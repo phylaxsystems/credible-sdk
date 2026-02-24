@@ -6,7 +6,6 @@
 
 use crate::utils::ErrorRecoverability;
 use alloy::primitives::Bytes;
-use futures_util::future::join_all;
 use assertion_da_client::{
     DaClient,
     DaClientError,
@@ -26,6 +25,7 @@ use assertion_executor::{
         extract_assertion_contract,
     },
 };
+use futures_util::future::join_all;
 use std::time::Duration;
 use tracing::{
     debug,
