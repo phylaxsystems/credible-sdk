@@ -13332,6 +13332,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "verifier"
+version = "1.0.9"
+dependencies = [
+ "anyhow",
+ "assertion-executor 1.0.9",
+ "axum",
+ "clap",
+ "rust-tracing",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"

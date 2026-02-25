@@ -21,8 +21,8 @@ members = [
     "crates/state-checker",
     "crates/credible-utils",
     "crates/eip-system-calls",
+    "crates/verifier",
     "scripts/geth_snapshot",
-    "scripts/verifier",
 ]
 exclude = ["fuzz"]
 resolver = "2"

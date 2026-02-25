@@ -11,3 +11,17 @@
 //! - Must register assertion spec ***(TBA), spec not implemented yet***
 //!
 //! The verifier is also exposed as a library, so that it can be reused for `pcl test`.
+
+pub mod assertion_verification;
+pub mod rpc;
+
+pub use assertion_verification::{
+    VerificationResult,
+    VerificationStatus,
+    verify_assertion,
+};
+pub use rpc::{
+    build_router,
+    health,
+    process_json_rpc,
+};
