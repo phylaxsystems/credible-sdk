@@ -6,7 +6,7 @@ use crate::{
         GraphqlEventSource,
         GraphqlEventSourceConfig,
     },
-    indexer_syncer::IndexerCfg,
+    indexer::IndexerCfg,
 };
 use assertion_da_client::DaClient;
 use assertion_executor::{

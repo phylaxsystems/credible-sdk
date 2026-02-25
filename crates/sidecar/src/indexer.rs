@@ -1,6 +1,6 @@
-//! # `indexer_syncer`
+//! # `indexer`
 //!
-//! Contains the indexer syncer that polls an external event source (e.g. GraphQL API)
+//! Contains the assertion indexer that polls an external event source (e.g. GraphQL API)
 //! for assertion events, fetches bytecode from the DA layer, and updates the local
 //! assertion store.
 
@@ -79,7 +79,7 @@ impl<S: EventSource> AssertionIndexer<S> {
     /// Run the indexer loop indefinitely.
     async fn run(&mut self) -> Result<(), IndexerError> {
         info!(
-            target = "sidecar::indexer_syncer",
+            target = "sidecar::indexer",
             poll_interval_ms = self.poll_interval.as_millis(),
             "Starting assertion indexer"
         );
@@ -95,7 +95,7 @@ impl<S: EventSource> AssertionIndexer<S> {
         let since = self.last_synced_block;
 
         debug!(
-            target = "sidecar::indexer_syncer",
+            target = "sidecar::indexer",
             since_block = since,
             "Polling for new events"
         );
@@ -108,7 +108,7 @@ impl<S: EventSource> AssertionIndexer<S> {
             && head < self.last_synced_block
         {
             warn!(
-                target = "sidecar::indexer_syncer",
+                target = "sidecar::indexer",
                 indexer_head = head,
                 last_synced_block = self.last_synced_block,
                 "Event source head moved backward, possible reorg upstream. Skipping cycle."
@@ -128,7 +128,7 @@ impl<S: EventSource> AssertionIndexer<S> {
 
         if added_events.is_empty() && removed_events.is_empty() {
             debug!(
-                target = "sidecar::indexer_syncer",
+                target = "sidecar::indexer",
                 since_block = since,
                 "No new events"
             );
@@ -144,7 +144,7 @@ impl<S: EventSource> AssertionIndexer<S> {
         }
 
         info!(
-            target = "sidecar::indexer_syncer",
+            target = "sidecar::indexer",
             added_count = added_events.len(),
             removed_count = removed_events.len(),
             since_block = since,
@@ -176,7 +176,7 @@ impl<S: EventSource> AssertionIndexer<S> {
                 Ok(head) => return Ok(head),
                 Err(e) => {
                     warn!(
-                        target = "sidecar::indexer_syncer",
+                        target = "sidecar::indexer",
                         error = ?e,
                         attempt,
                         max_retries = MAX_RETRIES,
@@ -191,7 +191,7 @@ impl<S: EventSource> AssertionIndexer<S> {
         }
 
         error!(
-            target = "sidecar::indexer_syncer",
+            target = "sidecar::indexer",
             max_retries = MAX_RETRIES,
             "Indexer unreachable after exhausting retries"
         );
@@ -224,14 +224,14 @@ impl<S: EventSource> AssertionIndexer<S> {
                 Ok(Some(modification)) => modifications.push(modification),
                 Ok(None) => {
                     warn!(
-                        target = "sidecar::indexer_syncer",
+                        target = "sidecar::indexer",
                         assertion_id = ?event.assertion_id,
                         "Failed to extract assertion contract, skipping"
                     );
                 }
                 Err(e) => {
                     warn!(
-                        target = "sidecar::indexer_syncer",
+                        target = "sidecar::indexer",
                         assertion_id = ?event.assertion_id,
                         error = ?e,
                         "Error processing added event, skipping"
@@ -284,7 +284,7 @@ impl<S: EventSource> AssertionIndexer<S> {
         match extract_assertion_contract(&deployment_bytecode, &self.executor_config) {
             Ok((assertion_contract, trigger_recorder)) => {
                 info!(
-                    target = "sidecar::indexer_syncer",
+                    target = "sidecar::indexer",
                     assertion_id = ?assertion_contract.id,
                     activation_block = event.activation_block,
                     "Processed AssertionAdded event"
@@ -299,7 +299,7 @@ impl<S: EventSource> AssertionIndexer<S> {
             }
             Err(err) => {
                 warn!(
-                    target = "sidecar::indexer_syncer",
+                    target = "sidecar::indexer",
                     ?err,
                     "Failed to extract assertion contract"
                 );

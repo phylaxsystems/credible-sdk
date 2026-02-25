@@ -48,8 +48,8 @@ use sidecar::{
     event_sequencing::EventSequencing,
     graphql_event_source::GraphqlEventSource,
     health::HealthServer,
-    indexer_syncer,
-    indexer_syncer::IndexerCfg,
+    indexer,
+    indexer::IndexerCfg,
     transaction_observer::{
         TransactionObserver,
         TransactionObserverConfig,
@@ -515,7 +515,7 @@ fn handle_observer_exit(
     }
 }
 
-fn handle_indexer_exit(result: Result<(), sidecar::indexer_syncer::IndexerError>) {
+fn handle_indexer_exit(result: Result<(), indexer::IndexerError>) {
     if let Err(e) = result {
         let recoverable = ErrorRecoverability::from(&e).is_recoverable();
         record_error_recoverability(recoverable);
@@ -570,7 +570,7 @@ async fn run_async_components(
                 critical!(error = ?e, "Health server exited");
             }
         }
-        result = indexer_syncer::run_indexer(indexer_cfg) => {
+        result = indexer::run_indexer(indexer_cfg) => {
             handle_indexer_exit(result);
         }
     }
