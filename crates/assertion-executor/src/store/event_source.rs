@@ -50,6 +50,8 @@ pub trait EventSource: Send + Sync {
 pub struct AssertionAddedEvent {
     /// Block number in which the event was emitted
     pub block: u64,
+    /// Log index within the block
+    pub log_index: u64,
     /// The assertion adopter address
     pub assertion_adopter: Address,
     /// The unique assertion id (keccak of deployment bytecode)
@@ -63,6 +65,8 @@ pub struct AssertionAddedEvent {
 pub struct AssertionRemovedEvent {
     /// Block number in which the event was emitted
     pub block: u64,
+    /// Log index within the block
+    pub log_index: u64,
     /// The assertion adopter address
     pub assertion_adopter: Address,
     /// The unique assertion id

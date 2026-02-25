@@ -248,7 +248,7 @@ impl<S: EventSource> AssertionSyncer<S> {
                 assertion_adopter: event.assertion_adopter,
                 assertion_contract_id: event.assertion_id,
                 inactivation_block: event.deactivation_block,
-                log_index: 0,
+                log_index: event.log_index,
             });
         }
 
@@ -294,7 +294,7 @@ impl<S: EventSource> AssertionSyncer<S> {
                     assertion_contract,
                     trigger_recorder,
                     activation_block: event.activation_block,
-                    log_index: 0,
+                    log_index: event.log_index,
                 }))
             }
             Err(err) => {
@@ -477,6 +477,7 @@ mod tests {
     ) -> AssertionAddedEvent {
         AssertionAddedEvent {
             block,
+            log_index: 0,
             assertion_adopter: adopter,
             assertion_id: keccak256(bytecode),
             activation_block,
@@ -508,6 +509,7 @@ mod tests {
 
         let event = AssertionAddedEvent {
             block: 10,
+            log_index: 0,
             assertion_adopter: adopter,
             assertion_id,
             activation_block: 15,
@@ -547,6 +549,7 @@ mod tests {
 
         let event = AssertionAddedEvent {
             block: 5,
+            log_index: 0,
             assertion_adopter: adopter,
             assertion_id: full_assertion_id,
             activation_block: 10,
@@ -586,6 +589,7 @@ mod tests {
             vec![],
             vec![AssertionRemovedEvent {
                 block: 20,
+                log_index: 0,
                 assertion_adopter: adopter,
                 assertion_id,
                 deactivation_block: 25,
@@ -660,6 +664,7 @@ mod tests {
             vec![],
             vec![AssertionRemovedEvent {
                 block: 20,
+                log_index: 0,
                 assertion_adopter: adopter,
                 assertion_id,
                 deactivation_block: 25,
@@ -687,6 +692,7 @@ mod tests {
             vec![make_added_event(&bc, adopter, 10, 10)],
             vec![AssertionRemovedEvent {
                 block: 10,
+                log_index: 0,
                 assertion_adopter: adopter,
                 assertion_id,
                 deactivation_block: 15,
@@ -827,6 +833,7 @@ mod tests {
             vec![],
             vec![AssertionRemovedEvent {
                 block: 50,
+                log_index: 0,
                 assertion_adopter: adopter,
                 assertion_id,
                 deactivation_block: 99,
@@ -854,6 +861,7 @@ mod tests {
         source.set_events(
             vec![AssertionAddedEvent {
                 block: 10,
+                log_index: 0,
                 assertion_adopter: adopter,
                 assertion_id,
                 activation_block: 10,

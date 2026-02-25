@@ -97,6 +97,7 @@ impl EventSource for GraphqlEventSource {
                 ) {
                     nodes {
                         block
+                        logIndex
                         assertionAdopter
                         assertionId
                         activationBlock
@@ -130,6 +131,7 @@ impl EventSource for GraphqlEventSource {
                 ) {
                     nodes {
                         block
+                        logIndex
                         assertionAdopter
                         assertionId
                         deactivationBlock
@@ -212,6 +214,7 @@ struct AssertionAddedsData {
 #[serde(rename_all = "camelCase")]
 struct AssertionAddedNode {
     block: i64,
+    log_index: i64,
     assertion_adopter: Address,
     assertion_id: B256,
     #[serde(deserialize_with = "deserialize_bigint_string")]
@@ -222,6 +225,7 @@ impl From<AssertionAddedNode> for AssertionAddedEvent {
     fn from(node: AssertionAddedNode) -> Self {
         Self {
             block: node.block.cast_unsigned(),
+            log_index: node.log_index.cast_unsigned(),
             assertion_adopter: node.assertion_adopter,
             assertion_id: node.assertion_id,
             activation_block: node.activation_block,
@@ -239,6 +243,7 @@ struct AssertionRemovedsData {
 #[serde(rename_all = "camelCase")]
 struct AssertionRemovedNode {
     block: i64,
+    log_index: i64,
     assertion_adopter: Address,
     assertion_id: B256,
     #[serde(deserialize_with = "deserialize_bigint_string")]
@@ -249,6 +254,7 @@ impl From<AssertionRemovedNode> for AssertionRemovedEvent {
     fn from(node: AssertionRemovedNode) -> Self {
         Self {
             block: node.block.cast_unsigned(),
+            log_index: node.log_index.cast_unsigned(),
             assertion_adopter: node.assertion_adopter,
             assertion_id: node.assertion_id,
             deactivation_block: node.deactivation_block,
