@@ -32,6 +32,7 @@ use tracing::{
     debug,
     error,
     info,
+    instrument,
     trace,
     warn,
 };
@@ -92,7 +93,7 @@ impl<S: EventSource> AssertionIndexer<S> {
     }
 
     /// Perform a single sync cycle: fetch new events and apply them.
-    #[tracing::instrument(skip(self), fields(since_block = self.last_synced_block))]
+    #[instrument(skip(self), fields(since_block = self.last_synced_block))]
     async fn sync_once(&mut self) -> Result<(), IndexerError> {
         let since = self.last_synced_block;
 
@@ -123,10 +124,7 @@ impl<S: EventSource> AssertionIndexer<S> {
         let removed_events = removed_result?;
 
         if added_events.is_empty() && removed_events.is_empty() {
-            trace!(
-                target = "sidecar::indexer",
-                "No new events"
-            );
+            trace!(target = "sidecar::indexer", "No new events");
             // Still update last_synced_block from the indexer head
             if let Some(head) = indexer_head
                 && head > self.last_synced_block
