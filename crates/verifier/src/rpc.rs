@@ -202,6 +202,12 @@ mod tests {
         assert_eq!(response["jsonrpc"], "2.0");
         assert_eq!(response["id"], 1);
         assert_eq!(response["result"]["status"], "success");
+        assert!(response["result"]["triggers"].is_object());
+        assert!(
+            response["result"]["triggers"]
+                .as_object()
+                .is_some_and(|triggers| !triggers.is_empty())
+        );
         assert!(response.get("error").is_none());
     }
 
@@ -220,6 +226,7 @@ mod tests {
         assert_eq!(response["jsonrpc"], "2.0");
         assert_eq!(response["id"], 1);
         assert_eq!(response["result"]["status"], "deployment_failure");
+        assert!(response["result"].get("triggers").is_none());
         assert!(response["result"]["error"].is_string());
     }
 
@@ -238,6 +245,7 @@ mod tests {
         assert_eq!(response["jsonrpc"], "2.0");
         assert_eq!(response["id"], 1);
         assert_eq!(response["result"]["status"], "no_triggers");
+        assert!(response["result"].get("triggers").is_none());
         assert!(response["result"].get("error").is_none());
     }
 

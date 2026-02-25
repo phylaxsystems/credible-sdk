@@ -2,6 +2,10 @@
 
 use assertion_executor::{
     ExecutorConfig,
+    inspectors::{
+        TriggerRecorder,
+        TriggerType,
+    },
     primitives::{
         Address,
         Bytes,
@@ -21,6 +25,7 @@ use serde::{
     Deserialize,
     Serialize,
 };
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -36,13 +41,16 @@ pub enum VerificationStatus {
 pub struct VerificationResult {
     pub status: VerificationStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub triggers: Option<BTreeMap<String, String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
 
 impl VerificationResult {
-    fn success() -> Self {
+    fn success(triggers: BTreeMap<String, String>) -> Self {
         Self {
             status: VerificationStatus::Success,
+            triggers: Some(triggers),
             error: None,
         }
     }
@@ -50,6 +58,7 @@ impl VerificationResult {
     fn deployment_failure(error: impl Into<String>) -> Self {
         Self {
             status: VerificationStatus::DeploymentFailure,
+            triggers: None,
             error: Some(error.into()),
         }
     }
@@ -57,6 +66,7 @@ impl VerificationResult {
     fn no_triggers() -> Self {
         Self {
             status: VerificationStatus::NoTriggers,
+            triggers: None,
             error: None,
         }
     }
@@ -74,6 +84,7 @@ pub fn verify_assertion(bytecode: &Bytes, executor_config: &ExecutorConfig) -> V
             Ok(extracted) => extracted,
             Err(error) => return map_extraction_error(error),
         };
+    let registered_triggers = format_registered_triggers(&trigger_recorder);
 
     let state = AssertionState {
         activation_block: 0,
@@ -102,7 +113,7 @@ pub fn verify_assertion(bytecode: &Bytes, executor_config: &ExecutorConfig) -> V
     };
 
     match insert_result {
-        Ok(_) => VerificationResult::success(),
+        Ok(_) => VerificationResult::success(registered_triggers),
         Err(error) => {
             VerificationResult::deployment_failure(format!(
                 "failed to insert assertion into store: {error}"
@@ -114,6 +125,48 @@ pub fn verify_assertion(bytecode: &Bytes, executor_config: &ExecutorConfig) -> V
 fn insert_assertion_state(state: AssertionState) -> Result<(), AssertionStoreError> {
     let store = AssertionStore::new_ephemeral();
     store.insert(Address::ZERO, state).map(|_| ())
+}
+
+fn format_registered_triggers(trigger_recorder: &TriggerRecorder) -> BTreeMap<String, String> {
+    let mut trigger_map: BTreeMap<String, Vec<&'static str>> = BTreeMap::new();
+
+    for (trigger_type, fn_selectors) in &trigger_recorder.triggers {
+        let trigger_name = map_trigger_name(trigger_type);
+        for fn_selector in fn_selectors {
+            let selector = format!("0x{}", hex::encode(fn_selector.as_slice()));
+            trigger_map.entry(selector).or_default().push(trigger_name);
+        }
+    }
+
+    trigger_map
+        .into_iter()
+        .map(|(selector, mut trigger_names)| {
+            trigger_names.sort_by_key(|name| trigger_name_order(name));
+            trigger_names.dedup();
+            (selector, trigger_names.join(" | "))
+        })
+        .collect()
+}
+
+fn map_trigger_name(trigger_type: &TriggerType) -> &'static str {
+    match trigger_type {
+        TriggerType::Call { .. } => "call",
+        TriggerType::AllCalls => "allCall",
+        TriggerType::BalanceChange => "balanceChange",
+        TriggerType::StorageChange { .. } => "storageChange",
+        TriggerType::AllStorageChanges => "allStorageChange",
+    }
+}
+
+fn trigger_name_order(trigger_name: &str) -> u8 {
+    match trigger_name {
+        "call" => 0,
+        "allCall" => 1,
+        "balanceChange" => 2,
+        "storageChange" => 3,
+        "allStorageChange" => 4,
+        _ => u8::MAX,
+    }
 }
 
 fn map_extraction_error(error: FnSelectorExtractorError) -> VerificationResult {
@@ -255,6 +308,12 @@ mod tests {
         );
         let result = verify_assertion(&bytecode, &ExecutorConfig::default());
         assert_eq!(result.status, VerificationStatus::Success);
+        assert!(
+            result
+                .triggers
+                .as_ref()
+                .is_some_and(|triggers| !triggers.is_empty())
+        );
         assert_eq!(result.error, None);
     }
 
@@ -265,6 +324,7 @@ mod tests {
         let bytecode: Bytes = hex::decode("6001600c60003960016000f300").unwrap().into();
         let result = verify_assertion(&bytecode, &ExecutorConfig::default());
         assert_eq!(result.status, VerificationStatus::NoTriggers);
+        assert_eq!(result.triggers, None);
         assert_eq!(result.error, None);
     }
 
@@ -274,6 +334,7 @@ mod tests {
         let bytecode: Bytes = hex::decode("60006000fd").unwrap().into();
         let result = verify_assertion(&bytecode, &ExecutorConfig::default());
         assert_eq!(result.status, VerificationStatus::DeploymentFailure);
+        assert_eq!(result.triggers, None);
         assert!(result.error.is_some());
     }
 }
