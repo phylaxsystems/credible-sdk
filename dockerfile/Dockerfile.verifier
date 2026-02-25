@@ -1,0 +1,42 @@
+# syntax=docker/dockerfile:1.2
+FROM rustlang/rust:nightly AS chef
+
+RUN rustup install nightly-2026-01-07 && \
+    rustup default nightly-2026-01-07 && \
+    cargo install cargo-chef && \
+    apt-get update && \
+    apt-get install -y libclang-dev clang
+
+WORKDIR /verifier
+
+FROM chef AS planner
+
+COPY crates ./crates
+COPY scripts ./scripts
+COPY Cargo.* .
+
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS builder
+
+COPY --from=planner /verifier/recipe.json recipe.json
+
+# Build dependencies only, these remained cached
+RUN cargo chef cook --release --recipe-path recipe.json
+
+# Optional build flags
+ARG BUILD_FLAGS=""
+COPY crates ./crates
+COPY scripts ./scripts
+COPY Cargo.* .
+RUN cargo build --release --locked --bin verifier $BUILD_FLAGS
+
+FROM ubuntu:24.04
+WORKDIR /usr/local/bin
+
+RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /verifier/target/release/verifier /usr/local/bin/verifier
+
+EXPOSE 8200
+
+ENTRYPOINT ["/usr/local/bin/verifier"]
