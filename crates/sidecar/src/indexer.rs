@@ -32,6 +32,7 @@ use tracing::{
     debug,
     error,
     info,
+    trace,
     warn,
 };
 
@@ -127,7 +128,7 @@ impl<S: EventSource> AssertionIndexer<S> {
         let removed_events = removed_result?;
 
         if added_events.is_empty() && removed_events.is_empty() {
-            debug!(
+            trace!(
                 target = "sidecar::indexer",
                 since_block = since,
                 "No new events"
@@ -143,7 +144,7 @@ impl<S: EventSource> AssertionIndexer<S> {
             return Ok(());
         }
 
-        info!(
+        debug!(
             target = "sidecar::indexer",
             added_count = added_events.len(),
             removed_count = removed_events.len(),

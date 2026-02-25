@@ -1,5 +1,5 @@
 //! # `graphql_event_source`
-//! 
+//!
 //! GraphQL-based implementation of [`EventSource`].
 //!
 //! Queries the sidecar-indexer's GraphQL API for assertion events.
@@ -192,13 +192,6 @@ struct BlockFilterVars {
 struct GraphqlResponse<T> {
     data: Option<T>,
     errors: Option<Vec<GraphqlError>>,
-}
-
-/// Configuration for the GraphQL event source.
-#[derive(Debug, Clone)]
-pub struct GraphqlEventSourceConfig {
-    /// URL of the GraphQL API, e.g. `<http://localhost:4350/graphql>`
-    pub graphql_url: String,
 }
 
 #[derive(Debug, Deserialize)]
