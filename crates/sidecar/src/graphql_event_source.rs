@@ -107,10 +107,10 @@ impl EventSource for GraphqlEventSource {
         let variables = BlockFilterVars {
             since_block: since_block.cast_signed(),
         };
-        let data: AssertionAddedsData = self.execute_query(query, variables).await?;
+        let data: AssertionAddedData = self.execute_query(query, variables).await?;
 
         Ok(data
-            .assertion_addeds
+            .assertion_added
             .nodes
             .into_iter()
             .map(Into::into)
@@ -141,10 +141,10 @@ impl EventSource for GraphqlEventSource {
         let variables = BlockFilterVars {
             since_block: since_block.cast_signed(),
         };
-        let data: AssertionRemovedsData = self.execute_query(query, variables).await?;
+        let data: AssertionRemovedData = self.execute_query(query, variables).await?;
 
         Ok(data
-            .assertion_removeds
+            .assertion_removed
             .nodes
             .into_iter()
             .map(Into::into)
@@ -203,9 +203,9 @@ struct ConnectionWrapper<T> {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct AssertionAddedsData {
-    assertion_addeds: ConnectionWrapper<AssertionAddedNode>,
+struct AssertionAddedData {
+    #[serde(rename = "assertionAddeds")]
+    assertion_added: ConnectionWrapper<AssertionAddedNode>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -232,9 +232,9 @@ impl From<AssertionAddedNode> for AssertionAddedEvent {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct AssertionRemovedsData {
-    assertion_removeds: ConnectionWrapper<AssertionRemovedNode>,
+struct AssertionRemovedData {
+    #[serde(rename = "assertionRemoveds")]
+    assertion_removed: ConnectionWrapper<AssertionRemovedNode>,
 }
 
 #[derive(Debug, Deserialize)]
