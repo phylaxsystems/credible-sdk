@@ -78,6 +78,10 @@ impl VerificationResult {
 /// 1. contract deployment succeeds
 /// 2. `triggers()` executes successfully and records at least one trigger
 /// 3. resulting assertion state can be inserted into an ephemeral assertion store
+///
+/// Note: The service will execute deployment of the assertion contract.
+/// So if your contract has constructor params, you must pass full deployment payload:
+/// `creation_bytecode ++ abi.encode(constructor_args)`.
 pub fn verify_assertion(bytecode: &Bytes, executor_config: &ExecutorConfig) -> VerificationResult {
     let (assertion_contract, trigger_recorder) =
         match extract_assertion_contract(bytecode, executor_config) {
@@ -113,7 +117,7 @@ pub fn verify_assertion(bytecode: &Bytes, executor_config: &ExecutorConfig) -> V
     };
 
     match insert_result {
-        Ok(_) => VerificationResult::success(registered_triggers),
+        Ok(()) => VerificationResult::success(registered_triggers),
         Err(error) => {
             VerificationResult::deployment_failure(format!(
                 "failed to insert assertion into store: {error}"

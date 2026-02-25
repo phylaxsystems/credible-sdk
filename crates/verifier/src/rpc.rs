@@ -63,17 +63,18 @@ async fn handle_rpc(State(state): State<AppState>, body: RequestBytes) -> Json<V
     Json(process_json_rpc(&body, &state.executor_config))
 }
 
+#[must_use]
 pub fn process_json_rpc(payload: &[u8], executor_config: &ExecutorConfig) -> Value {
     let json_value: Value = match serde_json::from_slice(payload) {
         Ok(value) => value,
         Err(_) => {
-            return rpc_error(Value::Null, PARSE_ERROR_CODE, "Parse error");
+            return rpc_error(&Value::Null, PARSE_ERROR_CODE, "Parse error");
         }
     };
 
     if !json_value.is_object() {
         return rpc_error(
-            Value::Null,
+            &Value::Null,
             INVALID_REQUEST_CODE,
             "Invalid JSON-RPC request",
         );
@@ -83,7 +84,7 @@ pub fn process_json_rpc(payload: &[u8], executor_config: &ExecutorConfig) -> Val
         Ok(request) => request,
         Err(_) => {
             return rpc_error(
-                Value::Null,
+                &Value::Null,
                 INVALID_REQUEST_CODE,
                 "Invalid JSON-RPC request",
             );
@@ -92,7 +93,7 @@ pub fn process_json_rpc(payload: &[u8], executor_config: &ExecutorConfig) -> Val
 
     if request.jsonrpc != "2.0" || !is_valid_jsonrpc_id(&request.id) {
         return rpc_error(
-            Value::Null,
+            &Value::Null,
             INVALID_REQUEST_CODE,
             "Invalid JSON-RPC request",
         );
@@ -100,7 +101,7 @@ pub fn process_json_rpc(payload: &[u8], executor_config: &ExecutorConfig) -> Val
 
     match request.method.as_str() {
         "verify_assertion" => handle_verify_assertion(request, executor_config),
-        _ => rpc_error(request.id, METHOD_NOT_FOUND_CODE, "Method not found"),
+        _ => rpc_error(&request.id, METHOD_NOT_FOUND_CODE, "Method not found"),
     }
 }
 
@@ -108,23 +109,23 @@ fn handle_verify_assertion(request: JsonRpcRequest, executor_config: &ExecutorCo
     let params: VerifyAssertionParams = match serde_json::from_value(request.params) {
         Ok(params) => params,
         Err(_) => {
-            return rpc_error(request.id, INVALID_PARAMS_CODE, "Invalid params");
+            return rpc_error(&request.id, INVALID_PARAMS_CODE, "Invalid params");
         }
     };
 
     let bytecode = match decode_bytecode(&params.bytecode) {
         Ok(bytecode) => bytecode,
         Err(err) => {
-            return rpc_error(request.id, INVALID_PARAMS_CODE, err);
+            return rpc_error(&request.id, INVALID_PARAMS_CODE, err);
         }
     };
 
     let result = verify_assertion(&bytecode, executor_config);
     match serde_json::to_value(result) {
-        Ok(serialized) => rpc_result(request.id, serialized),
+        Ok(serialized) => rpc_result(&request.id, &serialized),
         Err(err) => {
             rpc_error(
-                request.id,
+                &request.id,
                 INTERNAL_ERROR_CODE,
                 format!("Internal error: {err}"),
             )
@@ -143,7 +144,7 @@ fn is_valid_jsonrpc_id(id: &Value) -> bool {
     matches!(id, Value::String(_) | Value::Number(_) | Value::Null)
 }
 
-fn rpc_result(id: Value, result: Value) -> Value {
+fn rpc_result(id: &Value, result: &Value) -> Value {
     json!({
         "jsonrpc": "2.0",
         "result": result,
@@ -151,7 +152,7 @@ fn rpc_result(id: Value, result: Value) -> Value {
     })
 }
 
-fn rpc_error(id: Value, code: i64, message: impl Into<String>) -> Value {
+fn rpc_error(id: &Value, code: i64, message: impl Into<String>) -> Value {
     json!({
         "jsonrpc": "2.0",
         "error": {
