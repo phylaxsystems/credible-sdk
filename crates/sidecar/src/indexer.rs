@@ -92,14 +92,9 @@ impl<S: EventSource> AssertionIndexer<S> {
     }
 
     /// Perform a single sync cycle: fetch new events and apply them.
+    #[tracing::instrument(skip(self), fields(since_block = self.last_synced_block))]
     async fn sync_once(&mut self) -> Result<(), IndexerError> {
         let since = self.last_synced_block;
-
-        debug!(
-            target = "sidecar::indexer",
-            since_block = since,
-            "Polling for new events"
-        );
 
         // Fetch indexer head with backoff retries
         let indexer_head = self.fetch_indexer_head_with_retry().await?;
@@ -130,7 +125,6 @@ impl<S: EventSource> AssertionIndexer<S> {
         if added_events.is_empty() && removed_events.is_empty() {
             trace!(
                 target = "sidecar::indexer",
-                since_block = since,
                 "No new events"
             );
             // Still update last_synced_block from the indexer head
@@ -148,7 +142,6 @@ impl<S: EventSource> AssertionIndexer<S> {
             target = "sidecar::indexer",
             added_count = added_events.len(),
             removed_count = removed_events.len(),
-            since_block = since,
             "Processing new events"
         );
 
