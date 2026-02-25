@@ -36,7 +36,7 @@ use sidecar::{
     config::{
         init_assertion_store,
         init_executor_config,
-        init_syncer_config,
+        init_indexer_config,
     },
     critical,
     da_reachability::run_da_reachability_monitor,
@@ -48,8 +48,8 @@ use sidecar::{
     event_sequencing::EventSequencing,
     graphql_event_source::GraphqlEventSource,
     health::HealthServer,
-    syncer,
-    syncer::SyncerCfg,
+    indexer_syncer,
+    indexer_syncer::IndexerCfg,
     transaction_observer::{
         TransactionObserver,
         TransactionObserverConfig,
@@ -515,14 +515,14 @@ fn handle_observer_exit(
     }
 }
 
-fn handle_syncer_exit(result: Result<(), sidecar::syncer::SyncerError>) {
+fn handle_indexer_exit(result: Result<(), sidecar::indexer_syncer::IndexerError>) {
     if let Err(e) = result {
         let recoverable = ErrorRecoverability::from(&e).is_recoverable();
         record_error_recoverability(recoverable);
         if recoverable {
-            tracing::error!(error = ?e, "Assertion syncer exited");
+            tracing::error!(error = ?e, "Assertion indexer exited");
         } else {
-            critical!(error = ?e, "Assertion syncer exited");
+            critical!(error = ?e, "Assertion indexer exited");
         }
     }
 }
@@ -530,7 +530,7 @@ fn handle_syncer_exit(result: Result<(), sidecar::syncer::SyncerError>) {
 async fn run_async_components(
     transport: &mut GrpcTransport,
     health_server: &mut HealthServer,
-    syncer_cfg: SyncerCfg<GraphqlEventSource>,
+    indexer_cfg: IndexerCfg<GraphqlEventSource>,
     engine_exited: tokio::sync::oneshot::Receiver<Result<(), sidecar::engine::EngineError>>,
     seq_exited: tokio::sync::oneshot::Receiver<
         Result<(), sidecar::event_sequencing::EventSequencingError>,
@@ -570,8 +570,8 @@ async fn run_async_components(
                 critical!(error = ?e, "Health server exited");
             }
         }
-        result = syncer::run_syncer(syncer_cfg) => {
-            handle_syncer_exit(result);
+        result = indexer_syncer::run_indexer(indexer_cfg) => {
+            handle_indexer_exit(result);
         }
     }
 
@@ -690,7 +690,7 @@ async fn run_sidecar_once(
     let mut health_server = HealthServer::new(health_bind_addr);
 
     let da_client = DaClient::new(&config.credible.assertion_da_rpc_url)?;
-    let syncer_cfg = init_syncer_config(
+    let indexer_cfg = init_indexer_config(
         config,
         assertion_store.clone(),
         executor_config,
@@ -702,7 +702,7 @@ async fn run_sidecar_once(
     let should_shutdown = Box::pin(run_async_components(
         &mut transport,
         &mut health_server,
-        syncer_cfg,
+        indexer_cfg,
         engine_exited,
         seq_exited,
         observer_exited_rx,

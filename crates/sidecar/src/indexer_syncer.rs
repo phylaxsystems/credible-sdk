@@ -1,6 +1,6 @@
-//! # `syncer`
+//! # `indexer_syncer`
 //!
-//! Contains the assertion syncer that polls an external event source (e.g. GraphQL API)
+//! Contains the indexer syncer that polls an external event source (e.g. GraphQL API)
 //! for assertion events, fetches bytecode from the DA layer, and updates the local
 //! assertion store.
 
@@ -42,8 +42,8 @@ const INITIAL_BACKOFF: Duration = Duration::from_secs(1);
 /// Maximum backoff duration between retries.
 const MAX_BACKOFF: Duration = Duration::from_secs(60);
 
-/// Configuration for the assertion syncer.
-pub struct SyncerCfg<S: EventSource> {
+/// Configuration for the indexer.
+pub struct IndexerCfg<S: EventSource> {
     pub event_source: S,
     pub store: AssertionStore,
     pub da_client: DaClient,
@@ -54,7 +54,7 @@ pub struct SyncerCfg<S: EventSource> {
 /// Polls an [`EventSource`] for new events,
 /// fetches bytecode from the DA layer, extracts assertion contracts, and
 /// applies modifications to the [`AssertionStore`].
-struct AssertionSyncer<S: EventSource> {
+struct AssertionIndexer<S: EventSource> {
     event_source: S,
     store: AssertionStore,
     da_client: DaClient,
@@ -64,8 +64,8 @@ struct AssertionSyncer<S: EventSource> {
     last_synced_block: u64,
 }
 
-impl<S: EventSource> AssertionSyncer<S> {
-    fn new(cfg: SyncerCfg<S>) -> Self {
+impl<S: EventSource> AssertionIndexer<S> {
+    fn new(cfg: IndexerCfg<S>) -> Self {
         Self {
             event_source: cfg.event_source,
             store: cfg.store,
@@ -76,12 +76,12 @@ impl<S: EventSource> AssertionSyncer<S> {
         }
     }
 
-    /// Run the syncer loop indefinitely.
-    async fn run(&mut self) -> Result<(), SyncerError> {
+    /// Run the indexer loop indefinitely.
+    async fn run(&mut self) -> Result<(), IndexerError> {
         info!(
-            target = "sidecar::syncer",
+            target = "sidecar::indexer_syncer",
             poll_interval_ms = self.poll_interval.as_millis(),
-            "Starting assertion syncer"
+            "Starting assertion indexer"
         );
 
         loop {
@@ -91,11 +91,11 @@ impl<S: EventSource> AssertionSyncer<S> {
     }
 
     /// Perform a single sync cycle: fetch new events and apply them.
-    async fn sync_once(&mut self) -> Result<(), SyncerError> {
+    async fn sync_once(&mut self) -> Result<(), IndexerError> {
         let since = self.last_synced_block;
 
         debug!(
-            target = "sidecar::syncer",
+            target = "sidecar::indexer_syncer",
             since_block = since,
             "Polling for new events"
         );
@@ -108,7 +108,7 @@ impl<S: EventSource> AssertionSyncer<S> {
             && head < self.last_synced_block
         {
             warn!(
-                target = "sidecar::syncer",
+                target = "sidecar::indexer_syncer",
                 indexer_head = head,
                 last_synced_block = self.last_synced_block,
                 "Event source head moved backward, possible reorg upstream. Skipping cycle."
@@ -128,7 +128,7 @@ impl<S: EventSource> AssertionSyncer<S> {
 
         if added_events.is_empty() && removed_events.is_empty() {
             debug!(
-                target = "sidecar::syncer",
+                target = "sidecar::indexer_syncer",
                 since_block = since,
                 "No new events"
             );
@@ -144,7 +144,7 @@ impl<S: EventSource> AssertionSyncer<S> {
         }
 
         info!(
-            target = "sidecar::syncer",
+            target = "sidecar::indexer_syncer",
             added_count = added_events.len(),
             removed_count = removed_events.len(),
             since_block = since,
@@ -168,7 +168,7 @@ impl<S: EventSource> AssertionSyncer<S> {
     }
 
     // Fetch the indexer head with exponential backoff retries.
-    async fn fetch_indexer_head_with_retry(&self) -> Result<Option<u64>, SyncerError> {
+    async fn fetch_indexer_head_with_retry(&self) -> Result<Option<u64>, IndexerError> {
         let mut backoff = INITIAL_BACKOFF;
 
         for attempt in 1..=MAX_RETRIES {
@@ -176,7 +176,7 @@ impl<S: EventSource> AssertionSyncer<S> {
                 Ok(head) => return Ok(head),
                 Err(e) => {
                     warn!(
-                        target = "sidecar::syncer",
+                        target = "sidecar::indexer_syncer",
                         error = ?e,
                         attempt,
                         max_retries = MAX_RETRIES,
@@ -191,11 +191,11 @@ impl<S: EventSource> AssertionSyncer<S> {
         }
 
         error!(
-            target = "sidecar::syncer",
+            target = "sidecar::indexer_syncer",
             max_retries = MAX_RETRIES,
             "Indexer unreachable after exhausting retries"
         );
-        Err(SyncerError::IndexerUnreachable)
+        Err(IndexerError::IndexerUnreachable)
     }
 
     /// Process added and removed events into store modifications.
@@ -205,7 +205,7 @@ impl<S: EventSource> AssertionSyncer<S> {
         added_events: &[AssertionAddedEvent],
         removed_events: &[AssertionRemovedEvent],
         since: u64,
-    ) -> Result<u64, SyncerError> {
+    ) -> Result<u64, IndexerError> {
         let mut max_block = since;
         let mut modifications = Vec::new();
 
@@ -224,14 +224,14 @@ impl<S: EventSource> AssertionSyncer<S> {
                 Ok(Some(modification)) => modifications.push(modification),
                 Ok(None) => {
                     warn!(
-                        target = "sidecar::syncer",
+                        target = "sidecar::indexer_syncer",
                         assertion_id = ?event.assertion_id,
                         "Failed to extract assertion contract, skipping"
                     );
                 }
                 Err(e) => {
                     warn!(
-                        target = "sidecar::syncer",
+                        target = "sidecar::indexer_syncer",
                         assertion_id = ?event.assertion_id,
                         error = ?e,
                         "Error processing added event, skipping"
@@ -269,7 +269,7 @@ impl<S: EventSource> AssertionSyncer<S> {
     async fn process_added_event(
         &self,
         event: &AssertionAddedEvent,
-    ) -> Result<Option<PendingModification>, SyncerError> {
+    ) -> Result<Option<PendingModification>, IndexerError> {
         let DaFetchResponse {
             bytecode,
             encoded_constructor_args,
@@ -284,7 +284,7 @@ impl<S: EventSource> AssertionSyncer<S> {
         match extract_assertion_contract(&deployment_bytecode, &self.executor_config) {
             Ok((assertion_contract, trigger_recorder)) => {
                 info!(
-                    target = "sidecar::syncer",
+                    target = "sidecar::indexer_syncer",
                     assertion_id = ?assertion_contract.id,
                     activation_block = event.activation_block,
                     "Processed AssertionAdded event"
@@ -299,7 +299,7 @@ impl<S: EventSource> AssertionSyncer<S> {
             }
             Err(err) => {
                 warn!(
-                    target = "sidecar::syncer",
+                    target = "sidecar::indexer_syncer",
                     ?err,
                     "Failed to extract assertion contract"
                 );
@@ -311,28 +311,28 @@ impl<S: EventSource> AssertionSyncer<S> {
 
 /// Polls the configured event source for new assertion events,
 /// fetches bytecode from the DA layer, and updates the assertion store.
-pub async fn run_syncer<S: EventSource>(cfg: SyncerCfg<S>) -> Result<(), SyncerError> {
-    let mut syncer = AssertionSyncer::new(cfg);
-    syncer.run().await
+pub async fn run_indexer<S: EventSource>(cfg: IndexerCfg<S>) -> Result<(), IndexerError> {
+    let mut indexer = AssertionIndexer::new(cfg);
+    indexer.run().await
 }
 
-impl From<&SyncerError> for ErrorRecoverability {
-    fn from(e: &SyncerError) -> Self {
+impl From<&IndexerError> for ErrorRecoverability {
+    fn from(e: &IndexerError) -> Self {
         match e {
             // Store errors and indexer unreachable (retries exhausted) are unrecoverable
-            SyncerError::Store(_) | SyncerError::IndexerUnreachable => {
+            IndexerError::Store(_) | IndexerError::IndexerUnreachable => {
                 ErrorRecoverability::Unrecoverable
             }
             // Network, DA, and extraction errors are recoverable — will retry on next poll
-            SyncerError::EventSource(_)
-            | SyncerError::DaClient(_)
-            | SyncerError::ExtractionError(_) => ErrorRecoverability::Recoverable,
+            IndexerError::EventSource(_)
+            | IndexerError::DaClient(_)
+            | IndexerError::ExtractionError(_) => ErrorRecoverability::Recoverable,
         }
     }
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum SyncerError {
+pub enum IndexerError {
     #[error("Event source error: {0}")]
     EventSource(#[from] EventSourceError),
     #[error("DA client error: {0}")]
@@ -451,21 +451,21 @@ mod tests {
         });
     }
 
-    // Build a syncer with ephemeral store, default config, and the given mock source.
-    fn create_test_syncer(
+    // Build an indexer with ephemeral store, default config, and the given mock source.
+    fn create_test_indexer(
         source: MockEventSource,
         da_url: &str,
-    ) -> AssertionSyncer<MockEventSource> {
+    ) -> AssertionIndexer<MockEventSource> {
         let store = AssertionStore::new_ephemeral();
         let da_client = DaClient::new(da_url).unwrap();
-        let cfg = SyncerCfg {
+        let cfg = IndexerCfg {
             event_source: source,
             store,
             da_client,
             executor_config: ExecutorConfig::default(),
             poll_interval: Duration::from_millis(10),
         };
-        AssertionSyncer::new(cfg)
+        AssertionIndexer::new(cfg)
     }
 
     // Build an AssertionAddedEvent with assertion_id = keccak256(bytecode).
@@ -490,10 +490,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_syncer_creation() {
+    async fn test_indexer_creation() {
         let server = MockServer::start();
-        let syncer = create_test_syncer(MockEventSource::new(), &server.base_url());
-        assert_eq!(syncer.last_synced_block, 0);
+        let indexer = create_test_indexer(MockEventSource::new(), &server.base_url());
+        assert_eq!(indexer.last_synced_block, 0);
     }
 
     #[tokio::test]
@@ -505,7 +505,7 @@ mod tests {
         let server = MockServer::start();
         mock_da_for_bytecode(&server, assertion_id, &bc, &[]);
 
-        let syncer = create_test_syncer(MockEventSource::new(), &server.base_url());
+        let indexer = create_test_indexer(MockEventSource::new(), &server.base_url());
 
         let event = AssertionAddedEvent {
             block: 10,
@@ -515,7 +515,7 @@ mod tests {
             activation_block: 15,
         };
 
-        let result = syncer.process_added_event(&event).await.unwrap();
+        let result = indexer.process_added_event(&event).await.unwrap();
         let modification = result.expect("should produce Add modification");
         match modification {
             PendingModification::Add {
@@ -545,7 +545,7 @@ mod tests {
         let server = MockServer::start();
         mock_da_for_bytecode(&server, full_assertion_id, &bc, &constructor_args);
 
-        let syncer = create_test_syncer(MockEventSource::new(), &server.base_url());
+        let indexer = create_test_indexer(MockEventSource::new(), &server.base_url());
 
         let event = AssertionAddedEvent {
             block: 5,
@@ -555,7 +555,7 @@ mod tests {
             activation_block: 10,
         };
 
-        let result = syncer.process_added_event(&event).await.unwrap();
+        let result = indexer.process_added_event(&event).await.unwrap();
         let modification = result.expect("should produce Add modification");
         match &modification {
             PendingModification::Add {
@@ -580,12 +580,12 @@ mod tests {
         source.set_events(vec![make_added_event(&bc, adopter, 10, 10)], vec![]);
         source.set_head(10);
 
-        let mut syncer = create_test_syncer(source, &server.base_url());
-        syncer.sync_once().await.unwrap();
-        assert_eq!(syncer.store.get_assertions_for_contract(adopter).len(), 1);
+        let mut indexer = create_test_indexer(source, &server.base_url());
+        indexer.sync_once().await.unwrap();
+        assert_eq!(indexer.store.get_assertions_for_contract(adopter).len(), 1);
 
         // cycle 2: remove the assertion
-        syncer.event_source.set_events(
+        indexer.event_source.set_events(
             vec![],
             vec![AssertionRemovedEvent {
                 block: 20,
@@ -595,10 +595,10 @@ mod tests {
                 deactivation_block: 25,
             }],
         );
-        syncer.event_source.set_head(20);
-        syncer.sync_once().await.unwrap();
+        indexer.event_source.set_head(20);
+        indexer.sync_once().await.unwrap();
 
-        let assertions = syncer.store.get_assertions_for_contract(adopter);
+        let assertions = indexer.store.get_assertions_for_contract(adopter);
         assert_eq!(assertions.len(), 1);
         assert_eq!(assertions[0].inactivation_block, Some(25));
     }
@@ -616,27 +616,27 @@ mod tests {
         source.set_events(vec![make_added_event(&bc, adopter, 10, 12)], vec![]);
         source.set_head(10);
 
-        let mut syncer = create_test_syncer(source, &server.base_url());
-        syncer.sync_once().await.unwrap();
+        let mut indexer = create_test_indexer(source, &server.base_url());
+        indexer.sync_once().await.unwrap();
 
-        let assertions = syncer.store.get_assertions_for_contract(adopter);
+        let assertions = indexer.store.get_assertions_for_contract(adopter);
         assert_eq!(assertions.len(), 1);
         assert_eq!(assertions[0].activation_block, 12);
         assert_eq!(assertions[0].assertion_contract.id, keccak256(&bc));
     }
 
     #[tokio::test]
-    async fn test_syncer_initial_sync() {
+    async fn test_indexer_initial_sync() {
         let server = MockServer::start();
         let source = MockEventSource::new();
         source.set_head(0);
 
-        let mut syncer = create_test_syncer(source, &server.base_url());
-        assert_eq!(syncer.last_synced_block, 0);
+        let mut indexer = create_test_indexer(source, &server.base_url());
+        assert_eq!(indexer.last_synced_block, 0);
 
-        syncer.sync_once().await.unwrap();
+        indexer.sync_once().await.unwrap();
         // head=0, no events => last_synced_block stays at 0
-        assert_eq!(syncer.last_synced_block, 0);
+        assert_eq!(indexer.last_synced_block, 0);
     }
 
     #[tokio::test]
@@ -652,15 +652,15 @@ mod tests {
         source.set_events(vec![make_added_event(&bc, adopter, 10, 10)], vec![]);
         source.set_head(10);
 
-        let mut syncer = create_test_syncer(source, &server.base_url());
-        syncer.sync_once().await.unwrap();
+        let mut indexer = create_test_indexer(source, &server.base_url());
+        indexer.sync_once().await.unwrap();
 
-        let assertions = syncer.store.get_assertions_for_contract(adopter);
+        let assertions = indexer.store.get_assertions_for_contract(adopter);
         assert_eq!(assertions.len(), 1);
         assert!(assertions[0].inactivation_block.is_none());
 
         // cycle 2: remove the assertion
-        syncer.event_source.set_events(
+        indexer.event_source.set_events(
             vec![],
             vec![AssertionRemovedEvent {
                 block: 20,
@@ -670,10 +670,10 @@ mod tests {
                 deactivation_block: 25,
             }],
         );
-        syncer.event_source.set_head(20);
-        syncer.sync_once().await.unwrap();
+        indexer.event_source.set_head(20);
+        indexer.sync_once().await.unwrap();
 
-        let assertions = syncer.store.get_assertions_for_contract(adopter);
+        let assertions = indexer.store.get_assertions_for_contract(adopter);
         assert_eq!(assertions.len(), 1);
         assert_eq!(assertions[0].inactivation_block, Some(25));
     }
@@ -700,10 +700,10 @@ mod tests {
         );
         source.set_head(10);
 
-        let mut syncer = create_test_syncer(source, &server.base_url());
-        syncer.sync_once().await.unwrap();
+        let mut indexer = create_test_indexer(source, &server.base_url());
+        indexer.sync_once().await.unwrap();
 
-        let assertions = syncer.store.get_assertions_for_contract(adopter);
+        let assertions = indexer.store.get_assertions_for_contract(adopter);
         assert_eq!(assertions.len(), 1);
         assert_eq!(assertions[0].inactivation_block, Some(15));
     }
@@ -751,14 +751,14 @@ mod tests {
         source.set_events(events, vec![]);
         source.set_head(10);
 
-        let mut syncer = create_test_syncer(source, &server.base_url());
-        syncer.sync_once().await.unwrap();
+        let mut indexer = create_test_indexer(source, &server.base_url());
+        indexer.sync_once().await.unwrap();
 
         for i in 0..batch_size {
             let mut addr_bytes = [0u8; 20];
             addr_bytes[18] = u8::try_from(i >> 8).unwrap();
             addr_bytes[19] = u8::try_from(i & 0xFF).unwrap();
-            let assertions = syncer
+            let assertions = indexer
                 .store
                 .get_assertions_for_contract(Address::new(addr_bytes));
             assert_eq!(assertions.len(), 1, "adopter {i} should have 1 assertion");
@@ -778,10 +778,10 @@ mod tests {
         source.set_events(vec![make_added_event(&bc, adopter, 10, 10)], vec![]);
         source.set_head(10);
 
-        let mut syncer = create_test_syncer(source, &server.base_url());
-        syncer.sync_once().await.unwrap();
+        let mut indexer = create_test_indexer(source, &server.base_url());
+        indexer.sync_once().await.unwrap();
 
-        let assertions = syncer.store.get_assertions_for_contract(adopter);
+        let assertions = indexer.store.get_assertions_for_contract(adopter);
         assert_eq!(assertions.len(), 1);
         assert!(!assertions[0].assertion_contract.deployed_code.is_empty());
     }
@@ -799,10 +799,10 @@ mod tests {
         source.set_events(vec![make_added_event(&bc, adopter, 10, 10)], vec![]);
         source.set_head(10);
 
-        let mut syncer = create_test_syncer(source, &server.base_url());
-        syncer.sync_once().await.unwrap();
+        let mut indexer = create_test_indexer(source, &server.base_url());
+        indexer.sync_once().await.unwrap();
 
-        let assertions = syncer.store.get_assertions_for_contract(adopter);
+        let assertions = indexer.store.get_assertions_for_contract(adopter);
         assert_eq!(assertions.len(), 1);
         assert!(!assertions[0].trigger_recorder.triggers.is_empty());
     }
@@ -820,16 +820,16 @@ mod tests {
         source.set_events(vec![make_added_event(&bc, adopter, 10, 42)], vec![]);
         source.set_head(10);
 
-        let mut syncer = create_test_syncer(source, &server.base_url());
-        syncer.sync_once().await.unwrap();
+        let mut indexer = create_test_indexer(source, &server.base_url());
+        indexer.sync_once().await.unwrap();
 
-        let assertions = syncer.store.get_assertions_for_contract(adopter);
+        let assertions = indexer.store.get_assertions_for_contract(adopter);
         assert_eq!(assertions.len(), 1);
         assert_eq!(assertions[0].activation_block, 42);
         assert_eq!(assertions[0].inactivation_block, None);
 
         // cycle 2: remove, verify activation_block is preserved
-        syncer.event_source.set_events(
+        indexer.event_source.set_events(
             vec![],
             vec![AssertionRemovedEvent {
                 block: 50,
@@ -839,10 +839,10 @@ mod tests {
                 deactivation_block: 99,
             }],
         );
-        syncer.event_source.set_head(50);
-        syncer.sync_once().await.unwrap();
+        indexer.event_source.set_head(50);
+        indexer.sync_once().await.unwrap();
 
-        let assertions = syncer.store.get_assertions_for_contract(adopter);
+        let assertions = indexer.store.get_assertions_for_contract(adopter);
         assert_eq!(assertions[0].activation_block, 42);
         assert_eq!(assertions[0].inactivation_block, Some(99));
     }
@@ -870,12 +870,17 @@ mod tests {
         );
         source.set_head(10);
 
-        let mut syncer = create_test_syncer(source, &server.base_url());
-        syncer.sync_once().await.unwrap();
+        let mut indexer = create_test_indexer(source, &server.base_url());
+        indexer.sync_once().await.unwrap();
 
-        // syncer skips malformed assertion but still advances
-        assert!(syncer.store.get_assertions_for_contract(adopter).is_empty());
-        assert_eq!(syncer.last_synced_block, 10);
+        // indexer skips malformed assertion but still advances
+        assert!(
+            indexer
+                .store
+                .get_assertions_for_contract(adopter)
+                .is_empty()
+        );
+        assert_eq!(indexer.last_synced_block, 10);
     }
 
     #[tokio::test]
@@ -891,22 +896,22 @@ mod tests {
         source.set_events(vec![make_added_event(&bc, adopter, 10, 10)], vec![]);
         source.set_head(10);
 
-        let mut syncer = create_test_syncer(source, &server.base_url());
-        syncer.sync_once().await.unwrap();
-        assert_eq!(syncer.last_synced_block, 10);
+        let mut indexer = create_test_indexer(source, &server.base_url());
+        indexer.sync_once().await.unwrap();
+        assert_eq!(indexer.last_synced_block, 10);
 
         // regress head from 10 to 5
-        syncer.event_source.set_head(5);
-        syncer.event_source.set_events(
+        indexer.event_source.set_head(5);
+        indexer.event_source.set_events(
             vec![make_added_event(&bc, Address::repeat_byte(0x08), 11, 11)],
             vec![],
         );
-        syncer.sync_once().await.unwrap();
+        indexer.sync_once().await.unwrap();
 
         // events were not processed, block didn't advance
-        assert_eq!(syncer.last_synced_block, 10);
+        assert_eq!(indexer.last_synced_block, 10);
         assert!(
-            syncer
+            indexer
                 .store
                 .get_assertions_for_contract(Address::repeat_byte(0x08))
                 .is_empty()
@@ -919,9 +924,9 @@ mod tests {
         let source = MockEventSource::new();
         source.set_head(50);
 
-        let mut syncer = create_test_syncer(source, &server.base_url());
-        syncer.sync_once().await.unwrap();
-        assert_eq!(syncer.last_synced_block, 50);
+        let mut indexer = create_test_indexer(source, &server.base_url());
+        indexer.sync_once().await.unwrap();
+        assert_eq!(indexer.last_synced_block, 50);
     }
 
     #[tokio::test]
@@ -932,11 +937,11 @@ mod tests {
         let source = MockEventSource::new();
         source.set_head_error(true);
 
-        let mut syncer = create_test_syncer(source, &server.base_url());
-        let result = syncer.sync_once().await;
+        let mut indexer = create_test_indexer(source, &server.base_url());
+        let result = indexer.sync_once().await;
 
         assert!(
-            matches!(result, Err(SyncerError::IndexerUnreachable)),
+            matches!(result, Err(IndexerError::IndexerUnreachable)),
             "Expected IndexerUnreachable, got: {result:?}"
         );
     }

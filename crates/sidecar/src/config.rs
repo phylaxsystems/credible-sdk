@@ -6,7 +6,7 @@ use crate::{
         GraphqlEventSource,
         GraphqlEventSourceConfig,
     },
-    syncer::SyncerCfg,
+    indexer_syncer::IndexerCfg,
 };
 use assertion_da_client::DaClient;
 use assertion_executor::{
@@ -78,16 +78,16 @@ pub fn init_assertion_store(config: &Config) -> Result<AssertionStore, Assertion
     ))
 }
 
-/// Initialize `SyncerCfg` from config.
+/// Initialize `IndexerCfg` from config.
 ///
-/// Creates the event source and syncer configuration for assertion events.
+/// Creates the event source and indexer configuration for assertion events.
 /// Performs an initial health check to verify the event source is reachable.
-pub async fn init_syncer_config(
+pub async fn init_indexer_config(
     config: &Config,
     store: AssertionStore,
     executor_config: &ExecutorConfig,
     da_client: DaClient,
-) -> Result<SyncerCfg<GraphqlEventSource>, EventSourceError> {
+) -> Result<IndexerCfg<GraphqlEventSource>, EventSourceError> {
     let event_source = GraphqlEventSource::new(GraphqlEventSourceConfig {
         graphql_url: config.credible.event_source_url.clone(),
     });
@@ -100,10 +100,10 @@ pub async fn init_syncer_config(
     info!(
         event_source_url = ?config.credible.event_source_url,
         poll_interval_ms = poll_interval.as_millis(),
-        "Initialized SyncerCfg (event source healthy)"
+        "Initialized IndexerCfg (event source healthy)"
     );
 
-    Ok(SyncerCfg {
+    Ok(IndexerCfg {
         event_source,
         store,
         da_client,

@@ -189,7 +189,7 @@ pub struct CredibleConfigFile {
     pub assertion_da_rpc_url: Option<String>,
     /// URL of the event source for assertion events
     pub event_source_url: Option<String>,
-    /// Poll interval for the event source syncer
+    /// Poll interval for the event source indexer
     #[serde_as(as = "Option<DurationMilliSeconds<u64>>")]
     pub poll_interval: Option<Duration>,
     /// Path to the rpc store db
@@ -237,7 +237,7 @@ pub struct CredibleConfig {
     pub assertion_da_rpc_url: String,
     /// URL of the event source for assertion events
     pub event_source_url: String,
-    /// Poll interval for the event source syncer
+    /// Poll interval for the event source indexer
     pub poll_interval: Duration,
     /// Path to the rpc store db
     pub assertion_store_db_path: String,
