@@ -363,7 +363,6 @@ mod tests {
         },
         test_utils,
     };
-    use async_trait::async_trait;
     use httpmock::MockServer;
     use std::sync::Mutex;
 
@@ -398,7 +397,6 @@ mod tests {
         }
     }
 
-    #[async_trait]
     impl EventSource for MockEventSource {
         async fn fetch_added_events(
             &self,

@@ -12,7 +12,6 @@ use assertion_executor::store::{
     EventSource,
     EventSourceError,
 };
-use async_trait::async_trait;
 use reqwest::Client;
 use serde::{
     Deserialize,
@@ -83,7 +82,6 @@ impl GraphqlEventSource {
     }
 }
 
-#[async_trait]
 impl EventSource for GraphqlEventSource {
     async fn fetch_added_events(
         &self,
@@ -164,7 +162,7 @@ impl EventSource for GraphqlEventSource {
 
         let data: MetaData = self.execute_query(query, ()).await?;
 
-        Ok(data._meta.block.map(|b| b.number.cast_unsigned()))
+        Ok(data.meta.block.map(|b| b.number.cast_unsigned()))
     }
 }
 
@@ -264,7 +262,8 @@ impl From<AssertionRemovedNode> for AssertionRemovedEvent {
 
 #[derive(Debug, Deserialize)]
 struct MetaData {
-    _meta: MetaBlock,
+    #[serde(rename = "_meta")]
+    meta: MetaBlock,
 }
 
 #[derive(Debug, Deserialize)]

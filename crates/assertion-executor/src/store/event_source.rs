@@ -2,11 +2,11 @@ use crate::primitives::{
     Address,
     B256,
 };
-use async_trait::async_trait;
 use serde::{
     Deserialize,
     Serialize,
 };
+use std::future::Future;
 
 /// Trait abstracting how assertion events are fetched.
 ///
@@ -15,34 +15,34 @@ use serde::{
 ///
 /// Both methods accept a `since_block` parameter: they return all
 /// events with `block > since_block`, ordered by `block` ascending.
-#[async_trait]
 pub trait EventSource: Send + Sync {
     /// Verify that the event source is reachable and healthy.
     ///
     /// The default implementation calls [`get_indexer_head`](Self::get_indexer_head)
     /// and succeeds if the call completes without error.
-    async fn health_check(&self) -> Result<(), EventSourceError> {
-        self.get_indexer_head().await?;
-        Ok(())
+    fn health_check(&self) -> impl Future<Output = Result<(), EventSourceError>> + Send {
+        async { self.get_indexer_head().await.map(|_| ()) }
     }
 
     /// Fetch all `AssertionAdded` events with block number strictly greater
     /// than `since_block`.
-    async fn fetch_added_events(
+    fn fetch_added_events(
         &self,
         since_block: u64,
-    ) -> Result<Vec<AssertionAddedEvent>, EventSourceError>;
+    ) -> impl Future<Output = Result<Vec<AssertionAddedEvent>, EventSourceError>> + Send;
 
     /// Fetch all `AssertionRemoved` events with block number strictly greater
     /// than `since_block`.
-    async fn fetch_removed_events(
+    fn fetch_removed_events(
         &self,
         since_block: u64,
-    ) -> Result<Vec<AssertionRemovedEvent>, EventSourceError>;
+    ) -> impl Future<Output = Result<Vec<AssertionRemovedEvent>, EventSourceError>> + Send;
 
     /// Returns the latest block number the event source has indexed up to.
     /// Used to know when the sidecar is "caught up" with the external indexer.
-    async fn get_indexer_head(&self) -> Result<Option<u64>, EventSourceError>;
+    fn get_indexer_head(
+        &self,
+    ) -> impl Future<Output = Result<Option<u64>, EventSourceError>> + Send;
 }
 
 /// A raw `AssertionAdded` event as returned by the event source.
