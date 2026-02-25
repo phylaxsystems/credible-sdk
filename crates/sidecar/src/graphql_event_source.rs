@@ -1,3 +1,5 @@
+//! # `graphql_event_source`
+//! 
 //! GraphQL-based implementation of [`EventSource`].
 //!
 //! Queries the sidecar-indexer's GraphQL API for assertion events.
@@ -21,6 +23,13 @@ use serde::{
 use std::time::Duration;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Configuration for the GraphQL event source.
+#[derive(Debug, Clone)]
+pub struct GraphqlEventSourceConfig {
+    /// URL of the GraphQL API, e.g. `<http://localhost:4350/graphql>`
+    pub graphql_url: String,
+}
 
 /// Event source that queries a GraphQL API
 /// served by the sidecar-indexer.
