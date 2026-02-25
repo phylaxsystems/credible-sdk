@@ -297,6 +297,7 @@ mod tests {
                     "assertionAddeds": {
                         "nodes": [{
                             "block": 100,
+                            "logIndex": 1,
                             "assertionAdopter": "0x1234567890123456789012345678901234567890",
                             "assertionId": "0x044852b2a670ade5407e78fb2863c51de9fcb96542a07186fe3aeda6bb8a116d",
                             "activationBlock": "150"
@@ -328,6 +329,7 @@ mod tests {
                     "assertionRemoveds": {
                         "nodes": [{
                             "block": 200,
+                            "logIndex": 2,
                             "assertionAdopter": "0x1234567890123456789012345678901234567890",
                             "assertionId": "0x044852b2a670ade5407e78fb2863c51de9fcb96542a07186fe3aeda6bb8a116d",
                             "deactivationBlock": "250"
