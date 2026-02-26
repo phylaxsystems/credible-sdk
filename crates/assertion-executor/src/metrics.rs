@@ -40,3 +40,13 @@ pub fn record_assertions_moved(count: u64) {
         counter!("assertion_executor_indexer_assertions_moved_total").increment(count);
     }
 }
+
+/// Record that the external event source head moved backward.
+///
+/// This indicates the upstream indexer is handling a reorg. The syncer
+/// skips the cycle and waits for the event source to stabilise.
+///
+/// Committed as a `Counter`: `assertion_executor_event_source_head_regression_total`
+pub fn record_event_source_head_regression() {
+    counter!("assertion_executor_event_source_head_regression_total").increment(1);
+}

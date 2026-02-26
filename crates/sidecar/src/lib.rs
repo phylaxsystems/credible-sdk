@@ -16,6 +16,7 @@ pub mod da_reachability;
 pub mod engine;
 pub mod event_sequencing;
 pub mod execution_ids;
+pub mod graphql_event_source;
 pub mod health;
 pub mod indexer;
 pub mod metrics;

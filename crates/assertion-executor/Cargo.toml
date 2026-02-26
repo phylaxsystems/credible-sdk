@@ -10,12 +10,9 @@ sled = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync"] }
 tracing = { workspace = true }
-tempfile = { workspace = true }
 assertion-da-client = { workspace = true }
 bincode = { workspace = true }
-clap = { workspace = true, features = ["derive"] }
 metrics = { workspace = true }
-futures-util.workspace = true
 dashmap = { workspace = true }
 bumpalo = { version = "3.19.1", features = ["allocator_api"] }
 
@@ -56,14 +53,10 @@ full-test = []
 [dev-dependencies]
 rand = { workspace = true }
 serde_json = { workspace = true }
-tempfile = { workspace = true }
 alloy-eips = { workspace = true }
 criterion = { workspace = true }
-int-test-utils = { workspace = true }
 assertion-executor = { path = ".", default-features = false, features = ["test"] }
-anyhow = { workspace = true }
 evm-glue = { workspace = true }
-alloy-signer-local = { workspace = true }
 benchmark-utils = { workspace = true }
 
 [[bench]]

@@ -46,8 +46,10 @@ use sidecar::{
         queue::TransactionQueueSender,
     },
     event_sequencing::EventSequencing,
+    graphql_event_source::GraphqlEventSource,
     health::HealthServer,
     indexer,
+    indexer::IndexerCfg,
     transaction_observer::{
         TransactionObserver,
         TransactionObserverConfig,
@@ -513,14 +515,14 @@ fn handle_observer_exit(
     }
 }
 
-fn handle_indexer_exit(result: Result<(), assertion_executor::store::IndexerError>) {
+fn handle_indexer_exit(result: Result<(), indexer::IndexerError>) {
     if let Err(e) = result {
         let recoverable = ErrorRecoverability::from(&e).is_recoverable();
         record_error_recoverability(recoverable);
         if recoverable {
-            tracing::error!(error = ?e, "Indexer exited");
+            tracing::error!(error = ?e, "Assertion indexer exited");
         } else {
-            critical!(error = ?e, "Indexer exited");
+            critical!(error = ?e, "Assertion indexer exited");
         }
     }
 }
@@ -528,7 +530,7 @@ fn handle_indexer_exit(result: Result<(), assertion_executor::store::IndexerErro
 async fn run_async_components(
     transport: &mut GrpcTransport,
     health_server: &mut HealthServer,
-    indexer_cfg: assertion_executor::store::IndexerCfg,
+    indexer_cfg: IndexerCfg<GraphqlEventSource>,
     engine_exited: tokio::sync::oneshot::Receiver<Result<(), sidecar::engine::EngineError>>,
     seq_exited: tokio::sync::oneshot::Receiver<
         Result<(), sidecar::event_sequencing::EventSequencingError>,
