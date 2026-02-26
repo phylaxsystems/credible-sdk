@@ -132,44 +132,72 @@ fn insert_assertion_state(state: AssertionState) -> Result<(), AssertionStoreErr
 }
 
 fn format_registered_triggers(trigger_recorder: &TriggerRecorder) -> BTreeMap<String, String> {
-    let mut trigger_map: BTreeMap<String, Vec<&'static str>> = BTreeMap::new();
+    let mut trigger_map: BTreeMap<String, Vec<TriggerDisplay>> = BTreeMap::new();
 
     for (trigger_type, fn_selectors) in &trigger_recorder.triggers {
-        let trigger_name = map_trigger_name(trigger_type);
+        let trigger_display = map_trigger_display(trigger_type);
         for fn_selector in fn_selectors {
             let selector = format!("0x{}", hex::encode(fn_selector.as_slice()));
-            trigger_map.entry(selector).or_default().push(trigger_name);
+            trigger_map
+                .entry(selector)
+                .or_default()
+                .push(trigger_display);
         }
     }
 
     trigger_map
         .into_iter()
-        .map(|(selector, mut trigger_names)| {
-            trigger_names.sort_by_key(|name| trigger_name_order(name));
-            trigger_names.dedup();
-            (selector, trigger_names.join(" | "))
+        .map(|(selector, mut trigger_displays)| {
+            trigger_displays.sort_by_key(|trigger_display| trigger_display.order);
+            trigger_displays.dedup_by_key(|trigger_display| trigger_display.name);
+            let formatted_triggers = trigger_displays
+                .into_iter()
+                .map(|trigger_display| trigger_display.name)
+                .collect::<Vec<_>>()
+                .join(" | ");
+            (selector, formatted_triggers)
         })
         .collect()
 }
 
-fn map_trigger_name(trigger_type: &TriggerType) -> &'static str {
-    match trigger_type {
-        TriggerType::Call { .. } => "call",
-        TriggerType::AllCalls => "allCall",
-        TriggerType::BalanceChange => "balanceChange",
-        TriggerType::StorageChange { .. } => "storageChange",
-        TriggerType::AllStorageChanges => "allStorageChange",
-    }
+#[derive(Clone, Copy)]
+struct TriggerDisplay {
+    order: u8,
+    name: &'static str,
 }
 
-fn trigger_name_order(trigger_name: &str) -> u8 {
-    match trigger_name {
-        "call" => 0,
-        "allCall" => 1,
-        "balanceChange" => 2,
-        "storageChange" => 3,
-        "allStorageChange" => 4,
-        _ => u8::MAX,
+fn map_trigger_display(trigger_type: &TriggerType) -> TriggerDisplay {
+    match trigger_type {
+        TriggerType::Call { .. } => {
+            TriggerDisplay {
+                order: 0,
+                name: "call",
+            }
+        }
+        TriggerType::AllCalls => {
+            TriggerDisplay {
+                order: 1,
+                name: "allCall",
+            }
+        }
+        TriggerType::BalanceChange => {
+            TriggerDisplay {
+                order: 2,
+                name: "balanceChange",
+            }
+        }
+        TriggerType::StorageChange { .. } => {
+            TriggerDisplay {
+                order: 3,
+                name: "storageChange",
+            }
+        }
+        TriggerType::AllStorageChanges => {
+            TriggerDisplay {
+                order: 4,
+                name: "allStorageChange",
+            }
+        }
     }
 }
 
