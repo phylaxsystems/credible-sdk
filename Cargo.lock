@@ -13335,6 +13335,7 @@ dependencies = [
 name = "verifier"
 version = "1.0.9"
 dependencies = [
+ "alloy-sol-types",
  "anyhow",
  "assertion-executor 1.0.9",
  "axum",

@@ -1,5 +1,10 @@
 //! Reusable library containing core logic for verifying if assertions can be put in the store.
 
+use alloy_sol_types::{
+    Panic,
+    Revert,
+    SolError,
+};
 use assertion_executor::{
     ExecutorConfig,
     inspectors::{
@@ -234,80 +239,16 @@ fn extract_execution_failure_message(result_and_state: &ResultAndState) -> Optio
 }
 
 fn decode_revert_reason(output: &Bytes) -> Option<String> {
-    const ERROR_STRING_SELECTOR: [u8; 4] = [0x08, 0xc3, 0x79, 0xa0];
-    const PANIC_SELECTOR: [u8; 4] = [0x4e, 0x48, 0x7b, 0x71];
-
-    let bytes = output.as_ref();
-    if bytes.len() < 4 {
-        return None;
+    if let Ok(revert) = Revert::abi_decode(output.as_ref()) {
+        return Some(revert.reason);
     }
 
-    let selector = &bytes[..4];
-    let encoded = &bytes[4..];
-
-    if selector == ERROR_STRING_SELECTOR {
-        return decode_error_string_payload(encoded);
-    }
-
-    if selector == PANIC_SELECTOR {
-        return decode_panic_payload(encoded);
+    if let Ok(panic) = Panic::abi_decode(output.as_ref()) {
+        let panic_code = u64::try_from(panic.code).ok()?;
+        return Some(format!("panic code 0x{panic_code:02x}"));
     }
 
     None
-}
-
-fn decode_error_string_payload(encoded: &[u8]) -> Option<String> {
-    if encoded.len() < 64 {
-        return None;
-    }
-
-    let offset = decode_word_to_usize(&encoded[0..32])?;
-    let len_pos = offset.checked_add(32)?;
-    if encoded.len() < len_pos {
-        return None;
-    }
-
-    let length = decode_word_to_usize(&encoded[offset..len_pos])?;
-    let start = len_pos;
-    let end = start.checked_add(length)?;
-    if encoded.len() < end {
-        return None;
-    }
-
-    std::str::from_utf8(&encoded[start..end])
-        .ok()
-        .map(std::string::ToString::to_string)
-}
-
-fn decode_panic_payload(encoded: &[u8]) -> Option<String> {
-    if encoded.len() < 32 {
-        return None;
-    }
-
-    let panic_code = decode_word_to_u64(&encoded[..32])?;
-    Some(format!("panic code 0x{panic_code:02x}"))
-}
-
-fn decode_word_to_usize(word: &[u8]) -> Option<usize> {
-    if word.len() != 32 {
-        return None;
-    }
-    if word[..24].iter().any(|byte| *byte != 0) {
-        return None;
-    }
-
-    let value = u64::from_be_bytes(word[24..32].try_into().ok()?);
-    usize::try_from(value).ok()
-}
-
-fn decode_word_to_u64(word: &[u8]) -> Option<u64> {
-    if word.len() != 32 {
-        return None;
-    }
-    if word[..24].iter().any(|byte| *byte != 0) {
-        return None;
-    }
-    Some(u64::from_be_bytes(word[24..32].try_into().ok()?))
 }
 
 #[cfg(test)]
@@ -368,5 +309,24 @@ mod tests {
         assert_eq!(result.status, VerificationStatus::DeploymentFailure);
         assert_eq!(result.triggers, None);
         assert!(result.error.is_some());
+    }
+
+    #[test]
+    fn decode_revert_reason_error_string() {
+        let revert_data = Revert::from("boom").abi_encode();
+        let output: Bytes = revert_data.into();
+
+        assert_eq!(decode_revert_reason(&output), Some("boom".to_string()));
+    }
+
+    #[test]
+    fn decode_revert_reason_panic_code() {
+        let revert_data = Panic::from(0x11u64).abi_encode();
+        let output: Bytes = revert_data.into();
+
+        assert_eq!(
+            decode_revert_reason(&output),
+            Some("panic code 0x11".to_string())
+        );
     }
 }

@@ -9,6 +9,7 @@ repository.workspace = true
 [dependencies]
 anyhow = { workspace = true }
 assertion-executor = { workspace = true }
+alloy-sol-types = { workspace = true }
 axum = { workspace = true }
 clap = { workspace = true, features = ["derive", "env"] }
 rust-tracing = { workspace = true }
