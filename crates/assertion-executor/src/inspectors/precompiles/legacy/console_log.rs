@@ -62,6 +62,7 @@ mod test {
             adopter,
             console_logs: vec![],
             original_tx_env: &tx_env,
+            assertion_spec: crate::inspectors::spec_recorder::AssertionSpec::Legacy,
         };
         console_log(input_bytes, &mut context)
     }
@@ -86,6 +87,7 @@ mod test {
             adopter,
             console_logs: vec![],
             original_tx_env: &tx_env,
+            assertion_spec: crate::inspectors::spec_recorder::AssertionSpec::Legacy,
         };
         let result = console_log(
             &logCall {

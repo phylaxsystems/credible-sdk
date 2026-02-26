@@ -240,6 +240,7 @@ mod test {
             adopter: Address::ZERO,
             console_logs: vec![],
             original_tx_env: &tx_env,
+            assertion_spec: crate::inspectors::spec_recorder::AssertionSpec::Legacy,
         };
         f(&context)
     }

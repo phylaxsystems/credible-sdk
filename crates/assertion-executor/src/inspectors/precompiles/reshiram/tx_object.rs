@@ -84,7 +84,7 @@ mod test {
         test_utils::{
             random_address,
             random_u256,
-            run_precompile_test,
+            run_precompile_test_with_spec,
         },
     };
 
@@ -100,6 +100,7 @@ mod test {
             adopter: Address::ZERO,
             console_logs: vec![],
             original_tx_env: tx_env,
+            assertion_spec: crate::inspectors::spec_recorder::AssertionSpec::Reshiram,
         }
     }
 
@@ -276,7 +277,10 @@ mod test {
 
     #[tokio::test]
     async fn test_load_tx_object_integration() {
-        let result = run_precompile_test("TestLoadTxObject");
+        let result = run_precompile_test_with_spec(
+            "TestLoadTxObject",
+            crate::inspectors::spec_recorder::AssertionSpec::Reshiram,
+        );
         assert!(result.is_valid());
         let result_and_state = result.result_and_state;
         assert!(result_and_state.result.is_success());

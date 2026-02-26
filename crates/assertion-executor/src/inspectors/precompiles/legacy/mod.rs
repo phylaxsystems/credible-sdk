@@ -1,6 +1,6 @@
 //! # Legacy Precompiles
 //!
-//! The `legacy` module contains the standard set of PhEvm precompiles available at launch.
+//! The `legacy` module contains the standard set of `PhEvm` precompiles available at launch.
 //! These precompiles are exposed when an assertion registers with `AssertionSpec::Legacy`.
 //!
 //! ## Precompiles
@@ -13,7 +13,7 @@
 //! - `assertion_adopter`: Returns the assertion adopter contract address.
 //! - `console_log`: Enables console logging for debugging assertions.
 //!
-//! `AssertionSpec::Legacy`: crate::inspectors::spec_recorder::AssertionSpec::Legacy
+//! `AssertionSpec::Legacy`: `crate::inspectors::spec_recorder::AssertionSpec::Legacy`
 
 pub(crate) use super::{
     BASE_COST,

@@ -54,6 +54,35 @@ pub enum AssertionSpec {
     Experimental,
 }
 
+impl AssertionSpec {
+    /// Returns `true` if the given precompile selector is allowed under this spec.
+    ///
+    /// Each spec is a superset of the previous one:
+    /// - `Legacy`: all precompiles except Reshiram-only selectors
+    /// - `Reshiram`: all precompiles except Experimental-only selectors
+    /// - `Experimental`: unrestricted
+    #[must_use]
+    pub fn allows_selector(&self, selector: [u8; 4]) -> bool {
+        match self {
+            Self::Experimental => true,
+            Self::Reshiram => !Self::is_experimental_only(selector),
+            Self::Legacy => {
+                !Self::is_reshiram_only(selector) && !Self::is_experimental_only(selector)
+            }
+        }
+    }
+
+    fn is_reshiram_only(selector: [u8; 4]) -> bool {
+        use crate::inspectors::sol_primitives::PhEvm;
+        use alloy_sol_types::SolCall;
+        matches!(selector, PhEvm::getTxObjectCall::SELECTOR)
+    }
+
+    fn is_experimental_only(_selector: [u8; 4]) -> bool {
+        false
+    }
+}
+
 /// `AssertionSpecRecorder` is an inspector used on assertion deployment for assertions to
 /// select their desired assertion spec.
 ///

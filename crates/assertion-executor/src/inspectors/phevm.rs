@@ -38,6 +38,7 @@ use crate::{
             PhEvm,
             console,
         },
+        spec_recorder::AssertionSpec,
         tracer::CallTracer,
     },
     primitives::{
@@ -116,6 +117,7 @@ pub struct PhEvmContext<'a> {
     pub adopter: Address,
     pub console_logs: Vec<String>,
     pub original_tx_env: &'a TxEnv,
+    pub assertion_spec: AssertionSpec,
 }
 
 impl<'a> PhEvmContext<'a> {
@@ -124,12 +126,14 @@ impl<'a> PhEvmContext<'a> {
         logs_and_traces: &'a LogsAndTraces<'a>,
         adopter: Address,
         tx_env: &'a TxEnv,
+        assertion_spec: AssertionSpec,
     ) -> Self {
         Self {
             logs_and_traces,
             adopter,
             console_logs: vec![],
             original_tx_env: tx_env,
+            assertion_spec,
         }
     }
 
@@ -144,6 +148,11 @@ impl<'a> PhEvmContext<'a> {
 pub enum PrecompileError<ExtDb: DatabaseRef> {
     #[error("Precompile selector not found: {0:#?}")]
     SelectorNotFound(FixedBytes<4>),
+    #[error("Precompile selector {selector:#?} not allowed under {spec:?} spec")]
+    SelectorNotAllowed {
+        selector: FixedBytes<4>,
+        spec: AssertionSpec,
+    },
     #[error("Unexpected error, should be Infallible: {0}")]
     UnexpectedError(#[source] std::convert::Infallible),
     #[error("Error getting state changes: {0}")]
@@ -188,11 +197,18 @@ impl<'a> PhEvmInspector<'a> {
             >,
     {
         let input_bytes = inputs.input.bytes(context);
-        let selector = input_bytes
+        let selector: [u8; 4] = input_bytes
             .get(0..4)
             .unwrap_or_default()
             .try_into()
             .unwrap_or_default();
+
+        if !self.context.assertion_spec.allows_selector(selector) {
+            return Err(PrecompileError::SelectorNotAllowed {
+                selector: selector.into(),
+                spec: self.context.assertion_spec.clone(),
+            });
+        }
 
         if let Some(outcome) =
             self.execute_fork_precompile::<ExtDb, CTX>(selector, context, inputs, &input_bytes)?

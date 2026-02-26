@@ -261,6 +261,7 @@ pub struct AssertionsForExecution {
     pub assertion_contract: AssertionContract,
     pub selectors: Vec<FixedBytes<4>>,
     pub adopter: Address,
+    pub assertion_spec: AssertionSpec,
 }
 
 /// Used to represent important tracing information.
@@ -347,6 +348,13 @@ impl AssertionState {
     /// Panics if the assertion contract cannot be initialized.
     pub fn new_test(bytecode: &Bytes) -> Self {
         Self::new_active(bytecode, &ExecutorConfig::default()).unwrap()
+    }
+
+    /// Override the assertion spec on this state.
+    #[must_use]
+    pub fn with_spec(mut self, spec: AssertionSpec) -> Self {
+        self.assertion_spec = spec;
+        self
     }
 
     /// Getter for the `assertion_contract_id`
@@ -735,11 +743,12 @@ impl AssertionStore {
             let contract_assertions = self.read_adopter(contract_address, triggers, block_num)?;
             let assertions_for_execution: Vec<AssertionsForExecution> = contract_assertions
                 .into_iter()
-                .map(|(assertion_contract, selectors)| {
+                .map(|(assertion_contract, selectors, assertion_spec)| {
                     AssertionsForExecution {
                         assertion_contract,
                         selectors,
                         adopter: *contract_address,
+                        assertion_spec,
                     }
                 })
                 .collect();
@@ -807,7 +816,8 @@ impl AssertionStore {
         assertion_adopter: &Address,
         triggers: &HashSet<TriggerType>,
         block: u64,
-    ) -> Result<Vec<(AssertionContract, Vec<FixedBytes<4>>)>, AssertionStoreError> {
+    ) -> Result<Vec<(AssertionContract, Vec<FixedBytes<4>>, AssertionSpec)>, AssertionStoreError>
+    {
         let assertion_states = tracing::trace_span!(
             "read_adopter_from_db",
             ?assertion_adopter,
@@ -893,7 +903,11 @@ impl AssertionStore {
                     all_selectors.extend(selectors.iter().copied());
                 }
                 // Convert HashSet to Vec to match the expected return type
-                (a.assertion_contract, all_selectors.into_iter().collect())
+                (
+                    a.assertion_contract,
+                    all_selectors.into_iter().collect(),
+                    a.assertion_spec,
+                )
             })
             .collect();
 
