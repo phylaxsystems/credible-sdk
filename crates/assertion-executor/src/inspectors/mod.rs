@@ -1,9 +1,9 @@
 mod phevm;
 pub mod precompiles;
 pub mod sol_primitives;
+mod spec_recorder;
 mod tracer;
 mod trigger_recorder;
-mod spec_recorder;
 
 pub use phevm::{
     LogsAndTraces,
