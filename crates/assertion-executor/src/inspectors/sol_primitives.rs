@@ -140,6 +140,7 @@ sol! {
 sol! {
     enum AssertionSpec {
         Legacy,
+        Reshiram,
         Experimental,
     }
 

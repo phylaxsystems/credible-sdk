@@ -36,10 +36,15 @@ use std::ops::Range;
 pub const SPEC_ADDRESS: Address = address!("984c47F4eE1770FBb8BbA655C058034652f48359");
 
 /// The assertion spec defines what subset of precompiles to expose during phevm execution.
+///
+/// All new specs derive and expose all precompiles from the old definitions, unless specified
+/// otherwise.
 #[derive(Debug, Clone)]
 pub enum AssertionSpec {
     /// Standard set of `PhEvm` precompiles available at launch.
     Legacy,
+    /// Contains tx object precompiles.
+    Reshiram,
     /// Unrestricted access to all available precompiles. May be untested and dangerous.
     /// Proceed with care.
     Experimental,

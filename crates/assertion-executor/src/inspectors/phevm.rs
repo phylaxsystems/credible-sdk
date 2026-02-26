@@ -8,29 +8,31 @@ use crate::{
     inspectors::{
         inspector_result_to_call_outcome,
         precompiles::{
-            assertion_adopter::get_assertion_adopter,
-            calls::{
-                GetCallInputsError,
-                get_call_inputs,
+            legacy::{
+                assertion_adopter::get_assertion_adopter,
+                calls::{
+                    GetCallInputsError,
+                    get_call_inputs,
+                },
+                console_log::ConsoleLogError,
+                fork::{
+                    ForkError,
+                    fork_post_call,
+                    fork_post_tx,
+                    fork_pre_call,
+                    fork_pre_tx,
+                },
+                get_logs::get_logs,
+                load::{
+                    LoadExternalSlotError,
+                    load_external_slot,
+                },
+                state_changes::{
+                    GetStateChangesError,
+                    get_state_changes,
+                },
             },
-            console_log::ConsoleLogError,
-            fork::{
-                ForkError,
-                fork_post_call,
-                fork_post_tx,
-                fork_pre_call,
-                fork_pre_tx,
-            },
-            get_logs::get_logs,
-            load::{
-                LoadExternalSlotError,
-                load_external_slot,
-            },
-            state_changes::{
-                GetStateChangesError,
-                get_state_changes,
-            },
-            tx_object::load_tx_object,
+            reshiram::tx_object::load_tx_object,
         },
         sol_primitives::{
             PhEvm,
@@ -374,7 +376,7 @@ impl<'a> PhEvmInspector<'a> {
             console::logCall::SELECTOR => {
                 #[cfg(feature = "phoundry")]
                 return Ok(Some(
-                    crate::inspectors::precompiles::console_log::console_log(
+                    crate::inspectors::precompiles::legacy::console_log::console_log(
                         input_bytes,
                         &mut self.context,
                     )
