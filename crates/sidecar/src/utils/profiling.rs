@@ -68,6 +68,26 @@ pub fn init_profiling(runtime: &Handle) -> Result<ProfilingGuard, String> {
             "alloy_transport=warn"
                 .parse()
                 .map_err(|e| format!("invalid directive: {e}"))?,
+        )
+        .add_directive(
+            "hyper_util=warn"
+                .parse()
+                .map_err(|e| format!("invalid directive: {e}"))?,
+        )
+        .add_directive(
+            "reqwest=warn"
+                .parse()
+                .map_err(|e| format!("invalid directive: {e}"))?,
+        )
+        .add_directive(
+            "h2=warn"
+                .parse()
+                .map_err(|e| format!("invalid directive: {e}"))?,
+        )
+        .add_directive(
+            "axum=warn"
+                .parse()
+                .map_err(|e| format!("invalid directive: {e}"))?,
         );
 
     let fmt_layer = tracing_subscriber::fmt::layer()
@@ -123,6 +143,26 @@ pub fn init_profiling(_runtime: &tokio::runtime::Handle) -> Result<ProfilingGuar
         )
         .add_directive(
             "alloy_transport=warn"
+                .parse()
+                .map_err(|e| format!("invalid directive: {e}"))?,
+        )
+        .add_directive(
+            "hyper_util=warn"
+                .parse()
+                .map_err(|e| format!("invalid directive: {e}"))?,
+        )
+        .add_directive(
+            "reqwest=warn"
+                .parse()
+                .map_err(|e| format!("invalid directive: {e}"))?,
+        )
+        .add_directive(
+            "h2=warn"
+                .parse()
+                .map_err(|e| format!("invalid directive: {e}"))?,
+        )
+        .add_directive(
+            "axum=warn"
                 .parse()
                 .map_err(|e| format!("invalid directive: {e}"))?,
         );
