@@ -1,4 +1,11 @@
+//! `assertion-verification`
+//!
 //! Reusable library containing core logic for verifying if assertions can be put in the store.
+//!
+//! This validates:
+//! 1. contract deployment succeeds
+//! 2. `triggers()` executes successfully and records at least one trigger
+//! 3. resulting assertion state can be inserted into an ephemeral assertion store
 
 use alloy_sol_types::{
     Panic,

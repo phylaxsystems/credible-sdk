@@ -2,12 +2,16 @@ use std::net::SocketAddr;
 
 use assertion_executor::ExecutorConfig;
 use clap::Parser;
-use verifier::build_router;
+use verifier_service::build_router;
 
 #[derive(Debug, Parser)]
 struct Args {
-    /// Address the verifier HTTP server binds to.
-    #[arg(long, env = "VERIFIER_BIND_ADDR", default_value = "127.0.0.1:8200")]
+    /// Address the verifier service HTTP server binds to.
+    #[arg(
+        long,
+        env = "VERIFIER_SERVICE_BIND_ADDR",
+        default_value = "127.0.0.1:8200"
+    )]
     bind_addr: SocketAddr,
 }
 

@@ -7,7 +7,7 @@ RUN rustup install nightly-2026-01-07 && \
     apt-get update && \
     apt-get install -y libclang-dev clang
 
-WORKDIR /verifier
+WORKDIR /verifier-service
 
 FROM chef AS planner
 
@@ -19,7 +19,7 @@ RUN cargo chef prepare --recipe-path recipe.json
 
 FROM chef AS builder
 
-COPY --from=planner /verifier/recipe.json recipe.json
+COPY --from=planner /verifier-service/recipe.json recipe.json
 
 # Build dependencies only, these remained cached
 RUN cargo chef cook --release --recipe-path recipe.json
@@ -29,14 +29,14 @@ ARG BUILD_FLAGS=""
 COPY crates ./crates
 COPY scripts ./scripts
 COPY Cargo.* .
-RUN cargo build --release --locked --bin verifier $BUILD_FLAGS
+RUN cargo build --release --locked --bin verifier-service $BUILD_FLAGS
 
 FROM ubuntu:24.04
 WORKDIR /usr/local/bin
 
 RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
-COPY --from=builder /verifier/target/release/verifier /usr/local/bin/verifier
+COPY --from=builder /verifier-service/target/release/verifier-service /usr/local/bin/verifier-service
 
 EXPOSE 8200
 
-ENTRYPOINT ["/usr/local/bin/verifier"]
+ENTRYPOINT ["/usr/local/bin/verifier-service"]

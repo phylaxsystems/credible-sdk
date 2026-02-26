@@ -1,7 +1,7 @@
-//! `verifier`
+//! `verifier-service`
 //!
-//! The verifier is a microservice that verifies that assertions conform to the interface needed to be deployed and ran.
-//! What this means in practice, is that the verifier has an API that accepts assertion bytecode, and will return a success
+//! The verifier service is a microservice that verifies that assertions conform to the interface needed to be deployed and ran.
+//! What this means in practice, is that the verifier service has an API that accepts assertion bytecode, and will return a success
 //! if the assertion can be deployed and ran and error otherwise.
 //!
 //! The assertion can error for a few reasons on deployment. The assertion must be able to be put in the assertion store.
@@ -10,9 +10,9 @@
 //! - Must register triggers
 //! - Must register assertion spec ***(TBA), spec not implemented yet***
 //!
-//! The verifier is also exposed as a library, so that it can be reused for `pcl test`.
+//! The core verification logic is provided by the `assertion-verification` crate,
+//! which is also reused by `pcl test`.
 
-pub mod assertion_verification;
 pub mod rpc;
 
 pub use assertion_verification::{
