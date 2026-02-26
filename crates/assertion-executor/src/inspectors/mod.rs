@@ -1,7 +1,7 @@
 mod phevm;
 pub mod precompiles;
 pub mod sol_primitives;
-mod spec_recorder;
+pub mod spec_recorder;
 mod tracer;
 mod trigger_recorder;
 

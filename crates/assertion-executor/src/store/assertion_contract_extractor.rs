@@ -11,6 +11,7 @@ use crate::{
     inspectors::{
         TriggerRecorder,
         insert_trigger_recorder_account,
+        spec_recorder::AssertionSpecRecorder,
     },
     primitives::{
         Account,
@@ -29,7 +30,6 @@ use revm::{
     ExecuteEvm,
     InspectEvm,
     database::InMemoryDB,
-    inspector::NoOpInspector,
     primitives::eip7825,
 };
 
@@ -102,7 +102,8 @@ pub fn extract_assertion_contract(
 
     let env = evm_env(config.chain_id, config.spec_id, block_env.clone());
 
-    let mut evm = crate::build_evm_by_features!(&mut db, &env, NoOpInspector);
+    let mut spec_recorder = AssertionSpecRecorder::default();
+    let mut evm = crate::build_evm_by_features!(&mut db, &env, &mut spec_recorder);
     let tx_env = crate::wrap_tx_env_for_optimism!(tx_env);
 
     let result_and_state = evm

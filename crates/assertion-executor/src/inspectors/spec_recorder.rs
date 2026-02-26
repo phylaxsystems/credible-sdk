@@ -54,7 +54,7 @@ pub enum AssertionSpec {
 /// select their desired assertion spec.
 ///
 /// The assertion spec defines what subset of assertion precompiles you will have access to.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct AssertionSpecRecorder {
     pub context: Option<AssertionSpec>,
 }
@@ -101,6 +101,10 @@ impl AssertionSpecRecorder {
                         match call.spec {
                             sol_primitives::AssertionSpec::Legacy => {
                                 self.context = Some(AssertionSpec::Legacy);
+                                Ok(Bytes::new())
+                            }
+                            sol_primitives::AssertionSpec::Reshiram => {
+                                self.context = Some(AssertionSpec::Reshiram);
                                 Ok(Bytes::new())
                             }
                             sol_primitives::AssertionSpec::Experimental => {
