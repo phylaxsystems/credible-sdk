@@ -15,6 +15,7 @@ pub use assertion_store::{
     AssertionState,
     AssertionStore,
     AssertionStoreError,
+    AssertionsForExecution,
     PruneConfig,
 };
 

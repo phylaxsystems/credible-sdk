@@ -90,6 +90,10 @@ use tracing::{
     warn,
 };
 
+/// Minimum number of items before rayon parallel execution is worthwhile.
+/// Below this threshold, sequential execution avoids scheduling overhead.
+const PARALLEL_THRESHOLD: usize = 2;
+
 static ASSERTION_EXECUTOR_POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
 
 fn assertion_executor_pool() -> &'static rayon::ThreadPool {
@@ -301,33 +305,57 @@ impl AssertionExecutor {
             return Ok(vec![]);
         }
 
+        let assertion_count = assertions.len();
         debug!(
             target: "assertion-executor::execute_assertions",
-            assertion_contract_count = assertions.len(),
+            assertion_contract_count = assertion_count,
             "Retrieved Assertion contracts from Assertion store"
         );
 
-        assertion_executor_pool().install(|| {
-            assertions
-                .into_par_iter()
-                .map(move |assertion_for_execution| {
-                    let phevm_context = PhEvmContext::new(
-                        &logs_and_traces,
-                        assertion_for_execution.adopter,
-                        tx_env,
-                    );
+        let execute_one = |assertion_for_execution: crate::store::AssertionsForExecution| {
+            let mut phevm_context = PhEvmContext::new(
+                &logs_and_traces,
+                assertion_for_execution.adopter,
+                tx_env,
+            );
 
-                    run_assertion_contract(
-                        &assertion_for_execution.assertion_contract,
-                        &assertion_for_execution.selectors,
-                        &block_env,
-                        tx_fork_db.clone(),
-                        &phevm_context,
-                        tx_arena_epoch,
-                    )
-                })
-                .collect()
-        })
+            // Find the first call targeting this adopter to set as trigger context
+            let adopter = assertion_for_execution.adopter;
+            phevm_context.trigger_call_id = logs_and_traces
+                .call_traces
+                .call_records()
+                .iter()
+                .enumerate()
+                .find(|(_, r)| r.inputs().target_address == adopter)
+                .map(|(i, _)| i);
+
+            run_assertion_contract(
+                &assertion_for_execution.assertion_contract,
+                &assertion_for_execution.selectors,
+                &block_env,
+                tx_fork_db.clone(),
+                &phevm_context,
+                tx_arena_epoch,
+            )
+        };
+
+        let total_selectors: usize = assertions.iter().map(|a| a.selectors.len()).sum();
+        let parallel = assertion_count >= PARALLEL_THRESHOLD;
+        debug!(
+            target: "assertion-executor::execute_assertions",
+            assertion_count,
+            total_selectors,
+            scheduling = if parallel { "parallel" } else { "sequential" },
+            "Assertion contract scheduling decision"
+        );
+
+        if parallel {
+            assertion_executor_pool().install(|| {
+                assertions.into_par_iter().map(execute_one).collect()
+            })
+        } else {
+            assertions.into_iter().map(execute_one).collect()
+        }
     }
 
     /// Builds the transaction environment for executing a single assertion function.
@@ -567,26 +595,53 @@ impl AssertionExecutor {
         Active: DatabaseRef + Sync + Send + Clone,
         Active::Error: Send,
     {
+        if fn_selectors.is_empty() {
+            debug!(
+                target: "assertion-executor::execute_assertions",
+                assertion_contract_id = ?assertion_contract.id,
+                "Skipping assertion contract with no matched selectors"
+            );
+            return Ok(AssertionContractExecution {
+                adopter: context.adopter,
+                assertion_fns_results: vec![],
+                total_assertion_gas: 0,
+                total_assertion_funcs_ran: 0,
+            });
+        }
+
         let prepared =
             self.prepare_assertion_contract(assertion_contract, fn_selectors, tx_fork_db, context);
 
+        let execute_fn = |fn_selector: &FixedBytes<4>| {
+            self.execute_assertion_fn(AssertionExecutionParams {
+                assertion_contract,
+                fn_selector,
+                tx_arena_epoch,
+                block_env: block_env.clone(),
+                multi_fork_db: prepared.multi_fork_db.clone(),
+                inspector: prepared.inspector.clone(),
+            })
+        };
+
+        let selector_count = fn_selectors.len();
+        let parallel_fns = selector_count >= PARALLEL_THRESHOLD;
+        trace!(
+            target: "assertion-executor::execute_assertions",
+            assertion_contract_id = ?assertion_contract.id,
+            selector_count,
+            scheduling = if parallel_fns { "parallel" } else { "sequential" },
+            "Assertion fn scheduling decision"
+        );
+
         let current_span = tracing::Span::current();
         let results_vec: Vec<_> = current_span.in_scope(|| {
-            assertion_executor_pool().install(|| {
-                fn_selectors
-                    .into_par_iter()
-                    .map(|fn_selector| {
-                        self.execute_assertion_fn(AssertionExecutionParams {
-                            assertion_contract,
-                            fn_selector,
-                            tx_arena_epoch,
-                            block_env: block_env.clone(),
-                            multi_fork_db: prepared.multi_fork_db.clone(),
-                            inspector: prepared.inspector.clone(),
-                        })
-                    })
-                    .collect()
-            })
+            if parallel_fns {
+                assertion_executor_pool().install(|| {
+                    fn_selectors.into_par_iter().map(execute_fn).collect()
+                })
+            } else {
+                fn_selectors.iter().map(execute_fn).collect()
+            }
         });
 
         trace!(target: "assertion-executor::execute_assertions", execution_results=?results_vec.iter().map(|result| format!("{result:?}")).collect::<Vec<_>>(), "Assertion Execution Results");

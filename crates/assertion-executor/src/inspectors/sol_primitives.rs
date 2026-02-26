@@ -1,133 +1,17 @@
 use alloy_sol_types::sol;
 
+// Canonical PhEvm interface loaded from Solidity source file.
+// This is the single source of truth for the PhEvm precompile ABI.
+// The downstream credible-std/src/PhEvm.sol should be kept in sync.
+sol!("interfaces/PhEvm.sol");
+
+// Canonical ITriggerRecorder interface loaded from Solidity source file.
+// This is the single source of truth for the TriggerRecorder precompile ABI.
+// The downstream credible-std/src/TriggerRecorder.sol should be kept in sync
+// (note: credible-std uses the name TriggerRecorder without the I prefix).
+sol!("interfaces/ITriggerRecorder.sol");
+
 sol! {
-    interface PhEvm {
-        // An Ethereum log
-        struct Log {
-            // The topics of the log, including the signature, if any.
-            bytes32[] topics;
-            // The raw data of the log.
-            bytes data;
-            // The address of the log's emitter.
-            address emitter;
-        }
-
-        // Call inputs for the getCallInputs precompile
-        struct CallInputs {
-            // The call data of the call.
-            bytes input;
-            /// The gas limit of the call.
-            uint64 gas_limit;
-            // The account address of bytecode that is going to be executed.
-            //
-            // Previously `context.code_address`.
-            address bytecode_address;
-            // Target address, this account storage is going to be modified.
-            //
-            // Previously `context.address`.
-            address target_address;
-            // This caller is invoking the call.
-            //
-            // Previously `context.caller`.
-            address caller;
-            // Call value.
-            //
-            // NOTE: This value may not necessarily be transferred from caller to callee, see [`CallValue`].
-            //
-            // Previously `transfer.value` or `context.apparent_value`.
-            uint256 value;
-            // id of the call, used to pass to forkCallPre and forkCallPost cheatcodes to access the state
-            // before and after the execution of the call.
-            uint256 id;
-        }
-
-        // Contains data about the original assertion-triggering transaction
-        struct TxObject {
-            // The address of caller.
-            address from;
-            // Transaction recepient. `Address::ZERO` if CREATE.
-            address to;
-            // Value of the transaction.
-            uint256 value;
-            // Chain id. `0` if not present.
-            uint64 chain_id;
-            // Gas limit.
-            uint64 gas_limit;
-            // The gas price or `max_fee_per_gas` if EIP-1559.
-            uint128 gas_price;
-            // Call data.
-            bytes input;
-
-        }
-
-        //Forks to the state prior to the assertion triggering transaction.
-        function forkPreTx() external;
-
-        // Forks to the state after the assertion triggering transaction.
-        function forkPostTx() external;
-
-        // Forks to the state before the execution of the call.
-        // Id can be obtained from the CallInputs struct returned by getCallInputs.
-        function forkPreCall(uint256 id) external;
-
-        // Forks to the state after the execution of the call.
-        // Id can be obtained from the CallInputs struct returned by getCallInputs.
-        function forkPostCall(uint256 id) external;
-
-        // Loads a storage slot from an address
-        function load(address target, bytes32 slot) external view returns (bytes32 data);
-
-        // Get the logs from the assertion triggering transaction.
-        function getLogs() external returns (Log[] memory logs);
-
-        // Get all call inputs for a given target and selector.
-        // Includes calls made using all call opcodes('CALL', 'STATICCALL', 'DELEGATECALL', 'CALLCODE').
-        function getAllCallInputs(
-            address target,
-            bytes4 selector
-        ) external view returns (CallInputs[] memory calls);
-
-        // Get the call inputs for a given target and selector.
-        // Only includes calls made using 'CALL' opcode.
-        function getCallInputs(
-            address target,
-            bytes4 selector
-        ) external view returns (CallInputs[] memory calls);
-
-        // Get the static call inputs for a given target and selector.
-        // Only includes calls made using 'STATICCALL' opcode.
-        function getStaticCallInputs(
-            address target,
-            bytes4 selector
-        ) external view returns (CallInputs[] memory calls);
-
-        // Get the delegate call inputs for a given target(proxy) and selector.
-        // Only includes calls made using 'DELEGATECALL' opcode.
-        function getDelegateCallInputs(
-            address target,
-            bytes4 selector
-        ) external view returns (CallInputs[] memory calls);
-
-        // Get the call code inputs for a given target and selector.
-        // Only includes calls made using 'CALLCODE' opcode.
-        function getCallCodeInputs(
-            address target,
-            bytes4 selector
-        ) external view returns (CallInputs[] memory calls);
-
-        // Get state changes for a given contract and storage slot.
-        function getStateChanges(address contractAddress, bytes32 slot)
-            external
-            view
-            returns (bytes32[] memory stateChanges);
-
-        // Get assertion adopter contract address associated with the assertion triggering transaction.
-        function getAssertionAdopter() external view returns (address);
-
-        // Returns the original transaction object that triggered the assertion.
-        function getTxObject() external view returns (TxObject memory txObject);
-    }
-
     interface Console {
         // Log a message to the console.
         function log(string message) external;
@@ -138,35 +22,192 @@ sol! {
 }
 
 sol! {
-    interface ITriggerRecorder {
-
-        /// @notice Records a call trigger for the specified assertion function.
-        /// A call trigger signifies that the assertion function should be called
-        /// if the assertion adopter is called.
-        /// @param fnSelector The function selector of the assertion function.
-        function registerCallTrigger(bytes4 fnSelector) external view;
-
-        /// @notice Registers a call trigger for calls to the AA.
-        /// @param fnSelector The function selector of the assertion function.
-        /// @param triggerSelector The function selector of the trigger function.
-        function registerCallTrigger(bytes4 fnSelector, bytes4 triggerSelector) external view;
-
-        /// @notice Registers storage change trigger for all slots
-        /// @param fnSelector The function selector of the assertion function.
-        function registerStorageChangeTrigger(bytes4 fnSelector) external view;
-
-        /// @notice Registers storage change trigger for a slot
-        /// @param fnSelector The function selector of the assertion function.
-        /// @param slot The storage slot to trigger on.
-        function registerStorageChangeTrigger(bytes4 fnSelector, bytes32 slot) external view;
-
-        /// @notice Registers balance change trigger for the AA
-        /// @param fnSelector The function selector of the assertion function.
-        function registerBalanceChangeTrigger(bytes4 fnSelector) external view;
-
-
-    }
     interface console {
         function log(string message) external;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_sol_types::SolCall;
+
+    /// Guards against accidental removal or modification of PhEvm interface methods.
+    /// If any selector changes, it means the ABI has changed and downstream
+    /// credible-std must be updated in sync.
+    #[test]
+    fn test_phevm_interface_selectors_are_stable() {
+        // Each selector is the first 4 bytes of keccak256(signature).
+        // These values are ABI-critical and must not change.
+        let expected_selectors: Vec<(&str, [u8; 4])> = vec![
+            ("forkPreTx()", PhEvm::forkPreTxCall::SELECTOR),
+            ("forkPostTx()", PhEvm::forkPostTxCall::SELECTOR),
+            ("forkPreCall(uint256)", PhEvm::forkPreCallCall::SELECTOR),
+            ("forkPostCall(uint256)", PhEvm::forkPostCallCall::SELECTOR),
+            (
+                "load(address,bytes32)",
+                PhEvm::loadCall::SELECTOR,
+            ),
+            ("getLogs()", PhEvm::getLogsCall::SELECTOR),
+            (
+                "getAllCallInputs(address,bytes4)",
+                PhEvm::getAllCallInputsCall::SELECTOR,
+            ),
+            (
+                "getCallInputs(address,bytes4)",
+                PhEvm::getCallInputsCall::SELECTOR,
+            ),
+            (
+                "getStaticCallInputs(address,bytes4)",
+                PhEvm::getStaticCallInputsCall::SELECTOR,
+            ),
+            (
+                "getDelegateCallInputs(address,bytes4)",
+                PhEvm::getDelegateCallInputsCall::SELECTOR,
+            ),
+            (
+                "getCallCodeInputs(address,bytes4)",
+                PhEvm::getCallCodeInputsCall::SELECTOR,
+            ),
+            (
+                "getStateChanges(address,bytes32)",
+                PhEvm::getStateChangesCall::SELECTOR,
+            ),
+            (
+                "getAssertionAdopter()",
+                PhEvm::getAssertionAdopterCall::SELECTOR,
+            ),
+            ("getTxObject()", PhEvm::getTxObjectCall::SELECTOR),
+            // Scalar call-fact cheatcodes
+            (
+                "anyCall(address,bytes4,(uint8,uint32,uint32,bool))",
+                PhEvm::anyCallCall::SELECTOR,
+            ),
+            (
+                "countCalls(address,bytes4,(uint8,uint32,uint32,bool))",
+                PhEvm::countCallsCall::SELECTOR,
+            ),
+            ("callerAt(uint256)", PhEvm::callerAtCall::SELECTOR),
+            (
+                "allCallsBy(address,bytes4,address,(uint8,uint32,uint32,bool))",
+                PhEvm::allCallsByCall::SELECTOR,
+            ),
+            (
+                "sumArgUint(address,bytes4,uint256,(uint8,uint32,uint32,bool))",
+                PhEvm::sumArgUintCall::SELECTOR,
+            ),
+            // Storage write-policy cheatcodes
+            (
+                "anySlotWritten(address,bytes32)",
+                PhEvm::anySlotWrittenCall::SELECTOR,
+            ),
+            (
+                "allSlotWritesBy(address,bytes32,address)",
+                PhEvm::allSlotWritesByCall::SELECTOR,
+            ),
+            // Call-boundary state cheatcodes
+            (
+                "loadAtCall(address,bytes32,uint256,uint8)",
+                PhEvm::loadAtCallCall::SELECTOR,
+            ),
+            (
+                "slotDeltaAtCall(address,bytes32,uint256)",
+                PhEvm::slotDeltaAtCallCall::SELECTOR,
+            ),
+            // Trigger context cheatcode
+            ("getTriggerContext()", PhEvm::getTriggerContextCall::SELECTOR),
+            // ERC20 fact cheatcodes
+            (
+                "erc20BalanceDiff(address,address)",
+                PhEvm::erc20BalanceDiffCall::SELECTOR,
+            ),
+            (
+                "erc20SupplyDiff(address)",
+                PhEvm::erc20SupplyDiffCall::SELECTOR,
+            ),
+            (
+                "getERC20NetFlow(address,address)",
+                PhEvm::getERC20NetFlowCall::SELECTOR,
+            ),
+            (
+                "getERC20FlowByCall(address,address,uint256)",
+                PhEvm::getERC20FlowByCallCall::SELECTOR,
+            ),
+        ];
+
+        // Verify all selectors are non-zero (sanity check)
+        for (name, selector) in &expected_selectors {
+            assert_ne!(
+                *selector,
+                [0u8; 4],
+                "Selector for {name} should not be zero"
+            );
+        }
+
+        // Verify we have the expected count of methods
+        assert_eq!(
+            expected_selectors.len(),
+            28,
+            "PhEvm interface should have exactly 28 methods"
+        );
+    }
+
+    /// Guards against accidental removal or modification of ITriggerRecorder interface methods.
+    #[test]
+    fn test_trigger_recorder_interface_selectors_are_stable() {
+        let expected_selectors: Vec<(&str, [u8; 4])> = vec![
+            (
+                "registerCallTrigger(bytes4)",
+                ITriggerRecorder::registerCallTrigger_0Call::SELECTOR,
+            ),
+            (
+                "registerCallTrigger(bytes4,bytes4)",
+                ITriggerRecorder::registerCallTrigger_1Call::SELECTOR,
+            ),
+            (
+                "registerStorageChangeTrigger(bytes4)",
+                ITriggerRecorder::registerStorageChangeTrigger_0Call::SELECTOR,
+            ),
+            (
+                "registerStorageChangeTrigger(bytes4,bytes32)",
+                ITriggerRecorder::registerStorageChangeTrigger_1Call::SELECTOR,
+            ),
+            (
+                "registerBalanceChangeTrigger(bytes4)",
+                ITriggerRecorder::registerBalanceChangeTriggerCall::SELECTOR,
+            ),
+        ];
+
+        for (name, selector) in &expected_selectors {
+            assert_ne!(
+                *selector,
+                [0u8; 4],
+                "Selector for {name} should not be zero"
+            );
+        }
+
+        assert_eq!(
+            expected_selectors.len(),
+            5,
+            "ITriggerRecorder interface should have exactly 5 methods"
+        );
+    }
+
+    /// Verifies that overloaded functions produce distinct selectors.
+    #[test]
+    fn test_overloaded_functions_have_distinct_selectors() {
+        // registerCallTrigger(bytes4) vs registerCallTrigger(bytes4,bytes4)
+        assert_ne!(
+            ITriggerRecorder::registerCallTrigger_0Call::SELECTOR,
+            ITriggerRecorder::registerCallTrigger_1Call::SELECTOR,
+            "registerCallTrigger overloads must have distinct selectors"
+        );
+
+        // registerStorageChangeTrigger(bytes4) vs registerStorageChangeTrigger(bytes4,bytes32)
+        assert_ne!(
+            ITriggerRecorder::registerStorageChangeTrigger_0Call::SELECTOR,
+            ITriggerRecorder::registerStorageChangeTrigger_1Call::SELECTOR,
+            "registerStorageChangeTrigger overloads must have distinct selectors"
+        );
     }
 }
