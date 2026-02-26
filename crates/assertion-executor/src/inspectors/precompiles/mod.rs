@@ -1,6 +1,11 @@
 //! # `precompiles`
 //!
 //! The `precompiles` mod contains the implementations of all the phevm precompiles.
+//!
+//! As a general note, when we reffer to `precompiles` we generally refer to functions we implement
+//! that functionally act as precompiles, but are implemented via revm inspectors. We do this to get better transaction
+//! introspection and more flexibility from the implementation.
+//!
 //! Helper methods used across precompiles can be found here, while the rest of
 //! the precompile implementations can be found as follows:
 //!
