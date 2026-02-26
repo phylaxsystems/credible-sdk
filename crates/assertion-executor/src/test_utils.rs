@@ -11,7 +11,6 @@ use crate::{
             test_utils::MockDb,
         },
     },
-    inspectors::TriggerRecorder,
     primitives::{
         AccountInfo,
         Address,
@@ -32,6 +31,7 @@ use crate::{
     store::{
         AssertionState,
         AssertionStore,
+        ExtractedContract,
         extract_assertion_contract,
     },
 };
@@ -163,18 +163,18 @@ pub const SIMPLE_ASSERTION_COUNTER: &str = "SimpleCounterAssertion.sol:SimpleCou
 
 #[must_use]
 pub fn counter_assertion() -> AssertionContract {
-    get_assertion_contract(SIMPLE_ASSERTION_COUNTER).0
+    get_extracted_contract(SIMPLE_ASSERTION_COUNTER).assertion_contract
 }
 
 pub const FN_SELECTOR: &str = "SelectorImpl.sol:SelectorImpl";
 
-fn get_assertion_contract(artifact: &str) -> (AssertionContract, TriggerRecorder) {
+fn get_extracted_contract(artifact: &str) -> ExtractedContract {
     extract_assertion_contract(&bytecode(artifact), &ExecutorConfig::default()).unwrap()
 }
 
 #[must_use]
-pub fn selector_assertion() -> (AssertionContract, TriggerRecorder) {
-    get_assertion_contract(FN_SELECTOR)
+pub fn selector_assertion() -> ExtractedContract {
+    get_extracted_contract(FN_SELECTOR)
 }
 
 /// Returns a random `FixedBytes` of length N

@@ -1,5 +1,6 @@
 mod assertion_contract_extractor;
 pub use assertion_contract_extractor::{
+    ExtractedContract,
     FnSelectorExtractorError,
     extract_assertion_contract,
     triggersCall,
@@ -27,7 +28,10 @@ pub use event_source::{
 };
 
 use crate::{
-    inspectors::TriggerRecorder,
+    inspectors::{
+        TriggerRecorder,
+        spec_recorder::AssertionSpec,
+    },
     primitives::{
         Address,
         AssertionContract,
@@ -50,6 +54,7 @@ pub enum PendingModification {
         assertion_adopter: Address,
         assertion_contract: AssertionContract,
         trigger_recorder: TriggerRecorder,
+        assertion_spec: AssertionSpec,
         activation_block: u64,
         log_index: u64,
     },

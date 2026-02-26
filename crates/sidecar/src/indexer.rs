@@ -21,6 +21,7 @@ use assertion_executor::{
         AssertionStoreError,
         EventSource,
         EventSourceError,
+        ExtractedContract,
         FnSelectorExtractorError,
         PendingModification,
         extract_assertion_contract,
@@ -274,7 +275,11 @@ impl<S: EventSource> AssertionIndexer<S> {
         let deployment_bytecode: Bytes = deployment_bytecode.into();
 
         match extract_assertion_contract(&deployment_bytecode, &self.executor_config) {
-            Ok((assertion_contract, trigger_recorder)) => {
+            Ok(ExtractedContract {
+                assertion_contract,
+                trigger_recorder,
+                assertion_spec,
+            }) => {
                 info!(
                     target = "sidecar::indexer",
                     assertion_id = ?assertion_contract.id,
@@ -285,6 +290,7 @@ impl<S: EventSource> AssertionIndexer<S> {
                     assertion_adopter: event.assertion_adopter,
                     assertion_contract,
                     trigger_recorder,
+                    assertion_spec,
                     activation_block: event.activation_block,
                     log_index: event.log_index,
                 }))

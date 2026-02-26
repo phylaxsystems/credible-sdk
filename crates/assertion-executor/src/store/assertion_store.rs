@@ -3,6 +3,7 @@ use crate::{
         CallTracer,
         TriggerRecorder,
         TriggerType,
+        spec_recorder::AssertionSpec,
     },
     primitives::{
         Address,
@@ -18,6 +19,7 @@ use crate::{
     ExecutorConfig,
     primitives::Bytes,
     store::assertion_contract_extractor::{
+        ExtractedContract,
         FnSelectorExtractorError,
         extract_assertion_contract,
     },
@@ -285,6 +287,7 @@ pub struct AssertionState {
     pub inactivation_block: Option<u64>,
     pub assertion_contract: AssertionContract,
     pub trigger_recorder: TriggerRecorder,
+    pub assertion_spec: AssertionSpec,
 }
 
 #[derive(Default)]
@@ -324,12 +327,17 @@ impl AssertionState {
         bytecode: &Bytes,
         executor_config: &ExecutorConfig,
     ) -> Result<Self, FnSelectorExtractorError> {
-        let (contract, trigger_recorder) = extract_assertion_contract(bytecode, executor_config)?;
+        let ExtractedContract {
+            assertion_contract,
+            trigger_recorder,
+            assertion_spec,
+        } = extract_assertion_contract(bytecode, executor_config)?;
         Ok(Self {
             activation_block: 0,
             inactivation_block: None,
-            assertion_contract: contract,
+            assertion_contract,
             trigger_recorder,
+            assertion_spec,
         })
     }
 
@@ -968,6 +976,7 @@ impl AssertionStore {
             PendingModification::Add {
                 assertion_contract,
                 trigger_recorder,
+                assertion_spec,
                 activation_block,
                 ..
             } => {
@@ -999,6 +1008,7 @@ impl AssertionStore {
                             inactivation_block: None,
                             assertion_contract: assertion_contract.clone(),
                             trigger_recorder: trigger_recorder.clone(),
+                            assertion_spec: assertion_spec.clone(),
                         });
                     }
                 }
@@ -1120,6 +1130,7 @@ mod tests {
                 ..Default::default()
             },
             trigger_recorder: TriggerRecorder::default(),
+            assertion_spec: AssertionSpec::Legacy,
         }
     }
 
@@ -1144,6 +1155,7 @@ mod tests {
                 ..Default::default()
             },
             trigger_recorder: TriggerRecorder::default(),
+            assertion_spec: AssertionSpec::Legacy,
             activation_block: active_at,
             log_index,
         }

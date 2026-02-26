@@ -3,6 +3,7 @@ use assertion_executor::{
         CallTracer,
         TriggerRecorder,
         TriggerType,
+        spec_recorder::AssertionSpec,
     },
     primitives::{
         Address,
@@ -71,6 +72,7 @@ fn build_assertion_state(
         inactivation_block: None,
         assertion_contract: assertion_executor::primitives::AssertionContract::default(),
         trigger_recorder: TriggerRecorder { triggers },
+        assertion_spec: AssertionSpec::Legacy,
     }
 }
 

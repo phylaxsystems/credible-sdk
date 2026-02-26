@@ -29,6 +29,10 @@ use revm::{
         CallOutcome,
     },
 };
+use serde::{
+    Deserialize,
+    Serialize,
+};
 use std::ops::Range;
 
 /// Address of the spec recorder precompile.
@@ -39,7 +43,7 @@ pub const SPEC_ADDRESS: Address = address!("984c47F4eE1770FBb8BbA655C058034652f4
 ///
 /// All new specs derive and expose all precompiles from the old definitions, unless specified
 /// otherwise.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum AssertionSpec {
     /// Standard set of `PhEvm` precompiles available at launch.
     Legacy,

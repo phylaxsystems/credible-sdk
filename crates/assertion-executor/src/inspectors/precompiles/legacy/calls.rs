@@ -242,6 +242,7 @@ mod test {
             inactivation_block: None,
             assertion_contract: AssertionContract::default(),
             trigger_recorder: TriggerRecorder::default(),
+            assertion_spec: crate::inspectors::spec_recorder::AssertionSpec::Legacy,
         }
     }
 

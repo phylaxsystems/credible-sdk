@@ -11,7 +11,10 @@ use crate::{
     inspectors::{
         TriggerRecorder,
         insert_trigger_recorder_account,
-        spec_recorder::AssertionSpecRecorder,
+        spec_recorder::{
+            AssertionSpec,
+            AssertionSpecRecorder,
+        },
     },
     primitives::{
         Account,
@@ -69,7 +72,15 @@ pub enum FnSelectorExtractorError {
 
 const DEPLOYMENT_GAS_LIMIT: u64 = eip7825::TX_GAS_LIMIT_CAP;
 
-/// Extracts [`AssertionContract`] and [`TriggerRecorder`] from a given assertion contract's deployment bytecode.
+/// The result of extracting an assertion contract from deployment bytecode.
+#[derive(Debug)]
+pub struct ExtractedContract {
+    pub assertion_contract: AssertionContract,
+    pub trigger_recorder: TriggerRecorder,
+    pub assertion_spec: AssertionSpec,
+}
+
+/// Extracts an [`ExtractedContract`] from a given assertion contract's deployment bytecode.
 ///
 /// # Errors
 ///
@@ -77,7 +88,7 @@ const DEPLOYMENT_GAS_LIMIT: u64 = eip7825::TX_GAS_LIMIT_CAP;
 pub fn extract_assertion_contract(
     assertion_code: &Bytes,
     config: &ExecutorConfig,
-) -> Result<(AssertionContract, TriggerRecorder), FnSelectorExtractorError> {
+) -> Result<ExtractedContract, FnSelectorExtractorError> {
     let assertion_id = keccak256(assertion_code);
 
     debug!(
@@ -174,8 +185,10 @@ pub fn extract_assertion_contract(
         .code
         .ok_or(FnSelectorExtractorError::AssertionContractNoCode)?;
 
-    Ok((
-        AssertionContract {
+    let assertion_spec = spec_recorder.context.unwrap_or(AssertionSpec::Legacy);
+
+    Ok(ExtractedContract {
+        assertion_contract: AssertionContract {
             deployed_code,
             code_hash: info.code_hash,
             storage,
@@ -183,7 +196,8 @@ pub fn extract_assertion_contract(
             id: assertion_id,
         },
         trigger_recorder,
-    ))
+        assertion_spec,
+    })
 }
 
 #[test]
@@ -194,8 +208,9 @@ fn test_get_assertion_selectors() {
 
     let config = ExecutorConfig::default();
     // Test with valid assertion contract
-    let (_, trigger_recorder) =
-        extract_assertion_contract(&bytecode(FN_SELECTOR), &config).unwrap();
+    let ExtractedContract {
+        trigger_recorder, ..
+    } = extract_assertion_contract(&bytecode(FN_SELECTOR), &config).unwrap();
 
     // Verify the contract has the expected selectors from the counter assertion
     let mut expected_selectors = vec![
@@ -262,8 +277,10 @@ fn test_extract_all_trigger_types() {
     let config = ExecutorConfig::default();
 
     // Test extraction from TriggerOnAny contract which should have AllCalls, AllStorageChanges, and BalanceChange
-    let (_, trigger_recorder_any) =
-        extract_assertion_contract(&bytecode("TriggerOnAny.sol:TriggerOnAny"), &config).unwrap();
+    let ExtractedContract {
+        trigger_recorder: trigger_recorder_any,
+        ..
+    } = extract_assertion_contract(&bytecode("TriggerOnAny.sol:TriggerOnAny"), &config).unwrap();
 
     // Should have all three "Any" trigger types
     assert!(
@@ -311,7 +328,10 @@ fn test_extract_all_trigger_types() {
     );
 
     // Test extraction from TriggerOnSpecific contract which should have specific Call and StorageChange triggers
-    let (_, trigger_recorder_specific) = extract_assertion_contract(
+    let ExtractedContract {
+        trigger_recorder: trigger_recorder_specific,
+        ..
+    } = extract_assertion_contract(
         &bytecode("TriggerOnSpecific.sol:TriggerOnSpecific"),
         &config,
     )
