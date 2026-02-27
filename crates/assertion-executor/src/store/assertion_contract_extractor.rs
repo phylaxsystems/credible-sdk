@@ -406,6 +406,7 @@ fn test_extract_no_triggers_error() {
 }
 
 #[cfg(test)]
+#[allow(clippy::cast_possible_truncation)]
 fn constructor_calls_spec_recorder_bytecode(
     spec: crate::inspectors::sol_primitives::AssertionSpec,
 ) -> Bytes {
