@@ -36,8 +36,8 @@ use serde::{
 use std::ops::Range;
 
 /// Address of the spec recorder precompile.
-// address(uint160(uint256(keccak256("cats dining table"))))
-pub const SPEC_ADDRESS: Address = address!("984c47F4eE1770FBb8BbA655C058034652f48359");
+// address(uint160(uint256(keccak256("SpecRecorder"))))
+pub const SPEC_ADDRESS: Address = address!("3cf4a3c0a0af502eef5907cc92584b70f01d686d");
 
 /// The assertion spec defines what subset of precompiles to expose during phevm execution.
 ///
