@@ -1,0 +1,6 @@
+# Fallback OFAC Ethereum sanction list snapshot.
+# Can be overridden with PH_OFAC_SANCTIONS_CSV_PATH.
+address
+0x8576aCc5C05D6cE88f4e49bF65BDF0C62F91353C
+0xD90e2f925DA726b50C4Ed8D0Fb90Ad053324F31b
+0x1da5821544e25c636c1417ba96ade4cf6d2f9b5a

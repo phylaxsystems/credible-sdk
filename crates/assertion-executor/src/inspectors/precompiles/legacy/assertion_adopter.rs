@@ -59,6 +59,7 @@ mod test {
             console_logs: vec![],
             original_tx_env: &tx_env,
             assertion_spec: crate::inspectors::spec_recorder::AssertionSpec::Legacy,
+            ofac_sanctions: std::sync::Arc::new(std::collections::HashSet::new()),
         };
         f(&context)
     }

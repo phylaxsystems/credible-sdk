@@ -75,7 +75,10 @@ impl AssertionSpec {
     fn is_reshiram_only(selector: [u8; 4]) -> bool {
         use crate::inspectors::sol_primitives::PhEvm;
         use alloy_sol_types::SolCall;
-        matches!(selector, PhEvm::getTxObjectCall::SELECTOR)
+        matches!(
+            selector,
+            PhEvm::getTxObjectCall::SELECTOR | PhEvm::revertIfSanctionedCall::SELECTOR
+        )
     }
 
     fn is_experimental_only(_selector: [u8; 4]) -> bool {

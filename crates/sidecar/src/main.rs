@@ -12,6 +12,7 @@ use assertion_da_client::DaClient;
 use assertion_executor::{
     AssertionExecutor,
     db::overlay::OverlayDb,
+    inspectors::precompiles::reshiram::ofac::load_sanctions_from_env_or_fallback,
 };
 use credible_utils::shutdown::wait_for_sigterm;
 use flume::unbounded;
@@ -78,6 +79,7 @@ use std::{
 };
 use tracing::{
     error,
+    info,
     warn,
 };
 
@@ -119,8 +121,16 @@ async fn main() -> anyhow::Result<()> {
 
     let executor_config = init_executor_config(&config);
     let assertion_store = init_assertion_store(&config)?;
-    let assertion_executor =
-        AssertionExecutor::new(executor_config.clone(), assertion_store.clone());
+    let ofac_sanctions = load_sanctions_from_env_or_fallback();
+    info!(
+        sanctioned_addresses = ofac_sanctions.len(),
+        "Loaded OFAC sanctions set"
+    );
+    let assertion_executor = AssertionExecutor::new_with_ofac_sanctions(
+        executor_config.clone(),
+        assertion_store.clone(),
+        ofac_sanctions,
+    );
     let health_bind_addr: SocketAddr = config.transport.health_bind_addr.parse()?;
 
     loop {

@@ -10,11 +10,13 @@ sled = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync"] }
 tracing = { workspace = true }
+reqwest = { workspace = true }
 assertion-da-client = { workspace = true }
 bincode = { workspace = true }
 metrics = { workspace = true }
 dashmap = { workspace = true }
 bumpalo = { version = "3.19.1", features = ["allocator_api"] }
+quick-xml = "0.38.4"
 
 # ETH deps
 alloy = { workspace = true }

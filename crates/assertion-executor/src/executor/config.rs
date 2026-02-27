@@ -1,8 +1,13 @@
 use crate::{
     AssertionExecutor,
-    primitives::SpecId,
+    inspectors::precompiles::reshiram::ofac::parse_addresses_from_csv,
+    primitives::{
+        Address,
+        SpecId,
+    },
     store::AssertionStore,
 };
+use std::collections::HashSet;
 
 /// Contains the configuration for the assertion executor.
 #[derive(Debug, Clone)]
@@ -47,9 +52,23 @@ impl ExecutorConfig {
     /// Build the assertion executor
     #[must_use]
     pub fn build(self, store: AssertionStore) -> AssertionExecutor {
-        AssertionExecutor {
-            store,
-            config: self,
-        }
+        AssertionExecutor::new(self, store)
+    }
+
+    /// Build the assertion executor with an explicit sanctions set.
+    #[must_use]
+    pub fn build_with_ofac_sanctions(
+        self,
+        store: AssertionStore,
+        ofac_sanctions: HashSet<Address>,
+    ) -> AssertionExecutor {
+        AssertionExecutor::new_with_ofac_sanctions(self, store, ofac_sanctions)
+    }
+
+    /// Build the assertion executor from CSV contents.
+    #[must_use]
+    pub fn build_with_ofac_csv(self, store: AssertionStore, csv: &str) -> AssertionExecutor {
+        let sanctions = parse_addresses_from_csv(csv);
+        AssertionExecutor::new_with_ofac_sanctions(self, store, sanctions)
     }
 }

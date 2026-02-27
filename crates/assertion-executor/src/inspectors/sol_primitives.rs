@@ -126,6 +126,9 @@ sol! {
 
         // Returns the original transaction object that triggered the assertion.
         function getTxObject() external view returns (TxObject memory txObject);
+
+        // Reverts if the provided address is on the OFAC sanctions list.
+        function revertIfSanctioned(address account) external view;
     }
 
     interface Console {

@@ -32,7 +32,13 @@ use crate::{
                     get_state_changes,
                 },
             },
-            reshiram::tx_object::load_tx_object,
+            reshiram::{
+                ofac::{
+                    OfacError,
+                    revert_if_sanctioned,
+                },
+                tx_object::load_tx_object,
+            },
         },
         sol_primitives::{
             PhEvm,
@@ -66,6 +72,10 @@ use revm::{
 
 use alloy_evm::eth::EthEvmContext;
 use alloy_sol_types::SolCall;
+use std::{
+    collections::HashSet,
+    sync::Arc,
+};
 
 /// Result of phevm precompile output.
 /// Includes return data and gas deducted.
@@ -118,6 +128,7 @@ pub struct PhEvmContext<'a> {
     pub console_logs: Vec<String>,
     pub original_tx_env: &'a TxEnv,
     pub assertion_spec: AssertionSpec,
+    pub ofac_sanctions: Arc<HashSet<Address>>,
 }
 
 impl<'a> PhEvmContext<'a> {
@@ -127,6 +138,7 @@ impl<'a> PhEvmContext<'a> {
         adopter: Address,
         tx_env: &'a TxEnv,
         assertion_spec: AssertionSpec,
+        ofac_sanctions: Arc<HashSet<Address>>,
     ) -> Self {
         Self {
             logs_and_traces,
@@ -134,6 +146,7 @@ impl<'a> PhEvmContext<'a> {
             console_logs: vec![],
             original_tx_env: tx_env,
             assertion_spec,
+            ofac_sanctions,
         }
     }
 
@@ -165,6 +178,8 @@ pub enum PrecompileError<ExtDb: DatabaseRef> {
     ConsoleLogError(#[source] ConsoleLogError),
     #[error("Error loading external slot: {0}")]
     LoadExternalSlotError(#[source] LoadExternalSlotError<ExtDb>),
+    #[error("OFAC sanctions check failed: {0}")]
+    OfacError(#[source] OfacError),
 }
 
 /// `PhEvmInspector` is an inspector for supporting the `PhEvm` precompiles.
@@ -389,6 +404,14 @@ impl<'a> PhEvmInspector<'a> {
                 get_assertion_adopter(&self.context).map_err(PrecompileError::UnexpectedError)?
             }
             PhEvm::getTxObjectCall::SELECTOR => load_tx_object(&self.context, inputs.gas_limit),
+            PhEvm::revertIfSanctionedCall::SELECTOR => {
+                revert_if_sanctioned(
+                    input_bytes,
+                    inputs.gas_limit,
+                    self.context.ofac_sanctions.as_ref(),
+                )
+                .map_err(PrecompileError::OfacError)?
+            }
             console::logCall::SELECTOR => {
                 #[cfg(feature = "phoundry")]
                 return Ok(Some(
@@ -558,6 +581,34 @@ mod test {
     }
 
     #[tokio::test]
+    async fn test_legacy_spec_forbids_ofac_check() {
+        let result = run_precompile_test_with_spec("TestSpecForbidOfac", AssertionSpec::Legacy);
+        assert!(
+            !result.is_valid(),
+            "revertIfSanctioned should be forbidden under Legacy spec"
+        );
+
+        let assertion_fn_result = &result.assertions_executions[0].assertion_fns_results[0];
+        match &assertion_fn_result.result {
+            crate::primitives::AssertionFunctionExecutionResult::AssertionExecutionResult(
+                result,
+            ) => {
+                assert!(!result.is_success());
+                let data = result.clone().into_output().unwrap();
+                let error_string =
+                    Error::abi_decode(data.iter().as_slice())
+                        .expect("Failed to decode error");
+                assert!(
+                    error_string.0.contains("not allowed under"),
+                    "Error should mention spec restriction, got: {}",
+                    error_string.0
+                );
+            }
+            other @ crate::primitives::AssertionFunctionExecutionResult::AssertionContractDeployFailure(_) => panic!("Expected AssertionExecutionResult, got: {other:#?}"),
+        }
+    }
+
+    #[tokio::test]
     async fn test_reshiram_spec_allows_legacy_precompiles() {
         let result = run_precompile_test_with_spec("TestSpecLegacy", AssertionSpec::Reshiram);
         assert!(
@@ -574,6 +625,52 @@ mod test {
             result.is_valid(),
             "getTxObject should be allowed under Reshiram spec"
         );
+    }
+
+    #[tokio::test]
+    async fn test_reshiram_spec_allows_ofac_check() {
+        let result = run_precompile_test_with_spec("TestSpecForbidOfac", AssertionSpec::Reshiram);
+        assert!(
+            result.is_valid(),
+            "revertIfSanctioned should be allowed under Reshiram spec"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_reshiram_ofac_check_allows_unsanctioned_address() {
+        let result = run_precompile_test_with_spec("TestOfacAllowed", AssertionSpec::Reshiram);
+        assert!(
+            result.is_valid(),
+            "Unsanctioned addresses should pass revertIfSanctioned"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_reshiram_ofac_check_reverts_for_sanctioned_address() {
+        let result = run_precompile_test_with_spec("TestOfacSanctioned", AssertionSpec::Reshiram);
+        assert!(
+            !result.is_valid(),
+            "Sanctioned addresses should fail revertIfSanctioned"
+        );
+
+        let assertion_fn_result = &result.assertions_executions[0].assertion_fns_results[0];
+        match &assertion_fn_result.result {
+            crate::primitives::AssertionFunctionExecutionResult::AssertionExecutionResult(
+                result,
+            ) => {
+                assert!(!result.is_success());
+                let data = result.clone().into_output().unwrap();
+                let error_string =
+                    Error::abi_decode(data.iter().as_slice())
+                        .expect("Failed to decode error");
+                assert!(
+                    error_string.0.contains("OFAC sanctions list"),
+                    "Error should mention OFAC sanctions list, got: {}",
+                    error_string.0
+                );
+            }
+            other @ crate::primitives::AssertionFunctionExecutionResult::AssertionContractDeployFailure(_) => panic!("Expected AssertionExecutionResult, got: {other:#?}"),
+        }
     }
 
     #[tokio::test]

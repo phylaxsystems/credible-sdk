@@ -296,6 +296,10 @@ mod tests {
         },
         database::InMemoryDB,
     };
+    use std::{
+        collections::HashSet,
+        sync::Arc,
+    };
 
     fn insert_caller(db: &mut InMemoryDB, caller: Address) {
         db.insert_account_info(
@@ -351,6 +355,7 @@ mod tests {
             address,
             &default_tx_env,
             AssertionSpec::Legacy,
+            Arc::new(HashSet::new()),
         );
 
         let inspector = PhEvmInspector::new(phvem_context);
@@ -414,6 +419,7 @@ mod tests {
             address,
             &default_tx_env,
             AssertionSpec::Legacy,
+            Arc::new(HashSet::new()),
         );
 
         let inspector = PhEvmInspector::new(phvem_context);

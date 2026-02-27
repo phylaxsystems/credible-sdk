@@ -4,8 +4,12 @@ pub mod config;
 mod with_inspector;
 
 use std::{
+    collections::HashSet,
     fmt::Debug,
-    sync::OnceLock,
+    sync::{
+        Arc,
+        OnceLock,
+    },
     time::Instant,
 };
 
@@ -36,11 +40,13 @@ use crate::{
         LogsAndTraces,
         PhEvmContext,
         PhEvmInspector,
+        precompiles::reshiram::ofac::load_sanctions_from_env_or_fallback,
     },
     primitives::{
         Account,
         AccountInfo,
         AccountStatus,
+        Address,
         AssertionContract,
         AssertionContractExecution,
         AssertionFnId,
@@ -105,13 +111,28 @@ fn assertion_executor_pool() -> &'static rayon::ThreadPool {
 pub struct AssertionExecutor {
     pub config: ExecutorConfig,
     pub store: AssertionStore,
+    pub ofac_sanctions: Arc<HashSet<Address>>,
 }
 
 impl AssertionExecutor {
     /// Creates a new assertion executor.
     #[must_use]
     pub fn new(config: ExecutorConfig, store: AssertionStore) -> Self {
-        Self { config, store }
+        Self::new_with_ofac_sanctions(config, store, load_sanctions_from_env_or_fallback())
+    }
+
+    /// Creates a new assertion executor with an explicit OFAC sanctions set.
+    #[must_use]
+    pub fn new_with_ofac_sanctions(
+        config: ExecutorConfig,
+        store: AssertionStore,
+        ofac_sanctions: HashSet<Address>,
+    ) -> Self {
+        Self {
+            config,
+            store,
+            ofac_sanctions: Arc::new(ofac_sanctions),
+        }
     }
 }
 
@@ -311,11 +332,13 @@ impl AssertionExecutor {
             assertions
                 .into_par_iter()
                 .map(move |assertion_for_execution| {
+                    let ofac_sanctions = self.ofac_sanctions.clone();
                     let phevm_context = PhEvmContext::new(
                         &logs_and_traces,
                         assertion_for_execution.adopter,
                         tx_env,
                         assertion_for_execution.assertion_spec,
+                        ofac_sanctions,
                     );
 
                     run_assertion_contract(
