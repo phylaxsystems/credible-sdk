@@ -315,6 +315,7 @@ impl AssertionExecutor {
                         &logs_and_traces,
                         assertion_for_execution.adopter,
                         tx_env,
+                        assertion_for_execution.assertion_spec,
                     );
 
                     run_assertion_contract(

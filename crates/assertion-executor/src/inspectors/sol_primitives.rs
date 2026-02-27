@@ -138,6 +138,24 @@ sol! {
 }
 
 sol! {
+    enum AssertionSpec {
+        Legacy,
+        Reshiram,
+        Experimental,
+    }
+
+    interface ISpecRecorder {
+        /// @notice Called within the constructor to set the desired assertion spec.
+        /// The assertion spec defines what subset of precompiles are available.
+        /// You can only call this function once. For an assertion to be valid,
+        /// it needs to have a defined spec.
+        /// @param spec The desired `AssertionSpec`.
+        function registerAssertionSpec(AssertionSpec spec) external view;
+    }
+
+}
+
+sol! {
     interface ITriggerRecorder {
 
         /// @notice Records a call trigger for the specified assertion function.

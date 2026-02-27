@@ -8,34 +8,37 @@ use crate::{
     inspectors::{
         inspector_result_to_call_outcome,
         precompiles::{
-            assertion_adopter::get_assertion_adopter,
-            calls::{
-                GetCallInputsError,
-                get_call_inputs,
+            legacy::{
+                assertion_adopter::get_assertion_adopter,
+                calls::{
+                    GetCallInputsError,
+                    get_call_inputs,
+                },
+                console_log::ConsoleLogError,
+                fork::{
+                    ForkError,
+                    fork_post_call,
+                    fork_post_tx,
+                    fork_pre_call,
+                    fork_pre_tx,
+                },
+                get_logs::get_logs,
+                load::{
+                    LoadExternalSlotError,
+                    load_external_slot,
+                },
+                state_changes::{
+                    GetStateChangesError,
+                    get_state_changes,
+                },
             },
-            console_log::ConsoleLogError,
-            fork::{
-                ForkError,
-                fork_post_call,
-                fork_post_tx,
-                fork_pre_call,
-                fork_pre_tx,
-            },
-            get_logs::get_logs,
-            load::{
-                LoadExternalSlotError,
-                load_external_slot,
-            },
-            state_changes::{
-                GetStateChangesError,
-                get_state_changes,
-            },
-            tx_object::load_tx_object,
+            reshiram::tx_object::load_tx_object,
         },
         sol_primitives::{
             PhEvm,
             console,
         },
+        spec_recorder::AssertionSpec,
         tracer::CallTracer,
     },
     primitives::{
@@ -114,6 +117,7 @@ pub struct PhEvmContext<'a> {
     pub adopter: Address,
     pub console_logs: Vec<String>,
     pub original_tx_env: &'a TxEnv,
+    pub assertion_spec: AssertionSpec,
 }
 
 impl<'a> PhEvmContext<'a> {
@@ -122,12 +126,14 @@ impl<'a> PhEvmContext<'a> {
         logs_and_traces: &'a LogsAndTraces<'a>,
         adopter: Address,
         tx_env: &'a TxEnv,
+        assertion_spec: AssertionSpec,
     ) -> Self {
         Self {
             logs_and_traces,
             adopter,
             console_logs: vec![],
             original_tx_env: tx_env,
+            assertion_spec,
         }
     }
 
@@ -142,6 +148,11 @@ impl<'a> PhEvmContext<'a> {
 pub enum PrecompileError<ExtDb: DatabaseRef> {
     #[error("Precompile selector not found: {0:#?}")]
     SelectorNotFound(FixedBytes<4>),
+    #[error("Precompile selector {selector:#?} not allowed under {spec:?} spec")]
+    SelectorNotAllowed {
+        selector: FixedBytes<4>,
+        spec: AssertionSpec,
+    },
     #[error("Unexpected error, should be Infallible: {0}")]
     UnexpectedError(#[source] std::convert::Infallible),
     #[error("Error getting state changes: {0}")]
@@ -186,11 +197,18 @@ impl<'a> PhEvmInspector<'a> {
             >,
     {
         let input_bytes = inputs.input.bytes(context);
-        let selector = input_bytes
+        let selector: [u8; 4] = input_bytes
             .get(0..4)
             .unwrap_or_default()
             .try_into()
             .unwrap_or_default();
+
+        if !self.context.assertion_spec.allows_selector(selector) {
+            return Err(PrecompileError::SelectorNotAllowed {
+                selector: selector.into(),
+                spec: self.context.assertion_spec.clone(),
+            });
+        }
 
         if let Some(outcome) =
             self.execute_fork_precompile::<ExtDb, CTX>(selector, context, inputs, &input_bytes)?
@@ -374,7 +392,7 @@ impl<'a> PhEvmInspector<'a> {
             console::logCall::SELECTOR => {
                 #[cfg(feature = "phoundry")]
                 return Ok(Some(
-                    crate::inspectors::precompiles::console_log::console_log(
+                    crate::inspectors::precompiles::legacy::console_log::console_log(
                         input_bytes,
                         &mut self.context,
                     )

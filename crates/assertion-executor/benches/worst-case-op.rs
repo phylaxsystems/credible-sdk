@@ -16,6 +16,7 @@ use assertion_executor::{
         LogsAndTraces,
         PhEvmContext,
         PhEvmInspector,
+        spec_recorder::AssertionSpec,
     },
     primitives::{
         AccountInfo,
@@ -106,7 +107,12 @@ fn register_op<M: Measurement>(
         call_traces: &call_tracer,
     };
     let default_tx_env = TxEnv::default();
-    let phevm_context = PhEvmContext::new(&logs_and_traces, Address::ZERO, &default_tx_env);
+    let phevm_context = PhEvmContext::new(
+        &logs_and_traces,
+        Address::ZERO,
+        &default_tx_env,
+        AssertionSpec::Legacy,
+    );
     let inspector = PhEvmInspector::new(phevm_context);
     let env = evm_env(1, SpecId::default(), BlockEnv::default());
     let mut multi_fork_db = MultiForkDb::new(fork, &JournalInner::new());
@@ -245,7 +251,12 @@ fn test_ecrecover() {
         call_traces: &call_tracer,
     };
     let default_tx_env = TxEnv::default();
-    let phevm_context = PhEvmContext::new(&logs_and_traces, addr, &default_tx_env);
+    let phevm_context = PhEvmContext::new(
+        &logs_and_traces,
+        addr,
+        &default_tx_env,
+        AssertionSpec::Legacy,
+    );
     let inspector = PhEvmInspector::new(phevm_context);
     let env = evm_env(1, SpecId::default(), BlockEnv::default());
     let mut evm = build_optimism_evm(&mut multi_fork_db, &env, inspector);

@@ -13,6 +13,7 @@ use assertion_executor::{
         precompiles::calls::get_call_inputs,
         sol_primitives::PhEvm,
         sol_primitives::PhEvm::loadCall,
+        spec_recorder::AssertionSpec,
         CallTracer,
         LogsAndTraces,
         PhEvmContext,
@@ -199,7 +200,7 @@ fuzz_target!(|data: &[u8]| {
         call_traces: &call_tracer,
     };
     let default_tx_env = revm::primitives::TxEnv::default();
-    let context = PhEvmContext::new(&logs_traces, params.target, &default_tx_env);
+    let context = PhEvmContext::new(&logs_traces, params.target, &default_tx_env, AssertionSpec::Legacy);
 
     // Modify the call_inputs to include the selector in the expected position
     // in the input data for get_call_inputs

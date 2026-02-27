@@ -11,7 +11,7 @@ use crate::{
             test_utils::MockDb,
         },
     },
-    inspectors::TriggerRecorder,
+    inspectors::spec_recorder::AssertionSpec,
     primitives::{
         AccountInfo,
         Address,
@@ -32,6 +32,7 @@ use crate::{
     store::{
         AssertionState,
         AssertionStore,
+        ExtractedContract,
         extract_assertion_contract,
     },
 };
@@ -163,18 +164,18 @@ pub const SIMPLE_ASSERTION_COUNTER: &str = "SimpleCounterAssertion.sol:SimpleCou
 
 #[must_use]
 pub fn counter_assertion() -> AssertionContract {
-    get_assertion_contract(SIMPLE_ASSERTION_COUNTER).0
+    get_extracted_contract(SIMPLE_ASSERTION_COUNTER).assertion_contract
 }
 
 pub const FN_SELECTOR: &str = "SelectorImpl.sol:SelectorImpl";
 
-fn get_assertion_contract(artifact: &str) -> (AssertionContract, TriggerRecorder) {
+fn get_extracted_contract(artifact: &str) -> ExtractedContract {
     extract_assertion_contract(&bytecode(artifact), &ExecutorConfig::default()).unwrap()
 }
 
 #[must_use]
-pub fn selector_assertion() -> (AssertionContract, TriggerRecorder) {
-    get_assertion_contract(FN_SELECTOR)
+pub fn selector_assertion() -> ExtractedContract {
+    get_extracted_contract(FN_SELECTOR)
 }
 
 /// Returns a random `FixedBytes` of length N
@@ -269,6 +270,63 @@ pub fn deployed_bytecode(input: &str) -> Bytes {
     hex::decode(bytecode)
         .expect("Failed to decode bytecode")
         .into()
+}
+
+/// # Panics
+///
+/// Panics if test setup fails or assertion insertion fails.
+#[must_use]
+pub fn run_precompile_test_with_spec(artifact: &str, spec: AssertionSpec) -> TxValidationResult {
+    let caller = address!("5fdcca53617f4d2b9134b29090c87d01058e27e9");
+    let target = address!("118dd24a3b0d02f90d8896e242d3838b4d37c181");
+
+    let db = OverlayDb::<CacheDB<EmptyDBTyped<Infallible>>>::new_test();
+
+    let mut fork_db = db.fork();
+
+    // Write test assertion to assertion store
+    let assertion_code = bytecode(&format!("{artifact}.sol:{artifact}"));
+
+    let assertion_store = AssertionStore::new_ephemeral();
+    assertion_store
+        .insert(
+            target,
+            AssertionState::new_test(&assertion_code).with_spec(spec),
+        )
+        .unwrap();
+
+    let mut executor = ExecutorConfig::default().build(assertion_store);
+
+    // Deploy mock using bytecode of Target.sol:Target
+    let target_deployment_tx = TxEnv {
+        caller,
+        data: bytecode("Target.sol:Target"),
+        kind: TxKind::Create,
+        ..Default::default()
+    };
+
+    let mut mock_db = crate::db::overlay::test_utils::MockDb::new();
+
+    // Execute target deployment tx
+    let result = executor
+        .execute_forked_tx_ext_db(&BlockEnv::default(), target_deployment_tx, &mut mock_db)
+        .unwrap();
+    mock_db.commit(result.result_and_state.state.clone());
+    fork_db.commit(result.result_and_state.state.clone());
+
+    // Deploy TriggeringTx contract
+    let trigger_tx = TxEnv {
+        caller,
+        data: bytecode(&format!("{}.sol:{}", artifact, "TriggeringTx")),
+        kind: TxKind::Create,
+        nonce: 1,
+        ..Default::default()
+    };
+
+    //Execute triggering tx.
+    executor
+        .validate_transaction_ext_db(BlockEnv::default(), &trigger_tx, &mut fork_db, &mut mock_db)
+        .unwrap()
 }
 
 /// # Panics

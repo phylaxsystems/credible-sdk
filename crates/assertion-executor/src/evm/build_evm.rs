@@ -270,6 +270,7 @@ mod tests {
             LogsAndTraces,
             PhEvmContext,
             PhEvmInspector,
+            spec_recorder::AssertionSpec,
         },
         primitives::{
             AccountInfo,
@@ -345,7 +346,12 @@ mod tests {
             call_traces: &tracer,
         };
         let default_tx_env = TxEnv::default();
-        let phvem_context = PhEvmContext::new(&logs_and_traces, address, &default_tx_env);
+        let phvem_context = PhEvmContext::new(
+            &logs_and_traces,
+            address,
+            &default_tx_env,
+            AssertionSpec::Legacy,
+        );
 
         let inspector = PhEvmInspector::new(phvem_context);
 
@@ -403,7 +409,12 @@ mod tests {
             call_traces: &tracer,
         };
         let default_tx_env = TxEnv::default();
-        let phvem_context = PhEvmContext::new(&logs_and_traces, address, &default_tx_env);
+        let phvem_context = PhEvmContext::new(
+            &logs_and_traces,
+            address,
+            &default_tx_env,
+            AssertionSpec::Legacy,
+        );
 
         let inspector = PhEvmInspector::new(phvem_context);
 
