@@ -10,8 +10,9 @@
 *.failed_queue
 
 # Claude code
-.claude
-*CLAUDE*
+.claude/*
+!.claude/skills/
+CLAUDE*
 
 # Logs
 logs
