@@ -1,0 +1,16 @@
+[package]
+name = "assertion-verification"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+assertion-executor = { workspace = true }
+alloy-sol-types = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+tokio = { workspace = true, features = ["full"] }
+
+[dev-dependencies]
+serde_json = { workspace = true }
