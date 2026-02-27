@@ -30,7 +30,6 @@ use crate::{
 };
 
 use revm::{
-    ExecuteEvm,
     InspectEvm,
     database::InMemoryDB,
     primitives::eip7825,
@@ -118,7 +117,7 @@ pub fn extract_assertion_contract(
     let tx_env = crate::wrap_tx_env_for_optimism!(tx_env);
 
     let result_and_state = evm
-        .transact(tx_env)
+        .inspect_tx(tx_env)
         .map_err(FnSelectorExtractorError::AssertionContractDeployError)?;
 
     if !result_and_state.result.is_success() {
@@ -404,4 +403,140 @@ fn test_extract_no_triggers_error() {
             println!("Got different error (acceptable): {other:?}");
         }
     }
+}
+
+#[cfg(test)]
+#[allow(clippy::cast_possible_truncation)]
+fn constructor_calls_spec_recorder_bytecode(
+    spec: crate::inspectors::sol_primitives::AssertionSpec,
+) -> Bytes {
+    use crate::inspectors::{
+        sol_primitives::ISpecRecorder,
+        spec_recorder::SPEC_ADDRESS,
+    };
+
+    let runtime = [0x00_u8];
+
+    let calldata = ISpecRecorder::registerAssertionSpecCall { spec }.abi_encode();
+    assert_eq!(calldata.len(), 36);
+
+    let mut init = Vec::with_capacity(128);
+    let calldata_offset_idx = 3;
+    init.extend_from_slice(&[
+        0x60, 0x24, // PUSH1 0x24     in_size = 36
+        0x60, 0x00, // PUSH1 calldata_offset (patched below)
+        0x60, 0x00, // PUSH1 0x00     mem_offset
+        0x39, // CODECOPY
+        0x60, 0x00, // PUSH1 0x00     out_size
+        0x60, 0x00, // PUSH1 0x00     out_offset
+        0x60, 0x24, // PUSH1 0x24     in_size
+        0x60, 0x00, // PUSH1 0x00     in_offset
+        0x60, 0x00, // PUSH1 0x00     value
+        0x73, // PUSH20
+    ]);
+    init.extend_from_slice(SPEC_ADDRESS.as_slice());
+    let runtime_offset_idx = init.len() + 8;
+    init.extend_from_slice(&[
+        0x61,
+        0xff,
+        0xff, // PUSH2 0xffff   gas
+        0xf1, // CALL
+        0x50, // POP
+        0x60,
+        runtime.len() as u8, // PUSH1 runtime_len
+        0x60,
+        0x00, // PUSH1 runtime_offset (patched below)
+        0x60,
+        0x00, // PUSH1 0x00
+        0x39, // CODECOPY
+        0x60,
+        runtime.len() as u8, // PUSH1 runtime_len
+        0x60,
+        0x00, // PUSH1 0x00
+        0xf3, // RETURN
+    ]);
+    let prefix_len = init.len();
+    assert!(prefix_len < 256);
+    assert!(prefix_len + runtime.len() < 256);
+    init[calldata_offset_idx] = (prefix_len + runtime.len()) as u8;
+    init[runtime_offset_idx] = prefix_len as u8;
+
+    init.extend_from_slice(&runtime);
+    init.extend_from_slice(&calldata);
+    init.into()
+}
+
+#[test]
+fn test_constructor_spec_recorder_is_not_called_by_transact() {
+    use crate::{
+        evm::build_evm::evm_env,
+        inspectors::spec_recorder::AssertionSpecRecorder,
+        primitives::{
+            BlockEnv,
+            SpecId,
+            TxEnv,
+            TxKind,
+        },
+    };
+
+    let mut db = InMemoryDB::default();
+    let env = evm_env(1, SpecId::default(), BlockEnv::default());
+    let mut spec_recorder = AssertionSpecRecorder::default();
+    let mut evm = crate::build_evm_by_features!(&mut db, &env, &mut spec_recorder);
+
+    let tx_env = TxEnv {
+        kind: TxKind::Create,
+        caller: CALLER,
+        data: constructor_calls_spec_recorder_bytecode(
+            crate::inspectors::sol_primitives::AssertionSpec::Reshiram,
+        ),
+        gas_limit: DEPLOYMENT_GAS_LIMIT,
+        ..Default::default()
+    };
+    let tx_env = crate::wrap_tx_env_for_optimism!(tx_env);
+
+    let deploy_result = revm::ExecuteEvm::transact(&mut evm, tx_env).unwrap();
+    assert!(deploy_result.result.is_success());
+    std::mem::drop(evm);
+
+    assert_eq!(spec_recorder.context, None);
+}
+
+#[test]
+fn test_constructor_spec_recorder_is_called_by_inspect_tx() {
+    use crate::{
+        evm::build_evm::evm_env,
+        inspectors::spec_recorder::{
+            AssertionSpec,
+            AssertionSpecRecorder,
+        },
+        primitives::{
+            BlockEnv,
+            SpecId,
+            TxEnv,
+            TxKind,
+        },
+    };
+
+    let mut db = InMemoryDB::default();
+    let env = evm_env(1, SpecId::default(), BlockEnv::default());
+    let mut spec_recorder = AssertionSpecRecorder::default();
+    let mut evm = crate::build_evm_by_features!(&mut db, &env, &mut spec_recorder);
+
+    let tx_env = TxEnv {
+        kind: TxKind::Create,
+        caller: CALLER,
+        data: constructor_calls_spec_recorder_bytecode(
+            crate::inspectors::sol_primitives::AssertionSpec::Reshiram,
+        ),
+        gas_limit: DEPLOYMENT_GAS_LIMIT,
+        ..Default::default()
+    };
+    let tx_env = crate::wrap_tx_env_for_optimism!(tx_env);
+
+    let deploy_result = evm.inspect_tx(tx_env).unwrap();
+    assert!(deploy_result.result.is_success());
+    std::mem::drop(evm);
+
+    assert_eq!(spec_recorder.context, Some(AssertionSpec::Reshiram));
 }

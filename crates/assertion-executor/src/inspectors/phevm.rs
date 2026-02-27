@@ -478,9 +478,16 @@ impl_phevm_inspector!(
 
 #[cfg(test)]
 mod test {
-    use crate::test_utils::run_precompile_test;
-
-    use crate::inspectors::sol_primitives::Error;
+    use crate::{
+        inspectors::{
+            sol_primitives::Error,
+            spec_recorder::AssertionSpec,
+        },
+        test_utils::{
+            run_precompile_test,
+            run_precompile_test_with_spec,
+        },
+    };
     use alloy_sol_types::SolError;
 
     #[tokio::test]
@@ -510,5 +517,123 @@ mod test {
                 panic!("Expected AssertionExecutionResult(_), got: {assertion_fn_result:#?}");
             }
         }
+    }
+
+    #[tokio::test]
+    async fn test_legacy_spec_allows_legacy_precompiles() {
+        let result = run_precompile_test_with_spec("TestSpecLegacy", AssertionSpec::Legacy);
+        assert!(
+            result.is_valid(),
+            "Legacy precompiles should work under Legacy spec"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_legacy_spec_forbids_get_tx_object() {
+        let result = run_precompile_test_with_spec("TestSpecForbidTxObject", AssertionSpec::Legacy);
+        assert!(
+            !result.is_valid(),
+            "getTxObject should be forbidden under Legacy spec"
+        );
+
+        // Verify we get the SelectorNotAllowed error
+        let assertion_fn_result = &result.assertions_executions[0].assertion_fns_results[0];
+        match &assertion_fn_result.result {
+            crate::primitives::AssertionFunctionExecutionResult::AssertionExecutionResult(
+                result,
+            ) => {
+                assert!(!result.is_success());
+                let data = result.clone().into_output().unwrap();
+                let error_string =
+                    Error::abi_decode(data.iter().as_slice())
+                        .expect("Failed to decode error");
+                assert!(
+                    error_string.0.contains("not allowed under"),
+                    "Error should mention spec restriction, got: {}",
+                    error_string.0
+                );
+            }
+            other @ crate::primitives::AssertionFunctionExecutionResult::AssertionContractDeployFailure(_) => panic!("Expected AssertionExecutionResult, got: {other:#?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_reshiram_spec_allows_legacy_precompiles() {
+        let result = run_precompile_test_with_spec("TestSpecLegacy", AssertionSpec::Reshiram);
+        assert!(
+            result.is_valid(),
+            "Legacy precompiles should work under Reshiram spec"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_reshiram_spec_allows_get_tx_object() {
+        let result =
+            run_precompile_test_with_spec("TestSpecForbidTxObject", AssertionSpec::Reshiram);
+        assert!(
+            result.is_valid(),
+            "getTxObject should be allowed under Reshiram spec"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_reshiram_spec_allows_mixed_precompiles() {
+        let result =
+            run_precompile_test_with_spec("TestSpecReshiramWithLegacy", AssertionSpec::Reshiram);
+        assert!(
+            result.is_valid(),
+            "Both Legacy and Reshiram precompiles should work under Reshiram spec"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_experimental_spec_allows_legacy_precompiles() {
+        let result = run_precompile_test_with_spec("TestSpecLegacy", AssertionSpec::Experimental);
+        assert!(
+            result.is_valid(),
+            "Legacy precompiles should work under Experimental spec"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_experimental_spec_allows_get_tx_object() {
+        let result =
+            run_precompile_test_with_spec("TestSpecForbidTxObject", AssertionSpec::Experimental);
+        assert!(
+            result.is_valid(),
+            "getTxObject should be allowed under Experimental spec"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_experimental_spec_allows_mixed_precompiles() {
+        let result = run_precompile_test_with_spec(
+            "TestSpecReshiramWithLegacy",
+            AssertionSpec::Experimental,
+        );
+        assert!(
+            result.is_valid(),
+            "All precompiles should work under Experimental spec"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_default_spec_allows_legacy_precompiles() {
+        // run_precompile_test uses default spec (Legacy)
+        let result = run_precompile_test("TestSpecLegacy");
+        assert!(
+            result.is_valid(),
+            "Legacy precompiles should work with default (Legacy) spec"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_default_spec_forbids_get_tx_object() {
+        // run_precompile_test uses default spec (Legacy)
+        let result = run_precompile_test("TestSpecForbidTxObject");
+        assert!(
+            !result.is_valid(),
+            "getTxObject should be forbidden with default (Legacy) spec"
+        );
     }
 }
