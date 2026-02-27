@@ -29,6 +29,7 @@ use assertion_executor::{
         AssertionState,
         AssertionStore,
         AssertionStoreError,
+        ExtractedContract,
         FnSelectorExtractorError,
         extract_assertion_contract,
     },
@@ -95,11 +96,14 @@ impl VerificationResult {
 /// So if your contract has constructor params, you must pass full deployment payload:
 /// `creation_bytecode ++ abi.encode(constructor_args)`.
 pub fn verify_assertion(bytecode: &Bytes, executor_config: &ExecutorConfig) -> VerificationResult {
-    let (assertion_contract, trigger_recorder) =
-        match extract_assertion_contract(bytecode, executor_config) {
-            Ok(extracted) => extracted,
-            Err(error) => return map_extraction_error(error),
-        };
+    let ExtractedContract {
+        assertion_contract,
+        trigger_recorder,
+        assertion_spec,
+    } = match extract_assertion_contract(bytecode, executor_config) {
+        Ok(extracted) => extracted,
+        Err(error) => return map_extraction_error(error),
+    };
     let registered_triggers = format_registered_triggers(&trigger_recorder);
 
     let state = AssertionState {
@@ -107,6 +111,7 @@ pub fn verify_assertion(bytecode: &Bytes, executor_config: &ExecutorConfig) -> V
         inactivation_block: None,
         assertion_contract,
         trigger_recorder,
+        assertion_spec,
     };
 
     let insert_result = if tokio::runtime::Handle::try_current().is_ok() {
