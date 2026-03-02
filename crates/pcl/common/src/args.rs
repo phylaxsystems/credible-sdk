@@ -10,7 +10,7 @@ pub struct CliArgs {
 }
 
 impl CliArgs {
-    pub fn json_output(&self) -> bool {
+    pub const fn json_output(&self) -> bool {
         self.json
     }
 }

@@ -32,7 +32,7 @@ impl Assertion {
         }
     }
 
-    pub fn contract_name(&self) -> &String {
+    pub const fn contract_name(&self) -> &String {
         &self.contract_name
     }
 }

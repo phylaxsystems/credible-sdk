@@ -1,11 +1,6 @@
 # syntax=docker/dockerfile:1.6
-FROM rustlang/rust:nightly AS chef
-
-RUN rustup install nightly-2026-01-07 && \
-    rustup default nightly-2026-01-07 && \
-    cargo install cargo-chef && \
-    apt-get update && \
-    apt-get install -y libclang-dev clang
+ARG BASE_IMAGE=ghcr.io/phylaxsystems/credible-sdk/credible-base:latest
+FROM ${BASE_IMAGE} AS chef
 
 WORKDIR /sidecar
 
@@ -25,7 +20,7 @@ ARG BUILD_FLAGS=""
 ARG CARGO_PROFILE=release
 
 # Build dependencies first to improve incremental rebuilds
-RUN cargo chef cook --profile ${CARGO_PROFILE} --recipe-path recipe.json
+RUN cargo chef cook --profile ${CARGO_PROFILE} --recipe-path recipe.json --package sidecar
 
 COPY Cargo.* .
 COPY crates ./crates
