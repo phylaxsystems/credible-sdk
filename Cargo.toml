@@ -23,6 +23,7 @@ members = [
     "crates/eip-system-calls",
     "crates/assertion-verification",
     "crates/verifier-service",
+    "crates/assertion-replay",
     "scripts/geth_snapshot",
 ]
 exclude = ["fuzz"]
@@ -66,6 +67,7 @@ eip-system-calls = { path = "crates/eip-system-calls" }
 assertion-verification = { path = "crates/assertion-verification" }
 
 sidecar = { path = "crates/sidecar" }
+shadow-driver = { path = "crates/shadow-driver" }
 mdbx = { path = "crates/mdbx", features = ["reader"] }
 benchmark-utils = { path = "crates/benchmark-utils", features = [] }
 
@@ -98,6 +100,7 @@ rustls = { version = "0.23.0", features = ["aws_lc_rs"] }
 
 async-trait = "0.1.89"
 futures-util = "0.3"
+flume = "0.12.0"
 
 tracing = { version = "0.1.43", features = ["release_max_level_debug"] }
 tracing-subscriber = { version = "0.3.22", features = ["std", "env-filter"] }

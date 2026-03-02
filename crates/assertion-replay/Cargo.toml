@@ -1,0 +1,27 @@
+[package]
+name = "assertion-replay"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+assertion-executor = { workspace = true, default-features = false }
+axum.workspace = true
+clap.workspace = true
+credible-utils.workspace = true
+rust-tracing.workspace = true
+rustls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sidecar.workspace = true
+shadow-driver.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+flume.workspace = true
+thiserror.workspace = true
+
+alloy = { workspace = true, features = ["consensus"] }
+alloy-provider.workspace = true
+revm.workspace = true
