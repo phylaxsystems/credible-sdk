@@ -78,6 +78,12 @@ pub struct IncidentData {
     pub(crate) revert_data: Bytes,
 }
 
+impl IncidentData {
+    pub fn assertion_id(&self) -> FixedBytes<32> {
+        self.assertion_id
+    }
+}
+
 /// Contains txhash and blockenv. Used to reconstruct
 /// incident txs and display them to end users.
 pub type ReconstructableTx = (FixedBytes<32>, TxEnv);
@@ -98,6 +104,16 @@ pub struct IncidentReport {
     /// Transaction hashes of previous transactions in the iteration
     /// and their blockenvs
     pub(crate) prev_txs: Vec<ReconstructableTx>,
+}
+
+impl IncidentReport {
+    pub fn failures(&self) -> &[IncidentData] {
+        &self.failures
+    }
+
+    pub fn transaction_hash(&self) -> FixedBytes<32> {
+        self.transaction_data.0
+    }
 }
 
 pub type IncidentReportSender = flume::Sender<IncidentReport>;

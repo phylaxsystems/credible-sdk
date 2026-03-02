@@ -39,12 +39,15 @@ use sidecar::{
         TxQueueContents,
     },
     execution_ids::TxExecutionId,
+    transaction_observer::IncidentReport,
+    transactions_state::TransactionResultEvent,
     transport::grpc::{
         GrpcDecodeError,
         convert_pb_tx_env_to_revm,
     },
 };
 use std::{
+    collections::HashSet,
     error::Error as StdError,
     sync::{
         Arc,
@@ -62,17 +65,29 @@ const SOURCE_SYNC_TIMEOUT: Duration = Duration::from_secs(10);
 
 type DynError = Box<dyn StdError + Send + Sync + 'static>;
 
+#[derive(Debug, Clone, Copy)]
+pub(super) struct ReplayStopMatch {
+    pub assertion_id: B256,
+    pub block_number: u64,
+    pub tx_hash: B256,
+}
+
 /// In-process runtime that feeds archive blocks into the sidecar engine queue.
 pub(super) struct ReplayRuntime {
     provider: Arc<RootProvider>,
     tx_sender: flume::Sender<TxQueueContents>,
+    incident_rx: Option<flume::Receiver<IncidentReport>>,
+    result_rx: Option<flume::Receiver<TransactionResultEvent>>,
     shutdown_flag: Arc<AtomicBool>,
     engine_handle: Option<std::thread::JoinHandle<Result<(), sidecar::engine::EngineError>>>,
 }
 
 impl ReplayRuntime {
     /// Creates a new runtime, including provider/source connectivity and engine spawn.
-    pub(super) async fn new(config: &Config) -> Result<Self, RuntimeError> {
+    pub(super) async fn new(
+        config: &Config,
+        enable_local_observation: bool,
+    ) -> Result<Self, RuntimeError> {
         let provider = connect_provider(&config.archive_ws_url).await?;
         let state_source = EthRpcSource::try_build(
             config.archive_ws_url.as_str(),
@@ -94,7 +109,21 @@ impl ReplayRuntime {
         );
 
         let (tx_sender, tx_receiver) = flume::unbounded();
-        let engine_state = TransactionsState::new();
+
+        let (incident_sender, incident_rx) = if enable_local_observation {
+            let (tx, rx) = flume::unbounded();
+            (Some(tx), Some(rx))
+        } else {
+            (None, None)
+        };
+
+        let (engine_state, result_rx) = if enable_local_observation {
+            let (tx, rx) = flume::unbounded();
+            (TransactionsState::with_result_sender(tx), Some(rx))
+        } else {
+            (TransactionsState::new(), None)
+        };
+
         let engine = CoreEngine::new(
             cache,
             cache_sources,
@@ -106,7 +135,7 @@ impl ReplayRuntime {
                 state_sources_sync_timeout: Duration::from_secs(15),
                 source_monitoring_period: Duration::from_millis(250),
                 overlay_cache_invalidation_every_block: false,
-                incident_sender: None,
+                incident_sender,
             },
         )
         .await;
@@ -119,6 +148,8 @@ impl ReplayRuntime {
         Ok(Self {
             provider,
             tx_sender,
+            incident_rx,
+            result_rx,
             shutdown_flag,
             engine_handle: Some(engine_handle),
         })
@@ -154,17 +185,32 @@ impl ReplayRuntime {
         &self,
         start: u64,
         end: u64,
-    ) -> Result<(), RuntimeError> {
+        watched_assertion_ids: &HashSet<B256>,
+    ) -> Result<Option<ReplayStopMatch>, RuntimeError> {
+        let should_stop_on_match = !watched_assertion_ids.is_empty();
+
         for block_number in start..=end {
             let block = fetch_block(&self.provider, block_number).await?;
-            self.process_block(&block)?;
+            let tx_count = self.process_block(&block)?;
+
+            if should_stop_on_match
+                && let Some(stop_match) = self
+                    .await_block_results_and_watch_assertions(
+                        block_number,
+                        tx_count,
+                        watched_assertion_ids,
+                    )
+                    .await?
+            {
+                return Ok(Some(stop_match));
+            }
         }
 
-        Ok(())
+        Ok(None)
     }
 
     /// Processes one block by pushing `NewIteration`, `Tx*`, and `CommitHead` events.
-    fn process_block(&self, block: &Block) -> Result<(), RuntimeError> {
+    fn process_block(&self, block: &Block) -> Result<usize, RuntimeError> {
         let block_number = block.header.number;
         let transactions = match &block.transactions {
             BlockTransactions::Full(txs) => txs,
@@ -226,7 +272,7 @@ impl ReplayRuntime {
         );
         self.send_event(TxQueueContents::CommitHead(commit))?;
 
-        Ok(())
+        Ok(transactions.len())
     }
 
     /// Sends one event into the sidecar engine queue.
@@ -244,6 +290,56 @@ impl ReplayRuntime {
         let (dummy_sender, _dummy_receiver) = flume::unbounded();
         let tx_sender = std::mem::replace(&mut self.tx_sender, dummy_sender);
         drop(tx_sender);
+    }
+
+    async fn await_block_results_and_watch_assertions(
+        &self,
+        block_number: u64,
+        expected_results: usize,
+        watched_assertion_ids: &HashSet<B256>,
+    ) -> Result<Option<ReplayStopMatch>, RuntimeError> {
+        let incident_rx = self
+            .incident_rx
+            .as_ref()
+            .ok_or(RuntimeError::ObservationUnavailable)?;
+        let result_rx = self
+            .result_rx
+            .as_ref()
+            .ok_or(RuntimeError::ObservationUnavailable)?;
+
+        let mut seen_results = 0usize;
+        while seen_results < expected_results {
+            tokio::select! {
+                incident = incident_rx.recv_async() => {
+                    let incident = incident.map_err(|_| RuntimeError::IncidentStreamClosed)?;
+                    if let Some(assertion_id) = find_first_matching_assertion_id(&incident, watched_assertion_ids) {
+                        return Ok(Some(ReplayStopMatch {
+                            assertion_id,
+                            block_number,
+                            tx_hash: B256::from_slice(incident.transaction_hash().as_slice()),
+                        }));
+                    }
+                }
+                result = result_rx.recv_async() => {
+                    result.map_err(|_| RuntimeError::ResultStreamClosed)?;
+                    seen_results += 1;
+                }
+            }
+        }
+
+        while let Ok(incident) = incident_rx.try_recv() {
+            if let Some(assertion_id) =
+                find_first_matching_assertion_id(&incident, watched_assertion_ids)
+            {
+                return Ok(Some(ReplayStopMatch {
+                    assertion_id,
+                    block_number,
+                    tx_hash: B256::from_slice(incident.transaction_hash().as_slice()),
+                }));
+            }
+        }
+
+        Ok(None)
     }
 
     /// Gracefully shuts down the runtime and joins the engine thread.
@@ -271,6 +367,18 @@ impl Drop for ReplayRuntime {
             let _ = handle.join();
         }
     }
+}
+
+fn find_first_matching_assertion_id(
+    incident: &IncidentReport,
+    watched_assertion_ids: &HashSet<B256>,
+) -> Option<B256> {
+    incident.failures().iter().find_map(|failure| {
+        let assertion_id = B256::from_slice(failure.assertion_id().as_slice());
+        watched_assertion_ids
+            .contains(&assertion_id)
+            .then_some(assertion_id)
+    })
 }
 
 /// Computes the commit block used for initial sidecar sync.
@@ -380,6 +488,12 @@ pub(crate) enum RuntimeError {
     },
     #[error("engine queue channel closed while sending event")]
     EngineQueueClosed,
+    #[error("local replay observation channels are unavailable")]
+    ObservationUnavailable,
+    #[error("incident stream was closed before replay finished")]
+    IncidentStreamClosed,
+    #[error("transaction-result stream was closed before replay finished")]
+    ResultStreamClosed,
     #[error("failed to await engine join task")]
     EngineJoinTask {
         #[source]
