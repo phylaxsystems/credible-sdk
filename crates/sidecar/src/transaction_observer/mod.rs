@@ -5,6 +5,7 @@ mod payload;
 mod tests;
 
 use crate::utils::ErrorRecoverability;
+use alloy::primitives::B256;
 use dapp_api_client::Client as DappClient;
 use futures_util::stream::{
     FuturesUnordered,
@@ -30,6 +31,7 @@ use serde::{
     Serialize,
 };
 use std::{
+    collections::HashSet,
     sync::{
         Arc,
         atomic::{
@@ -78,6 +80,12 @@ pub struct IncidentData {
     pub(crate) revert_data: Bytes,
 }
 
+impl IncidentData {
+    pub fn assertion_id(&self) -> FixedBytes<32> {
+        self.assertion_id
+    }
+}
+
 /// Contains txhash and blockenv. Used to reconstruct
 /// incident txs and display them to end users.
 pub type ReconstructableTx = (FixedBytes<32>, TxEnv);
@@ -98,6 +106,28 @@ pub struct IncidentReport {
     /// Transaction hashes of previous transactions in the iteration
     /// and their blockenvs
     pub(crate) prev_txs: Vec<ReconstructableTx>,
+}
+
+impl IncidentReport {
+    pub fn failures(&self) -> &[IncidentData] {
+        &self.failures
+    }
+
+    pub fn transaction_hash(&self) -> FixedBytes<32> {
+        self.transaction_data.0
+    }
+
+    pub fn find_first_matching_assertion_id(
+        &self,
+        watched_assertion_ids: &HashSet<B256>,
+    ) -> Option<B256> {
+        self.failures().iter().find_map(|failure| {
+            let assertion_id = B256::from_slice(failure.assertion_id().as_slice());
+            watched_assertion_ids
+                .contains(&assertion_id)
+                .then_some(assertion_id)
+        })
+    }
 }
 
 pub type IncidentReportSender = flume::Sender<IncidentReport>;

@@ -6,14 +6,20 @@ use crate::{
 };
 use runtime::{
     ReplayRuntime,
+    ReplayStopMatch,
     RuntimeError,
 };
+use std::collections::HashSet;
 use thiserror::Error;
-use tracing::debug;
+use tracing::{
+    debug,
+    info,
+};
 
 /// Runs one full replay pass from configured `start_block` to current head.
 pub async fn run_replay(config: &Config, request: &ReplayRequest) -> Result<(), ReplayError> {
-    let runtime = ReplayRuntime::new(config)
+    let watched_assertion_ids: HashSet<_> = request.assertion_ids.iter().map(|id| id.0).collect();
+    let runtime = ReplayRuntime::new(config, !watched_assertion_ids.is_empty())
         .await
         .map_err(|source| ReplayError::RuntimeInitialization { source })?;
     let head = runtime
@@ -32,8 +38,8 @@ pub async fn run_replay(config: &Config, request: &ReplayRequest) -> Result<(), 
         .send_initial_commit(config.start_block)
         .await
         .map_err(|source| ReplayError::InitialCommit { source })?;
-    runtime
-        .process_block_range(config.start_block, head)
+    let stop_match = runtime
+        .process_block_range(config.start_block, head, &watched_assertion_ids)
         .await
         .map_err(|source| ReplayError::BlockRangeProcessing { source })?;
     runtime
@@ -41,11 +47,25 @@ pub async fn run_replay(config: &Config, request: &ReplayRequest) -> Result<(), 
         .await
         .map_err(|source| ReplayError::RuntimeShutdown { source })?;
 
-    debug!(
-        assertion_ids_count = request.assertion_ids.len(),
-        "replay run completed; assertion results dispatch is not implemented yet"
-    );
+    log_replay_outcome(stop_match, request.assertion_ids.len());
     Ok(())
+}
+
+fn log_replay_outcome(stop_match: Option<ReplayStopMatch>, assertion_ids_count: usize) {
+    if let Some(stop_match) = stop_match {
+        info!(
+            assertion_ids_count,
+            matched_assertion_id = %stop_match.assertion_id,
+            matched_tx_hash = %stop_match.tx_hash,
+            matched_block_number = stop_match.block_number,
+            "replay stopped early after observing a watched assertion id"
+        );
+    } else {
+        debug!(
+            assertion_ids_count,
+            "replay run completed without matching a watched assertion id"
+        );
+    }
 }
 
 #[derive(Debug, Error)]
