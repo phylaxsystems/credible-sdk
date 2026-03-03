@@ -134,3 +134,22 @@ pub fn get_mapping_state_changes_bytes_key(
 
     Ok(PhevmOutcome::new(dif_bytes, gas_limit - gas_left))
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        inspectors::spec_recorder::AssertionSpec,
+        test_utils::run_precompile_test_with_spec,
+    };
+
+    #[tokio::test]
+    async fn test_get_mapping_state_changes_integration() {
+        let result = run_precompile_test_with_spec(
+            "TestGetMappingStateChanges",
+            AssertionSpec::Experimental,
+        );
+        assert!(result.is_valid(), "{result:#?}");
+        let result_and_state = result.result_and_state;
+        assert!(result_and_state.result.is_success());
+    }
+}

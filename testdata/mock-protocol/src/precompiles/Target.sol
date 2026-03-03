@@ -17,6 +17,7 @@ contract Target {
 
     address public impl;
     CallType public callType;
+    mapping(uint256 => uint256) public mappingData;
 
     constructor() payable {
         value = 1;
@@ -40,6 +41,10 @@ contract Target {
         value = value_;
         emit Log(value);
         emit Log2(value);
+    }
+
+    function writeMapping(uint256 key, uint256 val) public {
+        mappingData[key] = val;
     }
 
     function writeStorageAndRevert(uint256 value_) external {
