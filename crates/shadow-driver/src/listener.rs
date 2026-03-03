@@ -7,10 +7,6 @@
 //! Uses gRPC bidirectional streaming via `StreamEvents` RPC.
 
 use alloy::{
-    consensus::{
-        Transaction,
-        TxType,
-    },
     primitives::{
         B256,
         U256,
@@ -32,9 +28,12 @@ use futures_util::{
     StreamExt,
     future::join_all,
 };
+use shadow_driver::tx_env::{
+    to_proto_tx_env,
+    u128_to_bytes,
+    u256_to_bytes,
+};
 use sidecar::transport::grpc::pb::{
-    AccessListItem as ProtoAccessListItem,
-    Authorization as ProtoAuthorization,
     BlobExcessGasAndPrice,
     BlockEnv,
     CommitHead,
@@ -45,7 +44,6 @@ use sidecar::transport::grpc::pb::{
     ResultStatus,
     StreamAck,
     Transaction as ProtoTransaction,
-    TransactionEnv,
     TransactionResult,
     TxExecutionId as ProtoTxExecutionId,
     event::Event as EventVariant,
@@ -1554,7 +1552,7 @@ impl Listener {
         prev_tx_hash: Option<Vec<u8>>,
     ) -> Result<()> {
         let tx_hash = tx.inner.hash();
-        let tx_env = Self::to_proto_tx_env(tx);
+        let tx_env = to_proto_tx_env(tx);
 
         stream
             .send_event_with_retry(
@@ -1609,117 +1607,6 @@ impl Listener {
             )
             .await
     }
-
-    /// Convert an Alloy transaction to protobuf `TransactionEnv`
-    fn to_proto_tx_env(tx: &alloy::rpc::types::Transaction) -> TransactionEnv {
-        let tx_type = match tx.inner.tx_type() {
-            TxType::Legacy => 0,
-            TxType::Eip2930 => 1,
-            TxType::Eip1559 => 2,
-            TxType::Eip4844 => 3,
-            TxType::Eip7702 => 4,
-        };
-
-        let transact_to = tx.to().map(|a| a.to_vec()).unwrap_or_default();
-
-        let access_list: Vec<ProtoAccessListItem> = tx
-            .access_list()
-            .map(|al| {
-                al.0.iter()
-                    .map(|item| {
-                        ProtoAccessListItem {
-                            address: item.address.to_vec(),
-                            storage_keys: item.storage_keys.iter().map(|k| k.to_vec()).collect(),
-                        }
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        let blob_hashes: Vec<Vec<u8>> = tx
-            .blob_versioned_hashes()
-            .map(|hashes| hashes.iter().map(|h| h.to_vec()).collect())
-            .unwrap_or_default();
-
-        let max_fee_per_blob_gas = tx
-            .max_fee_per_blob_gas()
-            .map_or_else(|| u128_to_bytes(0), u128_to_bytes);
-
-        let authorization_list: Vec<ProtoAuthorization> = tx
-            .authorization_list()
-            .map(|auths| {
-                auths
-                    .iter()
-                    .filter_map(|auth| {
-                        let sig = auth.signature().ok()?;
-                        Some(ProtoAuthorization {
-                            chain_id: U256::from(auth.chain_id).to_be_bytes_vec(),
-                            address: auth.address.to_vec(),
-                            nonce: auth.nonce,
-                            y_parity: u32::from(sig.v()),
-                            r: sig.r().to_be_bytes_vec(),
-                            s: sig.s().to_be_bytes_vec(),
-                        })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        // Handle gas_price and gas_priority_fee based on transaction type
-        let (gas_price, gas_priority_fee) = match tx.inner.tx_type() {
-            // Legacy transaction
-            TxType::Legacy |
-            // EIP-2930 - Access list transaction
-            TxType::Eip2930 => {
-                // Use gas_price directly, no priority fee
-                (
-                    u128_to_bytes(tx.inner.gas_price().unwrap_or_default()),
-                    None,
-                )
-            }
-            // EIP-1559 - Dynamic fee transaction
-            TxType::Eip1559 |
-            // EIP-4844 - Blob transaction
-            TxType::Eip4844 |
-            // EIP-7702 - Account delegation transaction
-            TxType::Eip7702 => {
-                // Use max_fee_per_gas as gas_price, and set priority fee
-                let max_fee = tx.inner.max_fee_per_gas();
-                let max_priority = tx.inner.max_priority_fee_per_gas();
-
-                (
-                    u128_to_bytes(max_fee),
-                    max_priority.map(u128_to_bytes),
-                )
-            }
-        };
-
-        TransactionEnv {
-            tx_type,
-            caller: tx.inner.signer().to_vec(),
-            gas_limit: tx.inner.gas_limit(),
-            gas_price,
-            transact_to,
-            value: u256_to_bytes(tx.value()),
-            data: tx.input().to_vec(),
-            nonce: tx.nonce(),
-            chain_id: tx.chain_id(),
-            access_list,
-            gas_priority_fee,
-            blob_hashes,
-            max_fee_per_blob_gas,
-            authorization_list,
-        }
-    }
-}
-
-// Helper functions for big-endian encoding
-fn u256_to_bytes(val: U256) -> Vec<u8> {
-    val.to_be_bytes_vec()
-}
-
-fn u128_to_bytes(val: u128) -> Vec<u8> {
-    val.to_be_bytes().to_vec()
 }
 
 fn bytes_to_hex(bytes: &[u8]) -> String {

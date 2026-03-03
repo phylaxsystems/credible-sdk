@@ -51,7 +51,7 @@ url = { workspace = true }
 console-subscriber = { workspace = true, optional = true }
 tokio-metrics = { workspace = true, optional = true }
 hashlink = "0.11.0"
-flume = "0.12.0"
+flume.workspace = true
 parking_lot.workspace = true
 bincode.workspace = true
 dhat = { version = "0.3", optional = true }
