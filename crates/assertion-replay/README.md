@@ -82,13 +82,17 @@ Request body:
 
 ```json
 {
-  "assertion_ids": [
-    "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  "assertions": [
+    {
+      "adopter": "0x1111111111111111111111111111111111111111",
+      "deployment_bytecode": "0x6001600055",
+      "id": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
   ]
 }
 ```
 
-`assertion_ids` is optional:
+`assertions` is optional:
 
 - empty/missing: replay full computed range
 - non-empty: replay watches incidents and can stop early on first watched ID match

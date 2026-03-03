@@ -25,3 +25,11 @@ thiserror.workspace = true
 alloy = { workspace = true, features = ["consensus"] }
 alloy-provider.workspace = true
 revm.workspace = true
+
+[dev-dependencies]
+assertion-executor = { workspace = true, features = ["test"] }
+hex.workspace = true
+int-test-utils.workspace = true
+reqwest.workspace = true
+serde_json.workspace = true
+tokio.workspace = true

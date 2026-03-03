@@ -1,4 +1,6 @@
 mod config;
+#[cfg(test)]
+mod integration_tests;
 mod server;
 mod services;
 

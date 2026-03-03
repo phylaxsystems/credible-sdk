@@ -77,20 +77,24 @@ mod tests {
     use super::ReplayRequest;
 
     #[test]
-    fn replay_request_default_has_no_assertion_ids() {
+    fn replay_request_default_has_no_assertions() {
         let request = ReplayRequest::default();
-        assert!(request.assertion_ids.is_empty());
+        assert!(request.assertions.is_empty());
     }
 
     #[test]
     fn replay_request_deserializes_valid_payload() {
         let payload = br#"{
-                "assertion_ids": [
-                    "0x1111111111111111111111111111111111111111111111111111111111111111"
+                "assertions": [
+                    {
+                        "adopter":"0x1111111111111111111111111111111111111111",
+                        "deployment_bytecode":"0x6001600055",
+                        "id":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    }
                 ]
             }"#;
         let request: ReplayRequest =
             serde_json::from_slice(payload).expect("valid payload should parse");
-        assert_eq!(request.assertion_ids.len(), 1);
+        assert_eq!(request.assertions.len(), 1);
     }
 }
