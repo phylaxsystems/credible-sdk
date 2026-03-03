@@ -5,6 +5,7 @@ mod payload;
 mod tests;
 
 use crate::utils::ErrorRecoverability;
+use alloy::primitives::B256;
 use dapp_api_client::Client as DappClient;
 use futures_util::stream::{
     FuturesUnordered,
@@ -30,6 +31,7 @@ use serde::{
     Serialize,
 };
 use std::{
+    collections::HashSet,
     sync::{
         Arc,
         atomic::{
@@ -113,6 +115,18 @@ impl IncidentReport {
 
     pub fn transaction_hash(&self) -> FixedBytes<32> {
         self.transaction_data.0
+    }
+
+    pub fn find_first_matching_assertion_id(
+        &self,
+        watched_assertion_ids: &HashSet<B256>,
+    ) -> Option<B256> {
+        self.failures().iter().find_map(|failure| {
+            let assertion_id = B256::from_slice(failure.assertion_id().as_slice());
+            watched_assertion_ids
+                .contains(&assertion_id)
+                .then_some(assertion_id)
+        })
     }
 }
 

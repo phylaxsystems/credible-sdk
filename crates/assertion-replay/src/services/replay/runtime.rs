@@ -307,12 +307,16 @@ impl ReplayRuntime {
             .as_ref()
             .ok_or(RuntimeError::ObservationUnavailable)?;
 
+        // Engine ordering invariant:
+        // for each tx, an incident (if any) is emitted before that tx result event.
+        // Therefore, once we've observed `expected_results` result events, no *new*
+        // incidents for those txs can be produced anymore.
         let mut seen_results = 0usize;
         while seen_results < expected_results {
             tokio::select! {
                 incident = incident_rx.recv_async() => {
                     let incident = incident.map_err(|_| RuntimeError::IncidentStreamClosed)?;
-                    if let Some(assertion_id) = find_first_matching_assertion_id(&incident, watched_assertion_ids) {
+                    if let Some(assertion_id) = incident.find_first_matching_assertion_id(watched_assertion_ids) {
                         return Ok(Some(ReplayStopMatch {
                             assertion_id,
                             block_number,
@@ -327,9 +331,11 @@ impl ReplayRuntime {
             }
         }
 
+        // `tokio::select!` may consume the final result event before consuming a
+        // concurrently-ready incident event; drain any already-buffered incidents.
         while let Ok(incident) = incident_rx.try_recv() {
             if let Some(assertion_id) =
-                find_first_matching_assertion_id(&incident, watched_assertion_ids)
+                incident.find_first_matching_assertion_id(watched_assertion_ids)
             {
                 return Ok(Some(ReplayStopMatch {
                     assertion_id,
@@ -367,18 +373,6 @@ impl Drop for ReplayRuntime {
             let _ = handle.join();
         }
     }
-}
-
-fn find_first_matching_assertion_id(
-    incident: &IncidentReport,
-    watched_assertion_ids: &HashSet<B256>,
-) -> Option<B256> {
-    incident.failures().iter().find_map(|failure| {
-        let assertion_id = B256::from_slice(failure.assertion_id().as_slice());
-        watched_assertion_ids
-            .contains(&assertion_id)
-            .then_some(assertion_id)
-    })
 }
 
 /// Computes the commit block used for initial sidecar sync.
