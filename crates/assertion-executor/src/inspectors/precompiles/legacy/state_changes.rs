@@ -81,7 +81,7 @@ pub fn get_state_changes(
 }
 
 /// Returns an array of different values for an account and slot, from the `JournaledState` passed.
-fn get_differences<A: std::alloc::Allocator>(
+pub(crate) fn get_differences<A: std::alloc::Allocator>(
     journal: &JournalInner<JournalEntry>,
     contract_address: Address,
     slot: U256,

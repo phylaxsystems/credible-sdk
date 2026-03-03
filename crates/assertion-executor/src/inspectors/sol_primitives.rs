@@ -121,6 +121,23 @@ sol! {
             view
             returns (bytes32[] memory stateChanges);
 
+        // Get state changes for a mapping entry with a value-type key (address/uint/bool etc).
+        // Derives slot = keccak256(key ++ baseSlot) + offset.
+        function getMappingStateChanges(
+            address contractAddress,
+            bytes32 baseSlot,
+            bytes32 key,
+            uint256 offset
+        ) external view returns (bytes32[] memory);
+
+        // Get state changes for a mapping entry with a bytes/string key.
+        // Derives slot = keccak256(key ++ baseSlot).
+        function getMappingStateChanges(
+            address contractAddress,
+            bytes32 baseSlot,
+            bytes key
+        ) external view returns (bytes32[] memory);
+
         // Get assertion adopter contract address associated with the assertion triggering transaction.
         function getAssertionAdopter() external view returns (address);
 

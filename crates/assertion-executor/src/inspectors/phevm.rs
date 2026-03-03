@@ -27,6 +27,10 @@ use crate::{
                     LoadExternalSlotError,
                     load_external_slot,
                 },
+                mapping_state_changes::{
+                    get_mapping_state_changes_bytes_key,
+                    get_mapping_state_changes_value_type,
+                },
                 state_changes::{
                     GetStateChangesError,
                     get_state_changes,
@@ -385,6 +389,20 @@ impl<'a> PhEvmInspector<'a> {
             PhEvm::getStateChangesCall::SELECTOR => {
                 self.run_get_state_changes::<ExtDb>(input_bytes, inputs.gas_limit)?
             }
+            PhEvm::getMappingStateChanges_0Call::SELECTOR => {
+                self.run_get_mapping_state_changes::<ExtDb>(
+                    get_mapping_state_changes_value_type,
+                    input_bytes,
+                    inputs.gas_limit,
+                )?
+            }
+            PhEvm::getMappingStateChanges_1Call::SELECTOR => {
+                self.run_get_mapping_state_changes::<ExtDb>(
+                    get_mapping_state_changes_bytes_key,
+                    input_bytes,
+                    inputs.gas_limit,
+                )?
+            }
             PhEvm::getAssertionAdopterCall::SELECTOR => {
                 get_assertion_adopter(&self.context).map_err(PrecompileError::UnexpectedError)?
             }
@@ -441,6 +459,18 @@ impl<'a> PhEvmInspector<'a> {
         gas_limit: u64,
     ) -> Result<PhevmOutcome, PrecompileError<ExtDb>> {
         match get_state_changes(input_bytes, &self.context, gas_limit) {
+            Ok(rax) | Err(GetStateChangesError::OutOfGas(rax)) => Ok(rax),
+            Err(err) => Err(PrecompileError::GetStateChangesError(err)),
+        }
+    }
+
+    fn run_get_mapping_state_changes<ExtDb: DatabaseRef + Clone + DatabaseCommit>(
+        &self,
+        handler: for<'b> fn(&[u8], &PhEvmContext<'b>, u64) -> Result<PhevmOutcome, GetStateChangesError>,
+        input_bytes: &Bytes,
+        gas_limit: u64,
+    ) -> Result<PhevmOutcome, PrecompileError<ExtDb>> {
+        match handler(input_bytes, &self.context, gas_limit) {
             Ok(rax) | Err(GetStateChangesError::OutOfGas(rax)) => Ok(rax),
             Err(err) => Err(PrecompileError::GetStateChangesError(err)),
         }

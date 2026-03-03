@@ -26,4 +26,5 @@ pub mod console_log;
 pub mod fork;
 pub mod get_logs;
 pub mod load;
+pub mod mapping_state_changes;
 pub mod state_changes;

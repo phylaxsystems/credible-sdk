@@ -78,8 +78,14 @@ impl AssertionSpec {
         matches!(selector, PhEvm::getTxObjectCall::SELECTOR)
     }
 
-    fn is_experimental_only(_selector: [u8; 4]) -> bool {
-        false
+    fn is_experimental_only(selector: [u8; 4]) -> bool {
+        use crate::inspectors::sol_primitives::PhEvm;
+        use alloy_sol_types::SolCall;
+        matches!(
+            selector,
+            PhEvm::getMappingStateChanges_0Call::SELECTOR
+                | PhEvm::getMappingStateChanges_1Call::SELECTOR
+        )
     }
 }
 
