@@ -1,48 +1,82 @@
 # assertion-replay
 
-`assertion-replay` is an HTTP service that replays blockchain blocks with given assertions through the sidecar's core
-engine and assertion executor.
-This way, we can observe the effects of assertions on the chain.
+`assertion-replay` is an HTTP service that backtests recent blocks through sidecar's core engine and assertion executor.
 
-It is intended for:
+## What It Does
 
-- replaying from a configured `start_block` up to current head (timeout 15 mins)
-- observing assertion failures during replay
-- optionally stopping early when a watched assertion id is observed
+For each `POST /replay`:
 
-## How it works
+1. Reads the current head from archive WS.
+2. Computes replay start as `head - replay_window`.
+3. Replays `[start_block, head]`.
+4. Measures execution time.
+5. Auto-tunes `replay_window` for the next run to keep replay duration near target.
 
-For each `POST /replay` request, the service:
+If request contains watched assertion IDs, replay may stop early on first matched incident.
 
-1. Connects to archive RPC (`ws` + `http`)
-2. Initializes an in-process sidecar's core engine
-3. Replays blocks in `[REPLAY_START_BLOCK, current_head]` with 15 mins timeout
-4. If request includes `assertion_ids`, it watches incident reports and can stop early on first match
-5. Shuts down runtime/engine cleanly
+## Adaptive Window Tuning
+
+The service targets one replay run around **12.5 minutes**.
+
+- if elapsed > `max` (default 15 min), it reduces window
+- if elapsed < `min` (default 10 min), it increases window
+- otherwise keeps window unchanged
+
+Adjustment is proportional:
+
+`next_window = current_window * (target_duration / actual_duration)`
+
+Defaults:
+
+- min: `10.0` minutes
+- target: `12.5` minutes
+- max: `15.0` minutes
 
 ## Configuration
 
-Configuration is loaded from CLI args and/or environment variables.
+Configuration is loaded from CLI args and/or env vars.
 
 - `REPLAY_BIND_ADDR` (default: `0.0.0.0:8080`)
 - `REPLAY_ARCHIVE_WS_URL` (required)
 - `REPLAY_ARCHIVE_HTTP_URL` (required)
-- `REPLAY_START_BLOCK` (required)
+- `REPLAY_WINDOW` (required; initial replay window in blocks)
 - `REPLAY_CHAIN_ID` (default: `1`)
 - `REPLAY_ASSERTION_GAS_LIMIT` (default: `1000000000`)
+- `REPLAY_DURATION_MIN_MINUTES` (default: `10.0`)
+- `REPLAY_DURATION_TARGET_MINUTES` (default: `12.5`)
+- `REPLAY_DURATION_MAX_MINUTES` (default: `15.0`)
 
-## HTTP API
+## Endpoints
 
 ### `GET /health`
 
-Health probe endpoint.
+Returns:
 
-- Response: `200 OK`
-- Body: empty
+- `200 OK`
+
+### `GET /replay/start-block`
+
+Returns the current replay start preview, computed as:
+
+`start_block = current_head - current_replay_window`
+
+Response (`200 OK`):
+
+```json
+{
+  "start_block": 12345000,
+  "head_block": 12348000,
+  "replay_window": 3000
+}
+```
+
+Failures:
+
+- `500 Internal Server Error` when head block cannot be queried
 
 ### `POST /replay`
 
-Starts one replay run.
+Starts one replay/backtest run.
 
 Request body:
 
@@ -54,17 +88,18 @@ Request body:
 }
 ```
 
-`assertion_ids`:
+`assertion_ids` is optional:
 
-- replay watches incidents and may stop early when one watched assertion ID is observed
+- empty/missing: replay full computed range
+- non-empty: replay watches incidents and can stop early on first watched ID match
 
 Responses:
 
-- `200 OK` on successful replay execution
+- `200 OK` on success
 - `400 Bad Request` for invalid JSON payload
 - `500 Internal Server Error` for runtime/replay failures
 
-Error response body:
+Error body:
 
 ```json
 {
