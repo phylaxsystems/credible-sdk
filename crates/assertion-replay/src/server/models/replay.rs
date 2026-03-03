@@ -9,7 +9,7 @@ use serde::{
 /// `keccak256(assertion deployment bytecode)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct AssertionId(pub assertion_executor::primitives::B256);
+pub struct AssertionId(pub alloy::primitives::B256);
 
 /// Request body for `POST /replay`.
 ///
@@ -23,28 +23,13 @@ pub struct ReplayRequest {
     pub assertion_ids: Vec<AssertionId>,
 }
 
-/// Response body for successful `POST /replay`.
-#[derive(Debug, Clone, Serialize)]
-pub struct ReplayResponse {
-    /// Uppercase operation status.
-    pub status: &'static str,
-}
-
-impl ReplayResponse {
-    /// Builds a successful replay response.
-    pub const fn ok() -> Self {
-        Self { status: "OK" }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
         AssertionId,
         ReplayRequest,
-        ReplayResponse,
     };
-    use assertion_executor::primitives::B256;
+    use alloy::primitives::B256;
 
     #[test]
     fn assertion_id_deserializes_from_hex() {
@@ -58,12 +43,5 @@ mod tests {
         let request: ReplayRequest =
             serde_json::from_str("{}").expect("empty request should parse");
         assert!(request.assertion_ids.is_empty());
-    }
-
-    #[test]
-    fn replay_response_ok_serializes_status() {
-        let response = ReplayResponse::ok();
-        let json = serde_json::to_string(&response).expect("response should serialize");
-        assert_eq!(json, r#"{"status":"OK"}"#);
     }
 }

@@ -1,41 +1,68 @@
 use crate::{
     server::{
         models::{
-            error::ErrorResponse,
-            replay::{
-                ReplayRequest,
-                ReplayResponse,
+            error::{
+                AppResult,
+                HttpError,
             },
+            replay::ReplayRequest,
         },
         state::AppState,
     },
-    services::replay::run_replay,
+    services::replay::{
+        ReplayError,
+        run_replay,
+    },
 };
 use axum::{
-    Json,
-    extract::State,
+    extract::{
+        Json,
+        State,
+        rejection::JsonRejection,
+    },
     http::StatusCode,
 };
+use thiserror::Error;
 
 /// Handles `POST /replay` requests.
 ///
 /// Returns:
-/// - `200` with `{"status":"OK"}` when scheduling/execution completes
+/// - `200` when scheduling/execution completes
 /// - `4xx` when JSON extraction/validation fails
 /// - `500` for internal replay/runtime failures
 pub async fn replay_handler(
     State(state): State<AppState>,
-    Json(request): Json<ReplayRequest>,
-) -> Result<(StatusCode, Json<ReplayResponse>), (StatusCode, Json<ErrorResponse>)> {
-    match run_replay(state.config.as_ref(), &request).await {
-        Ok(()) => Ok((StatusCode::OK, Json(ReplayResponse::ok()))),
-        Err(source) => {
-            Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: source.to_string(),
-                }),
-            ))
+    payload: Result<Json<ReplayRequest>, JsonRejection>,
+) -> AppResult<StatusCode> {
+    let Json(request) = payload.map_err(ReplayHandlerError::from)?;
+    run_replay(state.config.as_ref(), &request)
+        .await
+        .map_err(ReplayHandlerError::from)?;
+
+    Ok(StatusCode::OK)
+}
+
+#[derive(Debug, Error)]
+enum ReplayHandlerError {
+    #[error("invalid payload: {0}")]
+    InvalidPayload(String),
+    #[error(transparent)]
+    Replay(#[from] ReplayError),
+}
+
+impl From<JsonRejection> for ReplayHandlerError {
+    fn from(source: JsonRejection) -> Self {
+        Self::InvalidPayload(source.body_text())
+    }
+}
+
+impl From<ReplayHandlerError> for HttpError {
+    fn from(source: ReplayHandlerError) -> Self {
+        match source {
+            ReplayHandlerError::InvalidPayload(message) => {
+                super::INVALID_PAYLOAD_ERROR.with_message(message)
+            }
+            ReplayHandlerError::Replay(_error) => super::REPLAY_FAILED_ERROR.into_error(),
         }
     }
 }

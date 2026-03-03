@@ -236,10 +236,19 @@ impl ReplayRuntime {
             .map_err(|_| RuntimeError::EngineQueueClosed)
     }
 
+    /// Triggers shutdown signal and closes the producer queue side.
+    fn initiate_shutdown(&mut self) {
+        self.shutdown_flag.store(true, Ordering::Release);
+
+        // Close the real sender immediately so the engine can terminate promptly.
+        let (dummy_sender, _dummy_receiver) = flume::unbounded();
+        let tx_sender = std::mem::replace(&mut self.tx_sender, dummy_sender);
+        drop(tx_sender);
+    }
+
     /// Gracefully shuts down the runtime and joins the engine thread.
     pub(super) async fn shutdown(mut self) -> Result<(), RuntimeError> {
-        self.shutdown_flag.store(true, Ordering::Release);
-        drop(self.tx_sender);
+        self.initiate_shutdown();
 
         if let Some(handle) = self.engine_handle.take() {
             let join_result = tokio::task::spawn_blocking(move || handle.join())
@@ -251,6 +260,16 @@ impl ReplayRuntime {
         }
 
         Ok(())
+    }
+}
+
+impl Drop for ReplayRuntime {
+    fn drop(&mut self) {
+        self.initiate_shutdown();
+
+        if let Some(handle) = self.engine_handle.take() {
+            let _ = handle.join();
+        }
     }
 }
 
