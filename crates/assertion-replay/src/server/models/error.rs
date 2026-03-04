@@ -45,6 +45,7 @@ pub struct HttpErrorDef {
 }
 
 impl HttpErrorDef {
+    #[must_use]
     pub const fn new(status: StatusCode, message: &'static str) -> Self {
         Self { status, message }
     }
@@ -53,6 +54,7 @@ impl HttpErrorDef {
         HttpError::new(self.status, message)
     }
 
+    #[must_use]
     pub fn into_error(self) -> HttpError {
         HttpError::new(self.status, self.message)
     }

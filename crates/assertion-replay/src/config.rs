@@ -42,6 +42,7 @@ pub struct Config {
 
 impl Config {
     /// Loads runtime configuration from CLI args and environment variables.
+    #[must_use]
     pub fn load() -> Self {
         Self::parse()
     }

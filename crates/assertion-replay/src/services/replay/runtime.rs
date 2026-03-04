@@ -9,6 +9,10 @@ use alloy::{
         Block,
         BlockTransactions,
     },
+    transports::{
+        RpcError,
+        TransportErrorKind,
+    },
 };
 use alloy_provider::{
     Provider,
@@ -48,7 +52,6 @@ use sidecar::{
 };
 use std::{
     collections::HashSet,
-    error::Error as StdError,
     sync::{
         Arc,
         atomic::{
@@ -62,8 +65,7 @@ use thiserror::Error;
 
 const DEFAULT_ITERATION_ID: u64 = 0;
 const SOURCE_SYNC_TIMEOUT: Duration = Duration::from_secs(10);
-
-type DynError = Box<dyn StdError + Send + Sync + 'static>;
+type ProviderRpcError = RpcError<TransportErrorKind>;
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct ReplayStopMatch {
@@ -88,6 +90,7 @@ impl ReplayRuntime {
     pub(super) async fn new(
         config: &Config,
         enable_local_observation: bool,
+        assertion_store: AssertionStore,
     ) -> Result<Self, RuntimeError> {
         let provider = connect_provider(&config.archive_ws_url).await?;
         let state_source = EthRpcSource::try_build(
@@ -105,7 +108,7 @@ impl ReplayRuntime {
             ExecutorConfig::default()
                 .with_chain_id(config.chain_id)
                 .with_assertion_gas_limit(config.assertion_gas_limit),
-            AssertionStore::new_ephemeral(),
+            assertion_store,
         );
 
         let (tx_sender, tx_receiver) = flume::unbounded();
@@ -153,15 +156,6 @@ impl ReplayRuntime {
             result_rx,
             shutdown_flag,
             engine_handle: Some(engine_handle),
-        })
-    }
-
-    /// Returns the current head block number from the archive provider.
-    pub(super) async fn head_block_number(&self) -> Result<u64, RuntimeError> {
-        self.provider.get_block_number().await.map_err(|source| {
-            RuntimeError::HeadBlockQuery {
-                source: Box::new(source),
-            }
         })
     }
 
@@ -371,6 +365,15 @@ impl ReplayRuntime {
     }
 }
 
+/// Queries head block directly from the archive websocket endpoint.
+pub(super) async fn query_head_block(ws_url: &str) -> Result<u64, RuntimeError> {
+    let provider = connect_provider(ws_url).await?;
+    provider
+        .get_block_number()
+        .await
+        .map_err(RuntimeError::HeadBlockQuery)
+}
+
 impl Drop for ReplayRuntime {
     fn drop(&mut self) {
         self.initiate_shutdown();
@@ -395,11 +398,7 @@ async fn connect_provider(ws_url: &str) -> Result<Arc<RootProvider>, RuntimeErro
     let provider = ProviderBuilder::new()
         .connect_ws(ws)
         .await
-        .map_err(|source| {
-            RuntimeError::ProviderConnect {
-                source: Box::new(source),
-            }
-        })?;
+        .map_err(RuntimeError::ProviderConnect)?;
     Ok(Arc::new(provider.root().clone()))
 }
 
@@ -415,7 +414,7 @@ async fn fetch_block(
         .map_err(|source| {
             RuntimeError::FetchBlock {
                 block_number,
-                source: Box::new(source),
+                source,
             }
         })?;
 
@@ -444,10 +443,7 @@ async fn wait_for_source_sync(
 #[derive(Debug, Error)]
 pub(crate) enum RuntimeError {
     #[error("failed to connect to archive websocket provider")]
-    ProviderConnect {
-        #[source]
-        source: DynError,
-    },
+    ProviderConnect(#[source] ProviderRpcError),
     #[error("failed to build EthRpcSource")]
     StateSourceBuild {
         #[source]
@@ -464,15 +460,12 @@ pub(crate) enum RuntimeError {
         source: std::io::Error,
     },
     #[error("failed to query head block number from archive provider")]
-    HeadBlockQuery {
-        #[source]
-        source: DynError,
-    },
+    HeadBlockQuery(#[source] ProviderRpcError),
     #[error("failed to fetch block {block_number} from archive provider")]
     FetchBlock {
         block_number: u64,
         #[source]
-        source: DynError,
+        source: ProviderRpcError,
     },
     #[error("block {block_number} not found on archive provider")]
     BlockNotFound { block_number: u64 },

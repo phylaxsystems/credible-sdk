@@ -21,6 +21,10 @@ use axum::{
 use thiserror::Error;
 
 /// Handles `GET /replay/start-block` requests.
+///
+/// # Errors
+///
+/// Returns [`HttpError`] when replay start-block preview computation fails.
 pub async fn replay_start_block_handler(
     State(state): State<AppState>,
 ) -> AppResult<Json<ReplayStartBlockResponse>> {

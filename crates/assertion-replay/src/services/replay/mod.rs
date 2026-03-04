@@ -1,3 +1,4 @@
+mod assertion_bootstrap;
 mod runtime;
 
 use crate::{
@@ -12,13 +13,17 @@ use alloy_provider::{
     Provider,
     RootProvider,
 };
+use assertion_bootstrap::{
+    BootstrapError,
+    bootstrap_assertion_store,
+};
 use runtime::{
     ReplayRuntime,
     ReplayStopMatch,
     RuntimeError,
+    query_head_block,
 };
 use std::{
-    collections::HashSet,
     sync::atomic::{
         AtomicU64,
         Ordering,
@@ -35,23 +40,32 @@ use tracing::{
 };
 
 /// Runs one replay pass from `current_head - replay_window` to current head.
-pub async fn run_replay(
+///
+/// # Errors
+///
+/// Returns [`ReplayError`] if querying head state, bootstrapping assertions,
+/// runtime initialization, block processing, or runtime shutdown fails.
+pub(crate) async fn run_replay(
     config: &Config,
     replay_window: &AtomicU64,
     tuning: ReplayDurationTuning,
     request: &ReplayRequest,
 ) -> Result<(), ReplayError> {
-    let watched_assertion_ids: HashSet<_> = request.assertion_ids.iter().map(|id| id.0).collect();
-    let runtime = ReplayRuntime::new(config, !watched_assertion_ids.is_empty())
-        .await
-        .map_err(|source| ReplayError::RuntimeInitialization { source })?;
-
-    let head = runtime
-        .head_block_number()
+    let head = query_head_block(&config.archive_ws_url)
         .await
         .map_err(ReplayError::HeadBlockQuery)?;
     let current_window = replay_window.load(Ordering::Relaxed).max(1);
     let start_block = ReplayDurationTuning::compute_start_block(head, current_window);
+    let executor_config = assertion_executor::ExecutorConfig::default()
+        .with_chain_id(config.chain_id)
+        .with_assertion_gas_limit(config.assertion_gas_limit);
+
+    let (assertion_store, watched_assertion_ids) =
+        bootstrap_assertion_store(request, start_block, &executor_config).await?;
+
+    let runtime = ReplayRuntime::new(config, !watched_assertion_ids.is_empty(), assertion_store)
+        .await
+        .map_err(|source| ReplayError::RuntimeInitialization { source })?;
 
     runtime
         .wait_for_source_sync(start_block)
@@ -76,7 +90,7 @@ pub async fn run_replay(
     let next_window = tuning.adjust_replay_window(current_window, elapsed);
     replay_window.store(next_window, Ordering::Relaxed);
 
-    log_replay_outcome(stop_match, request.assertion_ids.len());
+    log_replay_outcome(stop_match, watched_assertion_ids.len());
     log_window_adjustment(current_window, next_window, elapsed, tuning);
     Ok(())
 }
@@ -88,7 +102,13 @@ pub struct ReplayStartBlockPreview {
     pub replay_window: u64,
 }
 
-pub async fn preview_replay_start_block(
+/// Computes the replay start block preview using the current head and replay window.
+///
+/// # Errors
+///
+/// Returns [`ReplayError`] if querying the current head block from the shared
+/// provider fails.
+pub(crate) async fn preview_replay_start_block(
     head_provider: &RootProvider,
     replay_window: &AtomicU64,
 ) -> Result<ReplayStartBlockPreview, ReplayError> {
@@ -106,10 +126,10 @@ pub async fn preview_replay_start_block(
     })
 }
 
-fn log_replay_outcome(stop_match: Option<ReplayStopMatch>, assertion_ids_count: usize) {
+fn log_replay_outcome(stop_match: Option<ReplayStopMatch>, assertions_count: usize) {
     if let Some(stop_match) = stop_match {
         info!(
-            assertion_ids_count,
+            assertions_count,
             matched_assertion_id = %stop_match.assertion_id,
             matched_tx_hash = %stop_match.tx_hash,
             matched_block_number = stop_match.block_number,
@@ -117,7 +137,7 @@ fn log_replay_outcome(stop_match: Option<ReplayStopMatch>, assertion_ids_count: 
         );
     } else {
         debug!(
-            assertion_ids_count,
+            assertions_count,
             "replay run completed without matching a watched assertion id"
         );
     }
@@ -131,6 +151,7 @@ pub struct ReplayDurationTuning {
 }
 
 impl ReplayDurationTuning {
+    #[must_use]
     pub fn from_config(config: &Config) -> Self {
         Self {
             min: Duration::from_secs_f64((config.replay_duration_min_minutes * 60.0).max(0.1)),
@@ -151,10 +172,12 @@ impl ReplayDurationTuning {
         }
 
         let target_nanos = self.target.as_nanos();
-        let elapsed_nanos = elapsed.as_nanos();
-        if elapsed_nanos == 0 || target_nanos == 0 {
+        if target_nanos == 0 {
             return current_window.max(1);
         }
+        // `Instant` resolution can produce `0ns` for very fast runs; treat it as
+        // the fastest non-zero duration so the window still scales upward.
+        let elapsed_nanos = elapsed.as_nanos().max(1);
 
         let numerator = u128::from(current_window).saturating_mul(target_nanos);
         let scaled = Self::rounded_div(numerator, elapsed_nanos).max(1);
@@ -205,7 +228,7 @@ fn log_window_adjustment(
 }
 
 #[derive(Debug, Error)]
-pub enum ReplayError {
+pub(crate) enum ReplayError {
     #[error("failed to initialize replay runtime")]
     RuntimeInitialization {
         #[source]
@@ -213,6 +236,8 @@ pub enum ReplayError {
     },
     #[error("failed to query current head block")]
     HeadBlockQuery(#[source] RuntimeError),
+    #[error("failed to bootstrap assertion store before replay")]
+    AssertionBootstrap(#[from] BootstrapError),
     #[error("failed to query current head block from shared provider")]
     HeadBlockQueryProvider(#[source] RpcError<TransportErrorKind>),
     #[error("failed to wait for source sync at replay start block")]
@@ -264,6 +289,18 @@ mod tests {
 
         let next = tuning.adjust_replay_window(1_000, Duration::from_secs(500));
         assert_eq!(next, 1_500);
+    }
+
+    #[test]
+    fn replay_window_increases_when_replay_elapsed_is_zero() {
+        let tuning = ReplayDurationTuning {
+            min: Duration::from_secs(600),
+            target: Duration::from_secs(750),
+            max: Duration::from_secs(900),
+        };
+
+        let next = tuning.adjust_replay_window(1, Duration::ZERO);
+        assert_eq!(next, 750_000_000_000);
     }
 
     #[test]
