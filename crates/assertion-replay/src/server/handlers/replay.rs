@@ -30,14 +30,24 @@ use thiserror::Error;
 /// - `200` when scheduling/execution completes
 /// - `4xx` when JSON extraction/validation fails
 /// - `500` for internal replay/runtime failures
+///
+/// # Errors
+///
+/// Returns [`HttpError`] when payload extraction/validation fails or replay
+/// execution fails.
 pub async fn replay_handler(
     State(state): State<AppState>,
     payload: Result<Json<ReplayRequest>, JsonRejection>,
 ) -> AppResult<StatusCode> {
     let Json(request) = payload.map_err(ReplayHandlerError::from)?;
-    run_replay(state.config.as_ref(), &request)
-        .await
-        .map_err(ReplayHandlerError::from)?;
+    run_replay(
+        state.config.as_ref(),
+        state.replay_window.as_ref(),
+        state.replay_duration_tuning,
+        &request,
+    )
+    .await
+    .map_err(ReplayHandlerError::from)?;
 
     Ok(StatusCode::OK)
 }
@@ -72,20 +82,24 @@ mod tests {
     use super::ReplayRequest;
 
     #[test]
-    fn replay_request_default_has_no_assertion_ids() {
+    fn replay_request_default_has_no_assertions() {
         let request = ReplayRequest::default();
-        assert!(request.assertion_ids.is_empty());
+        assert!(request.assertions.is_empty());
     }
 
     #[test]
     fn replay_request_deserializes_valid_payload() {
         let payload = br#"{
-                "assertion_ids": [
-                    "0x1111111111111111111111111111111111111111111111111111111111111111"
+                "assertions": [
+                    {
+                        "adopter":"0x1111111111111111111111111111111111111111",
+                        "deployment_bytecode":"0x6001600055",
+                        "id":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    }
                 ]
             }"#;
         let request: ReplayRequest =
             serde_json::from_slice(payload).expect("valid payload should parse");
-        assert_eq!(request.assertion_ids.len(), 1);
+        assert_eq!(request.assertions.len(), 1);
     }
 }

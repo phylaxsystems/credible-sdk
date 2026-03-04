@@ -1,19 +1,30 @@
-mod config;
-mod server;
-mod services;
-
-use crate::{
+use alloy::{
+    providers::WsConnect,
+    transports::{
+        RpcError,
+        TransportErrorKind,
+    },
+};
+use alloy_provider::{
+    Provider,
+    ProviderBuilder,
+};
+use assertion_replay::{
     config::Config,
     server::{
         AppState,
         app_router,
     },
+    services::replay::ReplayDurationTuning,
 };
 use credible_utils::shutdown::wait_for_sigterm;
 use rust_tracing::trace;
 use std::{
     net::SocketAddr,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::AtomicU64,
+    },
 };
 use thiserror::Error;
 use tracing::info;
@@ -27,7 +38,22 @@ async fn main() -> Result<(), MainError> {
     trace();
 
     let config = Arc::new(Config::load());
-    let state = AppState { config };
+    let ws = WsConnect::new(config.archive_ws_url.clone());
+    let head_provider = Arc::new(
+        ProviderBuilder::new()
+            .connect_ws(ws)
+            .await
+            .map_err(|source| MainError::HeadProviderConnect { source })?
+            .root()
+            .clone(),
+    );
+    let replay_duration_tuning = ReplayDurationTuning::from_config(config.as_ref());
+    let state = AppState {
+        head_provider,
+        replay_window: Arc::new(AtomicU64::new(config.replay_window.max(1))),
+        replay_duration_tuning,
+        config,
+    };
     let app = app_router(state.clone());
     let bind_addr = state.config.bind_addr;
     let listener = tokio::net::TcpListener::bind(state.config.bind_addr)
@@ -60,6 +86,11 @@ enum MainError {
         bind_addr: SocketAddr,
         #[source]
         source: std::io::Error,
+    },
+    #[error("failed to connect head websocket provider")]
+    HeadProviderConnect {
+        #[source]
+        source: RpcError<TransportErrorKind>,
     },
     #[error("axum server failed")]
     Serve {
