@@ -40,7 +40,12 @@ use tracing::{
 };
 
 /// Runs one replay pass from `current_head - replay_window` to current head.
-pub async fn run_replay(
+///
+/// # Errors
+///
+/// Returns [`ReplayError`] if querying head state, bootstrapping assertions,
+/// runtime initialization, block processing, or runtime shutdown fails.
+pub(crate) async fn run_replay(
     config: &Config,
     replay_window: &AtomicU64,
     tuning: ReplayDurationTuning,
@@ -97,7 +102,13 @@ pub struct ReplayStartBlockPreview {
     pub replay_window: u64,
 }
 
-pub async fn preview_replay_start_block(
+/// Computes the replay start block preview using the current head and replay window.
+///
+/// # Errors
+///
+/// Returns [`ReplayError`] if querying the current head block from the shared
+/// provider fails.
+pub(crate) async fn preview_replay_start_block(
     head_provider: &RootProvider,
     replay_window: &AtomicU64,
 ) -> Result<ReplayStartBlockPreview, ReplayError> {
@@ -140,6 +151,7 @@ pub struct ReplayDurationTuning {
 }
 
 impl ReplayDurationTuning {
+    #[must_use]
     pub fn from_config(config: &Config) -> Self {
         Self {
             min: Duration::from_secs_f64((config.replay_duration_min_minutes * 60.0).max(0.1)),
@@ -216,7 +228,7 @@ fn log_window_adjustment(
 }
 
 #[derive(Debug, Error)]
-pub enum ReplayError {
+pub(crate) enum ReplayError {
     #[error("failed to initialize replay runtime")]
     RuntimeInitialization {
         #[source]

@@ -1,16 +1,16 @@
-use crate::{
+use alloy::providers::WsConnect;
+use alloy_provider::{
+    Provider,
+    ProviderBuilder,
+    RootProvider,
+};
+use assertion_replay::{
     config::Config,
     server::{
         AppState,
         app_router,
     },
     services::replay::ReplayDurationTuning,
-};
-use alloy::providers::WsConnect;
-use alloy_provider::{
-    Provider,
-    ProviderBuilder,
-    RootProvider,
 };
 use int_test_utils::node_protocol_mock_server::DualProtocolMockServer;
 use reqwest::{
@@ -34,7 +34,6 @@ const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 const STARTUP_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 pub struct TestInstance {
-    #[allow(dead_code)]
     pub mock_node: DualProtocolMockServer,
     pub client: Client,
     pub base_url: String,
@@ -141,20 +140,6 @@ impl TestInstance {
 impl Drop for TestInstance {
     fn drop(&mut self) {
         self.app_handle.abort();
-    }
-}
-
-pub async fn require_test_instance(test_name: &str) -> Option<TestInstance> {
-    match TestInstance::try_new().await {
-        Ok(instance) => Some(instance),
-        Err(error) => {
-            if error.contains("Operation not permitted") {
-                eprintln!("{test_name}: skipped due to sandbox socket restrictions ({error})");
-                None
-            } else {
-                panic!("{test_name}: failed to start integration test instance: {error}");
-            }
-        }
     }
 }
 

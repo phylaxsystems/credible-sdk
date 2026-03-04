@@ -1,17 +1,3 @@
-mod config;
-#[cfg(test)]
-mod integration_tests;
-mod server;
-mod services;
-
-use crate::{
-    config::Config,
-    server::{
-        AppState,
-        app_router,
-    },
-    services::replay::ReplayDurationTuning,
-};
 use alloy::{
     providers::WsConnect,
     transports::{
@@ -22,6 +8,14 @@ use alloy::{
 use alloy_provider::{
     Provider,
     ProviderBuilder,
+};
+use assertion_replay::{
+    config::Config,
+    server::{
+        AppState,
+        app_router,
+    },
+    services::replay::ReplayDurationTuning,
 };
 use credible_utils::shutdown::wait_for_sigterm;
 use rust_tracing::trace;

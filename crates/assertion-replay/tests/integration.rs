@@ -1,4 +1,5 @@
-use crate::integration_tests::setup::require_test_instance;
+mod common;
+
 use alloy::primitives::keccak256;
 use assertion_executor::{
     db::DatabaseCommit,
@@ -10,6 +11,7 @@ use assertion_executor::{
         setup_counter_validation,
     },
 };
+use common::require_test_instance;
 use serde_json::{
     Value,
     json,
@@ -17,7 +19,7 @@ use serde_json::{
 
 #[tokio::test]
 async fn health_endpoint_returns_ok() {
-    let Some(instance) = require_test_instance("health_endpoint_returns_ok").await else {
+    let Some(instance) = require_test_instance!("health_endpoint_returns_ok") else {
         return;
     };
     let response = instance.get("/health").await;
@@ -26,7 +28,7 @@ async fn health_endpoint_returns_ok() {
 
 #[tokio::test]
 async fn replay_start_block_endpoint_returns_preview() {
-    let Some(instance) = require_test_instance("replay_start_block_endpoint_returns_preview").await
+    let Some(instance) = require_test_instance!("replay_start_block_endpoint_returns_preview")
     else {
         return;
     };
@@ -54,7 +56,7 @@ async fn replay_start_block_endpoint_returns_preview() {
 
 #[tokio::test]
 async fn replay_start_block_tracks_head_progression() {
-    let Some(instance) = require_test_instance("replay_start_block_tracks_head_progression").await
+    let Some(instance) = require_test_instance!("replay_start_block_tracks_head_progression")
     else {
         return;
     };
@@ -82,7 +84,7 @@ async fn replay_start_block_tracks_head_progression() {
 #[tokio::test]
 async fn replay_start_block_reflects_adaptive_window_after_replay() {
     let Some(instance) =
-        require_test_instance("replay_start_block_reflects_adaptive_window_after_replay").await
+        require_test_instance!("replay_start_block_reflects_adaptive_window_after_replay")
     else {
         return;
     };
@@ -112,7 +114,7 @@ async fn replay_start_block_reflects_adaptive_window_after_replay() {
 
 #[tokio::test]
 async fn replay_rejects_malformed_payload() {
-    let Some(instance) = require_test_instance("replay_rejects_malformed_payload").await else {
+    let Some(instance) = require_test_instance!("replay_rejects_malformed_payload") else {
         return;
     };
 
@@ -122,7 +124,7 @@ async fn replay_rejects_malformed_payload() {
 
 #[tokio::test]
 async fn replay_accepts_empty_payload() {
-    let Some(instance) = require_test_instance("replay_accepts_empty_payload").await else {
+    let Some(instance) = require_test_instance!("replay_accepts_empty_payload") else {
         return;
     };
 
@@ -133,7 +135,7 @@ async fn replay_accepts_empty_payload() {
 #[tokio::test]
 async fn replay_rejects_legacy_assertion_id_string_payload() {
     let Some(instance) =
-        require_test_instance("replay_rejects_legacy_assertion_id_string_payload").await
+        require_test_instance!("replay_rejects_legacy_assertion_id_string_payload")
     else {
         return;
     };
@@ -151,8 +153,7 @@ async fn replay_rejects_legacy_assertion_id_string_payload() {
 
 #[tokio::test]
 async fn replay_fails_on_invalid_override_bytecode() {
-    let Some(instance) = require_test_instance("replay_fails_on_invalid_override_bytecode").await
-    else {
+    let Some(instance) = require_test_instance!("replay_fails_on_invalid_override_bytecode") else {
         return;
     };
 
@@ -178,8 +179,7 @@ async fn replay_fails_on_invalid_override_bytecode() {
 
 #[tokio::test]
 async fn replay_accepts_valid_override_bytecode() {
-    let Some(instance) = require_test_instance("replay_accepts_valid_override_bytecode").await
-    else {
+    let Some(instance) = require_test_instance!("replay_accepts_valid_override_bytecode") else {
         return;
     };
 

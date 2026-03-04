@@ -30,6 +30,11 @@ use thiserror::Error;
 /// - `200` when scheduling/execution completes
 /// - `4xx` when JSON extraction/validation fails
 /// - `500` for internal replay/runtime failures
+///
+/// # Errors
+///
+/// Returns [`HttpError`] when payload extraction/validation fails or replay
+/// execution fails.
 pub async fn replay_handler(
     State(state): State<AppState>,
     payload: Result<Json<ReplayRequest>, JsonRejection>,
