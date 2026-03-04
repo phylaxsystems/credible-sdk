@@ -2,6 +2,9 @@
 //!
 //! Measures wall-clock time from enqueueing events into the sequencing input channel
 //! to receiving the corresponding output events on the engine channel.
+#![allow(clippy::expect_used)]
+#![allow(clippy::indexing_slicing)]
+#![allow(clippy::unwrap_used)]
 
 use alloy::primitives::{
     B256,

@@ -1,19 +1,20 @@
 use std::process::Command;
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     emit_build_metadata();
 
     // Generate gRPC bindings for the sidecar transport service
     println!("cargo:rerun-if-changed=src/transport/grpc/sidecar.proto");
     // Use a vendored `protoc` to avoid requiring it on the system
-    let protoc = protoc_bin_vendored::protoc_bin_path().expect("protoc not found (vendored)");
+    let protoc = protoc_bin_vendored::protoc_bin_path()
+        .map_err(|err| format!("protoc not found (vendored): {err}"))?;
 
     // Setting an env var for build tooling is safe; this is a build script.
     unsafe {
         std::env::set_var("PROTOC", protoc);
     }
 
-    let rax = tonic_prost_build::configure()
+    let compile_result = tonic_prost_build::configure()
         .build_server(true)
         .build_client(true)
         .compile_protos(
@@ -26,7 +27,9 @@ fn main() {
         std::env::remove_var("PROTOC");
     }
 
-    assert!(rax.is_ok(), "Failed to compile gRPC protos");
+    compile_result.map_err(|err| format!("Failed to compile gRPC protos: {err}"))?;
+
+    Ok(())
 }
 
 fn emit_build_metadata() {

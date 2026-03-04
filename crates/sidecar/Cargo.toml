@@ -99,8 +99,6 @@ cache_validation = ["alloy-rpc-types-trace"]
 
 [package.metadata.cargo-shear]
 ignored = ["prost", "tonic-prost"]
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tokio_unstable)'] }
 
 [dev-dependencies]
 ctor = "0.6.3"
@@ -151,3 +149,6 @@ name = "reorg"
 path = "benches/reorg.rs"
 harness = false
 required-features = ["bench-utils"]
+
+[lints]
+workspace = true

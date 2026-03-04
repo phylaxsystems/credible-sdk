@@ -4,6 +4,16 @@
 #![allow(clippy::unreadable_literal)]
 #![allow(clippy::similar_names)]
 #![allow(clippy::struct_field_names)]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::unwrap_used
+    )
+)]
 #![allow(unused)]
 #[macro_use]
 extern crate credible_utils;
