@@ -17,8 +17,8 @@ pub struct Config {
     #[arg(long, env = "REPLAY_ARCHIVE_HTTP_URL")]
     pub archive_http_url: String,
 
-    #[arg(long, env = "REPLAY_START_BLOCK")]
-    pub start_block: u64,
+    #[arg(long, env = "REPLAY_WINDOW")]
+    pub replay_window: u64,
 
     #[arg(long, env = "REPLAY_CHAIN_ID", default_value_t = 1)]
     pub chain_id: u64,
@@ -29,6 +29,15 @@ pub struct Config {
         default_value_t = 1_000_000_000
     )]
     pub assertion_gas_limit: u64,
+
+    #[arg(long, env = "REPLAY_DURATION_MIN_MINUTES", default_value_t = 10.0)]
+    pub replay_duration_min_minutes: f64,
+
+    #[arg(long, env = "REPLAY_DURATION_TARGET_MINUTES", default_value_t = 12.5)]
+    pub replay_duration_target_minutes: f64,
+
+    #[arg(long, env = "REPLAY_DURATION_MAX_MINUTES", default_value_t = 15.0)]
+    pub replay_duration_max_minutes: f64,
 }
 
 impl Config {

@@ -23,6 +23,14 @@ pub struct ReplayRequest {
     pub assertion_ids: Vec<AssertionId>,
 }
 
+/// Response body for current replay start preview.
+#[derive(Debug, Clone, Serialize)]
+pub struct ReplayStartBlockResponse {
+    pub start_block: u64,
+    pub head_block: u64,
+    pub replay_window: u64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::{

@@ -75,6 +75,7 @@ pub(super) struct ReplayStopMatch {
 /// In-process runtime that feeds archive blocks into the sidecar engine queue.
 pub(super) struct ReplayRuntime {
     provider: Arc<RootProvider>,
+    state_source: Arc<EthRpcSource>,
     tx_sender: flume::Sender<TxQueueContents>,
     incident_rx: Option<flume::Receiver<IncidentReport>>,
     result_rx: Option<flume::Receiver<TransactionResultEvent>>,
@@ -95,9 +96,8 @@ impl ReplayRuntime {
         )
         .await
         .map_err(|source| RuntimeError::StateSourceBuild { source })?;
-        wait_for_source_sync(state_source.as_ref(), U256::from(config.start_block)).await?;
 
-        let sources: Vec<Arc<dyn Source>> = vec![state_source];
+        let sources: Vec<Arc<dyn Source>> = vec![state_source.clone()];
         let cache_sources = Arc::new(Sources::new(sources, 0));
         let cache: OverlayDb<Sources> = OverlayDb::new(Some(cache_sources.clone()));
 
@@ -147,6 +147,7 @@ impl ReplayRuntime {
 
         Ok(Self {
             provider,
+            state_source,
             tx_sender,
             incident_rx,
             result_rx,
@@ -162,6 +163,11 @@ impl ReplayRuntime {
                 source: Box::new(source),
             }
         })
+    }
+
+    /// Waits for state source sync at a specific replay start block.
+    pub(super) async fn wait_for_source_sync(&self, start_block: u64) -> Result<(), RuntimeError> {
+        wait_for_source_sync(self.state_source.as_ref(), U256::from(start_block)).await
     }
 
     /// Sends the initial commit event to establish the pre-state head.

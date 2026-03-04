@@ -35,9 +35,14 @@ pub async fn replay_handler(
     payload: Result<Json<ReplayRequest>, JsonRejection>,
 ) -> AppResult<StatusCode> {
     let Json(request) = payload.map_err(ReplayHandlerError::from)?;
-    run_replay(state.config.as_ref(), &request)
-        .await
-        .map_err(ReplayHandlerError::from)?;
+    run_replay(
+        state.config.as_ref(),
+        state.replay_window.as_ref(),
+        state.replay_duration_tuning,
+        &request,
+    )
+    .await
+    .map_err(ReplayHandlerError::from)?;
 
     Ok(StatusCode::OK)
 }
