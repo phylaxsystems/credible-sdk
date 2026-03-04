@@ -23,7 +23,6 @@ members = [
     "crates/eip-system-calls",
     "crates/assertion-verification",
     "crates/verifier-service",
-    "crates/assertion-replay",
     "scripts/geth_snapshot",
 ]
 exclude = ["fuzz"]
@@ -67,7 +66,6 @@ eip-system-calls = { path = "crates/eip-system-calls" }
 assertion-verification = { path = "crates/assertion-verification" }
 
 sidecar = { path = "crates/sidecar" }
-shadow-driver = { path = "crates/shadow-driver" }
 mdbx = { path = "crates/mdbx", features = ["reader"] }
 benchmark-utils = { path = "crates/benchmark-utils", features = [] }
 
