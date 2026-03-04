@@ -204,6 +204,8 @@ pub struct CredibleConfigFile {
     pub transaction_observer_endpoint_rps_max: Option<usize>,
     /// Poll interval for incident publishing in milliseconds
     pub transaction_observer_poll_interval_ms: Option<u64>,
+    /// Aeges guard-svc endpoint URL for failure reporting
+    pub aeges_endpoint: Option<String>,
     /// Contract address of the state oracle contract, used to query assertion info
     pub state_oracle: Option<Address>,
     /// Block number of the state oracle deployment
@@ -251,6 +253,8 @@ pub struct CredibleConfig {
     pub transaction_observer_endpoint_rps_max: Option<usize>,
     /// Poll interval for incident publishing in milliseconds
     pub transaction_observer_poll_interval_ms: Option<u64>,
+    /// Aeges guard-svc endpoint URL for failure reporting
+    pub aeges_endpoint: Option<String>,
     /// Contract address of the state oracle contract, used to query assertion info
     pub state_oracle: Address,
     /// Block number of the state oracle deployment
@@ -418,6 +422,7 @@ fn resolve_credible(credible_file: &CredibleConfigFile) -> Result<CredibleConfig
         transaction_observer_auth_token: optional.transaction_observer_auth_token,
         transaction_observer_endpoint_rps_max: optional.transaction_observer_endpoint_rps_max,
         transaction_observer_poll_interval_ms: optional.transaction_observer_poll_interval_ms,
+        aeges_endpoint: optional.aeges_endpoint,
         state_oracle: required.state_oracle,
         state_oracle_deployment_block: required.state_oracle_deployment_block,
         transaction_results_max_capacity: required.transaction_results_max_capacity,
@@ -507,6 +512,7 @@ struct CredibleOptional {
     transaction_observer_auth_token: Option<SecretString>,
     transaction_observer_endpoint_rps_max: Option<usize>,
     transaction_observer_poll_interval_ms: Option<u64>,
+    aeges_endpoint: Option<String>,
 }
 
 struct CredibleTtls {
@@ -601,6 +607,10 @@ fn resolve_credible_optional(
         transaction_observer_poll_interval_ms: optional_or_env(
             credible_file.transaction_observer_poll_interval_ms,
             "SIDECAR_TRANSACTION_OBSERVER_POLL_INTERVAL_MS",
+        )?,
+        aeges_endpoint: optional_or_env(
+            credible_file.aeges_endpoint.clone(),
+            "SIDECAR_AEGES_ENDPOINT",
         )?,
     })
 }

@@ -147,6 +147,7 @@ pub struct TransactionObserverConfig {
     pub endpoint: String,
     pub auth_token: String,
     pub db_path: String,
+    pub aeges_endpoint: Option<String>,
 }
 
 impl Default for TransactionObserverConfig {
@@ -157,6 +158,7 @@ impl Default for TransactionObserverConfig {
             endpoint: String::default(),
             auth_token: String::default(),
             db_path: String::default(),
+            aeges_endpoint: None,
         }
     }
 }
@@ -192,6 +194,8 @@ pub struct TransactionObserver {
     runtime: Runtime,
     /// Tracks consecutive publish failures for rate-limited logging
     consecutive_failures: u64,
+    /// HTTP client for fire-and-forget Aeges reporting
+    aeges_client: Option<reqwest::blocking::Client>,
 }
 
 impl TransactionObserver {
@@ -222,6 +226,22 @@ impl TransactionObserver {
             );
         }
 
+        let aeges_client = config
+            .aeges_endpoint
+            .as_ref()
+            .filter(|ep| !ep.trim().is_empty())
+            .map(|_| {
+                reqwest::blocking::Client::builder()
+                    .timeout(Duration::from_secs(5))
+                    .build()
+            })
+            .transpose()
+            .map_err(|e| {
+                TransactionObserverError::PublishFailed {
+                    reason: format!("Failed to build aeges http client: {e}"),
+                }
+            })?;
+
         Ok(Self {
             config,
             incident_rx,
@@ -229,6 +249,7 @@ impl TransactionObserver {
             dapp_client,
             runtime,
             consecutive_failures: 0,
+            aeges_client,
         })
     }
 
@@ -257,7 +278,10 @@ impl TransactionObserver {
             }
 
             match self.incident_rx.recv_timeout(RECV_TIMEOUT) {
-                Ok(report) => self.store_incident(&report)?,
+                Ok(report) => {
+                    self.store_incident(&report)?;
+                    self.notify_aeges(&report.transaction_data);
+                }
                 Err(flume::RecvTimeoutError::Timeout) => {}
                 Err(flume::RecvTimeoutError::Disconnected) => {
                     return Err(TransactionObserverError::ChannelClosed);
@@ -281,6 +305,32 @@ impl TransactionObserver {
             return Err(err);
         }
         Ok(())
+    }
+
+    /// Fire-and-forget POST to Aeges guard-svc for deny-cache population.
+    fn notify_aeges(&self, tx_data: &ReconstructableTx) {
+        let (Some(client), Some(endpoint)) = (&self.aeges_client, &self.config.aeges_endpoint)
+        else {
+            return;
+        };
+
+        let tx_hash = tx_data.0;
+
+        match client.post(endpoint).json(tx_data).send() {
+            Ok(resp) if resp.status().is_success() => {
+                debug!(
+                    target = "transaction_observer",
+                    ?tx_hash,
+                    "Aeges report sent"
+                );
+            }
+            Ok(resp) => {
+                warn!(target = "transaction_observer", ?tx_hash, status = %resp.status(), "Aeges rejected report");
+            }
+            Err(e) => {
+                warn!(target = "transaction_observer", ?tx_hash, error = %e, "Failed to send Aeges report");
+            }
+        }
     }
 
     #[instrument(

@@ -9,7 +9,6 @@
 extern crate credible_utils;
 extern crate core;
 
-pub mod aeges;
 pub mod args;
 pub mod cache;
 pub mod config;

@@ -66,7 +66,6 @@ use self::{
 use crate::utils::local_instance_db::LocalInstanceDb;
 use crate::{
     TransactionsState,
-    aeges::AegesReportSender,
     critical,
     metrics::{
         BlockMetrics,
@@ -190,7 +189,6 @@ pub struct CoreEngineConfig {
     pub source_monitoring_period: Duration,
     pub overlay_cache_invalidation_every_block: bool,
     pub incident_sender: Option<IncidentReportSender>,
-    pub aeges_sender: Option<AegesReportSender>,
     #[cfg(feature = "cache_validation")]
     pub provider_ws_url: Option<String>,
 }
@@ -405,8 +403,6 @@ pub struct CoreEngine<DB> {
     tx_receiver: TransactionQueueReceiver,
     /// Channel on which the core engine sends invalidation reports.
     incident_sender: Option<IncidentReportSender>,
-    /// Channel on which the core engine sends lightweight reports to Aeges.
-    aeges_sender: Option<AegesReportSender>,
     /// Core engines instance of the assertion executor, executes transactions and assertions
     assertion_executor: AssertionExecutor,
     /// Stores results of executed transactions
@@ -489,7 +485,6 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             sources: sources.clone(),
             tx_receiver,
             incident_sender: config.incident_sender,
-            aeges_sender: config.aeges_sender,
             assertion_executor,
             transaction_results: TransactionsResults::new(
                 state_results,
@@ -742,16 +737,6 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         }
     }
 
-    fn notify_aeges(&self, tx_data: &ReconstructableTx) {
-        let Some(sender) = &self.aeges_sender else {
-            return;
-        };
-
-        if let Err(e) = sender.try_send(tx_data.clone()) {
-            warn!(target = "engine", error = ?e, "Failed to send Aeges report");
-        }
-    }
-
     fn collect_incident_failures(rax: &TxValidationResult) -> Vec<IncidentData> {
         rax.assertions_executions
             .iter()
@@ -872,7 +857,6 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         let tx_data: ReconstructableTx = (tx_execution_id.tx_hash, tx_env.clone());
         if let Some(prev_txs) = prev_txs {
             self.emit_incident_report(tx_data.clone(), &block_env, prev_txs, &rax);
-            self.notify_aeges(&tx_data);
         }
 
         let result_and_state = rax.result_and_state;
