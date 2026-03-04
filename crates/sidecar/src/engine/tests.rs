@@ -82,6 +82,7 @@ impl<DB> CoreEngine<DB> {
             current_block_iterations: HashMap::new(),
             tx_receiver,
             incident_sender: None,
+            aeges_sender: None,
             assertion_executor: AssertionExecutor::new(
                 ExecutorConfig::default(),
                 AssertionStore::new_ephemeral(),
@@ -215,6 +216,7 @@ async fn create_test_engine_with_timeout(
             source_monitoring_period: timeout / 2,
             overlay_cache_invalidation_every_block: false,
             incident_sender: None,
+            aeges_sender: None,
             #[cfg(feature = "cache_validation")]
             provider_ws_url: None,
         },
@@ -1838,6 +1840,7 @@ async fn build_canonical_setup(caller: Address) -> CanonicalSetup {
             source_monitoring_period: Duration::from_millis(20),
             overlay_cache_invalidation_every_block: false,
             incident_sender: None,
+            aeges_sender: None,
             #[cfg(feature = "cache_validation")]
             provider_ws_url: None,
         },

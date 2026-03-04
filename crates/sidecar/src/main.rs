@@ -630,6 +630,9 @@ async fn run_sidecar_once(
         (None, None)
     };
 
+    // Channel: CoreEngine -> Aeges
+    let (aeges_report_tx, _aeges_report_rx) = unbounded();
+
     let (result_tx, result_rx) = unbounded();
     let accepted_txs_ttl = result_ttl(config);
     let engine_state_results =
@@ -658,6 +661,7 @@ async fn run_sidecar_once(
             .overlay_cache_invalidation_every_block
             .unwrap_or(false),
         incident_sender: incident_report_tx,
+        aeges_sender: Some(aeges_report_tx),
         #[cfg(feature = "cache_validation")]
         provider_ws_url: Some(config.credible.cache_checker_ws_url.clone()),
     };
