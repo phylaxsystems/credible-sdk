@@ -3,6 +3,7 @@ use crate::{
         models::{
             error::{
                 AppResult,
+                ErrorResponse,
                 HttpError,
             },
             replay::ReplayRequest,
@@ -35,6 +36,25 @@ use thiserror::Error;
 ///
 /// Returns [`HttpError`] when payload extraction/validation fails or replay
 /// execution fails.
+#[utoipa::path(
+    post,
+    path = "/replay",
+    request_body = ReplayRequest,
+    responses(
+        (status = 200, description = "Replay completed"),
+        (
+            status = 400,
+            description = "Invalid payload",
+            body = ErrorResponse
+        ),
+        (
+            status = 500,
+            description = "Replay failed",
+            body = ErrorResponse
+        )
+    ),
+    tag = "assertion-replay"
+)]
 pub async fn replay_handler(
     State(state): State<AppState>,
     payload: Result<Json<ReplayRequest>, JsonRejection>,

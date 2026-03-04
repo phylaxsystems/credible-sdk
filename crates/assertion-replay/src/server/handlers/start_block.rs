@@ -3,6 +3,7 @@ use crate::{
         models::{
             error::{
                 AppResult,
+                ErrorResponse,
                 HttpError,
             },
             replay::ReplayStartBlockResponse,
@@ -25,6 +26,23 @@ use thiserror::Error;
 /// # Errors
 ///
 /// Returns [`HttpError`] when replay start-block preview computation fails.
+#[utoipa::path(
+    get,
+    path = "/replay/start-block",
+    responses(
+        (
+            status = 200,
+            description = "Replay start-block preview",
+            body = ReplayStartBlockResponse
+        ),
+        (
+            status = 500,
+            description = "Failed to compute replay start-block",
+            body = ErrorResponse
+        )
+    ),
+    tag = "assertion-replay"
+)]
 pub async fn replay_start_block_handler(
     State(state): State<AppState>,
 ) -> AppResult<Json<ReplayStartBlockResponse>> {

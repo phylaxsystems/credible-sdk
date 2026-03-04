@@ -7,9 +7,10 @@ use axum::{
     },
 };
 use serde::Serialize;
+use utoipa::ToSchema;
 
 /// Generic error response body for non-2xx handler responses.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct ErrorResponse {
     /// Human-readable error message.
     pub error: String,

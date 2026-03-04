@@ -2,20 +2,22 @@ use serde::{
     Deserialize,
     Serialize,
 };
+use utoipa::ToSchema;
 
 /// Canonical assertion identifier.
 ///
 /// This wraps the executor's `B256` type, which represents:
 /// `keccak256(assertion deployment bytecode)`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
 #[serde(transparent)]
+#[schema(value_type = String, pattern = "^0x[a-fA-F0-9]{64}$")]
 pub struct AssertionId(pub alloy::primitives::B256);
 
 /// Request body for `POST /replay`.
 ///
 /// All fields are optional to keep payload ergonomics simple
 /// while still allowing per-request tuning.
-#[derive(Debug, Default, Clone, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ReplayRequest {
     /// Assertions to inject into replay.
@@ -27,19 +29,21 @@ pub struct ReplayRequest {
 }
 
 /// Assertion injected into replay state.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Assertion {
     /// Adopter address for this assertion.
+    #[schema(value_type = String, pattern = "^0x[a-fA-F0-9]{40}$")]
     pub adopter: alloy::primitives::Address,
     /// Full deployment bytecode (creation code + encoded constructor args).
+    #[schema(value_type = String, pattern = "^0x[a-fA-F0-9]*$")]
     pub deployment_bytecode: alloy::primitives::Bytes,
     /// Expected id (keccak256 of deployment bytecode).
     pub id: AssertionId,
 }
 
 /// Response body for current replay start preview.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct ReplayStartBlockResponse {
     pub start_block: u64,
     pub head_block: u64,
