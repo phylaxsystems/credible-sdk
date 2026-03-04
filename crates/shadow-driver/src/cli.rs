@@ -20,4 +20,11 @@ pub struct Args {
     /// The starting block to start from. If not set, the driver will start from the current block.
     #[arg(long, env = "SHADOW_DRIVER_STARTING_BLOCK")]
     pub starting_block: Option<u64>,
+
+    /// Optional MDBX directory for persisting sidecar payloads.
+    ///
+    /// When set, the driver resumes from the last persisted block and appends
+    /// blocks contiguously with no gaps.
+    #[arg(long, env = "SHADOW_DRIVER_MDBX_PATH")]
+    pub mdbx_path: Option<std::path::PathBuf>,
 }
