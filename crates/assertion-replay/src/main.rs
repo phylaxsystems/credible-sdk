@@ -15,7 +15,13 @@ use assertion_replay::{
         AppState,
         app_router,
     },
-    services::replay::ReplayDurationTuning,
+    services::replay::{
+        ReplayDurationTuning,
+        notifier::{
+            NotifierInitError,
+            ReplayResultNotifier,
+        },
+    },
 };
 use credible_utils::shutdown::wait_for_sigterm;
 use rust_tracing::trace;
@@ -48,10 +54,13 @@ async fn main() -> Result<(), MainError> {
             .clone(),
     );
     let replay_duration_tuning = ReplayDurationTuning::from_config(config.as_ref());
+    let replay_result_notifier = ReplayResultNotifier::from_config(config.as_ref())
+        .map_err(MainError::ReplayResultNotifierInit)?;
     let state = AppState {
         head_provider,
         replay_window: Arc::new(AtomicU64::new(config.replay_window.max(1))),
         replay_duration_tuning,
+        replay_result_notifier: Arc::new(replay_result_notifier),
         config,
     };
     let app = app_router(state.clone());
@@ -97,6 +106,8 @@ enum MainError {
         #[source]
         source: std::io::Error,
     },
+    #[error("failed to initialize replay result notifier")]
+    ReplayResultNotifierInit(#[source] NotifierInitError),
 }
 
 #[cfg(test)]

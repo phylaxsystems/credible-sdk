@@ -43,7 +43,11 @@ use sidecar::{
         TxQueueContents,
     },
     execution_ids::TxExecutionId,
-    transaction_observer::IncidentReport,
+    transaction_observer::{
+        DappIncidentPayload,
+        IncidentReport,
+        build_incident_body,
+    },
     transactions_state::TransactionResultEvent,
     transport::grpc::{
         GrpcDecodeError,
@@ -67,11 +71,12 @@ const DEFAULT_ITERATION_ID: u64 = 0;
 const SOURCE_SYNC_TIMEOUT: Duration = Duration::from_secs(10);
 type ProviderRpcError = RpcError<TransportErrorKind>;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(super) struct ReplayStopMatch {
     pub assertion_id: B256,
     pub block_number: u64,
     pub tx_hash: B256,
+    pub incident_payload: DappIncidentPayload,
 }
 
 /// In-process runtime that feeds archive blocks into the sidecar engine queue.
@@ -317,10 +322,13 @@ impl ReplayRuntime {
                 incident = incident_rx.recv_async() => {
                     let incident = incident.map_err(|_| RuntimeError::IncidentStreamClosed)?;
                     if let Some(assertion_id) = incident.find_first_matching_assertion_id(watched_assertion_ids) {
+                        let incident_payload = build_incident_body(&incident)
+                            .map_err(RuntimeError::IncidentPayloadBuild)?;
                         return Ok(Some(ReplayStopMatch {
                             assertion_id,
                             block_number,
                             tx_hash: B256::from_slice(incident.transaction_hash().as_slice()),
+                            incident_payload,
                         }));
                     }
                 }
@@ -337,10 +345,13 @@ impl ReplayRuntime {
             if let Some(assertion_id) =
                 incident.find_first_matching_assertion_id(watched_assertion_ids)
             {
+                let incident_payload =
+                    build_incident_body(&incident).map_err(RuntimeError::IncidentPayloadBuild)?;
                 return Ok(Some(ReplayStopMatch {
                     assertion_id,
                     block_number,
                     tx_hash: B256::from_slice(incident.transaction_hash().as_slice()),
+                    incident_payload,
                 }));
             }
         }
@@ -487,6 +498,8 @@ pub(crate) enum RuntimeError {
     IncidentStreamClosed,
     #[error("transaction-result stream was closed before replay finished")]
     ResultStreamClosed,
+    #[error("failed to build sidecar assertion-notification payload from incident")]
+    IncidentPayloadBuild(#[source] sidecar::transaction_observer::TransactionObserverError),
     #[error("failed to await engine join task")]
     EngineJoinTask {
         #[source]

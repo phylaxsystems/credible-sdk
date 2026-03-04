@@ -45,6 +45,8 @@ Configuration is loaded from CLI args and/or env vars.
 - `REPLAY_DURATION_MIN_MINUTES` (default: `10.0`)
 - `REPLAY_DURATION_TARGET_MINUTES` (default: `12.5`)
 - `REPLAY_DURATION_MAX_MINUTES` (default: `15.0`)
+- `REPLAY_RESULT_CALLBACK_URL` (required; callback endpoint for replay results)
+- `REPLAY_RESULT_CALLBACK_API_KEY` (required; sent as `x-api-key` for replay result callbacks)
 
 ## Endpoints
 
@@ -82,6 +84,7 @@ Request body:
 
 ```json
 {
+  "request_id": "replay-run-2026-03-04-001",
   "assertions": [
     {
       "adopter": "0x1111111111111111111111111111111111111111",
@@ -92,7 +95,8 @@ Request body:
 }
 ```
 
-`assertions` is optional:
+- `request_id` is required and is echoed to callback delivery (`x-request-id` header + JSON body)
+- `assertions` is optional:
 
 - empty/missing: replay full computed range
 - non-empty: replay watches incidents and can stop early on first watched ID match
@@ -102,6 +106,59 @@ Responses:
 - `200 OK` on success
 - `400 Bad Request` for invalid JSON payload
 - `500 Internal Server Error` for runtime/replay failures
+
+The service posts replay completion to `REPLAY_RESULT_CALLBACK_URL`.
+
+Request headers:
+
+- `x-api-key: <REPLAY_RESULT_CALLBACK_API_KEY>`
+- `x-request-id: <request_id>`
+
+Success callback body example:
+
+```json
+{
+  "request_id": "replay-run-2026-03-04-001",
+  "status": "succeeded",
+  "result": {
+    "start_block": 12345000,
+    "head_block": 12348000,
+    "replay_window_before": 3000,
+    "replay_window_after": 3120,
+    "elapsed_millis": 723451,
+    "watched_assertion_ids": [
+      "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    ],
+    "matched_assertion_id": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "matched_block_number": 12347001,
+    "matched_tx_hash": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "matched_incident_payload": {
+      "failures": [
+        {
+          "assertion_adopter_address": "0x1111111111111111111111111111111111111111",
+          "assertion_id": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "assertion_fn_selector": "0x12345678",
+          "revert_reason": "0x"
+        }
+      ],
+      "enforcer_version": "1.1.0",
+      "incident_timestamp": "2024-01-01T00:00:00+00:00",
+      "transaction_data": {},
+      "block_env": {}
+    }
+  }
+}
+```
+
+Failure callback body example:
+
+```json
+{
+  "request_id": "replay-run-2026-03-04-001",
+  "status": "failed",
+  "error": "failed to process requested block range"
+}
+```
 
 Error body:
 

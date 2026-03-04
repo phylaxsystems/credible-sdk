@@ -1,13 +1,17 @@
 mod assertion_bootstrap;
+pub mod notifier;
 mod runtime;
 
 use crate::{
     config::Config,
     server::models::replay::ReplayRequest,
 };
-use alloy::transports::{
-    RpcError,
-    TransportErrorKind,
+use alloy::{
+    primitives::B256,
+    transports::{
+        RpcError,
+        TransportErrorKind,
+    },
 };
 use alloy_provider::{
     Provider,
@@ -39,6 +43,20 @@ use tracing::{
     info,
 };
 
+#[derive(Debug, Clone)]
+pub struct ReplayExecutionSummary {
+    pub start_block: u64,
+    pub head_block: u64,
+    pub replay_window_before: u64,
+    pub replay_window_after: u64,
+    pub elapsed_millis: u128,
+    pub watched_assertion_ids: Vec<B256>,
+    pub matched_assertion_id: Option<B256>,
+    pub matched_block_number: Option<u64>,
+    pub matched_tx_hash: Option<B256>,
+    pub matched_incident_payload: Option<sidecar::transaction_observer::DappIncidentPayload>,
+}
+
 /// Runs one replay pass from `current_head - replay_window` to current head.
 ///
 /// # Errors
@@ -50,7 +68,7 @@ pub(crate) async fn run_replay(
     replay_window: &AtomicU64,
     tuning: ReplayDurationTuning,
     request: &ReplayRequest,
-) -> Result<(), ReplayError> {
+) -> Result<ReplayExecutionSummary, ReplayError> {
     let head = query_head_block(&config.archive_ws_url)
         .await
         .map_err(ReplayError::HeadBlockQuery)?;
@@ -90,9 +108,27 @@ pub(crate) async fn run_replay(
     let next_window = tuning.adjust_replay_window(current_window, elapsed);
     replay_window.store(next_window, Ordering::Relaxed);
 
-    log_replay_outcome(stop_match, watched_assertion_ids.len());
+    log_replay_outcome(stop_match.as_ref(), watched_assertion_ids.len());
     log_window_adjustment(current_window, next_window, elapsed, tuning);
-    Ok(())
+    let matched_assertion_id = stop_match.as_ref().map(|candidate| candidate.assertion_id);
+    let matched_block_number = stop_match.as_ref().map(|candidate| candidate.block_number);
+    let matched_tx_hash = stop_match.as_ref().map(|candidate| candidate.tx_hash);
+    let matched_incident_payload = stop_match.map(|candidate| candidate.incident_payload);
+    let mut watched_assertion_ids: Vec<B256> = watched_assertion_ids.iter().copied().collect();
+    watched_assertion_ids.sort_unstable();
+
+    Ok(ReplayExecutionSummary {
+        start_block,
+        head_block: head,
+        replay_window_before: current_window,
+        replay_window_after: next_window,
+        elapsed_millis: elapsed.as_millis(),
+        watched_assertion_ids,
+        matched_assertion_id,
+        matched_block_number,
+        matched_tx_hash,
+        matched_incident_payload,
+    })
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -126,7 +162,7 @@ pub(crate) async fn preview_replay_start_block(
     })
 }
 
-fn log_replay_outcome(stop_match: Option<ReplayStopMatch>, assertions_count: usize) {
+fn log_replay_outcome(stop_match: Option<&ReplayStopMatch>, assertions_count: usize) {
     if let Some(stop_match) = stop_match {
         info!(
             assertions_count,

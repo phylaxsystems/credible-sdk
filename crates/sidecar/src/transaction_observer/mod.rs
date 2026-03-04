@@ -58,11 +58,14 @@ use tracing::{
     warn,
 };
 
+pub use self::payload::build_incident_body;
 use self::{
     client::build_dapp_client,
     db::IncidentDb,
-    payload::build_incident_body,
 };
+
+/// Canonical payload schema sent by sidecar assertion notifications to the dapp API.
+pub type DappIncidentPayload = dapp_api_client::generated::client::types::PostEnforcerIncidentsBody;
 
 const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(1);
 /// Timeout for recv - threads will check for the shutdown flag at this interval

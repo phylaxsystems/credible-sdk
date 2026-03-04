@@ -21,6 +21,7 @@ tokio.workspace = true
 tracing.workspace = true
 flume.workspace = true
 thiserror.workspace = true
+reqwest.workspace = true
 
 alloy = { workspace = true, features = ["consensus"] }
 alloy-provider.workspace = true

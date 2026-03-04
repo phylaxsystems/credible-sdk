@@ -12,12 +12,12 @@ use serde::{
 pub struct AssertionId(pub alloy::primitives::B256);
 
 /// Request body for `POST /replay`.
-///
-/// All fields are optional to keep payload ergonomics simple
-/// while still allowing per-request tuning.
 #[derive(Debug, Default, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReplayRequest {
+    /// Caller-provided id used to correlate replay callback delivery.
+    pub request_id: String,
+
     /// Assertions to inject into replay.
     ///
     /// These assertions are applied in-memory before replay begins and do not
@@ -69,13 +69,14 @@ mod tests {
     #[test]
     fn replay_request_defaults_assertions_to_empty() {
         let request: ReplayRequest =
-            serde_json::from_str("{}").expect("empty request should parse");
+            serde_json::from_str(r#"{"request_id":"req-1"}"#).expect("request should parse");
         assert!(request.assertions.is_empty());
     }
 
     #[test]
     fn replay_request_rejects_unknown_fields() {
         let payload = r#"{
+            "request_id":"req-1",
             "assertion_ids":["0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]
         }"#;
         let error = serde_json::from_str::<ReplayRequest>(payload)
@@ -89,12 +90,21 @@ mod tests {
     #[test]
     fn assertion_deserializes() {
         let payload = r#"{
-            "adopter":"0x1111111111111111111111111111111111111111",
-            "deployment_bytecode":"0x6001600055",
-            "id":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            "request_id":"req-1",
+            "assertions":[
+                {
+                    "adopter":"0x1111111111111111111111111111111111111111",
+                    "deployment_bytecode":"0x6001600055",
+                    "id":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                }
+            ]
         }"#;
-        let assertion_entry: Assertion =
-            serde_json::from_str(payload).expect("assertion should parse");
+        let assertion_entry: Assertion = serde_json::from_str::<ReplayRequest>(payload)
+            .expect("assertion should parse")
+            .assertions
+            .into_iter()
+            .next()
+            .expect("assertion should exist");
 
         assert_eq!(assertion_entry.adopter, Address::repeat_byte(0x11));
         assert_eq!(

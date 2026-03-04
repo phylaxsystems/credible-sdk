@@ -1,6 +1,9 @@
 use crate::{
     config::Config,
-    services::replay::ReplayDurationTuning,
+    services::replay::{
+        ReplayDurationTuning,
+        notifier::ReplayResultNotifier,
+    },
 };
 use alloy_provider::RootProvider;
 use std::sync::{
@@ -15,4 +18,5 @@ pub struct AppState {
     pub head_provider: Arc<RootProvider>,
     pub replay_window: Arc<AtomicU64>,
     pub replay_duration_tuning: ReplayDurationTuning,
+    pub replay_result_notifier: Arc<ReplayResultNotifier>,
 }

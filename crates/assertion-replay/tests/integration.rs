@@ -11,7 +11,14 @@ use assertion_executor::{
         setup_counter_validation,
     },
 };
-use common::require_test_instance;
+use common::{
+    require_test_instance,
+    setup::{
+        CallbackCaptureServer,
+        ReplayCallbackConfig,
+        require_test_instance_with_callback,
+    },
+};
 use serde_json::{
     Value,
     json,
@@ -93,7 +100,9 @@ async fn replay_start_block_reflects_adaptive_window_after_replay() {
         instance.mock_node.send_new_head();
     }
 
-    let replay_response = instance.post_json("/replay", json!({})).await;
+    let replay_response = instance
+        .post_json("/replay", json!({"request_id":"req-window"}))
+        .await;
     assert_eq!(replay_response.status(), reqwest::StatusCode::OK);
 
     let response = instance.get("/replay/start-block").await;
@@ -123,12 +132,26 @@ async fn replay_rejects_malformed_payload() {
 }
 
 #[tokio::test]
-async fn replay_accepts_empty_payload() {
-    let Some(instance) = require_test_instance!("replay_accepts_empty_payload") else {
+async fn replay_rejects_empty_payload_without_request_id() {
+    let Some(instance) = require_test_instance!("replay_rejects_empty_payload_without_request_id")
+    else {
         return;
     };
 
     let response = instance.post_json("/replay", json!({})).await;
+    assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn replay_accepts_minimal_payload_with_request_id() {
+    let Some(instance) = require_test_instance!("replay_accepts_minimal_payload_with_request_id")
+    else {
+        return;
+    };
+
+    let response = instance
+        .post_json("/replay", json!({"request_id":"req-1"}))
+        .await;
     assert_eq!(response.status(), reqwest::StatusCode::OK);
 }
 
@@ -144,6 +167,7 @@ async fn replay_rejects_legacy_assertion_id_string_payload() {
         .post_json(
             "/replay",
             json!({
+                "request_id":"req-1",
                 "assertion_ids": ["0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]
             }),
         )
@@ -161,6 +185,7 @@ async fn replay_fails_on_invalid_override_bytecode() {
         .post_json(
             "/replay",
             json!({
+                "request_id":"req-1",
                 "assertions": [
                     {
                         "adopter": "0x1111111111111111111111111111111111111111",
@@ -192,6 +217,7 @@ async fn replay_accepts_valid_override_bytecode() {
         .post_json(
             "/replay",
             json!({
+                "request_id":"req-1",
                 "assertions": [
                     {
                         "adopter": "0x1111111111111111111111111111111111111111",
@@ -203,6 +229,105 @@ async fn replay_accepts_valid_override_bytecode() {
         )
         .await;
     assert_eq!(response.status(), reqwest::StatusCode::OK);
+}
+
+#[tokio::test]
+async fn replay_posts_result_callback_on_success() {
+    let callback_server = match CallbackCaptureServer::try_new(reqwest::StatusCode::OK).await {
+        Ok(server) => server,
+        Err(error) => {
+            if error.contains("Operation not permitted") {
+                eprintln!(
+                    "replay_posts_result_callback_on_success: skipped due to sandbox socket restrictions ({error})"
+                );
+                return;
+            }
+            panic!(
+                "replay_posts_result_callback_on_success: callback server failed to start: {error}"
+            );
+        }
+    };
+
+    let Some(instance) = require_test_instance_with_callback(
+        "replay_posts_result_callback_on_success",
+        Some(ReplayCallbackConfig {
+            url: callback_server.url.clone(),
+            api_key: "callback-secret".to_string(),
+        }),
+    )
+    .await
+    else {
+        return;
+    };
+
+    let response = instance
+        .post_json("/replay", json!({"request_id":"req-success"}))
+        .await;
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    assert!(callback_server.wait_for_call_count(1).await);
+    let recorded = callback_server.recorded().await;
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(recorded[0].api_key.as_deref(), Some("callback-secret"));
+    assert_eq!(recorded[0].request_id.as_deref(), Some("req-success"));
+    assert_eq!(recorded[0].body["request_id"], json!("req-success"));
+    assert_eq!(recorded[0].body["status"], json!("succeeded"));
+    assert_eq!(
+        recorded[0].body["result"]["watched_assertion_ids"],
+        json!([])
+    );
+    assert_eq!(
+        recorded[0].body["result"]["matched_incident_payload"],
+        json!(null)
+    );
+}
+
+#[tokio::test]
+async fn replay_fails_when_result_callback_delivery_fails() {
+    let callback_server = match CallbackCaptureServer::try_new(
+        reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+    )
+    .await
+    {
+        Ok(server) => server,
+        Err(error) => {
+            if error.contains("Operation not permitted") {
+                eprintln!(
+                    "replay_fails_when_result_callback_delivery_fails: skipped due to sandbox socket restrictions ({error})"
+                );
+                return;
+            }
+            panic!(
+                "replay_fails_when_result_callback_delivery_fails: callback server failed to start: {error}"
+            );
+        }
+    };
+
+    let Some(instance) = require_test_instance_with_callback(
+        "replay_fails_when_result_callback_delivery_fails",
+        Some(ReplayCallbackConfig {
+            url: callback_server.url.clone(),
+            api_key: "callback-secret".to_string(),
+        }),
+    )
+    .await
+    else {
+        return;
+    };
+
+    let response = instance
+        .post_json("/replay", json!({"request_id":"req-fail"}))
+        .await;
+    assert_eq!(
+        response.status(),
+        reqwest::StatusCode::INTERNAL_SERVER_ERROR
+    );
+    assert!(callback_server.wait_for_call_count(1).await);
+    let recorded = callback_server.recorded().await;
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(recorded[0].api_key.as_deref(), Some("callback-secret"));
+    assert_eq!(recorded[0].request_id.as_deref(), Some("req-fail"));
+    assert_eq!(recorded[0].body["request_id"], json!("req-fail"));
+    assert_eq!(recorded[0].body["status"], json!("succeeded"));
 }
 
 #[tokio::test]

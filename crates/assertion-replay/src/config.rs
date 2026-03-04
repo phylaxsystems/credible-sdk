@@ -38,6 +38,17 @@ pub struct Config {
 
     #[arg(long, env = "REPLAY_DURATION_MAX_MINUTES", default_value_t = 15.0)]
     pub replay_duration_max_minutes: f64,
+
+    /// Replay result callback URL.
+    ///
+    /// Every `/replay` request publishes its final result (success/failure) to
+    /// this endpoint.
+    #[arg(long, env = "REPLAY_RESULT_CALLBACK_URL")]
+    pub replay_result_callback_url: String,
+
+    /// API key sent as `x-api-key` when delivering replay results.
+    #[arg(long, env = "REPLAY_RESULT_CALLBACK_API_KEY")]
+    pub replay_result_callback_api_key: String,
 }
 
 impl Config {

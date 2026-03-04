@@ -11,6 +11,7 @@ use crate::{
     },
     services::replay::{
         ReplayError,
+        notifier::NotifyError,
         run_replay,
     },
 };
@@ -40,14 +41,26 @@ pub async fn replay_handler(
     payload: Result<Json<ReplayRequest>, JsonRejection>,
 ) -> AppResult<StatusCode> {
     let Json(request) = payload.map_err(ReplayHandlerError::from)?;
-    run_replay(
+    if request.request_id.trim().is_empty() {
+        return Err(ReplayHandlerError::InvalidPayload(
+            "missing or empty `request_id`".to_string(),
+        )
+        .into());
+    }
+
+    let replay_result = run_replay(
         state.config.as_ref(),
         state.replay_window.as_ref(),
         state.replay_duration_tuning,
         &request,
     )
-    .await
-    .map_err(ReplayHandlerError::from)?;
+    .await;
+    state
+        .replay_result_notifier
+        .notify(request.request_id.as_str(), &replay_result)
+        .await
+        .map_err(ReplayHandlerError::from)?;
+    replay_result.map_err(ReplayHandlerError::from)?;
 
     Ok(StatusCode::OK)
 }
@@ -58,6 +71,8 @@ enum ReplayHandlerError {
     InvalidPayload(String),
     #[error(transparent)]
     Replay(#[from] ReplayError),
+    #[error(transparent)]
+    Notification(#[from] NotifyError),
 }
 
 impl From<JsonRejection> for ReplayHandlerError {
@@ -72,7 +87,9 @@ impl From<ReplayHandlerError> for HttpError {
             ReplayHandlerError::InvalidPayload(message) => {
                 super::INVALID_PAYLOAD_ERROR.with_message(message)
             }
-            ReplayHandlerError::Replay(_error) => super::REPLAY_FAILED_ERROR.into_error(),
+            ReplayHandlerError::Replay(_) | ReplayHandlerError::Notification(_) => {
+                super::REPLAY_FAILED_ERROR.into_error()
+            }
         }
     }
 }
@@ -83,13 +100,17 @@ mod tests {
 
     #[test]
     fn replay_request_default_has_no_assertions() {
-        let request = ReplayRequest::default();
+        let request = ReplayRequest {
+            request_id: "req-1".to_string(),
+            assertions: Vec::new(),
+        };
         assert!(request.assertions.is_empty());
     }
 
     #[test]
     fn replay_request_deserializes_valid_payload() {
         let payload = br#"{
+                "request_id":"req-1",
                 "assertions": [
                     {
                         "adopter":"0x1111111111111111111111111111111111111111",

@@ -208,7 +208,7 @@ struct TransactionCommonFields {
     data: Option<String>,
 }
 
-pub(super) fn build_incident_body(
+pub fn build_incident_body(
     report: &IncidentReport,
 ) -> Result<dapp_types::PostEnforcerIncidentsBody, TransactionObserverError> {
     let incident_timestamp = format_incident_timestamp(report.incident_timestamp)?;
