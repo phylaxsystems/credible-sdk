@@ -297,6 +297,7 @@ impl TransactionObserver {
     }
 
     /// Fire-and-forget POST to Aeges guard-svc for deny-cache population.
+    #[instrument(name = "transaction_observer::notify_aeges", skip(self, tx_data), level = "trace")]
     fn notify_aeges(&self, tx_data: &ReconstructableTx) {
         let (Some(client), Some(endpoint)) = (&self.aeges_client, &self.config.aeges_endpoint)
         else {
