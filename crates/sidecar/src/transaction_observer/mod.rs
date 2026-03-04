@@ -59,7 +59,10 @@ use tracing::{
 };
 
 use self::{
-    client::build_dapp_client,
+    client::{
+        build_aeges_client,
+        build_dapp_client,
+    },
     db::IncidentDb,
     payload::build_incident_body,
 };
@@ -226,21 +229,7 @@ impl TransactionObserver {
             );
         }
 
-        let aeges_client = config
-            .aeges_endpoint
-            .as_ref()
-            .filter(|ep| !ep.trim().is_empty())
-            .map(|_| {
-                reqwest::blocking::Client::builder()
-                    .timeout(Duration::from_secs(5))
-                    .build()
-            })
-            .transpose()
-            .map_err(|e| {
-                TransactionObserverError::PublishFailed {
-                    reason: format!("Failed to build aeges http client: {e}"),
-                }
-            })?;
+        let aeges_client = build_aeges_client(&config)?;
 
         Ok(Self {
             config,

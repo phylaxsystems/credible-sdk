@@ -40,6 +40,32 @@ pub(super) fn build_dapp_client(
     Ok(Some(Arc::new(client)))
 }
 
+/// Builds the blocking HTTP client for Aeges reporting.
+///
+/// Returns `None` if `aeges_endpoint` is absent or empty, which disables Aeges reporting.
+pub(super) fn build_aeges_client(
+    config: &TransactionObserverConfig,
+) -> Result<Option<reqwest::blocking::Client>, TransactionObserverError> {
+    let Some(endpoint) = config.aeges_endpoint.as_ref() else {
+        return Ok(None);
+    };
+
+    if endpoint.trim().is_empty() {
+        return Ok(None);
+    }
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .map_err(|e| {
+            TransactionObserverError::PublishFailed {
+                reason: format!("Failed to build aeges http client: {e}"),
+            }
+        })?;
+
+    Ok(Some(client))
+}
+
 fn endpoint_base_url(endpoint: &str) -> String {
     let trimmed = endpoint.trim().trim_end_matches('/');
     if trimmed.is_empty() {
