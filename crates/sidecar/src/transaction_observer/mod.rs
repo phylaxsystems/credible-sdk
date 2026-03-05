@@ -56,6 +56,7 @@ use tracing::{
     instrument,
     trace,
     warn,
+    error
 };
 
 use self::{
@@ -72,6 +73,9 @@ const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const RECV_TIMEOUT: Duration = Duration::from_millis(100);
 /// Only log publish failures at warn level every N consecutive failures to avoid log spam
 const FAILURE_LOG_INTERVAL: u64 = 60;
+
+// Base path for Aeges report endpoint.
+const AEGES_REPORT_PATH: &str = "/report";
 
 /// This struct contains data for giving high level context to
 /// any observer about an incident (or invalidation) that occured.
@@ -297,34 +301,32 @@ impl TransactionObserver {
         Ok(())
     }
 
-    /// Fire-and-forget POST to Aeges guard-svc for deny-cache population.
+    /// Fire-and-forget POST to Aeges service.
     #[instrument(
         name = "transaction_observer::notify_aeges",
         skip(self, tx_data),
         level = "trace"
     )]
     fn notify_aeges(&self, tx_data: &ReconstructableTx) {
-        let (Some(client), Some(url)) = (&self.aeges_client, &self.config.aeges_url) else {
-            return;
-        };
+        if let (Some(client), Some(url)) = (&self.aeges_client, &self.config.aeges_url) {
+            let tx_hash = tx_data.0;
+            let mut report_url = url.clone();
+            report_url.set_path(AEGES_REPORT_PATH);
 
-        let tx_hash = tx_data.0;
-        let mut report_url = url.clone();
-        report_url.set_path("/report");
-
-        match client.post(report_url).json(tx_data).send() {
-            Ok(resp) if resp.status().is_success() => {
-                debug!(
-                    target = "transaction_observer",
-                    ?tx_hash,
-                    "Aeges report sent"
-                );
-            }
-            Ok(resp) => {
-                warn!(target = "transaction_observer", ?tx_hash, status = %resp.status(), "Aeges rejected report");
-            }
-            Err(e) => {
-                warn!(target = "transaction_observer", ?tx_hash, error = %e, "Failed to send Aeges report");
+            match client.post(report_url).json(tx_data).send() {
+                Ok(resp) if resp.status().is_success() => {
+                    debug!(
+                        target = "transaction_observer",
+                        ?tx_hash,
+                        "Aeges report sent"
+                    );
+                }
+                Ok(resp) => {
+                    warn!(target = "transaction_observer", ?tx_hash, status = %resp.status(), "Aeges rejected report");
+                }
+                Err(e) => {
+                    error!(target = "transaction_observer", ?tx_hash, error = %e, "Failed to send Aeges report");
+                }
             }
         }
     }
