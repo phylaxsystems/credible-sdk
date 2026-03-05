@@ -265,6 +265,7 @@ impl ObserverHandle {
             endpoint: String::new(),
             auth_token: String::new(),
             db_path: tempdir.path().to_string_lossy().to_string(),
+            aeges_url: None,
         };
         let observer = TransactionObserver::new(config, incident_rx)
             .expect("Failed to create transaction observer");
