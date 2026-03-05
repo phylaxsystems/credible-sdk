@@ -52,11 +52,11 @@ use tokio::{
 };
 use tracing::{
     debug,
+    error,
     info,
     instrument,
     trace,
     warn,
-    error
 };
 
 use self::{
