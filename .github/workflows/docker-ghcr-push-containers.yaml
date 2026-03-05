@@ -104,6 +104,15 @@ jobs:
       dockerfile-path: dockerfile/Dockerfile.state-worker
       version-tag: ${{ needs.get-version.outputs.version }}
 
+  docker-ghcr-push-verifier-service:
+    needs: get-version
+    uses: phylaxsystems/actions/.github/workflows/release-docker-ghcr.yaml@main
+    with:
+      rust-binary-name: verifier-service
+      requires-private-deps: false
+      dockerfile-path: dockerfile/Dockerfile.verifier-service
+      version-tag: ${{ needs.get-version.outputs.version }}
+
   helm-deploy:
     if: github.ref == 'refs/heads/main'
     needs:
