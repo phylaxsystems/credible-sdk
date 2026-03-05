@@ -203,7 +203,11 @@ fn decode_u128_be(bytes: &[u8]) -> Result<u128, GrpcDecodeError> {
     if bytes.len() != U128_LEN {
         return Err(GrpcDecodeError::InvalidU128(bytes.len()));
     }
-    Ok(u128::from_be_bytes(bytes.try_into().unwrap()))
+    let value = bytes
+        .try_into()
+        .map(u128::from_be_bytes)
+        .map_err(|_| GrpcDecodeError::InvalidU128(bytes.len()))?;
+    Ok(value)
 }
 
 #[inline]
@@ -211,7 +215,11 @@ fn decode_u256_be(bytes: &[u8]) -> Result<U256, GrpcDecodeError> {
     if bytes.len() != U256_LEN {
         return Err(GrpcDecodeError::InvalidU256(bytes.len()));
     }
-    Ok(U256::from_be_bytes::<32>(bytes.try_into().unwrap()))
+    let value = bytes
+        .try_into()
+        .map(U256::from_be_bytes::<32>)
+        .map_err(|_| GrpcDecodeError::InvalidU256(bytes.len()))?;
+    Ok(value)
 }
 
 #[inline]

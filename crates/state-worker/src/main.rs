@@ -1,12 +1,5 @@
 #![recursion_limit = "1024"]
 #![doc = include_str!("../README.md")]
-#![deny(clippy::panic)]
-#![deny(clippy::unwrap_used)]
-#![deny(clippy::expect_used)]
-#![deny(clippy::unreachable)]
-#![deny(clippy::todo)]
-#![deny(clippy::unimplemented)]
-#![warn(clippy::indexing_slicing)]
 
 #[macro_use]
 extern crate credible_utils;

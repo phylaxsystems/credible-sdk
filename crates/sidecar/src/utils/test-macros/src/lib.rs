@@ -6,6 +6,10 @@ use syn::{
     parse_macro_input,
 };
 
+fn compile_error_tokens(message: &str) -> TokenStream {
+    TokenStream::from(quote! { compile_error!(#message); })
+}
+
 /// Contains info about a single transport variant. Used in the macro below to generate tests
 /// for different variants.
 struct TransportVariant {
@@ -43,10 +47,6 @@ const VARIANTS: &[TransportVariant] = &[
 ///     // Your test code here
 /// }
 /// ```
-///
-/// # Panics
-///
-/// Will panic if neither argument is present: `#[engine_test(all)]` or `#[engine_test(mock)]`
 // TODO: we should expand this macro to generate tests for multiple transports.
 // For example, we can from one test generate multiple tests for different transports
 // if we genericize `LocalInstnace` to accept different transports. The syntax would
@@ -70,8 +70,8 @@ pub fn engine_test(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     // Parse which variants to test - require arguments
     let variants_to_test: Vec<&'static str> = if attr.is_empty() {
-        panic!(
-            "engine_test macro requires an argument: use #[engine_test(all)] or #[engine_test(mock)]"
+        return compile_error_tokens(
+            "engine_test macro requires an argument: use #[engine_test(all)] or #[engine_test(mock)]",
         );
     } else {
         let attr_str = attr.to_string();
@@ -83,7 +83,7 @@ pub fn engine_test(attr: TokenStream, item: TokenStream) -> TokenStream {
             if let Some(variant) = VARIANTS.iter().find(|v| v.test_name == requested_variant) {
                 vec![variant.test_name]
             } else {
-                panic!(
+                return compile_error_tokens(&format!(
                     "Unknown variant '{}'. Available variants: {} or 'all'",
                     requested_variant,
                     VARIANTS
@@ -91,7 +91,7 @@ pub fn engine_test(attr: TokenStream, item: TokenStream) -> TokenStream {
                         .map(|v| v.test_name)
                         .collect::<Vec<_>>()
                         .join(", ")
-                );
+                ));
             }
         }
     };
@@ -101,7 +101,17 @@ pub fn engine_test(attr: TokenStream, item: TokenStream) -> TokenStream {
         VARIANTS.iter().find(|v| v.test_name == *variant_name).map(|variant| {
             // Always prefix with the test_name
             let test_fn_name = Ident::new(&format!("{}_{}", variant.test_name, fn_name), fn_name.span());
-            let transport_type: proc_macro2::TokenStream = variant.transport_type.parse().unwrap();
+            let transport_type = match syn::parse_str::<proc_macro2::TokenStream>(variant.transport_type)
+            {
+                Ok(parsed) => parsed,
+                Err(err) => {
+                    let message = format!(
+                        "engine_test macro could not parse transport type '{}': {err}",
+                        variant.transport_type
+                    );
+                    return quote! { compile_error!(#message); };
+                }
+            };
             let _options = (variant.options)(&quote! {});
 
             quote! {
