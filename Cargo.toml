@@ -171,6 +171,16 @@ ignored = []
 [workspace.lints.clippy]
 too_many_lines = "deny"
 too_many_arguments = "deny"
+panic = "deny"
+unwrap_used = "deny"
+expect_used = "deny"
+unreachable = "deny"
+todo = "deny"
+unimplemented = "deny"
+indexing_slicing = "deny"
+
+[workspace.lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tokio_unstable)'] }
 
 # Maxperf profile for absolute maximum performance
 # Only use for builds that are going to get used by end users
