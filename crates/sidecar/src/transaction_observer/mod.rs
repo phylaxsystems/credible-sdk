@@ -150,7 +150,7 @@ pub struct TransactionObserverConfig {
     pub endpoint: String,
     pub auth_token: String,
     pub db_path: String,
-    pub aeges_endpoint: Option<String>,
+    pub aeges_url: Option<url::Url>,
 }
 
 impl Default for TransactionObserverConfig {
@@ -161,7 +161,7 @@ impl Default for TransactionObserverConfig {
             endpoint: String::default(),
             auth_token: String::default(),
             db_path: String::default(),
-            aeges_endpoint: None,
+            aeges_url: None,
         }
     }
 }
@@ -304,14 +304,15 @@ impl TransactionObserver {
         level = "trace"
     )]
     fn notify_aeges(&self, tx_data: &ReconstructableTx) {
-        let (Some(client), Some(endpoint)) = (&self.aeges_client, &self.config.aeges_endpoint)
-        else {
+        let (Some(client), Some(url)) = (&self.aeges_client, &self.config.aeges_url) else {
             return;
         };
 
         let tx_hash = tx_data.0;
+        let mut report_url = url.clone();
+        report_url.set_path("/report");
 
-        match client.post(endpoint).json(tx_data).send() {
+        match client.post(report_url).json(tx_data).send() {
             Ok(resp) if resp.status().is_success() => {
                 debug!(
                     target = "transaction_observer",
