@@ -1,12 +1,5 @@
 //! # The credible layer sidecar
 #![doc = include_str!("../README.md")]
-#![deny(clippy::panic)]
-#![deny(clippy::unwrap_used)]
-#![deny(clippy::expect_used)]
-#![deny(clippy::unreachable)]
-#![deny(clippy::todo)]
-#![deny(clippy::unimplemented)]
-#![deny(clippy::indexing_slicing)]
 
 use assertion_da_client::DaClient;
 use assertion_executor::{

@@ -12,3 +12,6 @@ alloy-eips.workspace = true
 alloy-primitives.workspace = true
 
 [dev-dependencies]
+
+[lints]
+workspace = true

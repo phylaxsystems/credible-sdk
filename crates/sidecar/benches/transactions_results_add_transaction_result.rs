@@ -1,4 +1,6 @@
 //! Targeted benchmark for `TransactionsResults::add_transaction_result`.
+#![allow(clippy::expect_used)]
+#![allow(clippy::indexing_slicing)]
 
 use alloy::primitives::U256;
 use assertion_executor::primitives::ExecutionResult;
