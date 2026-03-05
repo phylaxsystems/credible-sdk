@@ -1,5 +1,6 @@
 mod cli;
 mod listener;
+mod mdbx_store;
 
 use crate::{
     cli::Args,
@@ -21,9 +22,14 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
 
-    let mut listener = Listener::new(&args.ws_url, &args.sidecar_url, args.starting_block)
-        .await
-        .with_result_querying(true);
+    let mut listener = Listener::new(
+        &args.ws_url,
+        &args.sidecar_url,
+        args.starting_block,
+        args.mdbx_path,
+    )
+    .await?
+    .with_result_querying(true);
 
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {

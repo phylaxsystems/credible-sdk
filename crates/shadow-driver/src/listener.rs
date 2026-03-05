@@ -6,7 +6,16 @@
 //!
 //! Uses gRPC bidirectional streaming via `StreamEvents` RPC.
 
+use crate::mdbx_store::{
+    ShadowMdbxStore,
+    StoredAccessListItem,
+    StoredAuthorization,
+    StoredCommitHead,
+    StoredNewIteration,
+    StoredTransaction,
+};
 use alloy::{
+    consensus::Transaction as _,
     primitives::{
         B256,
         U256,
@@ -494,6 +503,8 @@ pub struct Listener {
     /// Tracks the last block that was fully committed (new iteration + txs + commit head)
     last_committed_block: Option<u64>,
     starting_block: Option<u64>,
+    shadow_store: Option<ShadowMdbxStore>,
+    enforce_contiguous_blocks: bool,
     /// Flag to enable/disable transaction result querying
     query_results: bool,
     /// Channel to send comparison requests to background worker
@@ -502,18 +513,47 @@ pub struct Listener {
 
 impl Listener {
     /// Build a worker that shares the provider/MDBX client across async tasks.
-    pub async fn new(ws_url: &str, grpc_endpoint: &str, starting_block: Option<u64>) -> Self {
-        Self {
+    pub async fn new(
+        ws_url: &str,
+        grpc_endpoint: &str,
+        starting_block: Option<u64>,
+        mdbx_path: Option<std::path::PathBuf>,
+    ) -> Result<Self> {
+        let persistence_enabled = mdbx_path.is_some();
+        let provider = Self::connect_provider_with_url(ws_url)
+            .await
+            .context("failed to connect to websocket provider")?;
+
+        let (shadow_store, last_committed_block) = if let Some(path) = mdbx_path {
+            let store = ShadowMdbxStore::open(&path).with_context(|| {
+                format!("failed to open shadow-driver MDBX at {}", path.display())
+            })?;
+            let latest = store
+                .latest_block()
+                .context("failed reading latest persisted block from shadow-driver MDBX")?;
+            if let Some(block) = latest {
+                info!(
+                    "Resuming from persisted MDBX block {block}; CLI starting block will be ignored"
+                );
+            } else {
+                info!("Configured MDBX is empty; using normal startup behavior");
+            }
+            (Some(store), latest)
+        } else {
+            (None, None)
+        };
+
+        Ok(Self {
             ws_url: ws_url.to_string(),
-            provider: Self::connect_provider_with_url(ws_url)
-                .await
-                .expect("failed to connect to websocket provider"),
+            provider,
             grpc_endpoint: grpc_endpoint.to_string(),
-            last_committed_block: None,
+            last_committed_block,
             starting_block,
+            shadow_store,
+            enforce_contiguous_blocks: persistence_enabled,
             query_results: false,
             comparison_manager: None,
-        }
+        })
     }
 
     /// Establish a WebSocket connection to the execution node and expose the
@@ -978,6 +1018,11 @@ impl Listener {
                 .fetch_and_process_block(stream, client, block_num)
                 .await
             {
+                if self.enforce_contiguous_blocks {
+                    return Err(anyhow!(
+                        "failed processing block {block_num} with contiguous MDBX mode enabled: {e}"
+                    ));
+                }
                 warn!(
                     error = ?e,
                     "Failed to process block {block_num} during catch-up, continuing to next block"
@@ -1062,11 +1107,25 @@ impl Listener {
         }
 
         let transactions = Self::extract_block_transactions(block)?;
+        let stored_new_iteration = Self::build_stored_new_iteration_payload(block)?;
+        let stored_commit_head = Self::build_stored_commit_head_payload(block, &transactions)?;
+        let stored_transactions = Self::build_stored_transaction_batch(&transactions)?;
 
         debug!(
             "Block {block_number} has {} transactions",
             transactions.len()
         );
+
+        if let Some(store) = &self.shadow_store {
+            store
+                .append_block(
+                    block_number,
+                    stored_new_iteration,
+                    stored_commit_head,
+                    &stored_transactions,
+                )
+                .with_context(|| format!("failed to persist block {block_number} to MDBX"))?;
+        }
 
         // STEP 1: Send NewIteration event (contains block_env) with retries
         info!("Step 1/3: Sending NewIteration event for block {block_number}");
@@ -1149,7 +1208,11 @@ impl Listener {
         block: &alloy::rpc::types::Block,
         block_number: u64,
     ) -> Result<bool> {
-        match self.send_new_iteration_with_retry(stream, block).await {
+        let new_iteration = Self::build_new_iteration_payload(block);
+        match self
+            .send_new_iteration_with_retry(stream, block_number, new_iteration.clone())
+            .await
+        {
             Ok(()) => {
                 debug!("NewIteration accepted for block {block_number}");
                 Ok(true)
@@ -1196,9 +1259,15 @@ impl Listener {
 
                 let prev_hash = last_successful_tx_hash.clone();
                 let tx_hash = tx.inner.hash();
+                let proto_tx = Self::build_transaction_payload(
+                    tx,
+                    index as u64,
+                    block_number,
+                    prev_hash.clone(),
+                );
 
                 match self
-                    .send_transaction_with_retry(stream, tx, index as u64, block_number, prev_hash)
+                    .send_transaction_with_retry(stream, block_number, proto_tx.clone())
                     .await
                 {
                     Ok(()) => {
@@ -1510,30 +1579,231 @@ impl Listener {
         }
     }
 
+    /// Build the `NewIteration` payload exactly as sent to sidecar.
+    fn build_new_iteration_payload(block: &alloy::rpc::types::Block) -> NewIteration {
+        let block_env = Self::build_block_env(block);
+        // Parent block hash for EIP-2935, as we apply it for every iteration.
+        let parent_block_hash = Some(block.header.parent_hash.to_vec());
+        // Parent beacon block root for EIP-4788.
+        let parent_beacon_block_root = block.header.parent_beacon_block_root.map(|h| h.to_vec());
+
+        NewIteration {
+            iteration_id: DEFAULT_ITERATION_ID,
+            block_env: Some(block_env),
+            parent_block_hash,
+            parent_beacon_block_root,
+        }
+    }
+
+    fn build_stored_new_iteration_payload(
+        block: &alloy::rpc::types::Block,
+    ) -> Result<StoredNewIteration> {
+        Ok(StoredNewIteration {
+            block_number: block.header.number,
+            beneficiary: Self::fixed_bytes(block.header.beneficiary.as_slice(), "beneficiary")?,
+            timestamp: block.header.timestamp,
+            gas_limit: block.header.gas_limit,
+            basefee: block.header.base_fee_per_gas.unwrap_or_default(),
+            difficulty: block.header.difficulty.to_be_bytes::<32>(),
+            // prevrandao is preserved for parity with sidecar `BlockEnv`.
+            prevrandao: Some(Self::fixed_bytes(
+                block.header.mix_hash.as_slice(),
+                "prevrandao",
+            )?),
+            // Matches current runtime values sent in `build_block_env`.
+            excess_blob_gas: 0,
+            blob_gasprice: 1,
+            iteration_id: DEFAULT_ITERATION_ID,
+            // Parent block hash for EIP-2935.
+            parent_block_hash: Some(Self::fixed_bytes(
+                block.header.parent_hash.as_slice(),
+                "parent_block_hash",
+            )?),
+            // Parent beacon block root for EIP-4788.
+            parent_beacon_block_root: block
+                .header
+                .parent_beacon_block_root
+                .map(|hash| Self::fixed_bytes(hash.as_slice(), "parent_beacon_block_root"))
+                .transpose()?,
+        })
+    }
+
+    fn build_stored_transaction_payload(
+        tx: &alloy::rpc::types::Transaction,
+        index: u64,
+        prev_tx_hash: Option<[u8; 32]>,
+    ) -> Result<StoredTransaction> {
+        use alloy::consensus::TxType;
+
+        let tx_type = match tx.inner.tx_type() {
+            TxType::Legacy => 0,
+            TxType::Eip2930 => 1,
+            TxType::Eip1559 => 2,
+            TxType::Eip4844 => 3,
+            TxType::Eip7702 => 4,
+        };
+
+        let (gas_price, gas_priority_fee) = match tx.inner.tx_type() {
+            TxType::Legacy | TxType::Eip2930 => (tx.inner.gas_price().unwrap_or(0), None),
+            TxType::Eip1559 | TxType::Eip4844 | TxType::Eip7702 => {
+                (
+                    tx.inner.max_fee_per_gas(),
+                    tx.inner.max_priority_fee_per_gas(),
+                )
+            }
+        };
+
+        let access_list = tx
+            .access_list()
+            .map(|list| {
+                list.0
+                    .iter()
+                    .map(|item| -> Result<StoredAccessListItem> {
+                        Ok(StoredAccessListItem {
+                            address: item.address.into_array(),
+                            storage_keys: item
+                                .storage_keys
+                                .iter()
+                                .map(|slot| Self::fixed_bytes(slot.as_slice(), "storage_slot"))
+                                .collect::<Result<Vec<_>>>()?,
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()
+            })
+            .transpose()?
+            .unwrap_or_default();
+
+        let authorization_list = tx
+            .authorization_list()
+            .map(|auths| {
+                auths
+                    .iter()
+                    .filter_map(|auth| {
+                        let sig = auth.signature().ok()?;
+                        Some(StoredAuthorization {
+                            chain_id: U256::from(auth.chain_id).to_be_bytes::<32>(),
+                            address: auth.address.into_array(),
+                            nonce: auth.nonce,
+                            y_parity: u8::from(sig.v()),
+                            r: sig.r().to_be_bytes::<32>(),
+                            s: sig.s().to_be_bytes::<32>(),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        Ok(StoredTransaction {
+            tx_hash: Self::fixed_bytes(tx.inner.hash().as_slice(), "tx_hash")?,
+            index,
+            prev_tx_hash,
+            tx_type,
+            caller: tx.inner.signer().into_array(),
+            gas_limit: tx.inner.gas_limit(),
+            gas_price,
+            transact_to: tx.to().map(alloy::primitives::Address::into_array),
+            value: tx.value().to_be_bytes::<32>(),
+            data: tx.input().to_vec(),
+            nonce: tx.nonce(),
+            chain_id: tx.chain_id(),
+            access_list,
+            gas_priority_fee,
+            blob_hashes: tx
+                .blob_versioned_hashes()
+                .map(|hashes| {
+                    hashes
+                        .iter()
+                        .map(|hash| Self::fixed_bytes(hash.as_slice(), "blob_hash"))
+                        .collect()
+                })
+                .transpose()?
+                .unwrap_or_default(),
+            max_fee_per_blob_gas: tx.max_fee_per_blob_gas().unwrap_or(0),
+            authorization_list,
+        })
+    }
+
+    fn build_stored_transaction_batch(
+        transactions: &[alloy::rpc::types::Transaction],
+    ) -> Result<Vec<(u64, StoredTransaction)>> {
+        // Mirror sidecar ordering semantics: each tx carries prev_tx_hash of the prior tx.
+        let mut prev_tx_hash: Option<[u8; 32]> = None;
+        let mut out = Vec::with_capacity(transactions.len());
+
+        for (index, tx) in transactions.iter().enumerate() {
+            let stored = Self::build_stored_transaction_payload(tx, index as u64, prev_tx_hash)?;
+            prev_tx_hash = Some(stored.tx_hash);
+            out.push((index as u64, stored));
+        }
+
+        Ok(out)
+    }
+
+    fn build_stored_commit_head_payload(
+        block: &alloy::rpc::types::Block,
+        transactions: &[alloy::rpc::types::Transaction],
+    ) -> Result<StoredCommitHead> {
+        let last_tx_hash = transactions
+            .last()
+            .map(|tx| Self::fixed_bytes(tx.inner.hash().as_slice(), "last_tx_hash"))
+            .transpose()?;
+
+        Ok(StoredCommitHead {
+            last_tx_hash,
+            n_transactions: transactions.len() as u64,
+            block_number: block.header.number,
+            selected_iteration_id: DEFAULT_ITERATION_ID,
+            block_hash: Self::fixed_bytes(block.header.hash.as_slice(), "block_hash")?,
+            parent_beacon_block_root: block
+                .header
+                .parent_beacon_block_root
+                .map(|hash| Self::fixed_bytes(hash.as_slice(), "parent_beacon_block_root"))
+                .transpose()?,
+            timestamp: block.header.timestamp,
+        })
+    }
+
+    fn fixed_bytes<const N: usize>(bytes: &[u8], field: &str) -> Result<[u8; N]> {
+        bytes
+            .try_into()
+            .map_err(|_| anyhow!("invalid {field} length: expected {N}, got {}", bytes.len()))
+    }
+
+    /// Build the `Transaction` payload exactly as sent to sidecar.
+    fn build_transaction_payload(
+        tx: &alloy::rpc::types::Transaction,
+        index: u64,
+        block_number: u64,
+        prev_tx_hash: Option<Vec<u8>>,
+    ) -> ProtoTransaction {
+        let tx_hash = tx.inner.hash();
+        let tx_env = to_proto_tx_env(tx);
+
+        ProtoTransaction {
+            tx_execution_id: Some(ProtoTxExecutionId {
+                block_number: u256_to_bytes(U256::from(block_number)),
+                iteration_id: DEFAULT_ITERATION_ID,
+                tx_hash: tx_hash.to_vec(),
+                index,
+            }),
+            tx_env: Some(tx_env),
+            prev_tx_hash,
+        }
+    }
+
     /// Send `NewIteration` event to the sidecar via gRPC stream with retries
     async fn send_new_iteration_with_retry(
         &self,
         stream: &mut EventStream,
-        block: &alloy::rpc::types::Block,
+        block_number: u64,
+        new_iteration: NewIteration,
     ) -> Result<()> {
-        let block_number = block.header.number;
-        let block_env = Self::build_block_env(block);
-        // Parent block hash for EIP-2935, as we apply it for every iteration
-        let parent_block_hash = Some(block.header.parent_hash.to_vec());
-        // Parent beacon block root for EIP-4788
-        let parent_beacon_block_root = block.header.parent_beacon_block_root.map(|h| h.to_vec());
-
         stream
             .send_event_with_retry(
                 |event_id| {
                     Event {
                         event_id,
-                        event: Some(EventVariant::NewIteration(NewIteration {
-                            iteration_id: DEFAULT_ITERATION_ID,
-                            block_env: Some(block_env.clone()),
-                            parent_block_hash: parent_block_hash.clone(),
-                            parent_beacon_block_root: parent_beacon_block_root.clone(),
-                        })),
+                        event: Some(EventVariant::NewIteration(new_iteration.clone())),
                     }
                 },
                 block_number,
@@ -1546,29 +1816,15 @@ impl Listener {
     async fn send_transaction_with_retry(
         &self,
         stream: &mut EventStream,
-        tx: &alloy::rpc::types::Transaction,
-        index: u64,
         block_number: u64,
-        prev_tx_hash: Option<Vec<u8>>,
+        transaction: ProtoTransaction,
     ) -> Result<()> {
-        let tx_hash = tx.inner.hash();
-        let tx_env = to_proto_tx_env(tx);
-
         stream
             .send_event_with_retry(
                 |event_id| {
                     Event {
                         event_id,
-                        event: Some(EventVariant::Transaction(ProtoTransaction {
-                            tx_execution_id: Some(ProtoTxExecutionId {
-                                block_number: u256_to_bytes(U256::from(block_number)),
-                                iteration_id: DEFAULT_ITERATION_ID,
-                                tx_hash: tx_hash.to_vec(),
-                                index,
-                            }),
-                            tx_env: Some(tx_env.clone()),
-                            prev_tx_hash: prev_tx_hash.clone(),
-                        })),
+                        event: Some(EventVariant::Transaction(transaction.clone())),
                     }
                 },
                 block_number,
