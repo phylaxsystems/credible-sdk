@@ -229,8 +229,6 @@ impl TransactionObserver {
             );
         }
 
-        let aeges_client = build_aeges_client(&config)?;
-
         Ok(Self {
             config,
             incident_rx,
@@ -238,7 +236,7 @@ impl TransactionObserver {
             dapp_client,
             runtime,
             consecutive_failures: 0,
-            aeges_client,
+            aeges_client: None,
         })
     }
 
@@ -259,6 +257,9 @@ impl TransactionObserver {
     }
 
     fn run_blocking(&mut self, shutdown: &Arc<AtomicBool>) -> Result<(), TransactionObserverError> {
+        // Build the blocking reqwest client on the dedicated thread
+        // `reqwest::Client` internally creates a runtime which panics if built inside an async context.
+        self.aeges_client = build_aeges_client(&self.config)?;
         let mut last_publish = Instant::now();
         loop {
             if shutdown.load(Ordering::Relaxed) {
