@@ -59,6 +59,7 @@ use reth_db::{
 };
 use reth_db_api::{
     DatabaseError,
+    cursor::DbCursorRO,
     models::ClientVersion,
     table::{
         Compress,
@@ -146,6 +147,7 @@ pub struct TxKey {
 }
 
 impl TxKey {
+    #[must_use]
     pub const fn new(block_number: u64, tx_index: u64) -> Self {
         Self {
             block_number,
@@ -426,6 +428,12 @@ pub struct ShadowMdbxStore {
 }
 
 impl ShadowMdbxStore {
+    /// Open or create a shadow-driver MDBX store at `path`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the directory cannot be created, MDBX cannot be
+    /// opened, or required tables cannot be created.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         if !path.exists() {
@@ -476,11 +484,51 @@ impl ShadowMdbxStore {
         Ok(Self { env: Arc::new(env) })
     }
 
+    /// Return the latest fully persisted block number.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the MDBX read transaction or metadata lookup fails.
     pub fn latest_block(&self) -> Result<Option<u64>> {
         let tx = self.env.tx()?;
         Ok(tx
             .get::<Metadata>(MetadataKey)?
             .map(|meta| meta.latest_block))
+    }
+
+    /// Read the stored block payload for a block number.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if MDBX read transaction or table access fails.
+    pub fn get_block_payload(&self, block_number: u64) -> Result<Option<BlockPayload>> {
+        let tx = self.env.tx()?;
+        tx.get::<Blocks>(BlockNumber(block_number))
+            .map_err(ShadowStoreError::from)
+    }
+
+    /// Read all stored transactions for a block in ascending tx index order.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if MDBX read transaction, cursor setup, or cursor
+    /// traversal fails.
+    pub fn get_block_transactions(&self, block_number: u64) -> Result<Vec<StoredTransaction>> {
+        let tx = self.env.tx()?;
+        let mut cursor = tx.cursor_read::<Transactions>()?;
+        let mut transactions = Vec::new();
+        let start_key = TxKey::new(block_number, 0);
+
+        let mut next = cursor.seek(start_key)?;
+        while let Some((key, payload)) = next {
+            if key.block_number != block_number {
+                break;
+            }
+            transactions.push(payload.0);
+            next = cursor.next()?;
+        }
+
+        Ok(transactions)
     }
 
     /// Atomically append one fully committed block payload batch.
@@ -489,6 +537,11 @@ impl ShadowMdbxStore {
     /// - block new-iteration + commit-head payload
     /// - all transaction payloads for that block
     /// - latest metadata pointer
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if metadata continuity checks fail, or if any MDBX
+    /// read/write/commit operation fails.
     pub fn append_block(
         &self,
         block_number: u64,

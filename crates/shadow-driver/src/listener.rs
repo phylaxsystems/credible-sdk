@@ -6,14 +6,6 @@
 //!
 //! Uses gRPC bidirectional streaming via `StreamEvents` RPC.
 
-use crate::mdbx_store::{
-    ShadowMdbxStore,
-    StoredAccessListItem,
-    StoredAuthorization,
-    StoredCommitHead,
-    StoredNewIteration,
-    StoredTransaction,
-};
 use alloy::{
     consensus::Transaction as _,
     primitives::{
@@ -37,10 +29,20 @@ use futures_util::{
     StreamExt,
     future::join_all,
 };
-use shadow_driver::tx_env::{
-    to_proto_tx_env,
-    u128_to_bytes,
-    u256_to_bytes,
+use shadow_driver::{
+    mdbx_store::{
+        ShadowMdbxStore,
+        StoredAccessListItem,
+        StoredAuthorization,
+        StoredCommitHead,
+        StoredNewIteration,
+        StoredTransaction,
+    },
+    tx_env::{
+        to_proto_tx_env,
+        u128_to_bytes,
+        u256_to_bytes,
+    },
 };
 use sidecar::transport::grpc::pb::{
     BlobExcessGasAndPrice,
