@@ -52,6 +52,7 @@ use tokio::{
 };
 use tracing::{
     debug,
+    error,
     info,
     instrument,
     trace,
@@ -59,7 +60,11 @@ use tracing::{
 };
 
 use self::{
-    client::build_dapp_client,
+    client::{
+        AegesClient,
+        build_aeges_client,
+        build_dapp_client,
+    },
     db::IncidentDb,
     payload::build_incident_body,
 };
@@ -69,6 +74,9 @@ const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const RECV_TIMEOUT: Duration = Duration::from_millis(100);
 /// Only log publish failures at warn level every N consecutive failures to avoid log spam
 const FAILURE_LOG_INTERVAL: u64 = 60;
+
+// Base path for Aeges report endpoint.
+const AEGES_REPORT_PATH: &str = "/report";
 
 /// This struct contains data for giving high level context to
 /// any observer about an incident (or invalidation) that occured.
@@ -147,6 +155,7 @@ pub struct TransactionObserverConfig {
     pub endpoint: String,
     pub auth_token: String,
     pub db_path: String,
+    pub aeges_url: Option<url::Url>,
 }
 
 impl Default for TransactionObserverConfig {
@@ -157,6 +166,7 @@ impl Default for TransactionObserverConfig {
             endpoint: String::default(),
             auth_token: String::default(),
             db_path: String::default(),
+            aeges_url: None,
         }
     }
 }
@@ -192,6 +202,8 @@ pub struct TransactionObserver {
     runtime: Runtime,
     /// Tracks consecutive publish failures for rate-limited logging
     consecutive_failures: u64,
+    /// HTTP client for fire-and-forget Aeges reporting
+    aeges_client: Option<AegesClient>,
 }
 
 impl TransactionObserver {
@@ -229,6 +241,7 @@ impl TransactionObserver {
             dapp_client,
             runtime,
             consecutive_failures: 0,
+            aeges_client: None,
         })
     }
 
@@ -249,6 +262,9 @@ impl TransactionObserver {
     }
 
     fn run_blocking(&mut self, shutdown: &Arc<AtomicBool>) -> Result<(), TransactionObserverError> {
+        // Build the blocking reqwest client on the dedicated thread
+        // `reqwest::Client` internally creates a runtime which panics if built inside an async context.
+        self.aeges_client = build_aeges_client(self.config.aeges_url.as_ref())?;
         let mut last_publish = Instant::now();
         loop {
             if shutdown.load(Ordering::Relaxed) {
@@ -257,7 +273,10 @@ impl TransactionObserver {
             }
 
             match self.incident_rx.recv_timeout(RECV_TIMEOUT) {
-                Ok(report) => self.store_incident(&report)?,
+                Ok(report) => {
+                    self.store_incident(&report)?;
+                    self.notify_aeges(&report.transaction_data);
+                }
                 Err(flume::RecvTimeoutError::Timeout) => {}
                 Err(flume::RecvTimeoutError::Disconnected) => {
                     return Err(TransactionObserverError::ChannelClosed);
@@ -281,6 +300,36 @@ impl TransactionObserver {
             return Err(err);
         }
         Ok(())
+    }
+
+    /// Fire-and-forget POST to Aeges service.
+    #[instrument(
+        name = "transaction_observer::notify_aeges",
+        skip(self, tx_data),
+        level = "trace"
+    )]
+    fn notify_aeges(&self, tx_data: &ReconstructableTx) {
+        if let Some(aeges) = &self.aeges_client {
+            let tx_hash = tx_data.0;
+            let mut report_url = aeges.url.clone();
+            report_url.set_path(AEGES_REPORT_PATH);
+
+            match aeges.client.post(report_url).json(tx_data).send() {
+                Ok(resp) if resp.status().is_success() => {
+                    debug!(
+                        target = "transaction_observer",
+                        ?tx_hash,
+                        "Aeges report sent"
+                    );
+                }
+                Ok(resp) => {
+                    warn!(target = "transaction_observer", ?tx_hash, status = %resp.status(), "Aeges rejected report");
+                }
+                Err(e) => {
+                    error!(target = "transaction_observer", ?tx_hash, error = %e, "Failed to send Aeges report");
+                }
+            }
+        }
     }
 
     #[instrument(

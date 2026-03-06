@@ -331,6 +331,7 @@ fn transaction_observer_config_from(config: &Config) -> Option<TransactionObserv
                 auth_token: auth_token.expose().to_string(),
                 endpoint_rps_max,
                 poll_interval: Duration::from_millis(poll_interval_ms),
+                aeges_url: config.credible.aeges_url.clone(),
             })
         }
         _ => None,

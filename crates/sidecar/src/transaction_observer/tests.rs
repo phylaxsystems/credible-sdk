@@ -234,6 +234,7 @@ fn build_observer(db_path: &TempDir, endpoint: String) -> TransactionObserver {
         endpoint,
         auth_token: "test-token".to_string(),
         db_path: db_path.path().to_string_lossy().to_string(),
+        aeges_url: None,
     };
     TransactionObserver::new(config, rx).expect("observer")
 }
@@ -543,6 +544,7 @@ fn observer_persists_and_loads_incident_with_previous_transactions() {
         endpoint: String::new(),
         auth_token: String::new(),
         db_path: tempdir.path().to_string_lossy().to_string(),
+        aeges_url: None,
     };
     let mut observer = TransactionObserver::new(config, rx).expect("observer");
     let tx_keepalive = tx.clone();
@@ -705,6 +707,7 @@ fn observer_consumes_and_clears_on_success() {
         endpoint: server.url("/api/v1/enforcer/incidents"),
         auth_token: "test-token".to_string(),
         db_path: tempdir.path().to_string_lossy().to_string(),
+        aeges_url: None,
     };
     let mut observer = TransactionObserver::new(config, rx).expect("observer");
 
@@ -751,6 +754,7 @@ fn observer_retries_after_failed_publish() {
             endpoint: server_fail.url("/api/v1/enforcer/incidents"),
             auth_token: "test-token".to_string(),
             db_path: tempdir.path().to_string_lossy().to_string(),
+            aeges_url: None,
         };
         let mut observer = TransactionObserver::new(config, rx).expect("observer");
         observer
@@ -786,6 +790,7 @@ fn observer_retries_after_failed_publish() {
         endpoint: server_success.url("/api/v1/enforcer/incidents"),
         auth_token: "test-token".to_string(),
         db_path: tempdir.path().to_string_lossy().to_string(),
+        aeges_url: None,
     };
     let mut observer = TransactionObserver::new(config, rx).expect("observer");
     observer.publish_invalidations().expect("publish retry");
@@ -821,6 +826,7 @@ async fn observer_posts_invalidating_transaction_from_local_instance() {
         endpoint: server.url("/api/v1/enforcer/incidents"),
         auth_token: "test-token".to_string(),
         db_path: tempdir.path().to_string_lossy().to_string(),
+        aeges_url: None,
     };
     let observer = TransactionObserver::new(config, incident_rx).expect("observer");
     let shutdown = Arc::new(AtomicBool::new(false));
