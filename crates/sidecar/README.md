@@ -109,6 +109,7 @@ Credible:
 - `credible.transaction_observer_auth_token` -> `SIDECAR_TRANSACTION_OBSERVER_AUTH_TOKEN`
 - `credible.transaction_observer_endpoint_rps_max` -> `SIDECAR_TRANSACTION_OBSERVER_ENDPOINT_RPS_MAX`
 - `credible.transaction_observer_poll_interval_ms` -> `SIDECAR_TRANSACTION_OBSERVER_POLL_INTERVAL_MS`
+- `credible.aeges_url` -> `SIDECAR_AEGES_URL`
 - `credible.block_tag` -> `SIDECAR_BLOCK_TAG`
 - `credible.state_oracle` -> `SIDECAR_STATE_ORACLE`
 - `credible.state_oracle_deployment_block` -> `SIDECAR_STATE_ORACLE_DEPLOYMENT_BLOCK`
@@ -326,6 +327,15 @@ The configuration file is a JSON file with the following schema:
           "minimum": 0,
           "examples": [
             1000
+          ]
+        },
+        "aeges_url": {
+          "type": "string",
+          "description": "Aeges URL for failure reporting",
+          "format": "uri",
+          "pattern": "^https?://",
+          "examples": [
+            "http://127.0.0.1:8080"
           ]
         },
         "block_tag": {
@@ -603,6 +613,7 @@ The default configuration can be found in [default_config.json](default_config.j
     "transaction_observer_auth_token": "",
     "transaction_observer_endpoint_rps_max": 60,
     "transaction_observer_poll_interval_ms": 1000,
+    "aeges_url": "http://127.0.0.1:8080",
     "block_tag": "latest",
     "state_oracle": "0x6dD3f12ce435f69DCeDA7e31605C02Bb5422597b",
     "state_oracle_deployment_block": 0,
