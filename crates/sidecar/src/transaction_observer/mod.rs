@@ -61,6 +61,7 @@ use tracing::{
 
 use self::{
     client::{
+        AegesClient,
         build_aeges_client,
         build_dapp_client,
     },
@@ -202,7 +203,7 @@ pub struct TransactionObserver {
     /// Tracks consecutive publish failures for rate-limited logging
     consecutive_failures: u64,
     /// HTTP client for fire-and-forget Aeges reporting
-    aeges_client: Option<reqwest::blocking::Client>,
+    aeges_client: Option<AegesClient>,
 }
 
 impl TransactionObserver {
@@ -263,7 +264,7 @@ impl TransactionObserver {
     fn run_blocking(&mut self, shutdown: &Arc<AtomicBool>) -> Result<(), TransactionObserverError> {
         // Build the blocking reqwest client on the dedicated thread
         // `reqwest::Client` internally creates a runtime which panics if built inside an async context.
-        self.aeges_client = build_aeges_client(&self.config)?;
+        self.aeges_client = build_aeges_client(self.config.aeges_url.as_ref())?;
         let mut last_publish = Instant::now();
         loop {
             if shutdown.load(Ordering::Relaxed) {
@@ -308,12 +309,12 @@ impl TransactionObserver {
         level = "trace"
     )]
     fn notify_aeges(&self, tx_data: &ReconstructableTx) {
-        if let (Some(client), Some(url)) = (&self.aeges_client, &self.config.aeges_url) {
+        if let Some(aeges) = &self.aeges_client {
             let tx_hash = tx_data.0;
-            let mut report_url = url.clone();
+            let mut report_url = aeges.url.clone();
             report_url.set_path(AEGES_REPORT_PATH);
 
-            match client.post(report_url).json(tx_data).send() {
+            match aeges.client.post(report_url).json(tx_data).send() {
                 Ok(resp) if resp.status().is_success() => {
                     debug!(
                         target = "transaction_observer",

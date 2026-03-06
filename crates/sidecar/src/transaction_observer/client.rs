@@ -43,15 +43,21 @@ pub(super) fn build_dapp_client(
     Ok(Some(Arc::new(client)))
 }
 
-/// Builds the blocking HTTP client for Aeges reporting.
+/// Encapsulates the blocking HTTP client and the base URL for Aeges reporting.
+pub(super) struct AegesClient {
+    pub client: BlockingClient,
+    pub url: Url,
+}
+
+/// Builds the [`AegesClient`] for Aeges reporting.
 ///
 /// Returns `None` if `aeges_url` is absent, which disables Aeges reporting.
 pub(super) fn build_aeges_client(
-    config: &TransactionObserverConfig,
-) -> Result<Option<BlockingClient>, TransactionObserverError> {
-    if config.aeges_url.is_none() {
+    aeges_url: Option<&Url>,
+) -> Result<Option<AegesClient>, TransactionObserverError> {
+    let Some(url) = aeges_url else {
         return Ok(None);
-    }
+    };
 
     let client = BlockingClient::builder()
         .timeout(REQUEST_TIMEOUT)
@@ -62,7 +68,10 @@ pub(super) fn build_aeges_client(
             }
         })?;
 
-    Ok(Some(client))
+    Ok(Some(AegesClient {
+        client,
+        url: url.clone(),
+    }))
 }
 
 fn endpoint_base_url(endpoint: &str) -> String {
