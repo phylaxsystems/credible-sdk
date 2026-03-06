@@ -81,7 +81,10 @@ use crate::{
 use assertion_executor::{
     AssertionExecutor,
     ExecutorConfig,
-    db::overlay::OverlayDb,
+    db::overlay::{
+        OverlayDb,
+        OverlayEvictionError,
+    },
     primitives::{
         EVMError,
         ExecutionResult,
@@ -188,6 +191,7 @@ pub struct CoreEngineConfig {
     pub state_sources_sync_timeout: Duration,
     pub source_monitoring_period: Duration,
     pub overlay_cache_invalidation_every_block: bool,
+    pub overlay_cache_retention_blocks: u64,
     pub incident_sender: Option<IncidentReportSender>,
     #[cfg(feature = "cache_validation")]
     pub provider_ws_url: Option<String>,
@@ -240,6 +244,8 @@ pub enum EngineError {
     Shutdown,
     #[error("System call error")]
     SystemCallError(#[source] SystemCallError),
+    #[error("Overlay eviction error")]
+    OverlayEvictionError(#[source] OverlayEvictionError),
 }
 
 impl From<&EngineError> for ErrorRecoverability {
@@ -259,6 +265,7 @@ impl From<&EngineError> for ErrorRecoverability {
             | EngineError::BadReorgHash
             | EngineError::NoSyncedSources
             | EngineError::SystemCallError(_)
+            | EngineError::OverlayEvictionError(_)
             | EngineError::Shutdown => ErrorRecoverability::Recoverable,
         }
     }
@@ -452,7 +459,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         assertion_executor: AssertionExecutor,
         state_results: Arc<TransactionsState>,
         config: CoreEngineConfig,
-    ) -> Self {
+    ) -> Result<Self, EngineError> {
         #[cfg(feature = "cache_validation")]
         let (processed_transactions, cache_checker) = {
             let processed_transactions: ProcessedBlocksCache =
@@ -473,8 +480,13 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         let assertion_failure_cache = moka::sync::Cache::builder()
             .max_capacity(ASSERTION_FAILURE_CACHE_SIZE)
             .build();
+        let retention_window =
+            usize::try_from(config.overlay_cache_retention_blocks).unwrap_or(usize::MAX);
+        cache
+            .try_set_max_committed_blocks(retention_window)
+            .map_err(EngineError::OverlayEvictionError)?;
 
-        Self {
+        Ok(Self {
             cache_metrics_handle: Some(cache.spawn_monitoring_thread()),
             cache,
             #[cfg(any(test, feature = "bench-utils"))]
@@ -506,7 +518,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             #[cfg(feature = "cache_validation")]
             cache_checker,
             assertion_failure_cache,
-        }
+        })
     }
 
     #[cfg(any(test, feature = "bench-utils"))]
@@ -873,14 +885,14 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
     }
 
     /// Invalidates the state and cache for all block iterations
-    fn invalidate_all(&mut self, commit_head: &CommitHead) {
-        self.invalidate_all_at_block(commit_head.block_number);
+    fn invalidate_all(&mut self, commit_head: &CommitHead) -> Result<(), EngineError> {
+        self.invalidate_all_at_block(commit_head.block_number)
     }
 
     /// Invalidates all in-memory state and clears any in-flight transaction tracking.
     ///
     /// This is used when we detect that our cached state is no longer safe to use.
-    fn invalidate_all_at_block(&mut self, reset_to_block: U256) {
+    fn invalidate_all_at_block(&mut self, reset_to_block: U256) -> Result<(), EngineError> {
         self.sources.reset_latest_unprocessed_block(reset_to_block);
 
         // Flush any transactions that were executed for the iterations we're about to drop,
@@ -897,10 +909,13 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         // Measure cache invalidation time and set its new min required driver height
         let instant = Instant::now();
         self.check_sources_available = true;
-        self.cache.invalidate_all();
+        self.cache
+            .try_invalidate_all()
+            .map_err(EngineError::OverlayEvictionError)?;
         self.current_block_iterations.clear();
         self.block_metrics
             .increment_cache_invalidation(instant.elapsed(), reset_to_block);
+        Ok(())
     }
 
     /// Checks if the cache should be cleared and clears it.
@@ -909,7 +924,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         &mut self,
         commit_head: &CommitHead,
         block_execution_id: &BlockExecutionId,
-    ) -> bool {
+    ) -> Result<bool, EngineError> {
         // Single HashMap lookup instead of multiple
         let Some(data) = self.current_block_iterations.get(block_execution_id) else {
             // CommitHead without prior NewIteration - invalidate cache
@@ -921,8 +936,8 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 commit_head_last_tx_hash = ?commit_head.last_tx_hash,
                 "Invalidating cache: CommitHead without NewIteration"
             );
-            self.invalidate_all(commit_head);
-            return false;
+            self.invalidate_all(commit_head)?;
+            return Ok(false);
         };
 
         let last_tx_id = data.last_tx_id();
@@ -958,8 +973,8 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 commit_head_last_tx_hash = ?commit_head_last_tx_hash,
                 "Invalidating cache: CommitHead not +1 from current head"
             );
-            self.invalidate_all(commit_head);
-            return false;
+            self.invalidate_all(commit_head)?;
+            return Ok(false);
         } else if tx_hash_mismatch {
             warn!(
                 sidecar_last_tx_hash = ?sidecar_last_tx_hash,
@@ -968,8 +983,8 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 commit_head_n_transactions = commit_head.n_transactions,
                 "Invalidating cache: Last transaction hash mismatch"
             );
-            self.invalidate_all(commit_head);
-            return false;
+            self.invalidate_all(commit_head)?;
+            return Ok(false);
         } else if count_mismatch {
             warn!(
                 sidecar_n_transactions = n_transactions,
@@ -978,11 +993,11 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 commit_head_last_tx_hash = ?commit_head_last_tx_hash,
                 "Invalidating cache: Transaction count mismatch"
             );
-            self.invalidate_all(commit_head);
-            return false;
+            self.invalidate_all(commit_head)?;
+            return Ok(false);
         }
 
-        true
+        Ok(true)
     }
 
     /// Spawns the engine on a dedicated OS thread with blocking receive.
@@ -1065,7 +1080,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                             error = ?error,
                             "Recoverable error occurred during event processing, continuing"
                         );
-                        self.invalidate_all_at_block(self.current_head);
+                        self.invalidate_all_at_block(self.current_head)?;
                     }
                     ErrorRecoverability::Unrecoverable => {
                         critical!(
@@ -1200,7 +1215,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                             "Recoverable error occurred during event processing, continuing"
                         );
                         // Invalidate the cache and reset the latest unprocessed block
-                        self.invalidate_all_at_block(self.current_head);
+                        self.invalidate_all_at_block(self.current_head)?;
                     }
                     ErrorRecoverability::Unrecoverable => {
                         // Log the critical error and break the loop
@@ -1254,6 +1269,9 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         }
 
         let block_execution_id = BlockExecutionId::from(new_iteration);
+        self.cache
+            .try_set_current_block(block_env.number)
+            .map_err(EngineError::OverlayEvictionError)?;
 
         // Create a VersionDb with a clone of the cache - VersionDb will create its own ForkDb internally
         let mut block_iteration_data = BlockIterationData {
@@ -1324,10 +1342,10 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
 
         // Check if cache should be invalidated
         let is_valid_state = if self.overlay_cache_invalidation_every_block {
-            self.invalidate_all(commit_head);
+            self.invalidate_all(commit_head)?;
             false
         } else {
-            self.check_cache(commit_head, &block_execution_id)
+            self.check_cache(commit_head, &block_execution_id)?
         };
 
         if !is_valid_state {
@@ -1365,6 +1383,14 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             commit_head.block_hash,
             &self.cache,
         );
+        let eviction_outcome = self
+            .cache
+            .try_commit_block(commit_head.block_number)
+            .map_err(EngineError::OverlayEvictionError)?;
+        if let Some(min_required_synced_block) = eviction_outcome.min_required_synced_block {
+            self.sources
+                .reset_latest_unprocessed_block(min_required_synced_block);
+        }
 
         #[cfg(any(test, feature = "bench-utils"))]
         if let Some(canonical_db) = self.canonical_db.as_ref() {
