@@ -102,14 +102,12 @@ Credible:
 - `credible.flush_every_ms` -> `SIDECAR_FLUSH_EVERY_MS`
 - `credible.assertion_da_rpc_url` -> `SIDECAR_ASSERTION_DA_RPC_URL`
 - `credible.event_source_url` -> `SIDECAR_EVENT_SOURCE_URL`
-- `credible.indexer_db_path` -> `SIDECAR_INDEXER_DB_PATH`
 - `credible.assertion_store_db_path` -> `SIDECAR_ASSERTION_STORE_DB_PATH`
 - `credible.transaction_observer_db_path` -> `SIDECAR_TRANSACTION_OBSERVER_DB_PATH`
 - `credible.transaction_observer_endpoint` -> `SIDECAR_TRANSACTION_OBSERVER_ENDPOINT`
 - `credible.transaction_observer_auth_token` -> `SIDECAR_TRANSACTION_OBSERVER_AUTH_TOKEN`
 - `credible.transaction_observer_endpoint_rps_max` -> `SIDECAR_TRANSACTION_OBSERVER_ENDPOINT_RPS_MAX`
 - `credible.transaction_observer_poll_interval_ms` -> `SIDECAR_TRANSACTION_OBSERVER_POLL_INTERVAL_MS`
-- `credible.block_tag` -> `SIDECAR_BLOCK_TAG`
 - `credible.state_oracle` -> `SIDECAR_STATE_ORACLE`
 - `credible.state_oracle_deployment_block` -> `SIDECAR_STATE_ORACLE_DEPLOYMENT_BLOCK`
 - `credible.transaction_results_max_capacity` -> `SIDECAR_TRANSACTION_RESULTS_MAX_CAPACITY`
@@ -208,14 +206,12 @@ The configuration file is a JSON file with the following schema:
         "assertion_gas_limit",
         "assertion_da_rpc_url",
         "event_source_url",
-        "indexer_db_path",
         "assertion_store_db_path",
         "transaction_observer_db_path",
         "transaction_observer_endpoint",
         "transaction_observer_auth_token",
         "transaction_observer_endpoint_rps_max",
         "transaction_observer_poll_interval_ms",
-        "block_tag",
         "state_oracle",
         "state_oracle_deployment_block",
         "transaction_results_max_capacity",
@@ -269,15 +265,6 @@ The configuration file is a JSON file with the following schema:
             "wss://mainnet.infura.io/ws/v3/YOUR-PROJECT-ID"
           ]
         },
-        "indexer_db_path": {
-          "type": "string",
-          "description": "Path to the indexer database (separate from main assertion store)",
-          "minLength": 1,
-          "examples": [
-            "/tmp/indexer.db",
-            "/var/lib/sidecar/indexer.db"
-          ]
-        },
         "assertion_store_db_path": {
           "type": "string",
           "description": "Path to the RPC store database",
@@ -326,20 +313,6 @@ The configuration file is a JSON file with the following schema:
           "minimum": 0,
           "examples": [
             1000
-          ]
-        },
-        "block_tag": {
-          "type": "string",
-          "description": "Block tag to use for indexing assertions",
-          "enum": [
-            "latest",
-            "earliest",
-            "pending",
-            "safe",
-            "finalized"
-          ],
-          "examples": [
-            "latest"
           ]
         },
         "state_oracle": {
@@ -596,14 +569,12 @@ The default configuration can be found in [default_config.json](default_config.j
     "flush_every_ms": 5000,
     "assertion_da_rpc_url": "http://127.0.0.1:5001",
     "event_source_url": "ws://127.0.0.1:8546",
-    "indexer_db_path": ".local/sidecar-host/indexer_database",
     "assertion_store_db_path": ".local/sidecar-host/assertion_store_database",
     "transaction_observer_db_path": ".local/sidecar-host/transaction_observer_database",
     "transaction_observer_endpoint": "",
     "transaction_observer_auth_token": "",
     "transaction_observer_endpoint_rps_max": 60,
     "transaction_observer_poll_interval_ms": 1000,
-    "block_tag": "latest",
     "state_oracle": "0x6dD3f12ce435f69DCeDA7e31605C02Bb5422597b",
     "state_oracle_deployment_block": 0,
     "transaction_results_max_capacity": 1000,
