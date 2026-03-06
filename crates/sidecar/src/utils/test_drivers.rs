@@ -278,12 +278,14 @@ impl CommonSetup {
                 state_sources_sync_timeout: Duration::from_millis(100),
                 source_monitoring_period: Duration::from_millis(20),
                 overlay_cache_invalidation_every_block: false,
+                overlay_cache_retention_blocks: 10,
                 incident_sender,
                 #[cfg(feature = "cache_validation")]
                 provider_ws_url: Some(self.eth_rpc_source_http_mock.ws_url()),
             },
         )
-        .await;
+        .await
+        .expect("failed to create core engine");
         engine.set_canonical_db_for_tests(self.underlying_db.clone());
 
         let shutdown = Arc::new(AtomicBool::new(false));
