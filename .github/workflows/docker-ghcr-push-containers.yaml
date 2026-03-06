@@ -131,4 +131,26 @@ jobs:
       environment: ${{ matrix.environment }}
     secrets: inherit
 
-      
+  railway-deploy-verifier-service:
+    if: github.ref == 'refs/heads/main'
+    needs:
+      - docker-ghcr-push-verifier-service
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        environment:
+          - platform-internal
+    environment: ${{ matrix.environment }}
+    container:
+      image: ghcr.io/railwayapp/cli:latest
+    env:
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+    steps:
+      - name: Deploy verifier-service to Railway (${{ matrix.environment }})
+        run: |
+          railway env link "${{ secrets.RAILWAY_ENVIRONMENT_ID }}";
+          railway redeploy \
+            --service "${{ secrets.RAILWAY_VERIFIER_SERVICE_ID }}" \
+            --yes
+
