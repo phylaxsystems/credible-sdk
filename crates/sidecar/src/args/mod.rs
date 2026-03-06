@@ -205,7 +205,7 @@ pub struct CredibleConfigFile {
     pub transaction_observer_endpoint_rps_max: Option<usize>,
     /// Poll interval for incident publishing in milliseconds
     pub transaction_observer_poll_interval_ms: Option<u64>,
-    /// Aeges guard-svc URL for failure reporting
+    /// Aeges URL for failure reporting
     pub aeges_url: Option<Url>,
     /// Contract address of the state oracle contract, used to query assertion info
     pub state_oracle: Option<Address>,
@@ -254,7 +254,7 @@ pub struct CredibleConfig {
     pub transaction_observer_endpoint_rps_max: Option<usize>,
     /// Poll interval for incident publishing in milliseconds
     pub transaction_observer_poll_interval_ms: Option<u64>,
-    /// Aeges guard-svc URL for failure reporting
+    /// Aeges URL for failure reporting
     pub aeges_url: Option<Url>,
     /// Contract address of the state oracle contract, used to query assertion info
     pub state_oracle: Address,
