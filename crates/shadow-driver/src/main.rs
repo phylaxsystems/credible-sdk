@@ -1,6 +1,5 @@
 mod cli;
 mod listener;
-mod mdbx_store;
 
 use crate::{
     cli::Args,

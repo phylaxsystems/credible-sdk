@@ -101,7 +101,7 @@ pub type ReconstructableTx = (FixedBytes<32>, TxEnv);
 /// Represents a full incident, includes transactions that preceeded
 /// the invalidating(incident) tx, blockenv, and more metadata needed
 /// for consumers to debug and investigate assertion failures.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IncidentReport {
     /// Transaction that caused the incident
     pub(crate) transaction_data: ReconstructableTx,

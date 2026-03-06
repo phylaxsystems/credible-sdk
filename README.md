@@ -1,6 +1,6 @@
 # `credible-sdk` monorepo
 
-The credible sdk contains building blocks for running transactions against phylax assertions. Inside, you'll find crates for running assertion EVM code inside our revm extension, types used within said extension, cheatcodes for assertion specific functionality, the DA server for storing assertion code, and our CLI utility for testing assertions and submitting them to credible layer networks.
+The Credible SDK contains building blocks for running transactions against Phylax assertions. Inside, you'll find crates for running assertion EVM code inside our revm extension, types used within said extension, cheatcodes for assertion-specific functionality, the DA server for storing assertion code, and our CLI utility for testing assertions and submitting them to Credible Layer networks.
 
 ## Directory structure
 
@@ -22,7 +22,7 @@ The credible sdk contains building blocks for running transactions against phyla
 
 ### READMEs
 
-For more detailed info on how to run, build and test the `credible-sdk` see:
+For more detailed information on how to run, build, and test the `credible-sdk`, see:
 
 - [Assertion DA](crates/assertion-da/README.md) - Documentation for the Data Availability server component
 - [`pcl`](crates/pcl/README.md) - Documentation for phylax command line utilities
