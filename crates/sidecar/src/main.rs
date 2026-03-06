@@ -651,6 +651,10 @@ async fn run_sidecar_once(
             .credible
             .overlay_cache_invalidation_every_block
             .unwrap_or(false),
+        overlay_cache_retention_blocks: config
+            .credible
+            .overlay_cache_retention_blocks
+            .unwrap_or(config.state.minimum_state_diff),
         incident_sender: incident_report_tx,
         #[cfg(feature = "cache_validation")]
         provider_ws_url: Some(config.credible.cache_checker_ws_url.clone()),
@@ -663,7 +667,7 @@ async fn run_sidecar_once(
         engine_state_results.clone(),
         engine_config,
     )
-    .await;
+    .await?;
     let (engine_handle, engine_exited) = engine.spawn(Arc::clone(&shutdown_flag))?;
     thread_handles.engine = Some(engine_handle);
 

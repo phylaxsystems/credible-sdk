@@ -19,7 +19,11 @@ use assertion_executor::{
         VersionDb,
         fork_db::ForkDb,
         multi_fork_db::MultiForkDb,
-        overlay::OverlayDb,
+        overlay::{
+            OverlayDb,
+            OverlayEvictionError,
+            TableKey,
+        },
     },
     evm::build_evm::{
         EthCtx,
@@ -234,6 +238,16 @@ async fn create_test_engine_with_timeout(
     CoreEngine<CacheDB<EmptyDBTyped<TestDbError>>>,
     flume::Sender<TxQueueContents>,
 ) {
+    create_test_engine_with_timeout_and_retention(timeout, 10).await
+}
+
+async fn create_test_engine_with_timeout_and_retention(
+    timeout: Duration,
+    retention_blocks: u64,
+) -> (
+    CoreEngine<CacheDB<EmptyDBTyped<TestDbError>>>,
+    flume::Sender<TxQueueContents>,
+) {
     let (tx_sender, tx_receiver) = flume::unbounded();
     let underlying_db = CacheDB::new(EmptyDBTyped::default());
     let state = OverlayDb::new(Some(std::sync::Arc::new(underlying_db)));
@@ -253,12 +267,14 @@ async fn create_test_engine_with_timeout(
             state_sources_sync_timeout: timeout,
             source_monitoring_period: timeout / 2,
             overlay_cache_invalidation_every_block: false,
+            overlay_cache_retention_blocks: retention_blocks,
             incident_sender: None,
             #[cfg(feature = "cache_validation")]
             provider_ws_url: None,
         },
     )
-    .await;
+    .await
+    .expect("failed to create test core engine");
     (engine, tx_sender)
 }
 
@@ -666,6 +682,168 @@ async fn test_failed_commit_head_does_not_mark_first_commit_processed() {
     assert!(
         !engine.first_commit_head_processed,
         "first_commit_head_processed must remain false when CommitHead processing fails"
+    );
+}
+
+#[test]
+fn test_overlay_eviction_error_is_recoverable() {
+    let error = EngineError::OverlayEvictionError(OverlayEvictionError::LockPoisoned);
+    assert!(matches!(
+        ErrorRecoverability::from(&error),
+        ErrorRecoverability::Recoverable
+    ));
+}
+
+#[tokio::test]
+async fn test_commit_head_eviction_advances_sources_sync_floor() {
+    let (mut engine, _) =
+        create_test_engine_with_timeout_and_retention(Duration::from_millis(100), 1).await;
+    let mut processed_blocks = 0;
+    let mut block_processing_time = Instant::now();
+
+    for block_number in 1_u64..=3 {
+        let block_env = BlockEnv {
+            number: U256::from(block_number),
+            basefee: 0,
+            ..Default::default()
+        };
+        engine
+            .process_iteration(&NewIteration::new(
+                1,
+                block_env,
+                Some(B256::ZERO),
+                Some(B256::ZERO),
+            ))
+            .unwrap();
+
+        engine
+            .process_commit_head(
+                &CommitHead::new(
+                    U256::from(block_number),
+                    1,
+                    None,
+                    0,
+                    B256::from([block_number as u8; 32]),
+                    Some(B256::ZERO),
+                    U256::from(block_number),
+                ),
+                &mut processed_blocks,
+                &mut block_processing_time,
+            )
+            .unwrap();
+    }
+
+    assert_eq!(
+        engine.sources.get_latest_unprocessed_block(),
+        U256::from(2),
+        "with retention=1, committing block 3 should advance minimum required synced block to 2"
+    );
+}
+
+#[tokio::test]
+async fn test_read_touch_inside_iteration_keeps_hot_key_in_next_eviction() {
+    let (mut engine, _) =
+        create_test_engine_with_timeout_and_retention(Duration::from_millis(100), 1).await;
+    let mut processed_blocks = 0;
+    let mut block_processing_time = Instant::now();
+
+    let block1 = BlockEnv {
+        number: U256::from(1),
+        basefee: 0,
+        ..Default::default()
+    };
+    engine
+        .process_iteration(&NewIteration::new(
+            1,
+            block1,
+            Some(B256::ZERO),
+            Some(B256::ZERO),
+        ))
+        .unwrap();
+    let block1_hash = B256::from([0x11; 32]);
+    engine
+        .process_commit_head(
+            &CommitHead::new(
+                U256::from(1),
+                1,
+                None,
+                0,
+                block1_hash,
+                Some(B256::ZERO),
+                U256::from(1),
+            ),
+            &mut processed_blocks,
+            &mut block_processing_time,
+        )
+        .unwrap();
+
+    let block2 = BlockEnv {
+        number: U256::from(2),
+        basefee: 0,
+        ..Default::default()
+    };
+    engine
+        .process_iteration(&NewIteration::new(
+            1,
+            block2,
+            Some(B256::ZERO),
+            Some(B256::ZERO),
+        ))
+        .unwrap();
+    assert_eq!(engine.cache.block_hash_ref(1).unwrap(), block1_hash);
+    engine
+        .process_commit_head(
+            &CommitHead::new(
+                U256::from(2),
+                1,
+                None,
+                0,
+                B256::from([0x22; 32]),
+                Some(B256::ZERO),
+                U256::from(2),
+            ),
+            &mut processed_blocks,
+            &mut block_processing_time,
+        )
+        .unwrap();
+
+    assert!(
+        engine.cache.is_cached(&TableKey::BlockHash(1)),
+        "read-touched key should survive eviction of older committed block"
+    );
+
+    let block3 = BlockEnv {
+        number: U256::from(3),
+        basefee: 0,
+        ..Default::default()
+    };
+    engine
+        .process_iteration(&NewIteration::new(
+            1,
+            block3,
+            Some(B256::ZERO),
+            Some(B256::ZERO),
+        ))
+        .unwrap();
+    engine
+        .process_commit_head(
+            &CommitHead::new(
+                U256::from(3),
+                1,
+                None,
+                0,
+                B256::from([0x33; 32]),
+                Some(B256::ZERO),
+                U256::from(3),
+            ),
+            &mut processed_blocks,
+            &mut block_processing_time,
+        )
+        .unwrap();
+
+    assert!(
+        !engine.cache.is_cached(&TableKey::BlockHash(1)),
+        "key touched in block 2 should be evicted when block 2 becomes oldest beyond retention"
     );
 }
 
@@ -1941,12 +2119,14 @@ async fn build_canonical_setup(caller: Address) -> CanonicalSetup {
             state_sources_sync_timeout: Duration::from_millis(100),
             source_monitoring_period: Duration::from_millis(20),
             overlay_cache_invalidation_every_block: false,
+            overlay_cache_retention_blocks: 10,
             incident_sender: None,
             #[cfg(feature = "cache_validation")]
             provider_ws_url: None,
         },
     )
-    .await;
+    .await
+    .expect("failed to create canonical test engine");
     engine.set_canonical_db_for_tests(canonical.clone());
 
     CanonicalSetup { engine, canonical }
