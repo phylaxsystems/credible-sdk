@@ -13,15 +13,30 @@ use tracing::{
     error,
     info,
 };
-
 use crate::{
-    inspectors::spec_recorder::AssertionSpec,
+    inspectors::{
+        TriggerRecorder,
+        spec_recorder::AssertionSpec,
+    },
+    primitives::AssertionContract,
     store::{
         AssertionState,
         AssertionStoreError,
-        migration::AssertionStateV1,
     },
 };
+use serde::{
+    Deserialize,
+    Serialize,
+};
+
+/// Pre-1.1.0 schema: no `assertion_spec` field.
+#[derive(Serialize, Deserialize)]
+pub(super) struct AssertionStateV1 {
+    pub(super) activation_block: u64,
+    pub(super) inactivation_block: Option<u64>,
+    pub(super) assertion_contract: AssertionContract,
+    pub(super) trigger_recorder: TriggerRecorder,
+}
 
 pub fn migrate(db: &sled::Db) -> Result<(), AssertionStoreError> {
     let mut migrated = 0u64;

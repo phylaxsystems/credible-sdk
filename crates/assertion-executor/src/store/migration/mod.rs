@@ -14,15 +14,7 @@
 
 mod v2;
 
-use crate::{
-    inspectors::TriggerRecorder,
-    primitives::AssertionContract,
-    store::AssertionStoreError,
-};
-use serde::{
-    Deserialize,
-    Serialize,
-};
+use crate::store::AssertionStoreError;
 use tracing::info;
 
 const SCHEMA_VERSION_TREE: &str = "schema_version";
@@ -34,15 +26,6 @@ type MigrateFn = fn(&sled::Db) -> Result<(), AssertionStoreError>;
 /// Ordered list of migrations. Each entry is (`target_version`, `migrate_fn`).
 /// Migrations run sequentially for any version below the target.
 const MIGRATIONS: &[(u8, MigrateFn)] = &[(2, v2::migrate)];
-
-/// Pre-1.1.0 schema: no `assertion_spec` field.
-#[derive(Serialize, Deserialize)]
-pub(super) struct AssertionStateV1 {
-    pub(super) activation_block: u64,
-    pub(super) inactivation_block: Option<u64>,
-    pub(super) assertion_contract: AssertionContract,
-    pub(super) trigger_recorder: TriggerRecorder,
-}
 
 /// Checks the schema version stored in sled and runs any pending migrations.
 /// Called once at startup from `AssertionStore::new()`.
@@ -106,7 +89,10 @@ mod tests {
             AssertionContract,
             B256,
         },
-        store::AssertionState,
+        store::{
+            AssertionState,
+            migration::v2::AssertionStateV1,
+        },
     };
     use bincode::{
         deserialize as de,
