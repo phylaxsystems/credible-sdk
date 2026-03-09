@@ -1,9 +1,4 @@
-//! Schema migration runner for the assertion store.
-//!
-//! Follows the Substrate runtime migration pattern:
-//! - Schema version is stored in a dedicated sled tree
-//! - On startup, the runner checks the version and applies pending migrations in order
-//! - Each migration is a self-contained module (e.g. `v2.rs`, `v3.rs`)
+//! Versioned schema migrations for the assertion sled store.
 //!
 //! To add a new migration:
 //! 1. Create `vN.rs` with a `pub fn migrate(db: &sled::Db)` function

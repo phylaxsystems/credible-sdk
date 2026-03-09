@@ -282,6 +282,9 @@ impl std::fmt::Debug for AssertionsForExecutionMetadata<'_> {
 }
 
 /// Struct representing a pending assertion modification that has not passed the timelock.
+///
+/// WARNING: This struct is persisted to sled via bincode. Any field change requires a new
+/// migration in `store::migration`.
 #[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
 pub struct AssertionState {
     pub activation_block: u64,

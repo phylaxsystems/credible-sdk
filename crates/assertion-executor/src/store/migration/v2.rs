@@ -38,6 +38,7 @@ pub(super) struct AssertionStateV1 {
     pub(super) trigger_recorder: TriggerRecorder,
 }
 
+/// Re-serializes every V1 entry with `assertion_spec: Legacy`.
 pub fn migrate(db: &sled::Db) -> Result<(), AssertionStoreError> {
     let mut batch = sled::Batch::default();
     let mut migrated = 0u64;
