@@ -575,6 +575,7 @@ The default configuration can be found in [default_config.json](default_config.j
     "transaction_observer_auth_token": "",
     "transaction_observer_endpoint_rps_max": 60,
     "transaction_observer_poll_interval_ms": 1000,
+    "aeges_url": "http://127.0.0.1:8080",
     "state_oracle": "0x6dD3f12ce435f69DCeDA7e31605C02Bb5422597b",
     "state_oracle_deployment_block": 0,
     "transaction_results_max_capacity": 1000,

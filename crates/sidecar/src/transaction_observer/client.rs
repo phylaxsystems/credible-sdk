@@ -6,8 +6,11 @@ use dapp_api_client::{
     Client as DappClient,
     Config as DappConfig,
 };
+use reqwest::blocking::Client as BlockingClient;
 use std::sync::Arc;
 use url::Url;
+
+const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Builds the dapp client if all required configuration is present.
 ///
@@ -38,6 +41,37 @@ pub(super) fn build_dapp_client(
     })?;
 
     Ok(Some(Arc::new(client)))
+}
+
+/// Encapsulates the blocking HTTP client and the base URL for Aeges reporting.
+pub(super) struct AegesClient {
+    pub client: BlockingClient,
+    pub url: Url,
+}
+
+/// Builds the [`AegesClient`] for Aeges reporting.
+///
+/// Returns `None` if `aeges_url` is absent, which disables Aeges reporting.
+pub(super) fn build_aeges_client(
+    aeges_url: Option<&Url>,
+) -> Result<Option<AegesClient>, TransactionObserverError> {
+    let Some(url) = aeges_url else {
+        return Ok(None);
+    };
+
+    let client = BlockingClient::builder()
+        .timeout(REQUEST_TIMEOUT)
+        .build()
+        .map_err(|e| {
+            TransactionObserverError::PublishFailed {
+                reason: format!("Failed to build aeges http client: {e}"),
+            }
+        })?;
+
+    Ok(Some(AegesClient {
+        client,
+        url: url.clone(),
+    }))
 }
 
 fn endpoint_base_url(endpoint: &str) -> String {
