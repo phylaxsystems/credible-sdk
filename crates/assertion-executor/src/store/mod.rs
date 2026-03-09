@@ -14,11 +14,13 @@ pub use assertion_da_client::{
 
 mod assertion_store;
 pub use assertion_store::{
-    AssertionState,
     AssertionStore,
     AssertionStoreError,
     PruneConfig,
 };
+
+pub mod models;
+pub use models::AssertionState;
 
 mod event_source;
 pub use event_source::{
