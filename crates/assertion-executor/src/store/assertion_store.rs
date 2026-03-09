@@ -451,12 +451,19 @@ impl std::fmt::Debug for AssertionStoreInner {
 impl AssertionStore {
     /// Create a new assertion store with a sled backend for persistence.
     ///
+    /// Runs schema migrations before opening the store. See [`super::migration`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if schema migration fails.
+    ///
     /// # Panics
     ///
     /// Will panic if the expiry tree cannot be opened in the sled DB
-    pub fn new(db: sled::Db, prune_config: PruneConfig) -> Self {
+    pub fn new(db: sled::Db, prune_config: PruneConfig) -> Result<Self, AssertionStoreError> {
+        super::migration::run(&db)?;
         let backend = StoreBackend::new_sled(db);
-        Self::with_backend(backend, prune_config)
+        Ok(Self::with_backend(backend, prune_config))
     }
 
     /// Creates a new assertion store without persistence (in-memory).
@@ -2225,7 +2232,7 @@ mod tests {
     async fn test_sled_backend_basic_operations() {
         // This test verifies the Sled backend works correctly
         let db = sled::Config::tmp().unwrap().open().unwrap();
-        let store = AssertionStore::new(db, PruneConfig::default());
+        let store = AssertionStore::new(db, PruneConfig::default()).unwrap();
         let aa = Address::random();
 
         // Test insert and get
@@ -2249,7 +2256,7 @@ mod tests {
             interval_ms: 100_000,
             retention_blocks: 0,
         };
-        let store = AssertionStore::new(db, config);
+        let store = AssertionStore::new(db, config).unwrap();
         let aa = Address::random();
 
         // Add and remove an assertion
@@ -2275,7 +2282,7 @@ mod tests {
         // Verify both backends produce the same results for the same operations
         let in_memory_store = AssertionStore::new_ephemeral();
         let db = sled::Config::tmp().unwrap().open().unwrap();
-        let sled_store = AssertionStore::new(db, PruneConfig::default());
+        let sled_store = AssertionStore::new(db, PruneConfig::default()).unwrap();
 
         let aa = Address::random();
         let assertion = create_test_assertion(100, Some(200));

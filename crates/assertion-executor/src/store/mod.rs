@@ -1,4 +1,5 @@
 mod assertion_contract_extractor;
+mod migration;
 pub use assertion_contract_extractor::{
     ExtractedContract,
     FnSelectorExtractorError,
