@@ -1,6 +1,5 @@
 pub mod config;
 
-#[cfg(feature = "phoundry")]
 mod with_inspector;
 
 use std::{

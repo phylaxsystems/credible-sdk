@@ -397,8 +397,8 @@ impl<'a> PhEvmInspector<'a> {
                         &mut self.context,
                     )
                     .map(PhevmOutcome::from)
-                    .map_err(PrecompileError::ConsoleLogError),
-                )?);
+                    .map_err(PrecompileError::ConsoleLogError)?,
+                ));
 
                 #[cfg(not(feature = "phoundry"))]
                 return Ok(Some(PhevmOutcome::from(Bytes::default())));

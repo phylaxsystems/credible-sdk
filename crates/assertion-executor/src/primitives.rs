@@ -177,7 +177,6 @@ impl AssertionFunctionResult {
 
 /// Result of a transaction validation against a set of assertions, with inspectors
 /// that observed both transaction execution and assertion execution.
-#[cfg(feature = "phoundry")]
 #[derive(Debug)]
 pub struct TxValidationResultWithInspectors<I> {
     /// The validation result
@@ -187,7 +186,6 @@ pub struct TxValidationResultWithInspectors<I> {
     pub inspectors: Vec<I>,
 }
 
-#[cfg(feature = "phoundry")]
 impl<I> TxValidationResultWithInspectors<I> {
     /// Returns the inspector from transaction execution
     pub fn tx_inspector(&self) -> Option<&I> {

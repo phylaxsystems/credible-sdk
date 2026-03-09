@@ -20,7 +20,6 @@ pub mod constants;
 
 pub mod primitives;
 
-#[cfg(feature = "phoundry")]
 pub use primitives::TxValidationResultWithInspectors;
 
 pub mod store;

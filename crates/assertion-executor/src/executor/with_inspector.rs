@@ -66,6 +66,34 @@ use crate::evm::build_evm::{
     OpCtx,
 };
 
+type InspectorAssertionExecutions<I> = (Vec<AssertionContractExecution>, Vec<I>);
+type InspectorContractExecution<I> = (AssertionContractExecution, Vec<I>);
+type InspectorFnExecution<I> = (AssertionFunctionResult, I);
+
+/// Per-contract arguments passed into `run_assertion_contract_with_inspector`.
+#[derive(Debug)]
+struct AssertionContractWithInspectorParams<'a, Active, I> {
+    assertion_contract: &'a AssertionContract,
+    fn_selectors: &'a [FixedBytes<4>],
+    block_env: &'a BlockEnv,
+    tx_fork_db: ForkDb<Active>,
+    context: &'a PhEvmContext<'a>,
+    inspector: I,
+    tx_arena_epoch: u64,
+}
+
+/// Per-function arguments passed into `execute_assertion_fn_with_inspector`.
+#[derive(Debug)]
+struct AssertionExecutionWithInspectorParams<'a, Active, I> {
+    assertion_contract: &'a AssertionContract,
+    fn_selector: FixedBytes<4>,
+    tx_arena_epoch: u64,
+    block_env: BlockEnv,
+    multi_fork_db: MultiForkDb<ForkDb<Active>>,
+    phevm_inspector: PhEvmInspector<'a>,
+    inspector: I,
+}
+
 impl AssertionExecutor {
     /// Validates a transaction with a custom inspector that observes both
     /// transaction execution and assertion execution.
@@ -78,6 +106,10 @@ impl AssertionExecutor {
     /// - The validation result
     /// - A vector of inspectors: first element is from TX execution, subsequent
     ///   elements are from each assertion function execution
+    ///
+    /// # Errors
+    /// Returns an error if transaction execution fails internally or if assertion
+    /// execution fails after the transaction succeeds.
     #[instrument(level = "debug", skip_all, target = "executor::validate_tx")]
     pub fn validate_transaction_with_inspector<ExtDb, Active, I>(
         &mut self,
@@ -217,7 +249,7 @@ impl AssertionExecutor {
         inspector: I,
         tx_arena_epoch: u64,
     ) -> Result<
-        (Vec<AssertionContractExecution>, Vec<I>),
+        InspectorAssertionExecutions<I>,
         AssertionExecutionError<<Active as DatabaseRef>::Error>,
     >
     where
@@ -234,15 +266,15 @@ impl AssertionExecutor {
             tx_env,
             tx_arena_epoch,
             |assertion_contract, fn_selectors, block_env, tx_fork_db, context, tx_arena_epoch| {
-                self.run_assertion_contract_with_inspector(
+                self.run_assertion_contract_with_inspector(AssertionContractWithInspectorParams {
                     assertion_contract,
                     fn_selectors,
                     block_env,
                     tx_fork_db,
                     context,
-                    inspector.clone(),
+                    inspector: inspector.clone(),
                     tx_arena_epoch,
-                )
+                })
             },
         )?;
 
@@ -265,21 +297,15 @@ impl AssertionExecutor {
     /// the execution results.
     #[instrument(
         skip_all,
-        fields(assertion_id=%assertion_contract.id),
+        fields(assertion_id=%params.assertion_contract.id),
         level = "debug",
         target = "assertion-executor::execute_assertions"
     )]
     fn run_assertion_contract_with_inspector<Active, I>(
         &self,
-        assertion_contract: &AssertionContract,
-        fn_selectors: &[FixedBytes<4>],
-        block_env: &BlockEnv,
-        tx_fork_db: ForkDb<Active>,
-        context: &PhEvmContext,
-        inspector: I,
-        tx_arena_epoch: u64,
+        params: AssertionContractWithInspectorParams<'_, Active, I>,
     ) -> Result<
-        (AssertionContractExecution, Vec<I>),
+        InspectorContractExecution<I>,
         AssertionExecutionError<<Active as DatabaseRef>::Error>,
     >
     where
@@ -289,6 +315,16 @@ impl AssertionExecutor {
         for<'db> I: Inspector<EthCtx<'db, MultiForkDb<ForkDb<Active>>>>,
         for<'db> I: Inspector<OpCtx<'db, MultiForkDb<ForkDb<Active>>>>,
     {
+        let AssertionContractWithInspectorParams {
+            assertion_contract,
+            fn_selectors,
+            block_env,
+            tx_fork_db,
+            context,
+            inspector,
+            tx_arena_epoch,
+        } = params;
+
         let prepared =
             self.prepare_assertion_contract(assertion_contract, fn_selectors, tx_fork_db, context);
 
@@ -299,13 +335,15 @@ impl AssertionExecutor {
                     .into_par_iter()
                     .map(|fn_selector| {
                         self.execute_assertion_fn_with_inspector(
-                            assertion_contract,
-                            *fn_selector,
-                            block_env.clone(),
-                            prepared.multi_fork_db.clone(),
-                            prepared.inspector.clone(),
-                            inspector.clone(),
-                            tx_arena_epoch,
+                            AssertionExecutionWithInspectorParams {
+                                assertion_contract,
+                                fn_selector: *fn_selector,
+                                tx_arena_epoch,
+                                block_env: block_env.clone(),
+                                multi_fork_db: prepared.multi_fork_db.clone(),
+                                phevm_inspector: prepared.inspector.clone(),
+                                inspector: inspector.clone(),
+                            },
                         )
                     })
                     .collect()
@@ -345,19 +383,23 @@ impl AssertionExecutor {
     )]
     fn execute_assertion_fn_with_inspector<Active, I>(
         &self,
-        assertion_contract: &AssertionContract,
-        fn_selector: FixedBytes<4>,
-        block_env: BlockEnv,
-        mut multi_fork_db: MultiForkDb<ForkDb<Active>>,
-        mut phevm_inspector: PhEvmInspector<'_>,
-        mut inspector: I,
-        tx_arena_epoch: u64,
-    ) -> Result<(AssertionFunctionResult, I), AssertionExecutionError<<Active as DatabaseRef>::Error>>
+        params: AssertionExecutionWithInspectorParams<'_, Active, I>,
+    ) -> Result<InspectorFnExecution<I>, AssertionExecutionError<<Active as DatabaseRef>::Error>>
     where
         Active: DatabaseRef + Sync + Send,
         for<'db> I: Inspector<EthCtx<'db, MultiForkDb<ForkDb<Active>>>>,
         for<'db> I: Inspector<OpCtx<'db, MultiForkDb<ForkDb<Active>>>>,
     {
+        let AssertionExecutionWithInspectorParams {
+            assertion_contract,
+            fn_selector,
+            tx_arena_epoch,
+            block_env,
+            mut multi_fork_db,
+            mut phevm_inspector,
+            mut inspector,
+        } = params;
+
         prepare_tx_arena_for_current_thread(tx_arena_epoch);
 
         // Compose inspector: (custom_inspector, phevm_inspector).
@@ -433,7 +475,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_validate_transaction_with_inspector() {
+    async fn test_validate_transaction_with_inspector() -> Result<(), Box<dyn std::error::Error>> {
         let CounterValidationSetup {
             mut fork_db,
             mut mock_db,
@@ -466,7 +508,9 @@ mod tests {
         // Check inspector count:
         // - 1 inspector from TX execution
         // - 1 inspector from assertion function execution (SIMPLE_ASSERTION_COUNTER has 1 function)
-        let expected_inspector_count = 1 + result.result.total_assertion_funcs_ran() as usize;
+        let expected_assertion_inspector_count =
+            usize::try_from(result.result.total_assertion_funcs_ran())?;
+        let expected_inspector_count = 1 + expected_assertion_inspector_count;
         assert_eq!(
             result.inspectors.len(),
             expected_inspector_count,
@@ -491,8 +535,7 @@ mod tests {
         for (i, inspector) in assertion_inspectors.iter().enumerate() {
             assert!(
                 inspector.get_step_count() > 0,
-                "Assertion inspector {} should have observed steps",
-                i
+                "Assertion inspector {i} should have observed steps",
             );
         }
 
@@ -508,5 +551,7 @@ mod tests {
                 inspector.get_step_count()
             );
         }
+
+        Ok(())
     }
 }

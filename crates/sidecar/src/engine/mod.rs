@@ -82,6 +82,10 @@ use assertion_executor::{
     AssertionExecutor,
     ExecutorConfig,
     db::overlay::OverlayDb,
+    evm::build_evm::{
+        EthCtx,
+        OpCtx,
+    },
     primitives::{
         EVMError,
         ExecutionResult,
@@ -134,23 +138,29 @@ use assertion_executor::{
     ExecutorError,
     ForkTxExecutionError,
     TxExecutionError,
+    TxValidationResultWithInspectors,
     db::{
         Database,
         RollbackDb,
         VersionDb,
+        fork_db::ForkDb,
+        multi_fork_db::MultiForkDb,
     },
 };
 use dashmap::DashMap;
 use metrics::counter;
 #[cfg(feature = "cache_validation")]
 use monitoring::cache::CacheChecker;
+use parking_lot::Mutex;
 use revm::{
     DatabaseCommit,
     DatabaseRef,
+    Inspector,
     context::{
         BlockEnv,
         TxEnv,
     },
+    database::WrapDatabaseRef,
     primitives::{
         Address,
         B256,
@@ -374,6 +384,123 @@ impl<DB> BlockIterationData<DB> {
 /// The engine processes blocks and appends transactions to them.
 /// It accepts transaction events sent from a transport via the `TransactionQueueReceiver`
 /// and processes them accordingly.
+pub trait EngineInspectorProvider<DB>: Clone + Send + Sync + 'static
+where
+    DB: DatabaseRef + Send + Sync + 'static,
+{
+    type Inspector: Clone + Send + Sync;
+
+    fn create_inspector(&self, tx_execution_id: TxExecutionId, tx_env: &TxEnv) -> Self::Inspector;
+
+    fn handle_result(
+        &self,
+        tx_execution_id: TxExecutionId,
+        tx_env: &TxEnv,
+        result: &TxValidationResultWithInspectors<Self::Inspector>,
+    );
+}
+
+#[derive(Debug, Clone)]
+pub struct RecordedInspectorResult<I> {
+    pub tx_execution_id: TxExecutionId,
+    pub tx_env: TxEnv,
+    pub inspectors: Vec<I>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RecordingInspectorProvider<I> {
+    prototype: I,
+    records: Arc<Mutex<Vec<RecordedInspectorResult<I>>>>,
+}
+
+impl<I> RecordingInspectorProvider<I> {
+    pub fn new(prototype: I) -> Self {
+        Self {
+            prototype,
+            records: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    pub fn records(&self) -> Vec<RecordedInspectorResult<I>>
+    where
+        I: Clone,
+    {
+        self.records.lock().clone()
+    }
+
+    pub fn drain_records(&self) -> Vec<RecordedInspectorResult<I>> {
+        std::mem::take(&mut *self.records.lock())
+    }
+}
+
+impl<DB, I> EngineInspectorProvider<DB> for RecordingInspectorProvider<I>
+where
+    DB: DatabaseRef + Send + Sync + 'static,
+    I: Clone + Send + Sync + 'static,
+{
+    type Inspector = I;
+
+    fn create_inspector(
+        &self,
+        _tx_execution_id: TxExecutionId,
+        _tx_env: &TxEnv,
+    ) -> Self::Inspector {
+        self.prototype.clone()
+    }
+
+    fn handle_result(
+        &self,
+        tx_execution_id: TxExecutionId,
+        tx_env: &TxEnv,
+        result: &TxValidationResultWithInspectors<Self::Inspector>,
+    ) {
+        self.records.lock().push(RecordedInspectorResult {
+            tx_execution_id,
+            tx_env: tx_env.clone(),
+            inspectors: result.inspectors.clone(),
+        });
+    }
+}
+
+trait CustomTxExecutor<DB>: Send + Sync {
+    fn execute(
+        &self,
+        engine: &mut CoreEngine<DB>,
+        tx_execution_id: TxExecutionId,
+        tx_env: &TxEnv,
+    ) -> Result<(), EngineError>;
+}
+
+impl<DB> std::fmt::Debug for dyn CustomTxExecutor<DB> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("CustomTxExecutor(..)")
+    }
+}
+
+#[derive(Debug)]
+struct InspectorTxExecutor<P> {
+    provider: P,
+}
+
+impl<DB, P> CustomTxExecutor<DB> for InspectorTxExecutor<P>
+where
+    DB: DatabaseRef + Send + Sync + 'static,
+    P: EngineInspectorProvider<DB>,
+    for<'db> P::Inspector: Inspector<EthCtx<'db, WrapDatabaseRef<ForkDb<OverlayDb<DB>>>>>,
+    for<'db> P::Inspector: Inspector<EthCtx<'db, MultiForkDb<ForkDb<OverlayDb<DB>>>>>,
+    for<'db> P::Inspector: Inspector<OpCtx<'db, WrapDatabaseRef<ForkDb<OverlayDb<DB>>>>>,
+    for<'db> P::Inspector: Inspector<OpCtx<'db, MultiForkDb<ForkDb<OverlayDb<DB>>>>>,
+{
+    fn execute(
+        &self,
+        engine: &mut CoreEngine<DB>,
+        tx_execution_id: TxExecutionId,
+        tx_env: &TxEnv,
+    ) -> Result<(), EngineError> {
+        engine.execute_transaction_with_inspector_provider(tx_execution_id, tx_env, &self.provider)
+    }
+}
+
 #[derive(Debug)]
 pub struct CoreEngine<DB> {
     /// In-memory `revm::Database` cache. Populated as the sidecar executes blocks.
@@ -429,6 +556,7 @@ pub struct CoreEngine<DB> {
     /// Cache of tx hashes that triggered assertion failures.
     /// Prevents duplicate logging/metrics on re-execution.
     assertion_failure_cache: moka::sync::Cache<TxHash, ()>,
+    custom_tx_executor: Option<Arc<dyn CustomTxExecutor<DB>>>,
 }
 
 #[cfg(feature = "cache_validation")]
@@ -506,6 +634,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             #[cfg(feature = "cache_validation")]
             cache_checker,
             assertion_failure_cache,
+            custom_tx_executor: None,
         }
     }
 
@@ -515,6 +644,34 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         canonical_db: Arc<LocalInstanceDb<revm::database::CacheDB<Arc<Sources>>>>,
     ) {
         self.canonical_db = Some(canonical_db);
+    }
+
+    pub fn set_inspector_provider<P>(&mut self, provider: P)
+    where
+        P: EngineInspectorProvider<DB>,
+        for<'db> P::Inspector: Inspector<EthCtx<'db, WrapDatabaseRef<ForkDb<OverlayDb<DB>>>>>,
+        for<'db> P::Inspector: Inspector<EthCtx<'db, MultiForkDb<ForkDb<OverlayDb<DB>>>>>,
+        for<'db> P::Inspector: Inspector<OpCtx<'db, WrapDatabaseRef<ForkDb<OverlayDb<DB>>>>>,
+        for<'db> P::Inspector: Inspector<OpCtx<'db, MultiForkDb<ForkDb<OverlayDb<DB>>>>>,
+    {
+        self.custom_tx_executor = Some(Arc::new(InspectorTxExecutor { provider }));
+    }
+
+    pub fn set_inspector<I>(&mut self, inspector: I) -> RecordingInspectorProvider<I>
+    where
+        I: Clone + Send + Sync + 'static,
+        for<'db> I: Inspector<EthCtx<'db, WrapDatabaseRef<ForkDb<OverlayDb<DB>>>>>,
+        for<'db> I: Inspector<EthCtx<'db, MultiForkDb<ForkDb<OverlayDb<DB>>>>>,
+        for<'db> I: Inspector<OpCtx<'db, WrapDatabaseRef<ForkDb<OverlayDb<DB>>>>>,
+        for<'db> I: Inspector<OpCtx<'db, MultiForkDb<ForkDb<OverlayDb<DB>>>>>,
+    {
+        let provider = RecordingInspectorProvider::new(inspector);
+        self.set_inspector_provider(provider.clone());
+        provider
+    }
+
+    pub fn clear_inspector_provider(&mut self) {
+        self.custom_tx_executor = None;
     }
 
     /// Returns the current spec ID from the executor configuration.
@@ -781,6 +938,31 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         tx_execution_id: TxExecutionId,
         tx_env: &TxEnv,
     ) -> Result<(), EngineError> {
+        if let Some(executor) = self.custom_tx_executor.clone() {
+            executor.execute(self, tx_execution_id, tx_env)
+        } else {
+            self.execute_transaction_default(tx_execution_id, tx_env)
+        }
+    }
+
+    #[instrument(
+        name = "engine::execute_transaction_default",
+        skip(self, tx_env),
+        fields(
+            tx_execution_id = %tx_execution_id.to_json_string(),
+            tx_hash = %tx_execution_id.tx_hash,
+            caller = %tx_env.caller,
+            gas_limit = tx_env.gas_limit,
+            failed_assertions = tracing::field::Empty,
+            assertion_failure_count = tracing::field::Empty
+        ),
+        level = "debug"
+    )]
+    fn execute_transaction_default(
+        &mut self,
+        tx_execution_id: TxExecutionId,
+        tx_env: &TxEnv,
+    ) -> Result<(), EngineError> {
         let block_id = tx_execution_id.as_block_execution_id();
         let should_report = self.incident_sender.is_some();
 
@@ -867,6 +1049,125 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 execution_result: result_and_state.result,
             },
             Some(result_and_state.state),
+        )?;
+
+        Ok(())
+    }
+
+    #[instrument(
+        name = "engine::execute_transaction_with_inspector",
+        skip(self, tx_env, provider),
+        fields(
+            tx_execution_id = %tx_execution_id.to_json_string(),
+            tx_hash = %tx_execution_id.tx_hash,
+            caller = %tx_env.caller,
+            gas_limit = tx_env.gas_limit,
+            failed_assertions = tracing::field::Empty,
+            assertion_failure_count = tracing::field::Empty
+        ),
+        level = "debug"
+    )]
+    fn execute_transaction_with_inspector_provider<P>(
+        &mut self,
+        tx_execution_id: TxExecutionId,
+        tx_env: &TxEnv,
+        provider: &P,
+    ) -> Result<(), EngineError>
+    where
+        P: EngineInspectorProvider<DB>,
+        for<'db> P::Inspector: Inspector<EthCtx<'db, WrapDatabaseRef<ForkDb<OverlayDb<DB>>>>>,
+        for<'db> P::Inspector: Inspector<EthCtx<'db, MultiForkDb<ForkDb<OverlayDb<DB>>>>>,
+        for<'db> P::Inspector: Inspector<OpCtx<'db, WrapDatabaseRef<ForkDb<OverlayDb<DB>>>>>,
+        for<'db> P::Inspector: Inspector<OpCtx<'db, MultiForkDb<ForkDb<OverlayDb<DB>>>>>,
+    {
+        let block_id = tx_execution_id.as_block_execution_id();
+        let should_report = self.incident_sender.is_some();
+
+        let current_block_iteration = self
+            .current_block_iterations
+            .get_mut(&block_id)
+            .ok_or(EngineError::TransactionError)?;
+
+        let instant = Instant::now();
+
+        trace!(
+            target = "engine",
+            tx_hash = %tx_execution_id.tx_hash,
+            caller = %tx_env.caller,
+            gas_limit = tx_env.gas_limit,
+            block_number = %current_block_iteration.block_env.number,
+            "Executing transaction with environment and custom inspector"
+        );
+
+        let block_env = current_block_iteration.block_env.clone();
+        let inspector = provider.create_inspector(tx_execution_id, tx_env);
+        let mut ext_db = WrapDatabaseRef(current_block_iteration.version_db.state_mut().clone());
+
+        let rax = self.assertion_executor.validate_transaction_with_inspector(
+            block_env.clone(),
+            tx_env,
+            current_block_iteration.version_db.state_mut(),
+            &mut ext_db,
+            inspector,
+        );
+
+        let processing_duration = instant.elapsed();
+
+        let rax = match rax {
+            Ok(rax) => rax,
+            Err(e) => {
+                return self.process_transaction_validation_error(tx_execution_id, tx_env, &e);
+            }
+        };
+
+        let is_valid = rax.result.is_valid();
+        let prev_txs = if should_report && !is_valid {
+            Some(current_block_iteration.executed_tx_data())
+        } else {
+            None
+        };
+
+        let assertions_ran = rax.result.total_assertion_funcs_ran();
+        let assertions_gas = rax.result.total_assertions_gas();
+
+        if self
+            .assertion_failure_cache
+            .get(&tx_execution_id.tx_hash)
+            .is_none()
+        {
+            self.block_metrics.assertions_per_block += assertions_ran;
+            self.block_metrics.assertion_gas_per_block += assertions_gas;
+        }
+        self.block_metrics.transactions_simulated += 1;
+
+        let mut tx_metrics = TransactionMetrics::new();
+        tx_metrics.transaction_processing_duration = processing_duration;
+        tx_metrics.assertion_execution_duration = rax.result.assertion_execution_duration;
+        tx_metrics.assertions_per_transaction = assertions_ran;
+        tx_metrics.assertion_gas_per_transaction = assertions_gas;
+        tx_metrics.commit();
+
+        self.trace_execute_transaction_result(
+            tx_execution_id,
+            tx_env,
+            &rax.result,
+            processing_duration,
+        );
+
+        let tx_data: ReconstructableTx = (tx_execution_id.tx_hash, tx_env.clone());
+        if let Some(prev_txs) = prev_txs {
+            self.emit_incident_report(tx_data.clone(), &block_env, prev_txs, &rax.result);
+        }
+
+        provider.handle_result(tx_execution_id, tx_env, &rax);
+
+        self.add_transaction_result(
+            ExecutedTx::valid(tx_execution_id, tx_data),
+            &TransactionResult::ValidationCompleted {
+                is_valid,
+                execution_result: rax.result.result_and_state.result.clone(),
+            },
+            Some(rax.result.result_and_state.state.clone()),
         )?;
 
         Ok(())
@@ -1508,6 +1809,100 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
 
         // Process the transaction with the current block environment
         self.execute_transaction(tx_execution_id, &tx_env)?;
+
+        Ok(())
+    }
+
+    fn process_transaction_event_with_inspector_provider<P>(
+        &mut self,
+        queue_transaction: QueueTransaction,
+        provider: &P,
+    ) -> Result<(), EngineError>
+    where
+        P: EngineInspectorProvider<DB>,
+        for<'db> P::Inspector: Inspector<EthCtx<'db, WrapDatabaseRef<ForkDb<OverlayDb<DB>>>>>,
+        for<'db> P::Inspector: Inspector<EthCtx<'db, MultiForkDb<ForkDb<OverlayDb<DB>>>>>,
+        for<'db> P::Inspector: Inspector<OpCtx<'db, WrapDatabaseRef<ForkDb<OverlayDb<DB>>>>>,
+        for<'db> P::Inspector: Inspector<OpCtx<'db, MultiForkDb<ForkDb<OverlayDb<DB>>>>>,
+    {
+        let tx_execution_id = queue_transaction.tx_execution_id;
+        let tx_hash = tx_execution_id.tx_hash;
+        let tx_env = queue_transaction.tx_env;
+        self.block_metrics.transactions_considered += 1;
+        counter!("sidecar_transactions_considered_total").increment(1);
+
+        info!(
+            target = "engine",
+            tx_execution_id = ?tx_execution_id,
+            tx_hash = ?tx_hash,
+            "Processing a new transaction"
+        );
+
+        if !self.first_commit_head_processed {
+            debug!(
+                target = "engine",
+                tx_hash = %tx_hash,
+                block_number = %tx_execution_id.block_number,
+                iteration_id = tx_execution_id.iteration_id,
+                "Ignoring transaction before first CommitHead is processed"
+            );
+            return Ok(());
+        }
+
+        let block_id = tx_execution_id.as_block_execution_id();
+
+        let Some(current_block_iteration) = self.current_block_iterations.get(&block_id) else {
+            error!(
+                target = "engine",
+                tx_hash = %tx_hash,
+                block_number = %tx_execution_id.block_number,
+                iteration_id = tx_execution_id.iteration_id,
+                caller = %tx_env.caller,
+                "Received transaction without first receiving a BlockEnv. An iteration for the id must be received first"
+            );
+            return Err(EngineError::TransactionError);
+        };
+
+        let expected_block_number = self.current_head + U256::from(1);
+        let iteration_block_number = current_block_iteration.block_env.number;
+        let has_pending_state = current_block_iteration.version_db.last_commit_was_empty();
+        if iteration_block_number != expected_block_number {
+            warn!(
+                target = "engine",
+                tx_hash = %tx_hash,
+                tx_block = %tx_execution_id.block_number,
+                iteration_block = %iteration_block_number,
+                expected_block = %expected_block_number,
+                "Transaction block number does not match expected block number"
+            );
+            let message = format!(
+                "Transaction targeted block {} but expected block {} based on current head {}",
+                tx_execution_id.block_number, expected_block_number, self.current_head
+            );
+            self.add_transaction_result(
+                ExecutedTx::Invalid(tx_execution_id),
+                &TransactionResult::ValidationError(message),
+                None,
+            )?;
+            return Ok(());
+        }
+
+        if has_pending_state {
+            return Err(EngineError::NothingToCommit);
+        }
+
+        debug!(
+            target = "engine",
+            tx_hash = %tx_hash,
+            block_number = %tx_execution_id.block_number,
+            iteration_id = tx_execution_id.iteration_id,
+            caller = %tx_env.caller,
+            gas_limit = tx_env.gas_limit,
+            current_head = %self.current_head,
+            "Processing transaction"
+        );
+
+        self.execute_transaction_with_inspector_provider(tx_execution_id, &tx_env, provider)?;
 
         Ok(())
     }
