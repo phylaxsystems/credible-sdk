@@ -63,7 +63,7 @@ pub fn init_assertion_store(config: &Config) -> Result<AssertionStore, Assertion
         "Initialized persistent AssertionStore"
     );
 
-    Ok(AssertionStore::new(
+    AssertionStore::new(
         db,
         PruneConfig {
             interval_ms: config
@@ -75,7 +75,7 @@ pub fn init_assertion_store(config: &Config) -> Result<AssertionStore, Assertion
                 .assertion_store_prune_config_retention_blocks
                 .unwrap_or_default(),
         },
-    ))
+    )
 }
 
 /// Initialize `IndexerCfg` from config.

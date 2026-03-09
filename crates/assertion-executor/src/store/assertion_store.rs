@@ -1,7 +1,6 @@
 use crate::{
     inspectors::{
         CallTracer,
-        TriggerRecorder,
         TriggerType,
         spec_recorder::AssertionSpec,
     },
@@ -12,16 +11,9 @@ use crate::{
         FixedBytes,
         U256,
     },
-    store::PendingModification,
-};
-
-use crate::{
-    ExecutorConfig,
-    primitives::Bytes,
-    store::assertion_contract_extractor::{
-        ExtractedContract,
-        FnSelectorExtractorError,
-        extract_assertion_contract,
+    store::{
+        AssertionState,
+        PendingModification,
     },
 };
 
@@ -33,11 +25,6 @@ use std::sync::{
 use bincode::{
     deserialize as de,
     serialize as ser,
-};
-
-use serde::{
-    Deserialize,
-    Serialize,
 };
 
 use tracing::{
@@ -281,16 +268,6 @@ impl std::fmt::Debug for AssertionsForExecutionMetadata<'_> {
     }
 }
 
-/// Struct representing a pending assertion modification that has not passed the timelock.
-#[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
-pub struct AssertionState {
-    pub activation_block: u64,
-    pub inactivation_block: Option<u64>,
-    pub assertion_contract: AssertionContract,
-    pub trigger_recorder: TriggerRecorder,
-    pub assertion_spec: AssertionSpec,
-}
-
 #[derive(Default)]
 struct ExpiryUpdates {
     additions: Vec<(u64, B256)>,
@@ -313,53 +290,6 @@ impl std::fmt::Debug for AssertionStateMetadata<'_> {
             .field("assertion_id", &self.assertion_id)
             .field("recorded_triggers", &self.recorded_triggers)
             .finish()
-    }
-}
-
-impl AssertionState {
-    /// Creates a new active assertion state.
-    /// Will be active across all blocks.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the assertion contract cannot be deployed or its triggers cannot be
-    /// extracted.
-    pub fn new_active(
-        bytecode: &Bytes,
-        executor_config: &ExecutorConfig,
-    ) -> Result<Self, FnSelectorExtractorError> {
-        let ExtractedContract {
-            assertion_contract,
-            trigger_recorder,
-            assertion_spec,
-        } = extract_assertion_contract(bytecode, executor_config)?;
-        Ok(Self {
-            activation_block: 0,
-            inactivation_block: None,
-            assertion_contract,
-            trigger_recorder,
-            assertion_spec,
-        })
-    }
-
-    #[cfg(any(test, feature = "test"))]
-    /// # Panics
-    ///
-    /// Panics if the assertion contract cannot be initialized.
-    pub fn new_test(bytecode: &Bytes) -> Self {
-        Self::new_active(bytecode, &ExecutorConfig::default()).unwrap()
-    }
-
-    /// Override the assertion spec on this state.
-    #[must_use]
-    pub fn with_spec(mut self, spec: AssertionSpec) -> Self {
-        self.assertion_spec = spec;
-        self
-    }
-
-    /// Getter for the `assertion_contract_id`
-    pub fn assertion_contract_id(&self) -> B256 {
-        self.assertion_contract.id
     }
 }
 
@@ -451,12 +381,19 @@ impl std::fmt::Debug for AssertionStoreInner {
 impl AssertionStore {
     /// Create a new assertion store with a sled backend for persistence.
     ///
+    /// Runs schema migrations before opening the store. See [`super::migration`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if schema migration fails.
+    ///
     /// # Panics
     ///
     /// Will panic if the expiry tree cannot be opened in the sled DB
-    pub fn new(db: sled::Db, prune_config: PruneConfig) -> Self {
+    pub fn new(db: sled::Db, prune_config: PruneConfig) -> Result<Self, AssertionStoreError> {
+        super::migration::run(&db)?;
         let backend = StoreBackend::new_sled(db);
-        Self::with_backend(backend, prune_config)
+        Ok(Self::with_backend(backend, prune_config))
     }
 
     /// Creates a new assertion store without persistence (in-memory).
@@ -1126,9 +1063,13 @@ mod tests {
     use revm::context::JournalInner;
 
     use super::*;
-    use crate::primitives::{
-        Address,
-        JournalEntry,
+    use crate::{
+        inspectors::TriggerRecorder,
+        primitives::{
+            Address,
+            Bytes,
+            JournalEntry,
+        },
     };
     use std::collections::HashSet;
 
@@ -2225,7 +2166,7 @@ mod tests {
     async fn test_sled_backend_basic_operations() {
         // This test verifies the Sled backend works correctly
         let db = sled::Config::tmp().unwrap().open().unwrap();
-        let store = AssertionStore::new(db, PruneConfig::default());
+        let store = AssertionStore::new(db, PruneConfig::default()).unwrap();
         let aa = Address::random();
 
         // Test insert and get
@@ -2249,7 +2190,7 @@ mod tests {
             interval_ms: 100_000,
             retention_blocks: 0,
         };
-        let store = AssertionStore::new(db, config);
+        let store = AssertionStore::new(db, config).unwrap();
         let aa = Address::random();
 
         // Add and remove an assertion
@@ -2275,7 +2216,7 @@ mod tests {
         // Verify both backends produce the same results for the same operations
         let in_memory_store = AssertionStore::new_ephemeral();
         let db = sled::Config::tmp().unwrap().open().unwrap();
-        let sled_store = AssertionStore::new(db, PruneConfig::default());
+        let sled_store = AssertionStore::new(db, PruneConfig::default()).unwrap();
 
         let aa = Address::random();
         let assertion = create_test_assertion(100, Some(200));
