@@ -5,14 +5,6 @@
 //! deserializes them with the old struct, and re-serializes with
 //! `assertion_spec: AssertionSpec::Legacy`.
 
-use bincode::{
-    deserialize as de,
-    serialize as ser,
-};
-use tracing::{
-    error,
-    info,
-};
 use crate::{
     inspectors::{
         TriggerRecorder,
@@ -24,9 +16,17 @@ use crate::{
         AssertionStoreError,
     },
 };
+use bincode::{
+    deserialize as de,
+    serialize as ser,
+};
 use serde::{
     Deserialize,
     Serialize,
+};
+use tracing::{
+    error,
+    info,
 };
 
 /// Pre-1.1.0 schema: no `assertion_spec` field.
