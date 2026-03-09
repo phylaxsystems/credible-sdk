@@ -39,6 +39,7 @@ pub(super) struct AssertionStateV1 {
 }
 
 pub fn migrate(db: &sled::Db) -> Result<(), AssertionStoreError> {
+    let mut batch = sled::Batch::default();
     let mut migrated = 0u64;
 
     for entry in db.iter() {
@@ -74,9 +75,13 @@ pub fn migrate(db: &sled::Db) -> Result<(), AssertionStoreError> {
             .collect();
 
         let serialized = ser(&v2_states).map_err(AssertionStoreError::BincodeError)?;
-        db.insert(key, serialized)
-            .map_err(AssertionStoreError::SledError)?;
+        batch.insert(key, serialized);
         migrated += 1;
+    }
+
+    if migrated > 0 {
+        db.apply_batch(batch)
+            .map_err(AssertionStoreError::SledError)?;
     }
 
     info!(
