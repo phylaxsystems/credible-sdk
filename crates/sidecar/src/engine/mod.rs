@@ -953,6 +953,19 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         }
     }
 
+    #[instrument(
+        name = "engine::execute_transaction_default",
+        skip(self, tx_env),
+        fields(
+            tx_execution_id = %tx_execution_id.to_json_string(),
+            tx_hash = %tx_execution_id.tx_hash,
+            caller = %tx_env.caller,
+            gas_limit = tx_env.gas_limit,
+            failed_assertions = tracing::field::Empty,
+            assertion_failure_count = tracing::field::Empty
+        ),
+        level = "debug"
+    )]
     fn execute_transaction_default(
         &mut self,
         tx_execution_id: TxExecutionId,
@@ -1020,6 +1033,19 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         Ok(())
     }
 
+    #[instrument(
+        name = "engine::execute_transaction_with_inspector",
+        skip(self, tx_env, provider),
+        fields(
+            tx_execution_id = %tx_execution_id.to_json_string(),
+            tx_hash = %tx_execution_id.tx_hash,
+            caller = %tx_env.caller,
+            gas_limit = tx_env.gas_limit,
+            failed_assertions = tracing::field::Empty,
+            assertion_failure_count = tracing::field::Empty
+        ),
+        level = "debug"
+    )]
     fn execute_transaction_with_inspector_provider<P>(
         &mut self,
         tx_execution_id: TxExecutionId,
