@@ -39,6 +39,9 @@ async fn main() -> Result<()> {
             Commands::Submit(submit) => {
                 submit.run(&cli.args, &mut config).await?;
             }
+            Commands::Apply(apply) => {
+                apply.run(&cli.args, &config).await?;
+            }
             Commands::Auth(auth_cmd) => {
                 auth_cmd.run(&mut config).await?;
             }

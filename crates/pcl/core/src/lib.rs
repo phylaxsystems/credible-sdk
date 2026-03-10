@@ -3,6 +3,7 @@
 #![allow(clippy::struct_field_names)]
 #![allow(clippy::unreadable_literal)]
 
+pub mod apply;
 pub mod assertion_da;
 pub mod assertion_submission;
 pub mod auth;

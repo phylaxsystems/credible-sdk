@@ -3,6 +3,7 @@ use pcl_common::args::CliArgs;
 use pcl_core::{
     DEFAULT_DA_URL,
     DEFAULT_DAPP_URL,
+    apply::ApplyArgs,
     assertion_da::DaStoreArgs,
     assertion_submission::DappSubmitArgs,
     auth::AuthCommand,
@@ -53,6 +54,8 @@ pub enum Commands {
     Store(DaStoreArgs),
     #[command(name = "submit")]
     Submit(DappSubmitArgs),
+    #[command(name = "apply")]
+    Apply(ApplyArgs),
     Auth(AuthCommand),
     #[command(about = "Manage configuration")]
     Config(ConfigArgs),
@@ -124,5 +127,22 @@ mod tests {
     fn parses_config_show_command() {
         let cli = Cli::try_parse_from(["pcl", "config", "show"]).unwrap();
         assert!(matches!(cli.command, Commands::Config(_)));
+    }
+
+    #[test]
+    fn parses_apply_command() {
+        let cli =
+            Cli::try_parse_from(["pcl", "apply", "--root", "./testdata/mock-protocol"]).unwrap();
+        match cli.command {
+            Commands::Apply(args) => {
+                assert_eq!(
+                    args.root,
+                    std::path::PathBuf::from("./testdata/mock-protocol")
+                );
+                assert!(!args.json);
+                assert!(!args.yes);
+            }
+            _ => panic!("expected apply command"),
+        }
     }
 }

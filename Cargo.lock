@@ -8577,6 +8577,8 @@ dependencies = [
  "foundry-common",
  "foundry-compilers",
  "foundry-config",
+ "serde",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
