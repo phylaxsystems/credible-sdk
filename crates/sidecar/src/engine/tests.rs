@@ -277,49 +277,10 @@ async fn create_test_engine_with_inspector<I>(
     RecordingInspectorProvider<I>,
 )
 where
-    I: Clone + Send + Sync + 'static,
-    for<'db> I: Inspector<
-        EthCtx<
-            'db,
-            revm::database::WrapDatabaseRef<ForkDb<OverlayDb<CacheDB<EmptyDBTyped<TestDbError>>>>>,
-        >,
-    >,
-    for<'db> I:
-        Inspector<EthCtx<'db, MultiForkDb<ForkDb<OverlayDb<CacheDB<EmptyDBTyped<TestDbError>>>>>>>,
-    for<'db> I: Inspector<
-        OpCtx<
-            'db,
-            revm::database::WrapDatabaseRef<ForkDb<OverlayDb<CacheDB<EmptyDBTyped<TestDbError>>>>>,
-        >,
-    >,
-    for<'db> I:
-        Inspector<OpCtx<'db, MultiForkDb<ForkDb<OverlayDb<CacheDB<EmptyDBTyped<TestDbError>>>>>>>,
+    RecordingInspectorProvider<I>:
+        EngineInspectorProvider<CacheDB<EmptyDBTyped<TestDbError>>, Inspector = I>,
 {
-    let (tx_sender, tx_receiver) = flume::unbounded();
-    let underlying_db = CacheDB::new(EmptyDBTyped::default());
-    let state = OverlayDb::new(Some(std::sync::Arc::new(underlying_db)));
-    let assertion_store = AssertionStore::new_ephemeral();
-    let assertion_executor = AssertionExecutor::new(ExecutorConfig::default(), assertion_store);
-
-    let state_results = TransactionsState::new();
-    let sources = Arc::new(Sources::new(vec![], 10));
-    let mut engine = CoreEngine::new(
-        state,
-        sources,
-        tx_receiver,
-        assertion_executor,
-        state_results,
-        CoreEngineConfig {
-            transaction_results_max_capacity: 10,
-            state_sources_sync_timeout: Duration::from_millis(100),
-            source_monitoring_period: Duration::from_millis(50),
-            overlay_cache_invalidation_every_block: false,
-            incident_sender: None,
-            #[cfg(feature = "cache_validation")]
-            provider_ws_url: None,
-        },
-    )
-    .await;
+    let (mut engine, tx_sender) = create_test_engine_with_timeout(Duration::from_millis(100)).await;
     let provider = engine.set_inspector(inspector);
     (engine, tx_sender, provider)
 }
