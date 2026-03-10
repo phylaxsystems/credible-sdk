@@ -47,5 +47,8 @@ pub use cache::{
 pub use engine::{
     CoreEngine,
     CoreEngineConfig,
+    EngineInspectorProvider,
+    RecordedInspectorResult,
+    RecordingInspectorProvider,
 };
 pub use transactions_state::TransactionsState;

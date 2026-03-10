@@ -15,7 +15,15 @@ use assertion_executor::{
     ExecutorConfig,
     db::{
         BlockHashStore,
+        Database as AssertionDatabase,
         VersionDb,
+        fork_db::ForkDb,
+        multi_fork_db::MultiForkDb,
+        overlay::OverlayDb,
+    },
+    evm::build_evm::{
+        EthCtx,
+        OpCtx,
     },
     primitives::{
         AccountInfo,
@@ -35,6 +43,7 @@ use eip_system_calls::eip4788::HISTORY_BUFFER_LENGTH;
 use revm::{
     DatabaseCommit,
     DatabaseRef,
+    Inspector,
     bytecode::Bytecode,
     context::{
         BlockEnv,
@@ -68,6 +77,33 @@ use std::{
     },
 };
 use thiserror::Error;
+
+#[derive(Clone, Default)]
+struct CountingInspector {
+    step_count: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl CountingInspector {
+    fn step_count(&self) -> usize {
+        self.step_count.load(Ordering::Relaxed)
+    }
+}
+
+impl<DB: AssertionDatabase> Inspector<EthCtx<'_, DB>> for CountingInspector {
+    fn step(
+        &mut self,
+        _interp: &mut revm::interpreter::Interpreter,
+        _context: &mut EthCtx<'_, DB>,
+    ) {
+        self.step_count.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+impl<DB: AssertionDatabase> Inspector<OpCtx<'_, DB>> for CountingInspector {
+    fn step(&mut self, _interp: &mut revm::interpreter::Interpreter, _context: &mut OpCtx<'_, DB>) {
+        self.step_count.fetch_add(1, Ordering::Relaxed);
+    }
+}
 
 impl<DB> CoreEngine<DB> {
     /// Creates a new `CoreEngine` for testing purposes.
@@ -111,9 +147,12 @@ impl<DB> CoreEngine<DB> {
             assertion_failure_cache: moka::sync::Cache::builder()
                 .max_capacity(super::ASSERTION_FAILURE_CACHE_SIZE)
                 .build(),
+            custom_tx_executor: None,
         }
     }
+}
 
+impl<DB> CoreEngine<DB> {
     /// Inserts an assertion directly into the assertion store of the engine.
     #[cfg(test)]
     pub fn insert_into_store(
@@ -228,6 +267,22 @@ async fn create_test_engine() -> (
     flume::Sender<TxQueueContents>,
 ) {
     create_test_engine_with_timeout(Duration::from_millis(100)).await
+}
+
+async fn create_test_engine_with_inspector<I>(
+    inspector: I,
+) -> (
+    CoreEngine<CacheDB<EmptyDBTyped<TestDbError>>>,
+    flume::Sender<TxQueueContents>,
+    RecordingInspectorProvider<I>,
+)
+where
+    RecordingInspectorProvider<I>:
+        EngineInspectorProvider<CacheDB<EmptyDBTyped<TestDbError>>, Inspector = I>,
+{
+    let (mut engine, tx_sender) = create_test_engine_with_timeout(Duration::from_millis(100)).await;
+    let provider = engine.set_inspector(inspector);
+    (engine, tx_sender, provider)
 }
 
 fn create_test_block_env() -> BlockEnv {
@@ -1667,6 +1722,55 @@ async fn test_engine_requires_block_env_before_tx() {
         }
         other => panic!("Expected TransactionError, got {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn test_execute_transaction_with_inspector() {
+    let (mut engine, _, provider) =
+        create_test_engine_with_inspector(CountingInspector::default()).await;
+    let cache = engine.cache.clone();
+    let tx_env = TxEnv {
+        caller: Address::from([0x05; 20]),
+        gas_limit: 100000,
+        gas_price: 0,
+        kind: TxKind::Create,
+        value: uint!(0_U256),
+        data: Bytes::from(vec![0x60, 0x00, 0x60, 0x00]),
+        nonce: 0,
+        ..Default::default()
+    };
+    let tx_hash = B256::from([0x55; 32]);
+    let tx_execution_id = TxExecutionId::from_hash(tx_hash);
+
+    engine.current_block_iterations.insert(
+        tx_execution_id.as_block_execution_id(),
+        BlockIterationData {
+            version_db: VersionDb::new(cache),
+            executed_txs: Vec::new(),
+            executed_state_deltas: Vec::new(),
+            block_env: create_test_block_env(),
+        },
+    );
+
+    let result = engine.execute_transaction(tx_execution_id, &tx_env);
+    assert!(result.is_ok(), "Transaction should execute successfully");
+
+    let observed_step_counts = provider
+        .records()
+        .into_iter()
+        .flat_map(|record| {
+            record
+                .inspectors
+                .into_iter()
+                .map(|inspector| inspector.step_count())
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        observed_step_counts.iter().any(|count| *count > 0),
+        "Configured inspector should observe transaction execution"
+    );
+
+    assert_transaction_result_success(&engine, &tx_execution_id);
 }
 
 #[crate::utils::engine_test(all)]
