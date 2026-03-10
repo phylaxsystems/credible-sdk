@@ -82,6 +82,54 @@ pub enum DappSubmitError {
     NoStoredAssertions,
 }
 
+/// Errors that can occur during declarative apply.
+#[derive(Error, Debug)]
+pub enum ApplyError {
+    #[error("Run `pcl auth login` first")]
+    NoAuthToken,
+
+    #[error("Failed to read or write local files: {0}")]
+    Io(#[source] std::io::Error),
+
+    #[error("Failed to parse credible.toml: {0}")]
+    Toml(#[source] toml::de::Error),
+
+    #[error("Invalid credible.toml: {0}")]
+    InvalidConfig(String),
+
+    #[error("Project selection failed: {0}")]
+    ProjectSelectionFailed(#[source] inquire::InquireError),
+
+    #[error("No projects found for the authenticated user")]
+    NoProjectsFound,
+
+    #[error("Build failed: {0}")]
+    BuildFailed(#[source] Box<PhoundryError>),
+
+    #[error("Request to {endpoint} failed: {source}")]
+    Network {
+        endpoint: String,
+        #[source]
+        source: ReqwestError,
+    },
+
+    #[error("API request to {endpoint} failed with status {status}: {body}")]
+    Api {
+        endpoint: String,
+        status: u16,
+        body: String,
+    },
+
+    #[error("Apply cancelled")]
+    ApplyCancelled,
+
+    #[error("JSON mode with pending changes requires `--yes`")]
+    JsonConfirmationRequiresYes,
+
+    #[error("Failed to encode JSON output: {0}")]
+    Json(#[from] serde_json::Error),
+}
+
 /// Errors that can occur during configuration operations
 #[derive(Error, Debug)]
 pub enum ConfigError {

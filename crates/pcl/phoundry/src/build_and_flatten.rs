@@ -20,9 +20,13 @@ use foundry_compilers::{
 };
 
 use alloy_json_abi::JsonAbi;
+use serde_json::Value;
 
 use foundry_config::find_project_root;
-use std::path::PathBuf;
+use std::{
+    collections::HashMap,
+    path::PathBuf,
+};
 
 use crate::error::PhoundryError;
 
@@ -36,15 +40,52 @@ pub struct BuildAndFlatOutput {
     pub flattened_source: String,
     /// Abi of the contract
     pub abi: JsonAbi,
+    /// Deployment bytecode of the contract
+    pub bytecode: String,
+    /// Whether the optimizer was enabled during compilation
+    pub optimizer_enabled: bool,
+    /// Number of optimizer runs used during compilation
+    pub optimizer_runs: u64,
+    /// Target EVM version
+    pub evm_version: String,
+    /// Metadata bytecode hash strategy
+    pub metadata_bytecode_hash: String,
+    /// Solidity remappings used during compilation
+    pub remappings: Vec<String>,
+    /// Linked libraries keyed by fully-qualified library name
+    pub libraries: HashMap<String, String>,
+    /// Source path used as the compilation target
+    pub compilation_target: String,
 }
 
 impl BuildAndFlatOutput {
     /// Creates a new `BuildAndFlatOutput` instance.
-    pub fn new(compiler_version: String, flattened_source: String, abi: JsonAbi) -> Self {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        compiler_version: String,
+        flattened_source: String,
+        abi: JsonAbi,
+        bytecode: String,
+        optimizer_enabled: bool,
+        optimizer_runs: u64,
+        evm_version: String,
+        metadata_bytecode_hash: String,
+        remappings: Vec<String>,
+        libraries: HashMap<String, String>,
+        compilation_target: String,
+    ) -> Self {
         Self {
             compiler_version,
             flattened_source,
             abi,
+            bytecode,
+            optimizer_enabled,
+            optimizer_runs,
+            evm_version,
+            metadata_bytecode_hash,
+            remappings,
+            libraries,
+            compilation_target,
         }
     }
 }
@@ -94,6 +135,11 @@ impl BuildAndFlattenArgs {
             .metadata
             .clone()
             .ok_or_else(|| PhoundryError::InvalidForgeOutput("Missing contract metadata"))?;
+        let settings = serde_json::to_value(&metadata.settings).map_err(|_| {
+            PhoundryError::InvalidForgeOutput("Failed to serialize compiler settings")
+        })?;
+        let bytecode = extract_bytecode(&artifact.bytecode)
+            .ok_or_else(|| PhoundryError::InvalidForgeOutput("Missing contract bytecode"))?;
 
         let solc_version = metadata
             .compiler
@@ -129,7 +175,43 @@ impl BuildAndFlattenArgs {
 
         // Flatten the contract
         let flattened = self.flatten(&path)?;
-        Ok(BuildAndFlatOutput::new(solc_version, flattened, abi))
+        Ok(BuildAndFlatOutput::new(
+            solc_version,
+            flattened,
+            abi,
+            bytecode,
+            settings
+                .pointer("/optimizer/enabled")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            settings
+                .pointer("/optimizer/runs")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+            settings
+                .get("evmVersion")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            settings
+                .pointer("/metadata/bytecodeHash")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            settings
+                .get("remappings")
+                .and_then(Value::as_array)
+                .map(|remappings| {
+                    remappings
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(ToString::to_string)
+                        .collect()
+                })
+                .unwrap_or_default(),
+            flatten_libraries(&settings),
+            rel_source_path.clone(),
+        ))
     }
 
     /// Builds the project and returns the compilation output.
@@ -185,6 +267,39 @@ impl BuildAndFlattenArgs {
     }
 }
 
+fn extract_bytecode<T: serde::Serialize>(bytecode: &T) -> Option<String> {
+    let value = serde_json::to_value(bytecode).ok()?;
+    value
+        .pointer("/object")
+        .and_then(Value::as_str)
+        .or_else(|| value.as_str())
+        .map(ToString::to_string)
+}
+
+fn flatten_libraries(settings: &Value) -> HashMap<String, String> {
+    settings
+        .get("libraries")
+        .and_then(Value::as_object)
+        .map(|files| {
+            files
+                .iter()
+                .flat_map(|(file, libraries)| {
+                    libraries
+                        .as_object()
+                        .into_iter()
+                        .flat_map(move |libraries| {
+                            libraries.iter().filter_map(move |(name, address)| {
+                                address
+                                    .as_str()
+                                    .map(|address| (format!("{file}:{name}"), address.to_string()))
+                            })
+                        })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -233,10 +348,19 @@ contract TestContract {
             "0.8.0".to_string(),
             "contract Test { }".to_string(),
             JsonAbi::default(),
+            "0x6000".to_string(),
+            true,
+            200,
+            "prague".to_string(),
+            "ipfs".to_string(),
+            vec!["@openzeppelin/=lib/openzeppelin/".to_string()],
+            HashMap::new(),
+            "assertions/src/TestContract.sol".to_string(),
         );
 
         assert_eq!(output.compiler_version, "0.8.0");
         assert_eq!(output.flattened_source, "contract Test { }");
+        assert_eq!(output.bytecode, "0x6000");
     }
 
     #[tokio::test(flavor = "multi_thread")]
