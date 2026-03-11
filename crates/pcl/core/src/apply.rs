@@ -286,10 +286,16 @@ impl ApplyArgs {
 
     async fn select_project(&self, config: &CliConfig) -> Result<String, ApplyError> {
         let auth = config.auth.as_ref().ok_or(ApplyError::NoAuthToken)?;
+        let user_id = auth.user_id.as_deref().ok_or_else(|| {
+            ApplyError::InvalidConfig(
+                "Missing user_id in auth config. Please run `pcl auth logout` then `pcl auth login` to refresh."
+                    .to_string(),
+            )
+        })?;
         let url = format!(
             "{}/api/v1/projects?user={}",
             self.api_url.trim_end_matches('/'),
-            auth.user_address
+            user_id
         );
         let client = reqwest::Client::new();
         let response = client

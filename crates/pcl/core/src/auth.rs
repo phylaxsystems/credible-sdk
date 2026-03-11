@@ -42,10 +42,12 @@ struct AuthResponse {
 }
 
 /// Response from the authentication status check
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 struct StatusResponse {
     verified: bool,
+    user_id: Option<String>,
     address: Option<String>,
+    email: Option<String>,
     token: Option<String>,
     refresh_token: Option<String>,
 }
@@ -115,10 +117,10 @@ impl AuthCommand {
             println!(
                 "{} Already logged in as: {}",
                 "ℹ️".blue(),
-                auth.user_address
+                auth.display_name()
             );
             println!(
-                "Please use {} first to login with a different wallet",
+                "Please use {} first to login with a different account",
                 "pcl auth logout".yellow()
             );
             return Ok(());
@@ -180,7 +182,7 @@ impl AuthCommand {
                 .expect("Failed to set spinner style"),
         );
         spinner.enable_steady_tick(Duration::from_millis(80));
-        spinner.set_message("Waiting for wallet authentication...");
+        spinner.set_message("Waiting for authentication...");
 
         let client = Client::new();
 
@@ -229,6 +231,11 @@ impl AuthCommand {
         status: StatusResponse,
         auth_response: &AuthResponse,
     ) -> Result<(), AuthError> {
+        let user_address = status
+            .address
+            .and_then(|a| a.parse::<Address>().ok())
+            .unwrap_or(Address::ZERO);
+
         config.auth = Some(UserAuth {
             access_token: status
                 .token
@@ -236,28 +243,23 @@ impl AuthCommand {
             refresh_token: status.refresh_token.ok_or(AuthError::InvalidAuthData(
                 "Missing refresh token".to_string(),
             ))?,
-            user_address: status
-                .address
-                .ok_or(AuthError::InvalidAuthData("Missing address".to_string()))?
-                .parse::<Address>()
-                .map_err(|_| AuthError::InvalidAddress)?,
+            user_address,
             expires_at: DateTime::parse_from_rfc3339(&auth_response.expires_at)
                 .map(|dt| dt.with_timezone(&Utc))
                 .map_err(|_| AuthError::InvalidTimestamp)?,
+            user_id: status.user_id,
+            email: status.email,
         });
         Ok(())
     }
 
     /// Display success message after authentication
     fn display_success_message(config: &CliConfig) {
+        let auth = config.auth.as_ref().unwrap();
         println!(
             "{}\n🔗 {}\n",
             "Authentication successful! 🎉".green().bold(),
-            format!(
-                "Connected wallet: {}",
-                config.auth.as_ref().unwrap().user_address
-            )
-            .white()
+            format!("Connected as: {}", auth.display_name()).white()
         );
     }
 
@@ -272,10 +274,7 @@ impl AuthCommand {
         let (icon, message) = if let Some(auth) = &config.auth {
             (
                 "✅".green(),
-                format!(
-                    "Logged in as: {}",
-                    auth.user_address.to_string().green().bold()
-                ),
+                format!("Logged in as: {}", auth.display_name().green().bold()),
             )
         } else {
             ("❌".red(), "Not logged in".to_string())
@@ -300,6 +299,8 @@ mod tests {
                     .parse()
                     .unwrap(),
                 expires_at: Utc.with_ymd_and_hms(2024, 12, 31, 0, 0, 0).unwrap(),
+                user_id: Some("test-uuid".to_string()),
+                email: None,
             }),
             ..Default::default()
         }
@@ -317,7 +318,9 @@ mod tests {
     fn create_test_status_response() -> StatusResponse {
         StatusResponse {
             verified: true,
+            user_id: Some("550e8400-e29b-41d4-a716-446655440000".to_string()),
             address: Some("0x1234567890123456789012345678901234567890".to_string()),
+            email: None,
             token: Some("test_token".to_string()),
             refresh_token: Some("test_refresh".to_string()),
         }
@@ -357,6 +360,10 @@ mod tests {
         );
         assert_eq!(auth.access_token, "test_token");
         assert_eq!(auth.refresh_token, "test_refresh");
+        assert_eq!(
+            auth.user_id.as_deref(),
+            Some("550e8400-e29b-41d4-a716-446655440000")
+        );
         assert_eq!(
             auth.expires_at,
             Utc.with_ymd_and_hms(2024, 12, 31, 0, 0, 0).unwrap()
@@ -406,7 +413,7 @@ mod tests {
             ]))
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(r#"{"verified":true,"address":"0xtest","token":"test_token","refresh_token":"test_refresh"}"#)
+            .with_body(r#"{"verified":true,"user_id":"550e8400-e29b-41d4-a716-446655440000","address":"0xtest","token":"test_token","refresh_token":"test_refresh"}"#)
             .create();
 
         let cmd = AuthCommand::try_parse_from(vec!["auth", "--auth-url", &server.url(), "login"])
@@ -445,15 +452,15 @@ mod tests {
     }
 
     #[test]
-    fn test_update_config_with_invalid_address() {
+    fn test_update_config_with_invalid_address_falls_back_to_zero() {
         let mut config = CliConfig::default();
         let auth_response = create_test_auth_response();
         let mut status = create_test_status_response();
         status.address = Some("invalid_address".to_string());
 
         let result = AuthCommand::update_config(&mut config, status, &auth_response);
-        assert!(result.is_err());
-        assert!(matches!(result, Err(AuthError::InvalidAddress)));
+        assert!(result.is_ok());
+        assert_eq!(config.auth.as_ref().unwrap().user_address, Address::ZERO);
     }
 
     #[test]
@@ -493,19 +500,15 @@ mod tests {
     }
 
     #[test]
-    fn test_update_config_with_missing_address() {
+    fn test_update_config_with_missing_address_uses_zero() {
         let mut config = CliConfig::default();
-        let _cmd = AuthCommand {
-            command: AuthSubcommands::Login,
-            auth_url: "https://dapp.phylax.systems".to_string(),
-        };
         let auth_response = create_test_auth_response();
         let mut status = create_test_status_response();
         status.address = None;
 
         let result = AuthCommand::update_config(&mut config, status, &auth_response);
-        assert!(result.is_err());
-        assert!(matches!(result, Err(AuthError::InvalidAuthData(_))));
+        assert!(result.is_ok());
+        assert_eq!(config.auth.as_ref().unwrap().user_address, Address::ZERO);
     }
 
     #[tokio::test]

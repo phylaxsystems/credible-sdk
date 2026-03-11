@@ -537,6 +537,8 @@ mod tests {
                     0,
                 )
                 .unwrap(),
+                user_id: None,
+                email: None,
             }),
             ..Default::default()
         }
@@ -801,6 +803,8 @@ mod tests {
                 refresh_token: "test_refresh".to_string(),
                 user_address: Address::from_slice(&[0; 20]),
                 expires_at: DateTime::from_timestamp(1672502400, 0).unwrap(),
+                user_id: None,
+                email: None,
             }),
             ..Default::default()
         };
@@ -942,6 +946,8 @@ mod tests {
                 refresh_token: "expired_refresh".to_string(),
                 user_address: Address::from_slice(&[0; 20]),
                 expires_at: DateTime::from_timestamp(0, 0).unwrap(), // Expired token
+                user_id: None,
+                email: None,
             }),
             ..Default::default()
         };

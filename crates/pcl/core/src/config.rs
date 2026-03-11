@@ -523,17 +523,39 @@ pub struct UserAuth {
     pub access_token: String,
     /// Refresh token for obtaining new access tokens
     pub refresh_token: String,
-    /// Ethereum address of the user
+    /// Ethereum address of the user, there is no address for email-only auth
     pub user_address: Address,
     /// Token expiration timestamp
     #[serde(with = "chrono::serde::ts_seconds")]
     pub expires_at: DateTime<Utc>,
+    /// Platform user ID (UUID), used for API calls that require it
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<String>,
+    /// Email address of the user (for email-based auth)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+}
+
+impl UserAuth {
+    /// Returns the best available display name for this user.
+    pub fn display_name(&self) -> String {
+        if self.user_address != Address::ZERO {
+            return self.user_address.to_string();
+        }
+        if let Some(email) = &self.email {
+            return email.clone();
+        }
+        if let Some(id) = &self.user_id {
+            return id.clone();
+        }
+        "unknown".to_string()
+    }
 }
 
 impl fmt::Display for UserAuth {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "Authentication:")?;
-        writeln!(f, "  User Address: {}", self.user_address)?;
+        writeln!(f, "  User: {}", self.display_name())?;
         let now = Utc::now();
         let expired = self.expires_at < now;
         let expiry_text = self.expires_at.format("%Y-%m-%d %H:%M:%S UTC").to_string();
@@ -629,6 +651,8 @@ mod tests {
                 refresh_token: "test_refresh".to_string(),
                 user_address: Address::from_slice(&[0; 20]),
                 expires_at: fixed_timestamp,
+                user_id: None,
+                email: None,
             }),
             assertions_for_submission: vec![(
                 "contract1".to_string().into(),
@@ -677,7 +701,7 @@ mod tests {
         assert!(formatted_cfg.contains("PCL Configuration"));
         assert!(formatted_cfg.contains("Config path:"));
         assert!(formatted_cfg.contains("pcl/config.toml"));
-        assert!(formatted_cfg.contains("User Address: 0x0000000000000000000000000000000000000000"));
+        assert!(formatted_cfg.contains("User: unknown"));
         assert!(formatted_cfg.contains("2022-12-31 16:00:00 UTC"));
         assert!(formatted_cfg.contains("Access Token: [Set]"));
         assert!(formatted_cfg.contains("Refresh Token: [Set]"));
@@ -726,13 +750,67 @@ mod tests {
             refresh_token: "test_refresh".to_string(),
             user_address: Address::from_slice(&[0; 20]),
             expires_at: DateTime::from_timestamp(1672502400, 0).unwrap(), // 2022-12-31 16:00:00 UTC
+            user_id: None,
+            email: Some("test@example.com".to_string()),
         };
 
         let display = format!("{auth}");
-        assert!(display.contains("User Address: 0x0000000000000000000000000000000000000000"));
+        assert!(display.contains("User: test@example.com"));
         assert!(display.contains("Token Expired at"));
         assert!(display.contains("Access Token: [Set]"));
         assert!(display.contains("Refresh Token: [Set]"));
+    }
+
+    #[test]
+    fn test_display_name_priority() {
+        let expires = DateTime::from_timestamp(0, 0).unwrap();
+
+        // Non-zero address takes priority over everything
+        let with_addr = UserAuth {
+            access_token: String::new(),
+            refresh_token: String::new(),
+            user_address: Address::from_slice(&[1; 20]),
+            expires_at: expires,
+            email: Some("test@example.com".to_string()),
+            user_id: Some("user-123".to_string()),
+        };
+        assert_eq!(
+            with_addr.display_name(),
+            "0x0101010101010101010101010101010101010101"
+        );
+
+        // Email is next priority when address is zero
+        let with_email = UserAuth {
+            access_token: String::new(),
+            refresh_token: String::new(),
+            user_address: Address::ZERO,
+            expires_at: expires,
+            email: Some("test@example.com".to_string()),
+            user_id: Some("user-123".to_string()),
+        };
+        assert_eq!(with_email.display_name(), "test@example.com");
+
+        // User ID is fallback when no address or email
+        let with_id = UserAuth {
+            access_token: String::new(),
+            refresh_token: String::new(),
+            user_address: Address::ZERO,
+            expires_at: expires,
+            email: None,
+            user_id: Some("user-123".to_string()),
+        };
+        assert_eq!(with_id.display_name(), "user-123");
+
+        // "unknown" when nothing is set
+        let bare = UserAuth {
+            access_token: String::new(),
+            refresh_token: String::new(),
+            user_address: Address::ZERO,
+            expires_at: expires,
+            email: None,
+            user_id: None,
+        };
+        assert_eq!(bare.display_name(), "unknown");
     }
 
     #[test]
@@ -767,6 +845,8 @@ mod tests {
                 refresh_token: "test".to_string(),
                 user_address: Address::from_slice(&[0; 20]),
                 expires_at: DateTime::from_timestamp(1672502400, 0).unwrap(),
+                user_id: None,
+                email: None,
             }),
             assertions_for_submission: HashMap::new(),
         };
@@ -848,6 +928,8 @@ mod tests {
             refresh_token: "test_refresh".to_string(),
             user_address: Address::from_slice(&[0; 20]),
             expires_at: DateTime::from_timestamp(1672502400, 0).unwrap(),
+            user_id: Some("test-uuid".to_string()),
+            email: Some("test@example.com".to_string()),
         };
 
         let serialized = toml::to_string(&auth).unwrap();
