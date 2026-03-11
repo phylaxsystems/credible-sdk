@@ -7,6 +7,7 @@
 use alloy_primitives::{
     Address,
     B256,
+    Bytes,
 };
 use assertion_executor::store::{
     AssertionAddedEvent,
@@ -108,6 +109,9 @@ impl EventSource for GraphqlEventSource {
                         assertionAdopter
                         assertionId
                         activationBlock
+                        daVerifier
+                        metadata
+                        proof
                     }
                 }
             }
@@ -219,6 +223,9 @@ struct AssertionAddedNode {
     assertion_id: B256,
     #[serde(deserialize_with = "deserialize_bigint_string")]
     activation_block: u64,
+    da_verifier: Address,
+    metadata: Bytes,
+    proof: Bytes,
 }
 
 impl From<AssertionAddedNode> for AssertionAddedEvent {
@@ -229,6 +236,9 @@ impl From<AssertionAddedNode> for AssertionAddedEvent {
             assertion_adopter: node.assertion_adopter,
             assertion_id: node.assertion_id,
             activation_block: node.activation_block,
+            da_verifier: node.da_verifier,
+            metadata: node.metadata,
+            proof: node.proof,
         }
     }
 }
@@ -302,7 +312,10 @@ mod tests {
                             "logIndex": 1,
                             "assertionAdopter": "0x1234567890123456789012345678901234567890",
                             "assertionId": "0x044852b2a670ade5407e78fb2863c51de9fcb96542a07186fe3aeda6bb8a116d",
-                            "activationBlock": "150"
+                            "activationBlock": "150",
+                            "daVerifier": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                            "metadata": "0xdeadbeef",
+                            "proof": "0xcafebabe"
                         }]
                     }
                 }
@@ -317,6 +330,17 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].block, 100);
         assert_eq!(events[0].activation_block, 150);
+        assert_eq!(
+            events[0].da_verifier,
+            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .parse::<Address>()
+                .unwrap()
+        );
+        assert_eq!(
+            events[0].metadata,
+            Bytes::from(vec![0xde, 0xad, 0xbe, 0xef])
+        );
+        assert_eq!(events[0].proof, Bytes::from(vec![0xca, 0xfe, 0xba, 0xbe]));
 
         mock.assert();
     }

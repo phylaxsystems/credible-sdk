@@ -1,6 +1,7 @@
 use crate::primitives::{
     Address,
     B256,
+    Bytes,
 };
 use serde::{
     Deserialize,
@@ -58,6 +59,13 @@ pub struct AssertionAddedEvent {
     pub assertion_id: B256,
     /// The block number when this assertion becomes active
     pub activation_block: u64,
+    /// The DA verifier address used for proof verification
+    pub da_verifier: Address,
+    /// The metadata used for verification
+    pub metadata: Bytes,
+    /// The proof used for verification. When `DAVerifierOnChain` is used,
+    /// this contains the deployment bytecode itself (keccak256(proof) == `assertion_id`).
+    pub proof: Bytes,
 }
 
 /// A raw `AssertionRemoved` event as returned by the event source.

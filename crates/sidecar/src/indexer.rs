@@ -5,7 +5,11 @@
 //! assertion store.
 
 use crate::utils::ErrorRecoverability;
-use alloy::primitives::Bytes;
+use alloy::primitives::{
+    Address,
+    Bytes,
+    keccak256,
+};
 use assertion_da_client::{
     DaClient,
     DaClientError,
@@ -52,6 +56,8 @@ pub struct IndexerCfg<S: EventSource> {
     pub da_client: DaClient,
     pub executor_config: ExecutorConfig,
     pub poll_interval: Duration,
+    /// Address of the on-chain DA verifier (`DAVerifierOnChain`).
+    pub onchain_da_verifier: Option<Address>,
 }
 
 /// Polls an [`EventSource`] for new events,
@@ -63,6 +69,7 @@ struct AssertionIndexer<S: EventSource> {
     da_client: DaClient,
     executor_config: ExecutorConfig,
     poll_interval: Duration,
+    onchain_da_verifier: Option<Address>,
     /// The last block number we have processed events for.
     last_synced_block: u64,
 }
@@ -75,6 +82,7 @@ impl<S: EventSource> AssertionIndexer<S> {
             da_client: cfg.da_client,
             executor_config: cfg.executor_config,
             poll_interval: cfg.poll_interval,
+            onchain_da_verifier: cfg.onchain_da_verifier,
             last_synced_block: 0,
         }
     }
@@ -256,23 +264,14 @@ impl<S: EventSource> AssertionIndexer<S> {
     }
 
     /// Process a single `AssertionAdded` event:
-    /// - Fetch bytecode from DA
+    /// - Resolve deployment bytecode (on-chain DA or DA server)
     /// - Extract assertion contract + trigger recorder
     /// - Return `PendingModification::Add`
     async fn process_added_event(
         &self,
         event: &AssertionAddedEvent,
     ) -> Result<Option<PendingModification>, IndexerError> {
-        let DaFetchResponse {
-            bytecode,
-            encoded_constructor_args,
-            ..
-        } = self.da_client.fetch_assertion(event.assertion_id).await?;
-
-        // Rebuild deployment bytecode by appending constructor args
-        let mut deployment_bytecode = bytecode.to_vec();
-        deployment_bytecode.extend_from_slice(encoded_constructor_args.as_ref());
-        let deployment_bytecode: Bytes = deployment_bytecode.into();
+        let deployment_bytecode = self.resolve_deployment_bytecode(event).await?;
 
         match extract_assertion_contract(&deployment_bytecode, &self.executor_config) {
             Ok(ExtractedContract {
@@ -304,6 +303,51 @@ impl<S: EventSource> AssertionIndexer<S> {
                 Ok(None)
             }
         }
+    }
+
+    /// Resolve the deployment bytecode for an assertion event.
+    ///
+    /// Uses on-chain DA when the event's `da_verifier` matches the configured
+    /// on-chain DA verifier address **and** `keccak256(proof) == assertion_id`.
+    /// Otherwise, the bytecode is fetched from the DA server.
+    async fn resolve_deployment_bytecode(
+        &self,
+        event: &AssertionAddedEvent,
+    ) -> Result<Bytes, IndexerError> {
+        if self.is_onchain_da(event) {
+            info!(
+                target = "sidecar::indexer",
+                assertion_id = ?event.assertion_id,
+                da_verifier = ?event.da_verifier,
+                "Resolved bytecode from on-chain DA proof"
+            );
+            Ok(event.proof.clone())
+        } else {
+            let DaFetchResponse {
+                bytecode,
+                encoded_constructor_args,
+                ..
+            } = self.da_client.fetch_assertion(event.assertion_id).await?;
+
+            // Rebuild deployment bytecode by appending constructor args
+            let mut deployment_bytecode = bytecode.to_vec();
+            deployment_bytecode.extend_from_slice(encoded_constructor_args.as_ref());
+
+            info!(
+                target = "sidecar::indexer",
+                assertion_id = ?event.assertion_id,
+                "Resolved bytecode from DA server"
+            );
+            Ok(deployment_bytecode.into())
+        }
+    }
+
+    /// Returns `true` when the event used on-chain DA: the event's DA verifier
+    /// matches the configured address and the proof hashes to the assertion ID.
+    fn is_onchain_da(&self, event: &AssertionAddedEvent) -> bool {
+        self.onchain_da_verifier
+            .is_some_and(|addr| addr == event.da_verifier)
+            && keccak256(&event.proof) == event.assertion_id
     }
 }
 
@@ -452,6 +496,14 @@ mod tests {
         source: MockEventSource,
         da_url: &str,
     ) -> AssertionIndexer<MockEventSource> {
+        create_test_indexer_with_onchain_da(source, da_url, None)
+    }
+
+    fn create_test_indexer_with_onchain_da(
+        source: MockEventSource,
+        da_url: &str,
+        onchain_da_verifier: Option<Address>,
+    ) -> AssertionIndexer<MockEventSource> {
         let store = AssertionStore::new_ephemeral();
         let da_client = DaClient::new(da_url).unwrap();
         let cfg = IndexerCfg {
@@ -460,11 +512,12 @@ mod tests {
             da_client,
             executor_config: ExecutorConfig::default(),
             poll_interval: Duration::from_millis(10),
+            onchain_da_verifier,
         };
         AssertionIndexer::new(cfg)
     }
 
-    // Build an AssertionAddedEvent with assertion_id = keccak256(bytecode).
+    // Build an AssertionAddedEvent that uses the DA server path, proof does not contain bytecode.
     fn make_added_event(
         bytecode: &[u8],
         adopter: Address,
@@ -477,6 +530,29 @@ mod tests {
             assertion_adopter: adopter,
             assertion_id: keccak256(bytecode),
             activation_block,
+            da_verifier: Address::ZERO,
+            metadata: Bytes::new(),
+            proof: Bytes::new(),
+        }
+    }
+
+    // Build an AssertionAddedEvent that uses on-chain DA (proof IS the bytecode).
+    fn make_onchain_da_event(
+        bytecode: &[u8],
+        adopter: Address,
+        da_verifier: Address,
+        block: u64,
+        activation_block: u64,
+    ) -> AssertionAddedEvent {
+        AssertionAddedEvent {
+            block,
+            log_index: 0,
+            assertion_adopter: adopter,
+            assertion_id: keccak256(bytecode),
+            activation_block,
+            da_verifier,
+            metadata: Bytes::new(),
+            proof: Bytes::copy_from_slice(bytecode),
         }
     }
 
@@ -509,6 +585,9 @@ mod tests {
             assertion_adopter: adopter,
             assertion_id,
             activation_block: 15,
+            da_verifier: Address::ZERO,
+            metadata: Bytes::new(),
+            proof: Bytes::new(),
         };
 
         let result = indexer.process_added_event(&event).await.unwrap();
@@ -549,6 +628,9 @@ mod tests {
             assertion_adopter: adopter,
             assertion_id: full_assertion_id,
             activation_block: 10,
+            da_verifier: Address::ZERO,
+            metadata: Bytes::new(),
+            proof: Bytes::new(),
         };
 
         let result = indexer.process_added_event(&event).await.unwrap();
@@ -561,6 +643,82 @@ mod tests {
             }
             PendingModification::Remove { .. } => panic!("expected PendingModification::Add"),
         }
+    }
+
+    #[tokio::test]
+    async fn test_process_added_event_onchain_da() {
+        let bc = counter_bytecode();
+        let adopter = Address::repeat_byte(0xAB);
+        let onchain_verifier = Address::repeat_byte(0xDA);
+        let assertion_id = keccak256(&bc);
+
+        // No DA server mock needed — bytecode comes from the proof field
+        let server = MockServer::start();
+        let indexer = create_test_indexer_with_onchain_da(
+            MockEventSource::new(),
+            &server.base_url(),
+            Some(onchain_verifier),
+        );
+
+        let event = make_onchain_da_event(&bc, adopter, onchain_verifier, 10, 15);
+
+        let result = indexer.process_added_event(&event).await.unwrap();
+        let modification = result.expect("should produce Add modification");
+        match modification {
+            PendingModification::Add {
+                assertion_adopter: aa,
+                assertion_contract,
+                activation_block,
+                ..
+            } => {
+                assert_eq!(aa, adopter);
+                assert_eq!(activation_block, 15);
+                assert_eq!(assertion_contract.id, assertion_id);
+            }
+            PendingModification::Remove { .. } => panic!("expected PendingModification::Add"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_onchain_da_ignored_when_verifier_not_configured() {
+        let bc = counter_bytecode();
+        let adopter = Address::repeat_byte(0xAC);
+        let assertion_id = keccak256(&bc);
+
+        let server = MockServer::start();
+        mock_da_for_bytecode(&server, assertion_id, &bc, &[]);
+
+        // No onchain_da_verifier configured — even though proof matches,
+        // the indexer should fall through to the DA server.
+        let indexer = create_test_indexer(MockEventSource::new(), &server.base_url());
+        let event = make_onchain_da_event(&bc, adopter, Address::repeat_byte(0xDA), 10, 15);
+
+        let result = indexer.process_added_event(&event).await.unwrap();
+        assert!(
+            result.is_some(),
+            "should still succeed via DA server fallback"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_onchain_da_ignored_when_verifier_mismatch() {
+        let bc = counter_bytecode();
+        let adopter = Address::repeat_byte(0xAD);
+        let assertion_id = keccak256(&bc);
+
+        let server = MockServer::start();
+        mock_da_for_bytecode(&server, assertion_id, &bc, &[]);
+
+        // Configure a different verifier than the event's — should fall through to DA server.
+        let indexer = create_test_indexer_with_onchain_da(
+            MockEventSource::new(),
+            &server.base_url(),
+            Some(Address::repeat_byte(0xFF)),
+        );
+        let event = make_onchain_da_event(&bc, adopter, Address::repeat_byte(0xDA), 10, 15);
+
+        let result = indexer.process_added_event(&event).await.unwrap();
+        assert!(result.is_some(), "should succeed via DA server fallback");
     }
 
     #[tokio::test]
@@ -861,6 +1019,9 @@ mod tests {
                 assertion_adopter: adopter,
                 assertion_id,
                 activation_block: 10,
+                da_verifier: Address::ZERO,
+                metadata: Bytes::new(),
+                proof: Bytes::new(),
             }],
             vec![],
         );

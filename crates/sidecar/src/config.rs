@@ -109,5 +109,6 @@ pub async fn init_indexer_config(
         da_client,
         executor_config: executor_config.clone(),
         poll_interval,
+        onchain_da_verifier: config.credible.onchain_da_verifier,
     })
 }
