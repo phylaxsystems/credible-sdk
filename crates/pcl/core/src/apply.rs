@@ -3,6 +3,10 @@ use crate::{
     config::CliConfig,
     error::ApplyError,
 };
+use chrono::{
+    DateTime,
+    Utc,
+};
 use clap::ValueHint;
 use inquire::Select;
 use pcl_common::args::CliArgs;
@@ -139,7 +143,7 @@ struct ReleaseResponse {
     previously_deployed: bool,
     diff: Option<Value>,
     diffed_against_release_id: Option<Uuid>,
-    created_at: String,
+    created_at: DateTime<Utc>,
     review_url: Option<Url>,
 }
 

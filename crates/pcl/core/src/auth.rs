@@ -39,7 +39,7 @@ struct AuthResponse {
     #[serde(rename = "deviceSecret")]
     device_secret: String,
     #[serde(rename = "expiresAt")]
-    expires_at: String,
+    expires_at: DateTime<Utc>,
 }
 
 /// Response from the authentication status check
@@ -245,9 +245,7 @@ impl AuthCommand {
                 "Missing refresh token".to_string(),
             ))?,
             user_address,
-            expires_at: DateTime::parse_from_rfc3339(&auth_response.expires_at)
-                .map(|dt| dt.with_timezone(&Utc))
-                .map_err(|_| AuthError::InvalidTimestamp)?,
+            expires_at: auth_response.expires_at,
             user_id: status.user_id,
             email: status.email,
         });
@@ -312,7 +310,7 @@ mod tests {
             code: "123456".to_string(),
             session_id: "test_session".to_string(),
             device_secret: "test_secret".to_string(),
-            expires_at: "2024-12-31T00:00:00Z".to_string(),
+            expires_at: Utc.with_ymd_and_hms(2024, 12, 31, 0, 0, 0).unwrap(),
         }
     }
 
@@ -462,18 +460,6 @@ mod tests {
         let result = AuthCommand::update_config(&mut config, status, &auth_response);
         assert!(result.is_ok());
         assert_eq!(config.auth.as_ref().unwrap().user_address, Address::ZERO);
-    }
-
-    #[test]
-    fn test_update_config_with_invalid_timestamp() {
-        let mut config = CliConfig::default();
-        let mut auth_response = create_test_auth_response();
-        auth_response.expires_at = "invalid_timestamp".to_string();
-        let status = create_test_status_response();
-
-        let result = AuthCommand::update_config(&mut config, status, &auth_response);
-        assert!(result.is_err());
-        assert!(matches!(result, Err(AuthError::InvalidTimestamp)));
     }
 
     #[test]

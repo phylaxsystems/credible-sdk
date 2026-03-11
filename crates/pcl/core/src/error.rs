@@ -201,8 +201,4 @@ pub enum AuthError {
         "Invalid Ethereum address received. Please ensure you're connecting with a valid wallet."
     )]
     InvalidAddress,
-
-    /// Error when an invalid timestamp format is received
-    #[error("Invalid timestamp received from server. Please try again.")]
-    InvalidTimestamp,
 }
