@@ -408,7 +408,7 @@ impl ApplyArgs {
             url
         });
         println!(
-            "Release #{} created. Review at: {}",
+            "Release #{} created.\nReview at: {}",
             release.release_number,
             review_url.as_ref().map_or_else(
                 |_| {
