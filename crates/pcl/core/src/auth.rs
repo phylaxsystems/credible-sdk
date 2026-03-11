@@ -52,16 +52,6 @@ struct StatusResponse {
     refresh_token: Option<String>,
 }
 
-/// Response from the `/web/auth/me` endpoint
-#[derive(Deserialize, Debug)]
-struct MeResponse {
-    id: String,
-    #[serde(default)]
-    email: Option<String>,
-    #[serde(default)]
-    address: Option<String>,
-}
-
 /// Authentication commands for the PCL CLI
 #[derive(clap::Parser)]
 #[command(about = "Authenticate the CLI with your Credible Layer dApp account")]
@@ -202,7 +192,6 @@ impl AuthCommand {
             if status.verified {
                 spinner.finish_with_message("✅ Authentication successful!");
                 Self::update_config(config, status, auth_response)?;
-                self.fetch_and_store_user_id(&client, config).await?;
                 Self::display_success_message(config);
                 return Ok(());
             }
@@ -234,46 +223,6 @@ impl AuthCommand {
             .json()
             .await
             .map_err(AuthError::StatusRequestInvalidResponse)
-    }
-
-    /// Fetch the user's platform UUID via `/web/auth/me` and store it in config.
-    async fn fetch_and_store_user_id(
-        &self,
-        client: &Client,
-        config: &mut CliConfig,
-    ) -> Result<(), AuthError> {
-        let auth = config.auth.as_ref().ok_or(AuthError::InvalidAuthData(
-            "No auth after login".to_string(),
-        ))?;
-
-        let url = format!("{}/api/v1/web/auth/me", self.auth_url.trim_end_matches('/'));
-        let resp = client
-            .get(&url)
-            .header("Authorization", format!("Bearer {}", auth.access_token))
-            .send()
-            .await
-            .map_err(AuthError::StatusRequestFailed)?;
-
-        if !resp.status().is_success() {
-            // Non-fatal: user_id won't be available but auth still works
-            return Ok(());
-        }
-
-        if let Ok(me) = resp.json::<MeResponse>().await {
-            let auth = config.auth.as_mut().unwrap();
-            auth.user_id = Some(me.id);
-            if auth.email.is_none() {
-                auth.email = me.email;
-            }
-            if auth.user_address == Address::ZERO
-                && let Some(addr) = me.address
-                && let Ok(parsed) = addr.parse::<Address>()
-            {
-                auth.user_address = parsed;
-            }
-        }
-
-        Ok(())
     }
 
     /// Update the configuration with authentication data
