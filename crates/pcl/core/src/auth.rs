@@ -23,6 +23,7 @@ use tokio::time::{
     Duration,
     sleep,
 };
+use uuid::Uuid;
 
 /// Interval between authentication status checks
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
@@ -43,9 +44,9 @@ struct AuthResponse {
 
 /// Response from the authentication status check
 #[derive(Deserialize, Debug)]
-struct StatusResponse {
+struct AuthStatusResponse {
     verified: bool,
-    user_id: Option<String>,
+    user_id: Option<Uuid>,
     address: Option<String>,
     email: Option<String>,
     token: Option<String>,
@@ -209,7 +210,7 @@ impl AuthCommand {
         &self,
         client: &Client,
         auth_response: &AuthResponse,
-    ) -> Result<StatusResponse, AuthError> {
+    ) -> Result<AuthStatusResponse, AuthError> {
         let url = format!("{}/api/v1/cli/auth/status", self.auth_url);
         client
             .get(url)
@@ -228,7 +229,7 @@ impl AuthCommand {
     /// Update the configuration with authentication data
     fn update_config(
         config: &mut CliConfig,
-        status: StatusResponse,
+        status: AuthStatusResponse,
         auth_response: &AuthResponse,
     ) -> Result<(), AuthError> {
         let user_address = status
@@ -299,7 +300,7 @@ mod tests {
                     .parse()
                     .unwrap(),
                 expires_at: Utc.with_ymd_and_hms(2024, 12, 31, 0, 0, 0).unwrap(),
-                user_id: Some("test-uuid".to_string()),
+                user_id: Some(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap()),
                 email: None,
             }),
             ..Default::default()
@@ -315,10 +316,10 @@ mod tests {
         }
     }
 
-    fn create_test_status_response() -> StatusResponse {
-        StatusResponse {
+    fn create_test_status_response() -> AuthStatusResponse {
+        AuthStatusResponse {
             verified: true,
-            user_id: Some("550e8400-e29b-41d4-a716-446655440000".to_string()),
+            user_id: Some(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap()),
             address: Some("0x1234567890123456789012345678901234567890".to_string()),
             email: None,
             token: Some("test_token".to_string()),
@@ -361,8 +362,8 @@ mod tests {
         assert_eq!(auth.access_token, "test_token");
         assert_eq!(auth.refresh_token, "test_refresh");
         assert_eq!(
-            auth.user_id.as_deref(),
-            Some("550e8400-e29b-41d4-a716-446655440000")
+            auth.user_id,
+            Some(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap())
         );
         assert_eq!(
             auth.expires_at,

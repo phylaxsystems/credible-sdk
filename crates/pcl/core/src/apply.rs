@@ -27,6 +27,8 @@ use std::{
         PathBuf,
     },
 };
+use url::Url;
+use uuid::Uuid;
 
 #[derive(clap::Parser, Debug)]
 #[command(
@@ -131,14 +133,14 @@ struct ApplyJsonOutput {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ReleaseResponse {
-    id: String,
+    id: Uuid,
     release_number: u64,
     status: String,
     previously_deployed: bool,
     diff: Option<Value>,
-    diffed_against_release_id: Option<String>,
+    diffed_against_release_id: Option<Uuid>,
     created_at: String,
-    review_url: Option<String>,
+    review_url: Option<Url>,
 }
 
 impl ApplyArgs {
@@ -194,13 +196,14 @@ impl ApplyArgs {
         // }
         let preview = Value::Null;
 
-        if json_output && !self.yes {
-            return Err(ApplyError::JsonConfirmationRequiresYes);
-        }
-
-        if !self.yes && !confirm_apply()? {
-            return Err(ApplyError::ApplyCancelled);
-        }
+        // TODO: Re-enable confirmation prompt once preview is implemented
+        // if json_output && !self.yes {
+        //     return Err(ApplyError::JsonConfirmationRequiresYes);
+        // }
+        //
+        // if !self.yes && !confirm_apply()? {
+        //     return Err(ApplyError::ApplyCancelled);
+        // }
 
         let release: ReleaseResponse = self
             .post_authenticated(
@@ -287,7 +290,7 @@ impl ApplyArgs {
 
     async fn select_project(&self, config: &CliConfig) -> Result<String, ApplyError> {
         let auth = config.auth.as_ref().ok_or(ApplyError::NoAuthToken)?;
-        let user_id = auth.user_id.as_deref().ok_or_else(|| {
+        let user_id = auth.user_id.as_ref().ok_or_else(|| {
             ApplyError::InvalidConfig(
                 "Missing user_id in auth config. Please run `pcl auth logout` then `pcl auth login` to refresh."
                     .to_string(),
@@ -393,11 +396,26 @@ impl ApplyArgs {
     }
 
     fn print_release_success(platform_url: &str, project_id: &str, release: &ReleaseResponse) {
+        let review_url = Url::parse(platform_url).map(|mut url| {
+            url.set_path(&format!(
+                "/dashboard/projects/{project_id}/releases/{}",
+                release.id
+            ));
+            url
+        });
         println!(
-            "Release #{} created. Review at: {}/dashboard/projects/{project_id}/releases/{}",
+            "Release #{} created. Review at: {}",
             release.release_number,
-            platform_url.trim_end_matches('/'),
-            release.id
+            review_url.as_ref().map_or_else(
+                |_| {
+                    format!(
+                        "{}/dashboard/projects/{project_id}/releases/{}",
+                        platform_url.trim_end_matches('/'),
+                        release.id
+                    )
+                },
+                ToString::to_string
+            )
         );
     }
 }
@@ -519,6 +537,8 @@ fn render_preview(preview: &Value) {
     );
 }
 
+#[allow(dead_code)]
+// TODO: to reuse when preview diff is activated
 fn confirm_apply() -> Result<bool, ApplyError> {
     eprint!("Do you want to apply these changes? Only 'yes' will be accepted: ");
     stderr().flush().map_err(ApplyError::Io)?;

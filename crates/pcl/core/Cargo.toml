@@ -34,6 +34,8 @@ toml = "0.8.2"
 dirs = "6.0.0"
 indicatif = "0.18"
 open = "5"
+url.workspace = true
+uuid = { version = "1", features = ["serde"] }
 
 [features]
 default = ["full-test"]
