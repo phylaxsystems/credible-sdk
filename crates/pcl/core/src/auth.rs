@@ -385,7 +385,7 @@ mod tests {
             .mock("GET", "/api/v1/cli/auth/code")
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(r#"{"code":"123456","sessionId":"test_session","deviceSecret":"test_secret","expiresAt":"2024-12-31"}"#)
+            .with_body(r#"{"code":"123456","sessionId":"test_session","deviceSecret":"test_secret","expiresAt":"2024-12-31T00:00:00Z"}"#)
             .create();
 
         let cmd = AuthCommand::try_parse_from(vec!["auth", "--auth-url", &server.url(), "login"])
