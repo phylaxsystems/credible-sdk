@@ -45,20 +45,11 @@ struct AuthResponse {
 #[derive(Deserialize, Debug)]
 struct StatusResponse {
     verified: bool,
+    user_id: Option<String>,
     address: Option<String>,
     email: Option<String>,
     token: Option<String>,
     refresh_token: Option<String>,
-}
-
-/// Response from the `/web/auth/me` endpoint
-#[derive(Deserialize, Debug)]
-struct MeResponse {
-    id: String,
-    #[serde(default)]
-    email: Option<String>,
-    #[serde(default)]
-    address: Option<String>,
 }
 
 /// Authentication commands for the PCL CLI
@@ -201,7 +192,6 @@ impl AuthCommand {
             if status.verified {
                 spinner.finish_with_message("✅ Authentication successful!");
                 Self::update_config(config, status, auth_response)?;
-                self.fetch_and_store_user_id(&client, config).await?;
                 Self::display_success_message(config);
                 return Ok(());
             }
@@ -235,46 +225,6 @@ impl AuthCommand {
             .map_err(AuthError::StatusRequestInvalidResponse)
     }
 
-    /// Fetch the user's platform UUID via `/web/auth/me` and store it in config.
-    async fn fetch_and_store_user_id(
-        &self,
-        client: &Client,
-        config: &mut CliConfig,
-    ) -> Result<(), AuthError> {
-        let auth = config.auth.as_ref().ok_or(AuthError::InvalidAuthData(
-            "No auth after login".to_string(),
-        ))?;
-
-        let url = format!("{}/api/v1/web/auth/me", self.auth_url.trim_end_matches('/'));
-        let resp = client
-            .get(&url)
-            .header("Authorization", format!("Bearer {}", auth.access_token))
-            .send()
-            .await
-            .map_err(AuthError::StatusRequestFailed)?;
-
-        if !resp.status().is_success() {
-            // Non-fatal: user_id won't be available but auth still works
-            return Ok(());
-        }
-
-        if let Ok(me) = resp.json::<MeResponse>().await {
-            let auth = config.auth.as_mut().unwrap();
-            auth.user_id = Some(me.id);
-            if auth.email.is_none() {
-                auth.email = me.email;
-            }
-            if auth.user_address == Address::ZERO
-                && let Some(addr) = me.address
-                && let Ok(parsed) = addr.parse::<Address>()
-            {
-                auth.user_address = parsed;
-            }
-        }
-
-        Ok(())
-    }
-
     /// Update the configuration with authentication data
     fn update_config(
         config: &mut CliConfig,
@@ -297,7 +247,7 @@ impl AuthCommand {
             expires_at: DateTime::parse_from_rfc3339(&auth_response.expires_at)
                 .map(|dt| dt.with_timezone(&Utc))
                 .map_err(|_| AuthError::InvalidTimestamp)?,
-            user_id: None,
+            user_id: status.user_id,
             email: status.email,
         });
         Ok(())
@@ -368,6 +318,7 @@ mod tests {
     fn create_test_status_response() -> StatusResponse {
         StatusResponse {
             verified: true,
+            user_id: Some("550e8400-e29b-41d4-a716-446655440000".to_string()),
             address: Some("0x1234567890123456789012345678901234567890".to_string()),
             email: None,
             token: Some("test_token".to_string()),
@@ -409,6 +360,10 @@ mod tests {
         );
         assert_eq!(auth.access_token, "test_token");
         assert_eq!(auth.refresh_token, "test_refresh");
+        assert_eq!(
+            auth.user_id.as_deref(),
+            Some("550e8400-e29b-41d4-a716-446655440000")
+        );
         assert_eq!(
             auth.expires_at,
             Utc.with_ymd_and_hms(2024, 12, 31, 0, 0, 0).unwrap()
@@ -458,7 +413,7 @@ mod tests {
             ]))
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(r#"{"verified":true,"address":"0xtest","token":"test_token","refresh_token":"test_refresh"}"#)
+            .with_body(r#"{"verified":true,"user_id":"550e8400-e29b-41d4-a716-446655440000","address":"0xtest","token":"test_token","refresh_token":"test_refresh"}"#)
             .create();
 
         let cmd = AuthCommand::try_parse_from(vec!["auth", "--auth-url", &server.url(), "login"])
