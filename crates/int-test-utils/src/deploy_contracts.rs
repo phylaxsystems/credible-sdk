@@ -73,6 +73,7 @@ pub struct Contracts {
     pub state_oracle: Address,
     pub admin_verifier: Address,
     pub da_verifier: Address,
+    pub da_verifier_onchain: Address,
 }
 
 /// Deploy contracts using the provided configuration
@@ -126,66 +127,71 @@ pub fn deploy_contracts(
             let address = Address::from_private_key(assertion_da_private_key);
             format!("{address:#x}")
         })
+        .env("DEPLOY_ADMIN_VERIFIER_OWNER", "true")
+        .env("DEPLOY_ADMIN_VERIFIER_WHITELIST", "false")
+        .env("ADMIN_VERIFIER_WHITELIST_ADMIN_ADDRESS", {
+            let address = Address::from_private_key(&deployer_private_key);
+            format!("{address:#x}")
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
     let output = cmd.output().map_err(DeployContractsError::IoError)?;
 
-    // Check if the script executed successfully
-    if output.status.success() {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let mut state_oracle = None;
-        let mut admin_verifier = None;
-        let mut da_verifier = None;
-        for line in stdout.lines() {
-            if let Some(addr) = line.strip_prefix("  State Oracle Proxy deployed at ") {
-                state_oracle = Some(addr.trim().to_string());
-            } else if let Some(addr) = line.strip_prefix("  Admin Verifier deployed at ") {
-                admin_verifier = Some(addr.trim().to_string());
-            } else if let Some(addr) = line.strip_prefix("  DA Verifier deployed at ") {
-                da_verifier = Some(addr.trim().to_string());
-            }
-        }
-        match (state_oracle, admin_verifier, da_verifier) {
-            (Some(state_oracle), Some(admin_verifier), Some(da_verifier)) => {
-                let state_oracle = Address::from_str(&state_oracle).map_err(|e| {
-                    DeployContractsError::CommandError(
-                        output.status,
-                        format!("Failed to parse state_oracle address: {e}"),
-                    )
-                })?;
-                let admin_verifier = Address::from_str(&admin_verifier).map_err(|e| {
-                    DeployContractsError::CommandError(
-                        output.status,
-                        format!("Failed to parse admin_verifier address: {e}"),
-                    )
-                })?;
-                let da_verifier = Address::from_str(&da_verifier).map_err(|e| {
-                    DeployContractsError::CommandError(
-                        output.status,
-                        format!("Failed to parse da_verifier address: {e}"),
-                    )
-                })?;
-                Ok(Contracts {
-                    state_oracle,
-                    admin_verifier,
-                    da_verifier,
-                })
-            }
-            _ => {
-                Err(DeployContractsError::CommandError(
-                    output.status,
-                    format!("Failed to parse contract addresses from output: {stdout}"),
-                ))
-            }
-        }
-    } else {
-        Err(DeployContractsError::CommandError(
+    if !output.status.success() {
+        return Err(DeployContractsError::CommandError(
             output.status,
             String::from_utf8_lossy(&output.stderr).to_string(),
-        ))
+        ));
     }
+
+    parse_deploy_output(&output)
 }
+
+fn parse_deploy_output(
+    output: &std::process::Output,
+) -> Result<Contracts, DeployContractsError> {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut state_oracle = None;
+    let mut admin_verifier = None;
+    let mut da_verifier = None;
+    let mut da_verifier_onchain = None;
+
+    for line in stdout.lines() {
+        if let Some(addr) = line.strip_prefix("  State Oracle Proxy deployed at ") {
+            state_oracle = Some(addr.trim());
+        } else if let Some(addr) = line.strip_prefix("  Admin Verifier (Owner) deployed at ") {
+            admin_verifier = Some(addr.trim());
+        } else if let Some(addr) = line.strip_prefix("  DA Verifier (ECDSA) deployed at ") {
+            da_verifier = Some(addr.trim());
+        } else if let Some(addr) = line.strip_prefix("  DA Verifier (OnChain) deployed at ") {
+            da_verifier_onchain = Some(addr.trim());
+        }
+    }
+
+    let parse_addr = |raw: Option<&str>, name: &str| -> Result<Address, DeployContractsError> {
+        let raw = raw.ok_or_else(|| {
+            DeployContractsError::CommandError(
+                output.status,
+                format!("Missing {name} in output: {stdout}"),
+            )
+        })?;
+        Address::from_str(raw).map_err(|e| {
+            DeployContractsError::CommandError(
+                output.status,
+                format!("Failed to parse {name} address: {e}"),
+            )
+        })
+    };
+
+    Ok(Contracts {
+        state_oracle: parse_addr(state_oracle, "state_oracle")?,
+        admin_verifier: parse_addr(admin_verifier, "admin_verifier")?,
+        da_verifier: parse_addr(da_verifier, "da_verifier")?,
+        da_verifier_onchain: parse_addr(da_verifier_onchain, "da_verifier_onchain")?,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
