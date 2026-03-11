@@ -13,7 +13,10 @@ use serde::{
 };
 use serde_json::Value;
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{
+        BTreeMap,
+        HashMap,
+    },
     io::{
         Write,
         stderr,
@@ -114,8 +117,6 @@ struct ApplyAssertionPayload {
     compiler_version: String,
     contract_name: String,
 }
-
-
 
 #[derive(Debug, Serialize)]
 struct ApplyJsonOutput {

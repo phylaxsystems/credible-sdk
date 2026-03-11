@@ -45,6 +45,7 @@ struct AuthResponse {
 #[derive(Deserialize, Debug)]
 struct StatusResponse {
     verified: bool,
+    user_id: Option<String>,
     address: Option<String>,
     email: Option<String>,
     token: Option<String>,
@@ -297,7 +298,7 @@ impl AuthCommand {
             expires_at: DateTime::parse_from_rfc3339(&auth_response.expires_at)
                 .map(|dt| dt.with_timezone(&Utc))
                 .map_err(|_| AuthError::InvalidTimestamp)?,
-            user_id: None,
+            user_id: status.user_id,
             email: status.email,
         });
         Ok(())
@@ -368,6 +369,7 @@ mod tests {
     fn create_test_status_response() -> StatusResponse {
         StatusResponse {
             verified: true,
+            user_id: Some("550e8400-e29b-41d4-a716-446655440000".to_string()),
             address: Some("0x1234567890123456789012345678901234567890".to_string()),
             email: None,
             token: Some("test_token".to_string()),
@@ -409,6 +411,10 @@ mod tests {
         );
         assert_eq!(auth.access_token, "test_token");
         assert_eq!(auth.refresh_token, "test_refresh");
+        assert_eq!(
+            auth.user_id.as_deref(),
+            Some("550e8400-e29b-41d4-a716-446655440000")
+        );
         assert_eq!(
             auth.expires_at,
             Utc.with_ymd_and_hms(2024, 12, 31, 0, 0, 0).unwrap()
@@ -458,7 +464,7 @@ mod tests {
             ]))
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(r#"{"verified":true,"address":"0xtest","token":"test_token","refresh_token":"test_refresh"}"#)
+            .with_body(r#"{"verified":true,"user_id":"550e8400-e29b-41d4-a716-446655440000","address":"0xtest","token":"test_token","refresh_token":"test_refresh"}"#)
             .create();
 
         let cmd = AuthCommand::try_parse_from(vec!["auth", "--auth-url", &server.url(), "login"])
