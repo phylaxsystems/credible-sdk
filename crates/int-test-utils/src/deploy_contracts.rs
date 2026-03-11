@@ -148,9 +148,7 @@ pub fn deploy_contracts(
     parse_deploy_output(&output)
 }
 
-fn parse_deploy_output(
-    output: &std::process::Output,
-) -> Result<Contracts, DeployContractsError> {
+fn parse_deploy_output(output: &std::process::Output) -> Result<Contracts, DeployContractsError> {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let mut state_oracle = None;
     let mut admin_verifier = None;
