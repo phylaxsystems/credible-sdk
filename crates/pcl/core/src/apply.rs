@@ -13,10 +13,7 @@ use serde::{
 };
 use serde_json::Value;
 use std::{
-    collections::{
-        BTreeMap,
-        HashMap,
-    },
+    collections::{BTreeMap, HashMap},
     io::{
         Write,
         stderr,
@@ -92,38 +89,33 @@ struct Project {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct ApplyPayload {
     environment: String,
+    assertions_dir: String,
     contracts: BTreeMap<String, ApplyContractPayload>,
 }
 
 #[derive(Debug, Serialize)]
 struct ApplyContractPayload {
     address: String,
-    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
     assertions: Vec<ApplyAssertionPayload>,
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct ApplyAssertionPayload {
     file: String,
     args: Vec<String>,
-    flattened_source: String,
     bytecode: String,
-    compiler_settings: CompilerSettingsPayload,
+    flattened_source: String,
+    compiler_version: String,
+    contract_name: String,
 }
 
-#[derive(Debug, Serialize)]
-struct CompilerSettingsPayload {
-    compiler_version: String,
-    optimizer_enabled: bool,
-    optimizer_runs: u64,
-    evm_version: String,
-    metadata_bytecode_hash: String,
-    remappings: Vec<String>,
-    libraries: HashMap<String, String>,
-    compilation_target: String,
-}
+
 
 #[derive(Debug, Serialize)]
 struct ApplyJsonOutput {
@@ -131,7 +123,21 @@ struct ApplyJsonOutput {
     project_id: String,
     preview: Value,
     applied: bool,
-    deployment: Option<Value>,
+    release: Option<ReleaseResponse>,
+}
+
+/// Response from `POST /projects/{id}/releases`
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReleaseResponse {
+    id: String,
+    release_number: u64,
+    status: String,
+    previously_deployed: bool,
+    diff: Option<Value>,
+    diffed_against_release_id: Option<String>,
+    created_at: String,
+    review_url: Option<String>,
 }
 
 impl ApplyArgs {
@@ -195,11 +201,11 @@ impl ApplyArgs {
             return Err(ApplyError::ApplyCancelled);
         }
 
-        let deployment = self
+        let release: ReleaseResponse = self
             .post_authenticated(
                 config,
                 &format!(
-                    "{}/api/v1/projects/{project_id}/deployments",
+                    "{}/api/v1/projects/{project_id}/releases",
                     self.api_url.trim_end_matches('/')
                 ),
                 &payload,
@@ -214,13 +220,13 @@ impl ApplyArgs {
                     project_id,
                     preview,
                     applied: true,
-                    deployment: Some(deployment),
+                    release: Some(release),
                 })?
             );
             return Ok(());
         }
 
-        Self::print_deployment_success(&self.api_url, &project_id, &deployment);
+        Self::print_release_success(&self.api_url, &project_id, &release);
         Ok(())
     }
 
@@ -250,21 +256,14 @@ impl ApplyArgs {
                     ))
                 })?;
 
+                let contract_name = assertion_contract_name(&assertion.file)?;
                 assertions.push(ApplyAssertionPayload {
                     file: assertion.file.clone(),
                     args: assertion.args.clone(),
                     flattened_source: built.flattened_source.clone(),
                     bytecode: built.bytecode.clone(),
-                    compiler_settings: CompilerSettingsPayload {
-                        compiler_version: built.compiler_version.clone(),
-                        optimizer_enabled: built.optimizer_enabled,
-                        optimizer_runs: built.optimizer_runs,
-                        evm_version: built.evm_version.clone(),
-                        metadata_bytecode_hash: built.metadata_bytecode_hash.clone(),
-                        remappings: built.remappings.clone(),
-                        libraries: built.libraries.clone(),
-                        compilation_target: built.compilation_target.clone(),
-                    },
+                    compiler_version: built.compiler_version.clone(),
+                    contract_name,
                 });
             }
 
@@ -272,7 +271,7 @@ impl ApplyArgs {
                 contract_key.clone(),
                 ApplyContractPayload {
                     address: contract.address.clone(),
-                    name: contract.name.clone(),
+                    name: Some(contract.name.clone()),
                     assertions,
                 },
             );
@@ -280,6 +279,7 @@ impl ApplyArgs {
 
         Ok(ApplyPayload {
             environment: credible.environment.clone(),
+            assertions_dir: "assertions".to_string(),
             contracts: payload_contracts,
         })
     }
@@ -348,12 +348,12 @@ impl ApplyArgs {
             .ok_or_else(|| ApplyError::InvalidConfig("Selected project was not found".to_string()))
     }
 
-    async fn post_authenticated<T: Serialize>(
+    async fn post_authenticated<T: Serialize, R: serde::de::DeserializeOwned>(
         &self,
         config: &CliConfig,
         endpoint: &str,
         body: &T,
-    ) -> Result<Value, ApplyError> {
+    ) -> Result<R, ApplyError> {
         let auth = config.auth.as_ref().ok_or(ApplyError::NoAuthToken)?;
         let client = reqwest::Client::new();
         let response = client
@@ -391,25 +391,15 @@ impl ApplyArgs {
         })
     }
 
-    fn print_deployment_success(platform_url: &str, project_id: &str, deployment: &Value) {
-        let deployment_number = deployment
-            .get("deployment_number")
-            .or_else(|| deployment.get("deploymentNumber"))
-            .or_else(|| deployment.get("number"))
-            .and_then(Value::as_u64)
-            .map_or_else(|| "created".to_string(), |value| value.to_string());
-
-        let deployment_id = deployment
-            .get("deployment_id")
-            .or_else(|| deployment.get("deploymentId"))
-            .or_else(|| deployment.get("id"))
-            .and_then(Value::as_str)
-            .map_or_else(|| deployment_number.clone(), ToString::to_string);
-
-        println!(
-            "Deployment #{deployment_number} created. Review at: {}/projects/{project_id}/deployments/{deployment_id}",
-            platform_url.trim_end_matches('/')
-        );
+    fn print_release_success(platform_url: &str, project_id: &str, release: &ReleaseResponse) {
+        let url = release.review_url.clone().unwrap_or_else(|| {
+            format!(
+                "{}/dashboard/projects/{project_id}/releases/{}",
+                platform_url.trim_end_matches('/'),
+                release.id
+            )
+        });
+        println!("Release #{} created. Review at: {url}", release.release_number);
     }
 }
 
