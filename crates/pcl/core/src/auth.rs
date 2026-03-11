@@ -23,6 +23,7 @@ use tokio::time::{
     Duration,
     sleep,
 };
+use uuid::Uuid;
 
 /// Interval between authentication status checks
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
@@ -38,14 +39,14 @@ struct AuthResponse {
     #[serde(rename = "deviceSecret")]
     device_secret: String,
     #[serde(rename = "expiresAt")]
-    expires_at: String,
+    expires_at: DateTime<Utc>,
 }
 
 /// Response from the authentication status check
 #[derive(Deserialize, Debug)]
-struct StatusResponse {
+struct AuthStatusResponse {
     verified: bool,
-    user_id: Option<String>,
+    user_id: Option<Uuid>,
     address: Option<String>,
     email: Option<String>,
     token: Option<String>,
@@ -209,7 +210,7 @@ impl AuthCommand {
         &self,
         client: &Client,
         auth_response: &AuthResponse,
-    ) -> Result<StatusResponse, AuthError> {
+    ) -> Result<AuthStatusResponse, AuthError> {
         let url = format!("{}/api/v1/cli/auth/status", self.auth_url);
         client
             .get(url)
@@ -228,7 +229,7 @@ impl AuthCommand {
     /// Update the configuration with authentication data
     fn update_config(
         config: &mut CliConfig,
-        status: StatusResponse,
+        status: AuthStatusResponse,
         auth_response: &AuthResponse,
     ) -> Result<(), AuthError> {
         let user_address = status
@@ -244,9 +245,7 @@ impl AuthCommand {
                 "Missing refresh token".to_string(),
             ))?,
             user_address,
-            expires_at: DateTime::parse_from_rfc3339(&auth_response.expires_at)
-                .map(|dt| dt.with_timezone(&Utc))
-                .map_err(|_| AuthError::InvalidTimestamp)?,
+            expires_at: auth_response.expires_at,
             user_id: status.user_id,
             email: status.email,
         });
@@ -299,7 +298,7 @@ mod tests {
                     .parse()
                     .unwrap(),
                 expires_at: Utc.with_ymd_and_hms(2024, 12, 31, 0, 0, 0).unwrap(),
-                user_id: Some("test-uuid".to_string()),
+                user_id: Some(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap()),
                 email: None,
             }),
             ..Default::default()
@@ -311,14 +310,14 @@ mod tests {
             code: "123456".to_string(),
             session_id: "test_session".to_string(),
             device_secret: "test_secret".to_string(),
-            expires_at: "2024-12-31T00:00:00Z".to_string(),
+            expires_at: Utc.with_ymd_and_hms(2024, 12, 31, 0, 0, 0).unwrap(),
         }
     }
 
-    fn create_test_status_response() -> StatusResponse {
-        StatusResponse {
+    fn create_test_status_response() -> AuthStatusResponse {
+        AuthStatusResponse {
             verified: true,
-            user_id: Some("550e8400-e29b-41d4-a716-446655440000".to_string()),
+            user_id: Some(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap()),
             address: Some("0x1234567890123456789012345678901234567890".to_string()),
             email: None,
             token: Some("test_token".to_string()),
@@ -361,8 +360,8 @@ mod tests {
         assert_eq!(auth.access_token, "test_token");
         assert_eq!(auth.refresh_token, "test_refresh");
         assert_eq!(
-            auth.user_id.as_deref(),
-            Some("550e8400-e29b-41d4-a716-446655440000")
+            auth.user_id,
+            Some(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap())
         );
         assert_eq!(
             auth.expires_at,
@@ -386,7 +385,7 @@ mod tests {
             .mock("GET", "/api/v1/cli/auth/code")
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(r#"{"code":"123456","sessionId":"test_session","deviceSecret":"test_secret","expiresAt":"2024-12-31"}"#)
+            .with_body(r#"{"code":"123456","sessionId":"test_session","deviceSecret":"test_secret","expiresAt":"2024-12-31T00:00:00Z"}"#)
             .create();
 
         let cmd = AuthCommand::try_parse_from(vec!["auth", "--auth-url", &server.url(), "login"])
@@ -461,18 +460,6 @@ mod tests {
         let result = AuthCommand::update_config(&mut config, status, &auth_response);
         assert!(result.is_ok());
         assert_eq!(config.auth.as_ref().unwrap().user_address, Address::ZERO);
-    }
-
-    #[test]
-    fn test_update_config_with_invalid_timestamp() {
-        let mut config = CliConfig::default();
-        let mut auth_response = create_test_auth_response();
-        auth_response.expires_at = "invalid_timestamp".to_string();
-        let status = create_test_status_response();
-
-        let result = AuthCommand::update_config(&mut config, status, &auth_response);
-        assert!(result.is_err());
-        assert!(matches!(result, Err(AuthError::InvalidTimestamp)));
     }
 
     #[test]

@@ -28,6 +28,7 @@ use std::{
     },
     str::FromStr,
 };
+use uuid::Uuid;
 
 /// Legacy directory name for storing PCL configuration (deprecated)
 const LEGACY_CONFIG_DIR: &str = ".pcl";
@@ -530,7 +531,7 @@ pub struct UserAuth {
     pub expires_at: DateTime<Utc>,
     /// Platform user ID (UUID), used for API calls that require it
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub user_id: Option<String>,
+    pub user_id: Option<Uuid>,
     /// Email address of the user (for email-based auth)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
@@ -546,7 +547,7 @@ impl UserAuth {
             return email.clone();
         }
         if let Some(id) = &self.user_id {
-            return id.clone();
+            return id.to_string();
         }
         "unknown".to_string()
     }
@@ -655,7 +656,7 @@ mod tests {
                 email: None,
             }),
             assertions_for_submission: vec![(
-                "contract1".to_string().into(),
+                "contract1".into(),
                 AssertionForSubmission {
                     assertion_contract: "contract1".to_string(),
                     assertion_id: "id1".to_string(),
@@ -772,7 +773,7 @@ mod tests {
             user_address: Address::from_slice(&[1; 20]),
             expires_at: expires,
             email: Some("test@example.com".to_string()),
-            user_id: Some("user-123".to_string()),
+            user_id: Some(Uuid::nil()),
         };
         assert_eq!(
             with_addr.display_name(),
@@ -786,7 +787,7 @@ mod tests {
             user_address: Address::ZERO,
             expires_at: expires,
             email: Some("test@example.com".to_string()),
-            user_id: Some("user-123".to_string()),
+            user_id: Some(Uuid::nil()),
         };
         assert_eq!(with_email.display_name(), "test@example.com");
 
@@ -797,9 +798,12 @@ mod tests {
             user_address: Address::ZERO,
             expires_at: expires,
             email: None,
-            user_id: Some("user-123".to_string()),
+            user_id: Some(Uuid::nil()),
         };
-        assert_eq!(with_id.display_name(), "user-123");
+        assert_eq!(
+            with_id.display_name(),
+            "00000000-0000-0000-0000-000000000000"
+        );
 
         // "unknown" when nothing is set
         let bare = UserAuth {
@@ -928,7 +932,7 @@ mod tests {
             refresh_token: "test_refresh".to_string(),
             user_address: Address::from_slice(&[0; 20]),
             expires_at: DateTime::from_timestamp(1672502400, 0).unwrap(),
-            user_id: Some("test-uuid".to_string()),
+            user_id: Some(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap()),
             email: Some("test@example.com".to_string()),
         };
 
