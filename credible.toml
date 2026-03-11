@@ -1,0 +1,8 @@
+environment = "staging"
+
+[contracts.my_contract]
+address = "0x1234567890abcdef1234567890abcdef12345678"
+name = "MyContract"
+
+[[contracts.my_contract.assertions]]
+file = "assertions/src/NoArgsAssertion.a.sol"
