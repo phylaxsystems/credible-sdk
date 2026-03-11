@@ -73,7 +73,7 @@ pub struct ApplyArgs {
 struct CredibleToml {
     environment: String,
     #[serde(default)]
-    project_id: Option<String>,
+    project_id: Option<Uuid>,
     contracts: BTreeMap<String, CredibleContract>,
 }
 
@@ -93,7 +93,7 @@ struct CredibleAssertion {
 
 #[derive(Debug, Deserialize)]
 struct Project {
-    project_id: String,
+    project_id: Uuid,
     project_name: String,
 }
 
@@ -127,7 +127,7 @@ struct ApplyAssertionPayload {
 #[derive(Debug, Serialize)]
 struct ApplyJsonOutput {
     status: &'static str,
-    project_id: String,
+    project_id: Uuid,
     preview: Value,
     applied: bool,
     release: Option<ReleaseResponse>,
@@ -152,7 +152,7 @@ impl ApplyArgs {
         let json_output = cli_args.json_output() || self.json;
         let root = canonicalize_root(&self.root)?;
         let credible = read_credible_toml(&root)?;
-        let project_id = match credible.project_id.clone() {
+        let project_id = match credible.project_id {
             Some(project_id) => project_id,
             None if json_output => {
                 return Err(ApplyError::InvalidConfig(
@@ -292,7 +292,7 @@ impl ApplyArgs {
         })
     }
 
-    async fn select_project(&self, config: &CliConfig) -> Result<String, ApplyError> {
+    async fn select_project(&self, config: &CliConfig) -> Result<Uuid, ApplyError> {
         let auth = config.auth.as_ref().ok_or(ApplyError::NoAuthToken)?;
         let user_id = auth.user_id.as_ref().ok_or_else(|| {
             ApplyError::InvalidConfig(
@@ -399,7 +399,7 @@ impl ApplyArgs {
         })
     }
 
-    fn print_release_success(platform_url: &str, project_id: &str, release: &ReleaseResponse) {
+    fn print_release_success(platform_url: &str, project_id: &Uuid, release: &ReleaseResponse) {
         let review_url = Url::parse(platform_url).map(|mut url| {
             url.set_path(&format!(
                 "/dashboard/projects/{project_id}/releases/{}",
