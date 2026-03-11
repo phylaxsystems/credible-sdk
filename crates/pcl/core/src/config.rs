@@ -762,6 +762,58 @@ mod tests {
     }
 
     #[test]
+    fn test_display_name_priority() {
+        let expires = DateTime::from_timestamp(0, 0).unwrap();
+
+        // Non-zero address takes priority over everything
+        let with_addr = UserAuth {
+            access_token: String::new(),
+            refresh_token: String::new(),
+            user_address: Address::from_slice(&[1; 20]),
+            expires_at: expires,
+            email: Some("test@example.com".to_string()),
+            user_id: Some("user-123".to_string()),
+        };
+        assert_eq!(
+            with_addr.display_name(),
+            "0x0101010101010101010101010101010101010101"
+        );
+
+        // Email is next priority when address is zero
+        let with_email = UserAuth {
+            access_token: String::new(),
+            refresh_token: String::new(),
+            user_address: Address::ZERO,
+            expires_at: expires,
+            email: Some("test@example.com".to_string()),
+            user_id: Some("user-123".to_string()),
+        };
+        assert_eq!(with_email.display_name(), "test@example.com");
+
+        // User ID is fallback when no address or email
+        let with_id = UserAuth {
+            access_token: String::new(),
+            refresh_token: String::new(),
+            user_address: Address::ZERO,
+            expires_at: expires,
+            email: None,
+            user_id: Some("user-123".to_string()),
+        };
+        assert_eq!(with_id.display_name(), "user-123");
+
+        // "unknown" when nothing is set
+        let bare = UserAuth {
+            access_token: String::new(),
+            refresh_token: String::new(),
+            user_address: Address::ZERO,
+            expires_at: expires,
+            email: None,
+            user_id: None,
+        };
+        assert_eq!(bare.display_name(), "unknown");
+    }
+
+    #[test]
     fn test_assertion_for_submission_display() {
         let assertion = AssertionForSubmission {
             assertion_contract: "test_contract".to_string(),
