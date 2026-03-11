@@ -392,14 +392,12 @@ impl ApplyArgs {
     }
 
     fn print_release_success(platform_url: &str, project_id: &str, release: &ReleaseResponse) {
-        let url = release.review_url.clone().unwrap_or_else(|| {
-            format!(
-                "{}/dashboard/projects/{project_id}/releases/{}",
-                platform_url.trim_end_matches('/'),
-                release.id
-            )
-        });
-        println!("Release #{} created. Review at: {url}", release.release_number);
+        println!(
+            "Release #{} created. Review at: {}/dashboard/projects/{project_id}/releases/{}",
+            release.release_number,
+            platform_url.trim_end_matches('/'),
+            release.id
+        );
     }
 }
 
