@@ -701,7 +701,7 @@ mod tests {
         assert!(formatted_cfg.contains("PCL Configuration"));
         assert!(formatted_cfg.contains("Config path:"));
         assert!(formatted_cfg.contains("pcl/config.toml"));
-        assert!(formatted_cfg.contains("User Address: 0x0000000000000000000000000000000000000000"));
+        assert!(formatted_cfg.contains("User: unknown"));
         assert!(formatted_cfg.contains("2022-12-31 16:00:00 UTC"));
         assert!(formatted_cfg.contains("Access Token: [Set]"));
         assert!(formatted_cfg.contains("Refresh Token: [Set]"));
