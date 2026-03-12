@@ -344,16 +344,23 @@ impl<S: EventSource> AssertionIndexer<S> {
 
     /// Check whether the event should use on-chain DA.
     ///
-    /// Returns `Ok(false)` when no on-chain DA verifier is configured — the
-    /// caller should fall back to the DA server.
+    /// Returns `Ok(false)` when no on-chain DA verifier is configured or the
+    /// configured address does not match `event.da_verifier` — the caller
+    /// should fall back to the DA server.
     ///
-    /// Returns `Ok(true)` when `keccak256(proof) == assertion_id`.
+    /// Returns `Ok(true)` when the address matches and
+    /// `keccak256(proof) == assertion_id`.
     ///
-    /// Returns `Err` (unrecoverable) when the proof hash does not match.
+    /// Returns `Err` (unrecoverable) when the address matches but the proof
+    /// hash does not match the assertion id.
     fn is_onchain_da(&self, event: &AssertionAddedEvent) -> Result<bool, IndexerError> {
         let Some(addr) = self.onchain_da_verifier else {
             return Ok(false);
         };
+
+        if addr != event.da_verifier {
+            return Ok(false);
+        }
 
         if keccak256(&event.proof) != event.assertion_id {
             return Err(IndexerError::OnchainDaVerification(format!(
