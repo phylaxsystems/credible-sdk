@@ -223,6 +223,8 @@ pub struct CredibleConfigFile {
     pub assertion_store_prune_config_interval_ms: Option<u64>,
     /// Number of blocks to keep after inactivation (buffer for reorgs) for the assertion store
     pub assertion_store_prune_config_retention_blocks: Option<u64>,
+    /// Address of the on-chain DA verifier (`DAVerifierOnChain`).
+    pub onchain_da_verifier: Option<Address>,
 }
 
 #[serde_as]
@@ -273,6 +275,8 @@ pub struct CredibleConfig {
     pub assertion_store_prune_config_interval_ms: Option<u64>,
     /// Number of blocks to keep after inactivation (buffer for reorgs) for the assertion store
     pub assertion_store_prune_config_retention_blocks: Option<u64>,
+    /// Address of the on-chain DA verifier, `DAVerifierOnChain`.
+    pub onchain_da_verifier: Option<Address>,
 }
 
 /// Transport configuration from file
@@ -433,6 +437,10 @@ fn resolve_credible(credible_file: &CredibleConfigFile) -> Result<CredibleConfig
         assertion_store_prune_config_interval_ms: prune.assertion_store_prune_config_interval_ms,
         assertion_store_prune_config_retention_blocks: prune
             .assertion_store_prune_config_retention_blocks,
+        onchain_da_verifier: optional_or_env(
+            credible_file.onchain_da_verifier,
+            "SIDECAR_ONCHAIN_DA_VERIFIER",
+        )?,
     })
 }
 

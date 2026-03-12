@@ -115,6 +115,7 @@ Credible:
 - `credible.assertion_store_prune_config_interval_ms` -> `SIDECAR_ASSERTION_STORE_PRUNE_INTERVAL_MS`
 - `credible.assertion_store_prune_config_retention_blocks` -> `SIDECAR_ASSERTION_STORE_PRUNE_RETENTION_BLOCKS`
 - `credible.cache_checker_ws_url` -> `SIDECAR_CACHE_CHECKER_WS_URL` (required when `cache_validation` feature is enabled)
+- `credible.onchain_da_verifier` -> `SIDECAR_ONCHAIN_DA_VERIFIER` (optional, address of `DAVerifierOnChain`)
 
 Transport:
 - `transport.protocol` -> `SIDECAR_TRANSPORT_PROTOCOL`
@@ -372,6 +373,14 @@ The configuration file is a JSON file with the following schema:
           "examples": [
             0,
             10
+          ]
+        },
+        "onchain_da_verifier": {
+          "type": "string",
+          "description": "Address of the on-chain DA verifier (DAVerifierOnChain). When set, bytecode is read from the event proof instead of the DA server.",
+          "pattern": "^0x[a-fA-F0-9]{40}$",
+          "examples": [
+            "0x1234567890123456789012345678901234567890"
           ]
         }
       },
