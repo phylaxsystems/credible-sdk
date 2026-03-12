@@ -314,7 +314,7 @@ impl<S: EventSource> AssertionIndexer<S> {
         &self,
         event: &AssertionAddedEvent,
     ) -> Result<Bytes, IndexerError> {
-        if self.is_onchain_da(event) {
+        if self.is_onchain_da(event)? {
             info!(
                 target = "sidecar::indexer",
                 assertion_id = ?event.assertion_id,
@@ -342,12 +342,37 @@ impl<S: EventSource> AssertionIndexer<S> {
         }
     }
 
-    /// Returns `true` when the event used on-chain DA: the event's DA verifier
-    /// matches the configured address and the proof hashes to the assertion ID.
-    fn is_onchain_da(&self, event: &AssertionAddedEvent) -> bool {
-        self.onchain_da_verifier
-            .is_some_and(|addr| addr == event.da_verifier)
-            && keccak256(&event.proof) == event.assertion_id
+    /// Check whether the event should use on-chain DA.
+    ///
+    /// Returns `Ok(false)` when no on-chain DA verifier is configured — the
+    /// caller should fall back to the DA server.
+    ///
+    /// Returns `Ok(true)` when the configured address matches the event's
+    /// `da_verifier` and `keccak256(proof) == assertion_id`.
+    ///
+    /// Returns `Err` (unrecoverable) when a verifier is configured but either
+    /// the address or the proof hash does not match ie. this indicates a
+    /// misconfiguration or a bug in the on-chain DA verifier.
+    fn is_onchain_da(&self, event: &AssertionAddedEvent) -> Result<bool, IndexerError> {
+        let Some(addr) = self.onchain_da_verifier else {
+            return Ok(false);
+        };
+
+        if addr != event.da_verifier {
+            return Err(IndexerError::OnchainDaVerification(format!(
+                "configured on-chain DA verifier ({addr}) does not match event da_verifier ({})",
+                event.da_verifier
+            )));
+        }
+
+        if keccak256(&event.proof) != event.assertion_id {
+            return Err(IndexerError::OnchainDaVerification(format!(
+                "DA verifier address matches ({addr}) but keccak256(proof) != assertion_id ({})",
+                event.assertion_id
+            )));
+        }
+
+        Ok(true)
     }
 }
 
@@ -361,10 +386,11 @@ pub async fn run_indexer<S: EventSource>(cfg: IndexerCfg<S>) -> Result<(), Index
 impl From<&IndexerError> for ErrorRecoverability {
     fn from(e: &IndexerError) -> Self {
         match e {
-            // Store errors and indexer unreachable (retries exhausted) are unrecoverable
-            IndexerError::Store(_) | IndexerError::IndexerUnreachable => {
-                ErrorRecoverability::Unrecoverable
-            }
+            // Store errors, indexer unreachable, and on-chain DA verification failures
+            // are unrecoverable
+            IndexerError::Store(_)
+            | IndexerError::IndexerUnreachable
+            | IndexerError::OnchainDaVerification(_) => ErrorRecoverability::Unrecoverable,
             // Network, DA, and extraction errors are recoverable — will retry on next poll
             IndexerError::EventSource(_)
             | IndexerError::DaClient(_)
@@ -385,6 +411,8 @@ pub enum IndexerError {
     ExtractionError(#[from] FnSelectorExtractorError),
     #[error("Indexer unreachable after {MAX_RETRIES} retries")]
     IndexerUnreachable,
+    #[error("On-chain DA verification failed: {0}")]
+    OnchainDaVerification(String),
 }
 
 #[cfg(test)]
