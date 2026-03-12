@@ -350,20 +350,11 @@ impl<S: EventSource> AssertionIndexer<S> {
     /// Returns `Ok(true)` when the configured address matches the event's
     /// `da_verifier` and `keccak256(proof) == assertion_id`.
     ///
-    /// Returns `Err` (unrecoverable) when a verifier is configured but either
-    /// the address or the proof hash does not match ie. this indicates a
-    /// misconfiguration or a bug in the on-chain DA verifier.
+    /// Returns `Err` (unrecoverable) when the proof hash does not match.
     fn is_onchain_da(&self, event: &AssertionAddedEvent) -> Result<bool, IndexerError> {
         let Some(addr) = self.onchain_da_verifier else {
             return Ok(false);
         };
-
-        if addr != event.da_verifier {
-            return Err(IndexerError::OnchainDaVerification(format!(
-                "configured on-chain DA verifier ({addr}) does not match event da_verifier ({})",
-                event.da_verifier
-            )));
-        }
 
         if keccak256(&event.proof) != event.assertion_id {
             return Err(IndexerError::OnchainDaVerification(format!(
