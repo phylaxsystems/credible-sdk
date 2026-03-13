@@ -91,11 +91,16 @@ impl BuildAndFlatOutput {
 
     /// Returns the short compiler version (e.g. "0.8.28") by stripping
     /// the "v" prefix and "+commit.xxx" suffix from the full version.
-    pub fn compiler_version_short(&self) -> Result<&str, PhoundryError> {
-        let v = self.compiler_version.strip_prefix('v').unwrap_or(&self.compiler_version);
-        v.split_once('+')
-            .map(|(short, _)| short)
-            .ok_or_else(|| PhoundryError::InvalidForgeOutput("Invalid solc version format"))
+    pub fn compiler_version_short(&self) -> Result<&str, Box<PhoundryError>> {
+        let v = self
+            .compiler_version
+            .strip_prefix('v')
+            .unwrap_or(&self.compiler_version);
+        v.split_once('+').map(|(short, _)| short).ok_or_else(|| {
+            Box::new(PhoundryError::InvalidForgeOutput(
+                "Invalid solc version format",
+            ))
+        })
     }
 }
 
@@ -364,6 +369,25 @@ contract TestContract {
         assert_eq!(output.compiler_version, "0.8.0");
         assert_eq!(output.flattened_source, "contract Test { }");
         assert_eq!(output.bytecode, "0x6000");
+    }
+
+    #[test]
+    fn test_compiler_version_short_strips_prefix_and_commit() {
+        let output = BuildAndFlatOutput::new(
+            "v0.8.28+commit.7893614a".to_string(),
+            "contract Test { }".to_string(),
+            JsonAbi::default(),
+            "0x6000".to_string(),
+            true,
+            200,
+            "prague".to_string(),
+            "ipfs".to_string(),
+            vec![],
+            HashMap::new(),
+            "assertions/src/TestContract.sol".to_string(),
+        );
+
+        assert_eq!(output.compiler_version_short().unwrap(), "0.8.28");
     }
 
     #[tokio::test(flavor = "multi_thread")]
