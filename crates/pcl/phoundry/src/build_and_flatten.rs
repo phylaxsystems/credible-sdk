@@ -34,7 +34,7 @@ use crate::error::PhoundryError;
 /// Contains the compiler version used and the flattened source code.
 #[derive(Debug, Default)]
 pub struct BuildAndFlatOutput {
-    /// Version of the Solidity compiler used
+    /// Full compiler version (e.g. "v0.8.28+commit.7893614a")
     pub compiler_version: String,
     /// Flattened source code of the contract
     pub flattened_source: String,
@@ -87,6 +87,15 @@ impl BuildAndFlatOutput {
             libraries,
             compilation_target,
         }
+    }
+
+    /// Returns the short compiler version (e.g. "0.8.28") by stripping
+    /// the "v" prefix and "+commit.xxx" suffix from the full version.
+    pub fn compiler_version_short(&self) -> Result<&str, PhoundryError> {
+        let v = self.compiler_version.strip_prefix('v').unwrap_or(&self.compiler_version);
+        v.split_once('+')
+            .map(|(short, _)| short)
+            .ok_or_else(|| PhoundryError::InvalidForgeOutput("Invalid solc version format"))
     }
 }
 
@@ -141,13 +150,7 @@ impl BuildAndFlattenArgs {
         let bytecode = extract_bytecode(&artifact.bytecode)
             .ok_or_else(|| PhoundryError::InvalidForgeOutput("Missing contract bytecode"))?;
 
-        let solc_version = metadata
-            .compiler
-            .version
-            .split_once('+')
-            .ok_or_else(|| PhoundryError::InvalidForgeOutput("Invalid solc version format"))?
-            .0
-            .to_string();
+        let solc_version = format!("v{}", metadata.compiler.version);
 
         // Find the source path for the contract
         let rel_source_path = metadata
