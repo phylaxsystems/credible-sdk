@@ -34,7 +34,7 @@ use crate::error::PhoundryError;
 /// Contains the compiler version used and the flattened source code.
 #[derive(Debug, Default)]
 pub struct BuildAndFlatOutput {
-    /// Version of the Solidity compiler used
+    /// Full compiler version (e.g. "v0.8.28+commit.7893614a")
     pub compiler_version: String,
     /// Flattened source code of the contract
     pub flattened_source: String,
@@ -87,6 +87,32 @@ impl BuildAndFlatOutput {
             libraries,
             compilation_target,
         }
+    }
+
+    /// Validates the build output.
+    ///
+    /// Returns an error if any field has an unexpected format
+    pub fn validate(&self) -> Result<(), Box<PhoundryError>> {
+        if !self.compiler_version.contains("+commit.") {
+            return Err(Box::new(PhoundryError::InvalidForgeOutput(
+                "Invalid solc version format: expected 'vX.Y.Z+commit.hash'",
+            )));
+        }
+        Ok(())
+    }
+
+    /// Returns the short compiler version (e.g. "0.8.28") by stripping
+    /// the "v" prefix and "+commit.xxx" suffix from the full version.
+    pub fn compiler_version_short(&self) -> Result<&str, Box<PhoundryError>> {
+        let v = self
+            .compiler_version
+            .strip_prefix('v')
+            .unwrap_or(&self.compiler_version);
+        v.split_once('+').map(|(short, _)| short).ok_or_else(|| {
+            Box::new(PhoundryError::InvalidForgeOutput(
+                "Invalid solc version format",
+            ))
+        })
     }
 }
 
@@ -141,13 +167,7 @@ impl BuildAndFlattenArgs {
         let bytecode = extract_bytecode(&artifact.bytecode)
             .ok_or_else(|| PhoundryError::InvalidForgeOutput("Missing contract bytecode"))?;
 
-        let solc_version = metadata
-            .compiler
-            .version
-            .split_once('+')
-            .ok_or_else(|| PhoundryError::InvalidForgeOutput("Invalid solc version format"))?
-            .0
-            .to_string();
+        let solc_version = format!("v{}", metadata.compiler.version);
 
         // Find the source path for the contract
         let rel_source_path = metadata
@@ -175,7 +195,7 @@ impl BuildAndFlattenArgs {
 
         // Flatten the contract
         let flattened = self.flatten(&path)?;
-        Ok(BuildAndFlatOutput::new(
+        let output = BuildAndFlatOutput::new(
             solc_version,
             flattened,
             abi,
@@ -211,7 +231,9 @@ impl BuildAndFlattenArgs {
                 .unwrap_or_default(),
             flatten_libraries(&settings),
             rel_source_path.clone(),
-        ))
+        );
+        output.validate()?;
+        Ok(output)
     }
 
     /// Builds the project and returns the compilation output.
@@ -361,6 +383,25 @@ contract TestContract {
         assert_eq!(output.compiler_version, "0.8.0");
         assert_eq!(output.flattened_source, "contract Test { }");
         assert_eq!(output.bytecode, "0x6000");
+    }
+
+    #[test]
+    fn test_compiler_version_short_strips_prefix_and_commit() {
+        let output = BuildAndFlatOutput::new(
+            "v0.8.28+commit.7893614a".to_string(),
+            "contract Test { }".to_string(),
+            JsonAbi::default(),
+            "0x6000".to_string(),
+            true,
+            200,
+            "prague".to_string(),
+            "ipfs".to_string(),
+            vec![],
+            HashMap::new(),
+            "assertions/src/TestContract.sol".to_string(),
+        );
+
+        assert_eq!(output.compiler_version_short().unwrap(), "0.8.28");
     }
 
     #[tokio::test(flavor = "multi_thread")]

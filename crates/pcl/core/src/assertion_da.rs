@@ -366,7 +366,10 @@ impl DaStoreArgs {
             .submit_assertion_with_args(
                 assertion_name.to_string(),
                 build_output.flattened_source.clone(),
-                build_output.compiler_version.clone(),
+                build_output
+                    .compiler_version_short()
+                    .map_err(DaSubmitError::PhoundryError)?
+                    .to_string(),
                 constructor_signature,
                 constructor_args.to_vec(),
             )

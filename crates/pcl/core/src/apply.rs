@@ -122,6 +122,9 @@ struct ApplyAssertionPayload {
     flattened_source: String,
     compiler_version: String,
     contract_name: String,
+    evm_version: String,
+    optimizer_runs: u64,
+    libraries: HashMap<String, String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -272,6 +275,9 @@ impl ApplyArgs {
                     bytecode: built.bytecode.clone(),
                     compiler_version: built.compiler_version.clone(),
                     contract_name,
+                    evm_version: built.evm_version.clone(),
+                    optimizer_runs: built.optimizer_runs,
+                    libraries: built.libraries.clone(),
                 });
             }
 
