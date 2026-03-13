@@ -89,6 +89,18 @@ impl BuildAndFlatOutput {
         }
     }
 
+    /// Validates the build output. 
+    /// 
+    /// Returns an error if any field has an unexpected format
+    pub fn validate(&self) -> Result<(), Box<PhoundryError>> {
+        if !self.compiler_version.contains("+commit.") {
+            return Err(Box::new(PhoundryError::InvalidForgeOutput(
+                "Invalid solc version format: expected 'vX.Y.Z+commit.hash'",
+            )));
+        }
+        Ok(())
+    }
+
     /// Returns the short compiler version (e.g. "0.8.28") by stripping
     /// the "v" prefix and "+commit.xxx" suffix from the full version.
     pub fn compiler_version_short(&self) -> Result<&str, Box<PhoundryError>> {
@@ -183,7 +195,7 @@ impl BuildAndFlattenArgs {
 
         // Flatten the contract
         let flattened = self.flatten(&path)?;
-        Ok(BuildAndFlatOutput::new(
+        let output = BuildAndFlatOutput::new(
             solc_version,
             flattened,
             abi,
@@ -219,7 +231,9 @@ impl BuildAndFlattenArgs {
                 .unwrap_or_default(),
             flatten_libraries(&settings),
             rel_source_path.clone(),
-        ))
+        );
+        output.validate()?;
+        Ok(output)
     }
 
     /// Builds the project and returns the compilation output.
