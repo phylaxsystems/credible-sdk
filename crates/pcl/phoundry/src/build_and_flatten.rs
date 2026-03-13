@@ -89,8 +89,8 @@ impl BuildAndFlatOutput {
         }
     }
 
-    /// Validates the build output. 
-    /// 
+    /// Validates the build output.
+    ///
     /// Returns an error if any field has an unexpected format
     pub fn validate(&self) -> Result<(), Box<PhoundryError>> {
         if !self.compiler_version.contains("+commit.") {
