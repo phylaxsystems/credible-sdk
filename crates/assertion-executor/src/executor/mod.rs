@@ -976,7 +976,12 @@ mod test {
             DatabaseRef,
             overlay::test_utils::MockDb,
         },
-        inspectors::CallTracer,
+        inspectors::{
+            CallTracer,
+            LogsAndTraces,
+            PhEvmContext,
+            spec_recorder::AssertionSpec,
+        },
         primitives::{
             Account,
             AccountInfo,
@@ -1036,7 +1041,6 @@ mod test {
 
         assert_eq!(account_info.code.unwrap(), counter_assertion.deployed_code);
     }
-
     #[tokio::test]
     async fn test_execute_assertion_detects_post_tx_overrides() {
         let test_db: TestDB = TestDB::new_test();
@@ -1121,6 +1125,122 @@ mod test {
             !results[0].assertion_fns_results[0].is_success(),
             "Assertion should revert when counter exceeds limit even if post-tx journal clears code"
         );
+    }
+
+    #[test]
+    fn test_should_parallelize_assertion_fns_respects_threshold() {
+        assert!(!should_parallelize_assertion_fns(0));
+        assert!(!should_parallelize_assertion_fns(1));
+        assert!(!should_parallelize_assertion_fns(
+            ASSERTION_FN_PARALLEL_MIN_WORK_ITEMS - 1
+        ));
+        assert!(should_parallelize_assertion_fns(
+            ASSERTION_FN_PARALLEL_MIN_WORK_ITEMS
+        ));
+        assert!(should_parallelize_assertion_fns(
+            ASSERTION_FN_PARALLEL_MIN_WORK_ITEMS + 1
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_run_assertion_contract_empty_selectors_short_circuits() {
+        let test_db: TestDB = TestDB::new_test();
+        let fork_db: TestForkDB = test_db.fork();
+        let executor =
+            AssertionExecutor::new(ExecutorConfig::default(), AssertionStore::new_ephemeral());
+
+        let call_tracer = CallTracer::default();
+        let logs_and_traces = LogsAndTraces {
+            tx_logs: &[],
+            call_traces: &call_tracer,
+        };
+        let tx_env = TxEnv::default();
+        let context = PhEvmContext::new(
+            &logs_and_traces,
+            COUNTER_ADDRESS,
+            &tx_env,
+            AssertionSpec::Legacy,
+        );
+
+        let execution = executor
+            .run_assertion_contract(
+                &counter_assertion(),
+                &[],
+                &BlockEnv::default(),
+                fork_db,
+                &context,
+                crate::arena::next_tx_arena_epoch(),
+            )
+            .expect("empty selector execution should short-circuit");
+
+        assert_eq!(execution.adopter, COUNTER_ADDRESS);
+        assert!(execution.assertion_fns_results.is_empty());
+        assert_eq!(execution.total_assertion_gas, 0);
+        assert_eq!(execution.total_assertion_funcs_ran, 0);
+    }
+
+    #[tokio::test]
+    async fn test_run_assertion_contract_sequential_path_executes_each_selector_once() {
+        let test_db: TestDB = TestDB::new_test();
+        let fork_db: TestForkDB = test_db.fork();
+        let executor =
+            AssertionExecutor::new(ExecutorConfig::default(), AssertionStore::new_ephemeral());
+
+        let extracted = selector_assertion();
+        let mut fn_selectors: Vec<_> = extracted
+            .trigger_recorder
+            .triggers
+            .values()
+            .flat_map(|selectors| selectors.iter().copied())
+            .collect();
+        fn_selectors.sort();
+        fn_selectors.dedup();
+
+        assert!(fn_selectors.len() > 1);
+        assert!(!should_parallelize_assertion_fns(fn_selectors.len()));
+
+        let call_tracer = CallTracer::default();
+        let logs_and_traces = LogsAndTraces {
+            tx_logs: &[],
+            call_traces: &call_tracer,
+        };
+        let tx_env = TxEnv::default();
+        let context = PhEvmContext::new(
+            &logs_and_traces,
+            COUNTER_ADDRESS,
+            &tx_env,
+            AssertionSpec::Legacy,
+        );
+
+        let execution = executor
+            .run_assertion_contract(
+                &extracted.assertion_contract,
+                &fn_selectors,
+                &BlockEnv::default(),
+                fork_db,
+                &context,
+                crate::arena::next_tx_arena_epoch(),
+            )
+            .expect("sequential multi-selector execution should succeed");
+
+        let mut executed_selectors: Vec<_> = execution
+            .assertion_fns_results
+            .iter()
+            .map(|result| result.id.fn_selector)
+            .collect();
+        executed_selectors.sort();
+
+        assert!(
+            execution
+                .assertion_fns_results
+                .iter()
+                .all(AssertionFunctionResult::is_success)
+        );
+        assert_eq!(
+            execution.total_assertion_funcs_ran,
+            fn_selectors.len() as u64
+        );
+        assert_eq!(executed_selectors, fn_selectors);
     }
 
     #[tokio::test]
