@@ -245,11 +245,9 @@ impl CallTracer {
         // In case where we are hit with a non-AA call, we want to ignore its calldata,
         // but we still have to store the rest of it to preserve the journal depth.
         if is_aa {
-            // Most calls already arrive as owned `Bytes`. Only allocate when revm handed us
-            // a shared buffer that would become invalid once execution continues.
-            if !matches!(inputs.input, CallInput::Bytes(_)) {
-                inputs.input = CallInput::Bytes(Bytes::from(input_bytes.to_vec()));
-            }
+            // Coerce the bytes at the time of recording the call,
+            // in case they are of the SharedBuffer variant
+            inputs.input = CallInput::Bytes(Bytes::from(input_bytes.to_vec()));
         } else {
             inputs.input = CallInput::Bytes(Bytes::default());
         }
@@ -269,17 +267,16 @@ impl CallTracer {
             selector,
         };
 
-        // Use the entry API so the hot insert path does one hash-table lookup instead of
-        // probing once for len and again for the push.
-        let position = {
-            let indices = self
-                .target_and_selector_indices
-                .entry(key.clone())
-                .or_default();
-            let position = indices.len();
-            indices.push(index);
-            position
-        };
+        // Track position within the key's Vec for O(1) truncation
+        let position = self
+            .target_and_selector_indices
+            .get(&key)
+            .map_or(0, Vec::len);
+
+        self.target_and_selector_indices
+            .entry(key.clone())
+            .or_default()
+            .push(index);
 
         self.call_records.push(CallRecord {
             inputs,
@@ -354,32 +351,6 @@ impl CallTracer {
                     self.target_and_selector_indices.remove(key);
                 }
             }
-        } else if entries_to_remove <= 1024 {
-            // Short reverted suffixes are the common case. Repeated lookups are cheaper than
-            // building a temporary map, so keep the small-range path allocation-free.
-            let mut keys_to_remove: Vec<TargetAndSelector> = Vec::new();
-
-            for i in index..old_len {
-                let record = &self.call_records[i];
-                let key = &record.target_and_selector;
-                let pos = record.key_index;
-
-                let mut remove_key = false;
-                if let Some(indices) = self.target_and_selector_indices.get_mut(key)
-                    && indices.len() > pos
-                {
-                    indices.truncate(pos);
-                    remove_key = indices.is_empty();
-                }
-
-                if remove_key {
-                    keys_to_remove.push(key.clone());
-                }
-            }
-
-            for key in keys_to_remove {
-                self.target_and_selector_indices.remove(&key);
-            }
         } else {
             // General path: for each unique key in the truncated range, find the minimum position
             // (first occurrence), then truncate to that position.
@@ -434,24 +405,24 @@ impl CallTracer {
         target: Address,
         selector: FixedBytes<4>,
     ) -> Vec<CallInputsWithId<'_>> {
-        self.call_ids_for(target, selector)
-            .iter()
-            .map(|&index| {
-                CallInputsWithId {
-                    call_input: self.call_records[index].inputs(),
-                    id: index,
-                }
-            })
-            .collect()
-    }
-
-    /// Borrow the matching call ids directly when callers only need indexing information.
-    #[inline]
-    #[must_use]
-    pub fn call_ids_for(&self, target: Address, selector: FixedBytes<4>) -> &[usize] {
-        self.target_and_selector_indices
+        // No filtering needed since all recorded calls are valid
+        match self
+            .target_and_selector_indices
             .get(&TargetAndSelector { target, selector })
-            .map_or(&[], Vec::as_slice)
+        {
+            Some(indices) => {
+                indices
+                    .iter()
+                    .map(|&index| {
+                        CallInputsWithId {
+                            call_input: self.call_records[index].inputs(),
+                            id: index,
+                        }
+                    })
+                    .collect()
+            }
+            None => vec![],
+        }
     }
 
     /// Check if a call is valid for forking (not inside a reverted subtree)
