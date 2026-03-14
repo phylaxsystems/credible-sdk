@@ -343,33 +343,93 @@ impl AssertionExecutor {
         let prepared =
             self.prepare_assertion_contract(assertion_contract, fn_selectors, tx_fork_db, context);
 
-        let execute_fn = |fn_selector: &FixedBytes<4>| {
-            self.execute_assertion_fn_with_inspector(AssertionExecutionWithInspectorParams {
-                assertion_contract,
-                fn_selector: *fn_selector,
-                tx_arena_epoch,
-                block_env: block_env.clone(),
-                multi_fork_db: prepared.multi_fork_db.clone(),
-                phevm_inspector: prepared.inspector.clone(),
-                inspector: inspector.clone(),
-            })
-        };
+        if fn_selectors.len() == 1 {
+            let fn_selector = fn_selectors[0];
+            let (fn_result, fn_inspector) =
+                self.execute_assertion_fn_with_inspector(AssertionExecutionWithInspectorParams {
+                    assertion_contract,
+                    fn_selector,
+                    tx_arena_epoch,
+                    block_env: block_env.clone(),
+                    multi_fork_db: prepared.multi_fork_db,
+                    phevm_inspector: prepared.inspector,
+                    inspector,
+                })?;
+            let total_assertion_gas = fn_result.as_result().gas_used();
+            return Ok((
+                AssertionContractExecution {
+                    adopter: context.adopter,
+                    assertion_fns_results: vec![fn_result],
+                    total_assertion_gas,
+                    total_assertion_funcs_ran: 1,
+                },
+                vec![fn_inspector],
+            ));
+        }
+
+        let execution_count = fn_selectors.len();
+        let parallel_fns = super::should_parallelize_assertion_fns(execution_count);
+        trace!(
+            target: "assertion-executor::execute_assertions",
+            assertion_contract_id = ?assertion_contract.id,
+            selector_count = fn_selectors.len(),
+            execution_count,
+            scheduling = if parallel_fns { "parallel" } else { "sequential" },
+            "Assertion fn scheduling decision"
+        );
+
+        if !parallel_fns {
+            let mut valid_results = Vec::with_capacity(execution_count);
+            let mut inspectors = Vec::with_capacity(execution_count);
+            let mut total_assertion_gas = 0;
+
+            for fn_selector in fn_selectors {
+                let (fn_result, fn_inspector) =
+                    self.execute_assertion_fn_with_inspector(AssertionExecutionWithInspectorParams {
+                        assertion_contract,
+                        fn_selector: *fn_selector,
+                        tx_arena_epoch,
+                        block_env: block_env.clone(),
+                        multi_fork_db: prepared.multi_fork_db.clone(),
+                        phevm_inspector: prepared.inspector.clone(),
+                        inspector: inspector.clone(),
+                    })?;
+                total_assertion_gas += fn_result.as_result().gas_used();
+                valid_results.push(fn_result);
+                inspectors.push(fn_inspector);
+            }
+
+            let total_assertion_funcs_ran = valid_results.len() as u64;
+            return Ok((
+                AssertionContractExecution {
+                    adopter: context.adopter,
+                    assertion_fns_results: valid_results,
+                    total_assertion_gas,
+                    total_assertion_funcs_ran,
+                },
+                inspectors,
+            ));
+        }
 
         let current_span = tracing::Span::current();
         let results_vec: Vec<_> = current_span.in_scope(|| {
-            if fn_selectors.len() < super::PARALLEL_THRESHOLD {
-                let mut results = Vec::with_capacity(fn_selectors.len());
-                for fn_selector in fn_selectors {
-                    results.push(execute_fn(fn_selector));
-                }
-                results
-            } else {
-                assertion_executor_pool()
-                    .install(|| fn_selectors.into_par_iter().map(execute_fn).collect())
-            }
+            assertion_executor_pool().install(|| {
+                fn_selectors
+                    .into_par_iter()
+                    .map(|fn_selector| {
+                        self.execute_assertion_fn_with_inspector(AssertionExecutionWithInspectorParams {
+                            assertion_contract,
+                            fn_selector: *fn_selector,
+                            tx_arena_epoch,
+                            block_env: block_env.clone(),
+                            multi_fork_db: prepared.multi_fork_db.clone(),
+                            phevm_inspector: prepared.inspector.clone(),
+                            inspector: inspector.clone(),
+                        })
+                    })
+                    .collect()
+            })
         });
-
-        trace!(target: "assertion-executor::execute_assertions", result_count=results_vec.len(), "Assertion Execution Results with Inspectors");
 
         let mut valid_results = Vec::with_capacity(results_vec.len());
         let mut inspectors = Vec::with_capacity(results_vec.len());

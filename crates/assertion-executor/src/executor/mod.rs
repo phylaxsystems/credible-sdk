@@ -93,6 +93,10 @@ use tracing::{
 /// Below this threshold, sequential execution avoids scheduling overhead.
 const PARALLEL_THRESHOLD: usize = 2;
 
+/// Function-level assertion invocations are short-lived enough that rayon often
+/// loses on small batches. Keep this threshold conservative.
+const ASSERTION_FN_PARALLEL_MIN_WORK_ITEMS: usize = 8;
+
 static ASSERTION_EXECUTOR_POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
 
 fn assertion_executor_pool() -> &'static rayon::ThreadPool {
@@ -102,6 +106,11 @@ fn assertion_executor_pool() -> &'static rayon::ThreadPool {
             .build()
             .expect("Failed to build assertion executor thread pool")
     })
+}
+
+#[inline]
+fn should_parallelize_assertion_fns(work_items: usize) -> bool {
+    work_items >= ASSERTION_FN_PARALLEL_MIN_WORK_ITEMS
 }
 
 #[derive(Debug, Clone)]
@@ -264,7 +273,7 @@ impl AssertionExecutor {
     /// Reads triggered assertions and executes each assertion contract in parallel.
     fn execute_triggered_assertions<Active, T, F>(
         &self,
-        block_env: BlockEnv,
+        block_env: &BlockEnv,
         tx_fork_db: &ForkDb<Active>,
         forked_tx_result: &ExecuteForkedTxResult,
         tx_env: &TxEnv,
@@ -311,35 +320,50 @@ impl AssertionExecutor {
             "Retrieved Assertion contracts from Assertion store"
         );
 
-        let execute_one = |assertion_for_execution: crate::store::AssertionsForExecution| {
-            let phevm_context = PhEvmContext::new(
-                &logs_and_traces,
-                assertion_for_execution.adopter,
-                tx_env,
-                assertion_for_execution.assertion_spec,
-            );
-
-            run_assertion_contract(
-                &assertion_for_execution.assertion_contract,
-                &assertion_for_execution.selectors,
-                &block_env,
-                tx_fork_db.clone(),
-                &phevm_context,
-                tx_arena_epoch,
-            )
-        };
-
         if assertion_count < PARALLEL_THRESHOLD {
             // Most txs hit zero or one assertion contract. Stay sequential in that regime so
             // we do not spend more time scheduling rayon work than executing the assertion.
             let mut results = Vec::with_capacity(assertion_count);
             for assertion_for_execution in assertions {
-                results.push(execute_one(assertion_for_execution)?);
+                let phevm_context = PhEvmContext::new(
+                    &logs_and_traces,
+                    assertion_for_execution.adopter,
+                    tx_env,
+                    assertion_for_execution.assertion_spec,
+                );
+                results.push(run_assertion_contract(
+                    &assertion_for_execution.assertion_contract,
+                    &assertion_for_execution.selectors,
+                    block_env,
+                    tx_fork_db.clone(),
+                    &phevm_context,
+                    tx_arena_epoch,
+                )?);
             }
             Ok(results)
         } else {
-            assertion_executor_pool()
-                .install(|| assertions.into_par_iter().map(execute_one).collect())
+            assertion_executor_pool().install(|| {
+                assertions
+                    .into_par_iter()
+                    .map(move |assertion_for_execution| {
+                        let phevm_context = PhEvmContext::new(
+                            &logs_and_traces,
+                            assertion_for_execution.adopter,
+                            tx_env,
+                            assertion_for_execution.assertion_spec,
+                        );
+
+                        run_assertion_contract(
+                            &assertion_for_execution.assertion_contract,
+                            &assertion_for_execution.selectors,
+                            block_env,
+                            tx_fork_db.clone(),
+                            &phevm_context,
+                            tx_arena_epoch,
+                        )
+                    })
+                    .collect()
+            })
         }
     }
 
@@ -495,7 +519,7 @@ impl AssertionExecutor {
         let assertion_timer = Instant::now();
         let results = self
             .execute_assertions(
-                block_env,
+                &block_env,
                 fork_db,
                 &forked_tx_result,
                 tx_env,
@@ -521,7 +545,7 @@ impl AssertionExecutor {
 
     fn execute_assertions<Active>(
         &self,
-        block_env: BlockEnv,
+        block_env: &BlockEnv,
         tx_fork_db: &ForkDb<Active>,
         forked_tx_result: &ExecuteForkedTxResult,
         tx_env: &TxEnv,
@@ -597,38 +621,81 @@ impl AssertionExecutor {
         let prepared =
             self.prepare_assertion_contract(assertion_contract, fn_selectors, tx_fork_db, context);
 
-        let execute_fn = |fn_selector: &FixedBytes<4>| {
-            self.execute_assertion_fn(AssertionExecutionParams {
+        if fn_selectors.len() == 1 {
+            let fn_selector = fn_selectors[0];
+            let fn_result = self.execute_assertion_fn(AssertionExecutionParams {
                 assertion_contract,
-                fn_selector,
+                fn_selector: &fn_selector,
                 tx_arena_epoch,
                 block_env: block_env.clone(),
-                multi_fork_db: prepared.multi_fork_db.clone(),
-                inspector: prepared.inspector.clone(),
-            })
-        };
+                multi_fork_db: prepared.multi_fork_db,
+                inspector: prepared.inspector,
+            })?;
+            let total_assertion_gas = fn_result.as_result().gas_used();
+            return Ok(AssertionContractExecution {
+                adopter: context.adopter,
+                assertion_fns_results: vec![fn_result],
+                total_assertion_gas,
+                total_assertion_funcs_ran: 1,
+            });
+        }
+
+        let execution_count = fn_selectors.len();
+        let parallel_fns = should_parallelize_assertion_fns(execution_count);
+        trace!(
+            target: "assertion-executor::execute_assertions",
+            assertion_contract_id = ?assertion_contract.id,
+            selector_count = fn_selectors.len(),
+            execution_count,
+            scheduling = if parallel_fns { "parallel" } else { "sequential" },
+            "Assertion fn scheduling decision"
+        );
+
+        if !parallel_fns {
+            let mut valid_results = Vec::with_capacity(execution_count);
+            let mut total_assertion_gas = 0;
+
+            for fn_selector in fn_selectors {
+                let fn_result = self.execute_assertion_fn(AssertionExecutionParams {
+                    assertion_contract,
+                    fn_selector,
+                    tx_arena_epoch,
+                    block_env: block_env.clone(),
+                    multi_fork_db: prepared.multi_fork_db.clone(),
+                    inspector: prepared.inspector.clone(),
+                })?;
+                total_assertion_gas += fn_result.as_result().gas_used();
+                valid_results.push(fn_result);
+            }
+
+            let total_assertion_funcs_ran = valid_results.len() as u64;
+            return Ok(AssertionContractExecution {
+                adopter: context.adopter,
+                assertion_fns_results: valid_results,
+                total_assertion_gas,
+                total_assertion_funcs_ran,
+            });
+        }
 
         let current_span = tracing::Span::current();
         let results_vec: Vec<_> = current_span.in_scope(|| {
-            if fn_selectors.len() < PARALLEL_THRESHOLD {
-                // The common case is one matched selector. Execute directly and keep the hot path
-                // free of rayon scheduling and iterator allocation overhead.
-                let mut results = Vec::with_capacity(fn_selectors.len());
-                for fn_selector in fn_selectors {
-                    results.push(execute_fn(fn_selector));
-                }
-                results
-            } else {
-                assertion_executor_pool()
-                    .install(|| fn_selectors.into_par_iter().map(execute_fn).collect())
-            }
+            assertion_executor_pool().install(|| {
+                fn_selectors
+                    .into_par_iter()
+                    .map(|fn_selector| {
+                        self.execute_assertion_fn(AssertionExecutionParams {
+                            assertion_contract,
+                            fn_selector,
+                            tx_arena_epoch,
+                            block_env: block_env.clone(),
+                            multi_fork_db: prepared.multi_fork_db.clone(),
+                            inspector: prepared.inspector.clone(),
+                        })
+                    })
+                    .collect()
+            })
         });
 
-        trace!(
-            target: "assertion-executor::execute_assertions",
-            result_count = results_vec.len(),
-            "Assertion Execution Results"
-        );
         let mut valid_results = Vec::with_capacity(results_vec.len());
         let mut total_assertion_gas = 0;
         for result in results_vec {
@@ -722,7 +789,7 @@ impl AssertionExecutor {
         let assertion_timer = Instant::now();
         let results = self
             .execute_assertions(
-                block_env,
+                &block_env,
                 fork_db,
                 &forked_tx_result,
                 tx_env,
@@ -1041,7 +1108,7 @@ mod test {
         let tx_arena_epoch = crate::arena::next_tx_arena_epoch();
         let results = executor
             .execute_assertions(
-                block_env,
+                &block_env,
                 &fork_db,
                 &forked_tx_result,
                 &TxEnv::default(),
