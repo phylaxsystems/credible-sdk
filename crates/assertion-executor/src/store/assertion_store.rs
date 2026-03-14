@@ -1674,6 +1674,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_read_adopter_all_calls_not_added_for_storage_only_matches()
+    -> Result<(), AssertionStoreError> {
+        let aa = Address::random();
+        let selector_all_calls = FixedBytes::<4>::random();
+        let selector_storage = FixedBytes::<4>::random();
+
+        let store = AssertionStore::new_ephemeral();
+        let mut trigger_recorder = TriggerRecorder::default();
+        trigger_recorder.triggers.insert(
+            TriggerType::AllCalls,
+            vec![selector_all_calls].into_iter().collect(),
+        );
+        trigger_recorder.triggers.insert(
+            TriggerType::StorageChange {
+                trigger_slot: U256::from(1).into(),
+            },
+            vec![selector_storage].into_iter().collect(),
+        );
+
+        let mut assertion = create_test_assertion(100, None);
+        assertion.trigger_recorder = trigger_recorder;
+        store.insert(aa, assertion)?;
+
+        let mut tracer = CallTracer::default();
+        tracer.journal.journal.push(JournalEntry::StorageChanged {
+            address: aa,
+            key: U256::from(1),
+            had_value: U256::ZERO,
+        });
+
+        let assertions = store.read(&tracer, U256::from(100))?;
+        assert_eq!(assertions.len(), 1);
+        assert_sorted_selectors(&assertions, vec![selector_storage]);
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn test_all_trigger_types_comprehensive() -> Result<(), AssertionStoreError> {
         let aa = Address::random();
         let fixture = build_comprehensive_fixture();
@@ -1802,6 +1840,69 @@ mod tests {
         let mut matched_selectors = assertions[0].selectors.clone();
         matched_selectors.sort();
         assert_eq!(matched_selectors, expected_selectors);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_read_adopter_deduplicates_shared_specific_and_all_selectors()
+    -> Result<(), AssertionStoreError> {
+        let aa = Address::random();
+
+        let call_selector = FixedBytes::<4>::random();
+        let storage_selector = FixedBytes::<4>::random();
+        let shared_selector = FixedBytes::<4>::random();
+        let trigger_selector = FixedBytes::<4>::default();
+        let trigger_slot = U256::from(7);
+
+        let recorded_triggers = vec![
+            (
+                TriggerType::Call { trigger_selector },
+                vec![call_selector, shared_selector]
+                    .into_iter()
+                    .collect::<HashSet<_>>(),
+            ),
+            (
+                TriggerType::AllCalls,
+                vec![shared_selector].into_iter().collect::<HashSet<_>>(),
+            ),
+            (
+                TriggerType::StorageChange {
+                    trigger_slot: trigger_slot.into(),
+                },
+                vec![storage_selector, shared_selector]
+                    .into_iter()
+                    .collect::<HashSet<_>>(),
+            ),
+            (
+                TriggerType::AllStorageChanges,
+                vec![shared_selector].into_iter().collect::<HashSet<_>>(),
+            ),
+        ];
+
+        let journal_entries = vec![JournalEntry::StorageChanged {
+            address: aa,
+            key: trigger_slot,
+            had_value: U256::ZERO,
+        }];
+
+        let assertions = setup_and_match(&recorded_triggers, journal_entries, aa)?;
+        assert_eq!(assertions.len(), 1);
+
+        let mut matched_selectors = assertions[0].selectors.clone();
+        matched_selectors.sort();
+
+        let mut expected_selectors = vec![call_selector, storage_selector, shared_selector];
+        expected_selectors.sort();
+
+        assert_eq!(matched_selectors, expected_selectors);
+        assert_eq!(
+            matched_selectors
+                .iter()
+                .filter(|selector| **selector == shared_selector)
+                .count(),
+            1
+        );
 
         Ok(())
     }

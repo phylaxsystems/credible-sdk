@@ -699,6 +699,13 @@ mod test {
             Host,
         },
     };
+    use std::sync::{
+        Arc,
+        atomic::{
+            AtomicUsize,
+            Ordering,
+        },
+    };
 
     #[test]
     fn call_tracing() {
@@ -2115,5 +2122,109 @@ mod test {
 
         let idx2 = tracer.storage_change_index();
         assert!(std::ptr::eq(idx1, idx2));
+    }
+
+    #[test]
+    fn test_storage_change_index_is_snapshot_after_first_access() {
+        let addr = address!("1111111111111111111111111111111111111111");
+        let mut tracer = CallTracer::default();
+        tracer.journal.journal.push(JournalEntry::StorageChanged {
+            address: addr,
+            key: U256::from(1),
+            had_value: U256::from(100),
+        });
+
+        let idx1_ptr = {
+            let idx1 = tracer.storage_change_index();
+            assert_eq!(idx1.slots_for_address(&addr).unwrap(), &[U256::from(1)]);
+            idx1 as *const StorageChangeIndex
+        };
+
+        tracer.journal.journal.push(JournalEntry::StorageChanged {
+            address: addr,
+            key: U256::from(2),
+            had_value: U256::from(200),
+        });
+
+        let idx2 = tracer.storage_change_index();
+        assert_eq!(idx1_ptr, idx2 as *const StorageChangeIndex);
+        assert_eq!(idx2.slots_for_address(&addr).unwrap(), &[U256::from(1)]);
+        assert_eq!(idx2.first_had_value(&addr, &U256::from(2)), None);
+    }
+
+    #[test]
+    fn test_call_ids_for_reverted_branch_cleanup_and_missing_key() {
+        let addr_a = address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let addr_b = address!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        let selector_a = FixedBytes::<4>::from([0x11, 0x11, 0x11, 0x11]);
+        let selector_b = FixedBytes::<4>::from([0x22, 0x22, 0x22, 0x22]);
+        let missing_selector = FixedBytes::<4>::from([0x33, 0x33, 0x33, 0x33]);
+
+        let make_call = |target: Address, selector: FixedBytes<4>| {
+            let input: Bytes = selector.into();
+            (
+                CallInputs {
+                    input: CallInput::Bytes(input.clone()),
+                    return_memory_offset: 0..0,
+                    gas_limit: 0,
+                    bytecode_address: target,
+                    known_bytecode: None,
+                    target_address: target,
+                    caller: target,
+                    value: CallValue::default(),
+                    scheme: CallScheme::Call,
+                    is_static: false,
+                },
+                input,
+            )
+        };
+
+        let mut tracer = CallTracer::default();
+        let mut journal = JournalInner::new();
+
+        journal.depth = 0;
+        let (inputs, bytes) = make_call(addr_a, selector_a);
+        tracer.record_call_start(inputs, &bytes, &mut journal);
+
+        journal.depth = 1;
+        let (inputs, bytes) = make_call(addr_b, selector_b);
+        tracer.record_call_start(inputs, &bytes, &mut journal);
+
+        journal.depth = 1;
+        tracer.record_call_end(&mut journal, true);
+
+        journal.depth = 1;
+        let (inputs, bytes) = make_call(addr_a, selector_a);
+        tracer.record_call_start(inputs, &bytes, &mut journal);
+        tracer.record_call_end(&mut journal, false);
+
+        journal.depth = 0;
+        tracer.record_call_end(&mut journal, false);
+
+        assert_eq!(tracer.call_ids_for(addr_a, selector_a), &[0, 1]);
+        assert!(tracer.call_ids_for(addr_b, selector_b).is_empty());
+        assert!(tracer.call_ids_for(addr_a, missing_selector).is_empty());
+    }
+
+    #[test]
+    fn test_encoded_logs_or_init_invokes_initializer_once() {
+        let tracer = CallTracer::default();
+        let init_calls = Arc::new(AtomicUsize::new(0));
+
+        let first_counter = Arc::clone(&init_calls);
+        let first = tracer.encoded_logs_or_init(|| {
+            first_counter.fetch_add(1, Ordering::Relaxed);
+            Bytes::from_static(b"cached-logs")
+        });
+
+        let second_counter = Arc::clone(&init_calls);
+        let second = tracer.encoded_logs_or_init(|| {
+            second_counter.fetch_add(1, Ordering::Relaxed);
+            Bytes::from_static(b"should-not-run")
+        });
+
+        assert_eq!(init_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(first, &Bytes::from_static(b"cached-logs"));
+        assert!(std::ptr::eq(first, second));
     }
 }
