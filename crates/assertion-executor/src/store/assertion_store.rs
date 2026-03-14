@@ -1834,6 +1834,7 @@ mod tests {
                 ..Default::default()
             },
             trigger_recorder: trigger_recorder1,
+            assertion_spec: AssertionSpec::Legacy,
         };
         store.insert(aa, assertion1)?;
 
@@ -1853,6 +1854,7 @@ mod tests {
                 ..Default::default()
             },
             trigger_recorder: trigger_recorder2,
+            assertion_spec: AssertionSpec::Legacy,
         };
         store.insert(aa, assertion2)?;
 
