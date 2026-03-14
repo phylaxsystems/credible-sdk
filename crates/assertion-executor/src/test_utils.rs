@@ -197,6 +197,8 @@ fn decode_artifact_bytecodes(input: &str) -> ArtifactBytecodes {
 }
 
 fn cached_artifact_bytecodes(input: &str) -> ArtifactBytecodes {
+    // Fast path: benchmarks repeatedly request the same small set of artifacts, so avoid
+    // taking the write lock when the decoded bytecodes are already resident.
     if let Some(entry) = artifact_bytecodes_cache()
         .read()
         .expect("artifact bytecode cache poisoned")
@@ -209,6 +211,8 @@ fn cached_artifact_bytecodes(input: &str) -> ArtifactBytecodes {
     let mut cache = artifact_bytecodes_cache()
         .write()
         .expect("artifact bytecode cache poisoned");
+    // Double-check after taking the write lock so concurrent readers that raced on the miss
+    // still converge on exactly one decode per artifact key.
     cache
         .entry(input.to_owned())
         .or_insert_with(|| decode_artifact_bytecodes(input))

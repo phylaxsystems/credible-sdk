@@ -78,6 +78,8 @@ impl StorageChangeIndex {
                 had_value,
             } = entry
             {
+                // Keep writes in journal order so callers can recover "first write in tx"
+                // semantics without rescanning the journal.
                 changes_by_key
                     .entry((*address, *key))
                     .or_default()
@@ -273,6 +275,7 @@ impl CallTracer {
         // but we still have to store the rest of it to preserve the journal depth.
         if is_aa {
             // Coerce only when needed (SharedBuffer). If already Bytes, keep in place.
+            // This avoids copying calldata for the common "already owned Bytes" case.
             if !matches!(inputs.input, CallInput::Bytes(_)) {
                 inputs.input = CallInput::Bytes(Bytes::from(input_bytes.to_vec()));
             }
@@ -386,6 +389,9 @@ impl CallTracer {
             // Small-range fast path:
             // Avoid allocating a temporary HashMap for common short suffix truncations.
             // Repeated lookups are cheap here and keep the branch lean for small reverts.
+            // The first record encountered for a key is the earliest truncated occurrence,
+            // so truncating that key's index vec once is sufficient; later entries for the
+            // same key become no-ops because `indices.len() > pos` stops being true.
             let mut keys_to_remove: Vec<TargetAndSelector> = Vec::new();
 
             for i in index..old_len {
@@ -630,6 +636,10 @@ impl CallTracer {
     }
 
     /// Returns cached `getLogs()` ABI bytes, initializing once on first use.
+    ///
+    /// The encoding depends only on the traced transaction logs, not on the gas budget
+    /// of an individual precompile call, so it is safe to compute once and reuse across
+    /// all assertion functions for the same traced transaction.
     #[must_use]
     pub fn encoded_logs_or_init<F>(&self, init: F) -> &Bytes
     where
@@ -663,6 +673,8 @@ impl CallTracer {
             let mut map: HashMap<(Address, FixedBytes<32>), Vec<usize>> = HashMap::new();
             for (idx, log) in tx_logs.iter().enumerate() {
                 if let Some(first_topic) = log.data.topics().first() {
+                    // Only topic0 participates in this index. Higher-topic filtering still
+                    // happens in the calling precompile after we narrow to the relevant log set.
                     map.entry((log.address, (*first_topic)))
                         .or_default()
                         .push(idx);

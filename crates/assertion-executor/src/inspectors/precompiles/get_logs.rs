@@ -75,6 +75,9 @@ pub fn get_logs(context: &PhEvmContext, gas: u64) -> Result<PhevmOutcome, GetLog
         return Err(GetLogsError::OutOfGas(rax));
     }
 
+    // Cache the ABI encoding once per traced transaction. We still charge encoding gas on
+    // every precompile call because the EVM-visible cost model is based on the returned
+    // payload size, not whether the Rust side happened to have a warm cache.
     let encoded = context
         .logs_and_traces
         .call_traces

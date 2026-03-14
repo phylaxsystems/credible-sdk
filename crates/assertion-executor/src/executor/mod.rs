@@ -104,6 +104,10 @@ fn assertion_executor_pool() -> &'static rayon::ThreadPool {
 
 /// Rayon scheduling has non-trivial overhead for single-item workloads.
 /// We run sequentially only when there is exactly one item.
+///
+/// This governs contract-level parallelism. Function-level parallelism uses a
+/// stricter threshold below because individual assertion function executions are
+/// much shorter-lived than whole-contract execution.
 #[inline]
 pub(super) fn should_parallelize(work_items: usize) -> bool {
     work_items > 1
@@ -186,6 +190,9 @@ pub(super) fn expand_selector_invocations(
 pub(super) fn selector_invocation_count(
     fn_selectors: &[crate::store::SelectorWithTrigger],
 ) -> usize {
+    // Count concrete executions without allocating the expanded invocation list.
+    // This is used for scheduling decisions before we know whether we need the
+    // allocation-heavy expanded representation at all.
     fn_selectors
         .iter()
         .map(|swt| swt.trigger_calls.len().max(1))
@@ -402,6 +409,9 @@ impl AssertionExecutor {
             assertion_executor_pool()
                 .install(|| assertions.into_par_iter().map(execute_one).collect())
         } else {
+            // The single-assertion case dominates benchmarks that hit one adopter / one
+            // assertion contract. Avoiding rayon here removes scheduler overhead while
+            // preserving the exact same per-contract execution body.
             let mut results = Vec::with_capacity(assertion_count);
             for assertion_for_execution in assertions {
                 results.push(execute_one(assertion_for_execution)?);
@@ -505,6 +515,9 @@ impl AssertionExecutor {
             "Preparing assertion contract",
         );
 
+        // We only need the selector count for tracing. Passing the full selector list here
+        // used to allocate formatting/debug data in a hot path even though setup is identical
+        // regardless of which selectors will execute.
         self.insert_persistent_accounts(assertion_contract, &mut tx_fork_db);
 
         PreparedAssertionContract {
@@ -680,6 +693,11 @@ impl AssertionExecutor {
             };
 
             if let Some(trigger_call_id) = direct_trigger_call_id {
+                // Safe because the direct path is only used when there is exactly one
+                // concrete invocation to run:
+                // - no trigger calls => run once with `None`
+                // - one trigger call => run once with `Some(call_id)`
+                // Multi-call selectors still fall back to the generic expansion path.
                 let mut inspector = prepared.inspector;
                 inspector.context.trigger_call_id = trigger_call_id;
                 let fn_selector = selector.selector;
