@@ -16,9 +16,13 @@ mod assertion_store;
 pub use assertion_store::{
     AssertionStore,
     AssertionStoreError,
-    AssertionsForExecution,
     PruneConfig,
 };
+
+#[cfg(any(test, feature = "test"))]
+// Benchmarks need to hold onto matched assertions between phases, but production
+// callers should keep using the store through its read API.
+pub use assertion_store::AssertionsForExecution;
 
 pub mod models;
 pub use models::AssertionState;

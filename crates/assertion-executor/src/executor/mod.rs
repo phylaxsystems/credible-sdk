@@ -57,7 +57,10 @@ use crate::{
         bytes,
     },
     reprice_evm_storage,
-    store::AssertionStore,
+    store::{
+        AssertionStore,
+        AssertionsForExecution,
+    },
 };
 
 use revm::{
@@ -70,6 +73,7 @@ use rayon::{
     ThreadPoolBuilder,
     prelude::{
         IntoParallelIterator,
+        IntoParallelRefIterator,
         ParallelIterator,
     },
 };
@@ -152,6 +156,15 @@ struct AssertionValidationSummary {
     invalid_assertions: Vec<AssertionFnId>,
     total_assertion_gas: u64,
     total_assertion_funcs_ran: u64,
+}
+
+#[cfg(any(test, feature = "test"))]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct BenchmarkAssertionSetupStats {
+    // Count contracts and selector fanout separately so the setup bench can tell
+    // whether a change affected contract preparation, selector cloning, or both.
+    pub assertion_contracts_prepared: usize,
+    pub selector_fanouts_prepared: usize,
 }
 
 /// Shared state produced by `prepare_assertion_contract` and consumed
@@ -270,11 +283,16 @@ impl AssertionExecutor {
         )
     }
 
-    /// Reads triggered assertions and executes each assertion contract in parallel.
-    fn execute_triggered_assertions<Active, T, F>(
+    /// Executes pre-read assertions in parallel.
+    ///
+    /// The benchmark harness pre-reads assertions outside this helper so it can
+    /// isolate store lookup from execution, but production validation still feeds
+    /// this helper from the store immediately before running assertions.
+    fn execute_selected_assertions<Active, T, F>(
         &self,
         block_env: &BlockEnv,
         tx_fork_db: &ForkDb<Active>,
+        assertions: Vec<AssertionsForExecution>,
         forked_tx_result: &ExecuteForkedTxResult,
         tx_env: &TxEnv,
         tx_arena_epoch: u64,
@@ -295,19 +313,10 @@ impl AssertionExecutor {
             + Sync
             + Send,
     {
-        let ExecuteForkedTxResult {
-            call_tracer,
-            result_and_state,
-        } = forked_tx_result;
         let logs_and_traces = LogsAndTraces {
-            tx_logs: result_and_state.result.logs(),
-            call_traces: call_tracer,
+            tx_logs: forked_tx_result.result_and_state.result.logs(),
+            call_traces: &forked_tx_result.call_tracer,
         };
-
-        let assertions = self
-            .store
-            .read(logs_and_traces.call_traces, U256::from(block_env.number))
-            .map_err(AssertionExecutionError::AssertionReadError)?;
 
         if assertions.is_empty() {
             return Ok(vec![]);
@@ -558,9 +567,15 @@ impl AssertionExecutor {
         Active: DatabaseRef + Sync + Send + Clone,
         Active::Error: Send,
     {
-        let results = self.execute_triggered_assertions(
+        let assertions = self
+            .store
+            .read(&forked_tx_result.call_tracer, U256::from(block_env.number))
+            .map_err(AssertionExecutionError::AssertionReadError)?;
+
+        let results = self.execute_selected_assertions(
             block_env,
             tx_fork_db,
+            assertions,
             forked_tx_result,
             tx_env,
             tx_arena_epoch,
@@ -578,6 +593,124 @@ impl AssertionExecutor {
 
         debug!(target: "assertion-executor::execute_assertions", ?results, "Assertion Execution Results");
         results
+    }
+
+    #[cfg(any(test, feature = "test"))]
+    /// Bench helper that measures assertion setup without executing any assertion bytecode.
+    ///
+    /// The `black_box` calls intentionally keep the cloned setup artifacts alive so the
+    /// optimizer cannot fold away the work that the setup benchmark is trying to measure.
+    pub fn benchmark_prepare_selected_assertions<Active>(
+        &self,
+        block_env: &BlockEnv,
+        tx_fork_db: &ForkDb<Active>,
+        assertions: &[AssertionsForExecution],
+        forked_tx_result: &ExecuteForkedTxResult,
+        tx_env: &TxEnv,
+    ) -> BenchmarkAssertionSetupStats
+    where
+        Active: DatabaseRef + Sync + Send + Clone,
+        Active::Error: Send,
+    {
+        let logs_and_traces = LogsAndTraces {
+            tx_logs: forked_tx_result.result_and_state.result.logs(),
+            call_traces: &forked_tx_result.call_tracer,
+        };
+
+        let mut stats = BenchmarkAssertionSetupStats::default();
+
+        for assertion_for_execution in assertions {
+            let phevm_context = PhEvmContext::new(
+                &logs_and_traces,
+                assertion_for_execution.adopter,
+                tx_env,
+                assertion_for_execution.assertion_spec.clone(),
+            );
+            let prepared = self.prepare_assertion_contract(
+                &assertion_for_execution.assertion_contract,
+                &assertion_for_execution.selectors,
+                tx_fork_db.clone(),
+                &phevm_context,
+            );
+
+            stats.assertion_contracts_prepared += 1;
+
+            let selector_count = assertion_for_execution.selectors.len();
+            if selector_count == 0 {
+                continue;
+            }
+
+            stats.selector_fanouts_prepared += selector_count;
+
+            if selector_count == 1 {
+                std::hint::black_box(prepared.multi_fork_db);
+                std::hint::black_box(prepared.inspector);
+                continue;
+            }
+
+            if should_parallelize_assertion_fns(selector_count) {
+                assertion_executor_pool().install(|| {
+                    assertion_for_execution.selectors.par_iter().for_each(|_| {
+                        // Match the real multi-selector path by cloning the prepared
+                        // db and inspector once per selector fanout.
+                        std::hint::black_box(prepared.multi_fork_db.clone());
+                        std::hint::black_box(prepared.inspector.clone());
+                    });
+                });
+            } else {
+                for _ in &assertion_for_execution.selectors {
+                    // Small fanouts stay sequential in production, so the setup bench
+                    // mirrors that branch instead of always forcing rayon.
+                    std::hint::black_box(prepared.multi_fork_db.clone());
+                    std::hint::black_box(prepared.inspector.clone());
+                }
+            }
+        }
+
+        let _ = block_env;
+        stats
+    }
+
+    #[cfg(any(test, feature = "test"))]
+    /// Bench helper that executes already-selected assertions so the perf harness can
+    /// measure assertion execution separately from store lookup and setup preparation.
+    pub fn benchmark_execute_selected_assertions<Active>(
+        &self,
+        block_env: &BlockEnv,
+        tx_fork_db: &ForkDb<Active>,
+        assertions: Vec<AssertionsForExecution>,
+        forked_tx_result: &ExecuteForkedTxResult,
+        tx_env: &TxEnv,
+    ) -> Result<Vec<AssertionContractExecution>, ExecutorError<<Active as DatabaseRef>::Error>>
+    where
+        Active: DatabaseRef + Sync + Send + Clone,
+        Active::Error: Send,
+    {
+        let tx_arena_epoch = next_tx_arena_epoch();
+        self.execute_selected_assertions(
+            block_env,
+            tx_fork_db,
+            assertions,
+            forked_tx_result,
+            tx_env,
+            tx_arena_epoch,
+            |assertion_contract, fn_selectors, block_env, tx_fork_db, context, tx_arena_epoch| {
+                self.run_assertion_contract(
+                    assertion_contract,
+                    fn_selectors,
+                    block_env,
+                    tx_fork_db,
+                    context,
+                    tx_arena_epoch,
+                )
+            },
+        )
+        .map_err(|err| {
+            ExecutorError::AssertionExecutionError(
+                forked_tx_result.result_and_state.state.clone(),
+                err,
+            )
+        })
     }
 
     /// Runs a single assertion contract's functions in parallel (without a custom inspector).

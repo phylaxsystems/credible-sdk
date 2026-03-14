@@ -259,9 +259,20 @@ impl AssertionExecutor {
         for<'db> I: Inspector<EthCtx<'db, MultiForkDb<ForkDb<Active>>>>,
         for<'db> I: Inspector<OpCtx<'db, MultiForkDb<ForkDb<Active>>>>,
     {
-        let results = self.execute_triggered_assertions(
+        // Keep the inspector path on the same assertion-selection flow as the
+        // default executor so phase-isolated benches exercise identical store reads.
+        let assertions = self
+            .store
+            .read(
+                &forked_tx_result.call_tracer,
+                crate::primitives::U256::from(block_env.number),
+            )
+            .map_err(AssertionExecutionError::AssertionReadError)?;
+
+        let results = self.execute_selected_assertions(
             block_env,
             tx_fork_db,
+            assertions,
             forked_tx_result,
             tx_env,
             tx_arena_epoch,
