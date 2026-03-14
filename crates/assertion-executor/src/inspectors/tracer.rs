@@ -13,6 +13,7 @@ use crate::{
     },
     store::AssertionStore,
 };
+use rapidhash::fast::RandomState;
 use revm::{
     Database,
     Inspector,
@@ -167,7 +168,7 @@ pub struct CallTracer {
     /// Push on `call_start`, pop on `call_end`.
     pending_post_call_writes: Vec<usize>,
     /// Maps (target, selector) keys to indices in `call_records` for fast lookup.
-    pub target_and_selector_indices: HashMap<TargetAndSelector, Vec<usize>>,
+    pub target_and_selector_indices: HashMap<TargetAndSelector, Vec<usize>, RandomState>,
     /// Result of call tracing operations. Check after tracing to detect errors.
     pub result: Result<(), CallTracerError>,
     /// Cold precompile-only caches live off the hot tracing path to keep the common-case
@@ -182,7 +183,7 @@ impl Default for CallTracer {
             assertion_store: None,
             journal: JournalInner::new(),
             pending_post_call_writes: Vec::new(),
-            target_and_selector_indices: HashMap::new(),
+            target_and_selector_indices: HashMap::default(),
             result: Ok(()),
             adopter_cache: HashMap::new(),
             lazy_state: Box::default(),
@@ -198,7 +199,7 @@ impl CallTracer {
             assertion_store: Some(assertion_store),
             journal: JournalInner::new(),
             pending_post_call_writes: Vec::new(),
-            target_and_selector_indices: HashMap::new(),
+            target_and_selector_indices: HashMap::default(),
             result: Ok(()),
             adopter_cache: HashMap::new(),
             lazy_state: Box::default(),
@@ -245,9 +246,10 @@ impl CallTracer {
         // In case where we are hit with a non-AA call, we want to ignore its calldata,
         // but we still have to store the rest of it to preserve the journal depth.
         if is_aa {
-            // Coerce the bytes at the time of recording the call,
-            // in case they are of the SharedBuffer variant
-            inputs.input = CallInput::Bytes(Bytes::from(input_bytes.to_vec()));
+            // Coerce only when needed (SharedBuffer). If already Bytes, keep it in place.
+            if !matches!(&inputs.input, CallInput::Bytes(_)) {
+                inputs.input = CallInput::Bytes(Bytes::from(input_bytes.to_vec()));
+            }
         } else {
             inputs.input = CallInput::Bytes(Bytes::default());
         }
@@ -268,15 +270,15 @@ impl CallTracer {
         };
 
         // Track position within the key's Vec for O(1) truncation
-        let position = self
-            .target_and_selector_indices
-            .get(&key)
-            .map_or(0, Vec::len);
-
-        self.target_and_selector_indices
-            .entry(key.clone())
-            .or_default()
-            .push(index);
+        let position = {
+            let indices = self
+                .target_and_selector_indices
+                .entry(key.clone())
+                .or_default();
+            let pos = indices.len();
+            indices.push(index);
+            pos
+        };
 
         self.call_records.push(CallRecord {
             inputs,
@@ -354,7 +356,8 @@ impl CallTracer {
         } else {
             // General path: for each unique key in the truncated range, find the minimum position
             // (first occurrence), then truncate to that position.
-            let mut truncate_positions: HashMap<&TargetAndSelector, usize> = HashMap::new();
+            let mut truncate_positions: HashMap<&TargetAndSelector, usize, RandomState> =
+                HashMap::default();
             for i in index..old_len {
                 let record = &self.call_records[i];
                 let key = &record.target_and_selector;
@@ -405,24 +408,24 @@ impl CallTracer {
         target: Address,
         selector: FixedBytes<4>,
     ) -> Vec<CallInputsWithId<'_>> {
-        // No filtering needed since all recorded calls are valid
-        match self
-            .target_and_selector_indices
+        self.call_ids_for(target, selector)
+            .iter()
+            .map(|&index| {
+                CallInputsWithId {
+                    call_input: self.call_records[index].inputs(),
+                    id: index,
+                }
+            })
+            .collect()
+    }
+
+    /// Returns call-record indices matching `(target, selector)` in journal order.
+    #[inline]
+    #[must_use]
+    pub fn call_ids_for(&self, target: Address, selector: FixedBytes<4>) -> &[usize] {
+        self.target_and_selector_indices
             .get(&TargetAndSelector { target, selector })
-        {
-            Some(indices) => {
-                indices
-                    .iter()
-                    .map(|&index| {
-                        CallInputsWithId {
-                            call_input: self.call_records[index].inputs(),
-                            id: index,
-                        }
-                    })
-                    .collect()
-            }
-            None => vec![],
-        }
+            .map_or(&[], Vec::as_slice)
     }
 
     /// Check if a call is valid for forking (not inside a reverted subtree)
