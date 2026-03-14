@@ -330,11 +330,16 @@ impl AssertionExecutor {
         };
 
         if assertion_count < PARALLEL_THRESHOLD {
-            assertions.into_iter().map(execute_one).collect()
+            // Most txs hit zero or one assertion contract. Stay sequential in that regime so
+            // we do not spend more time scheduling rayon work than executing the assertion.
+            let mut results = Vec::with_capacity(assertion_count);
+            for assertion_for_execution in assertions {
+                results.push(execute_one(assertion_for_execution)?);
+            }
+            Ok(results)
         } else {
-            assertion_executor_pool().install(|| {
-                assertions.into_par_iter().map(execute_one).collect()
-            })
+            assertion_executor_pool()
+                .install(|| assertions.into_par_iter().map(execute_one).collect())
         }
     }
 
@@ -606,15 +611,24 @@ impl AssertionExecutor {
         let current_span = tracing::Span::current();
         let results_vec: Vec<_> = current_span.in_scope(|| {
             if fn_selectors.len() < PARALLEL_THRESHOLD {
-                fn_selectors.iter().map(execute_fn).collect()
+                // The common case is one matched selector. Execute directly and keep the hot path
+                // free of rayon scheduling and iterator allocation overhead.
+                let mut results = Vec::with_capacity(fn_selectors.len());
+                for fn_selector in fn_selectors {
+                    results.push(execute_fn(fn_selector));
+                }
+                results
             } else {
-                assertion_executor_pool().install(|| {
-                    fn_selectors.into_par_iter().map(execute_fn).collect()
-                })
+                assertion_executor_pool()
+                    .install(|| fn_selectors.into_par_iter().map(execute_fn).collect())
             }
         });
 
-        trace!(target: "assertion-executor::execute_assertions", execution_results=?results_vec.iter().map(|result| format!("{result:?}")).collect::<Vec<_>>(), "Assertion Execution Results");
+        trace!(
+            target: "assertion-executor::execute_assertions",
+            result_count = results_vec.len(),
+            "Assertion Execution Results"
+        );
         let mut valid_results = Vec::with_capacity(results_vec.len());
         let mut total_assertion_gas = 0;
         for result in results_vec {

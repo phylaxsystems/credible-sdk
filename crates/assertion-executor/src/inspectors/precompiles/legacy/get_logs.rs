@@ -14,6 +14,10 @@ use std::convert::Infallible;
 
 use super::BASE_COST;
 
+const RESULT_ENCODING: u64 = 15;
+const LOG_COST_PER_WORD: u64 = 8;
+const ABI_ENCODE_COST: u64 = 6;
+
 #[derive(Debug, thiserror::Error)]
 pub enum GetLogsError {
     #[error("Out of gas")]
@@ -26,47 +30,58 @@ pub enum GetLogsError {
 ///
 /// This function returns `Infallible` and does not error.
 pub fn get_logs(context: &PhEvmContext, gas: u64) -> Result<PhevmOutcome, Infallible> {
-    const RESULT_ENCODING: u64 = 15;
-    const LOG_COST_PER_WORD: u64 = 8;
-    const ABI_ENCODE_COST: u64 = 6;
-
     let gas_limit = gas;
     let mut gas_left = gas;
     if let Some(rax) = deduct_gas_and_check(&mut gas_left, BASE_COST + RESULT_ENCODING, gas_limit) {
         return Ok(rax);
     }
 
-    let encoded: Bytes = crate::arena::with_current_tx_arena(|arena| {
-        let mut vec_size_bytes: usize = 0;
-        let mut sol_logs: Vec<PhEvm::Log, &Bump> = Vec::new_in(arena);
-        for log in context.logs_and_traces.tx_logs {
-            let sol_log = PhEvm::Log {
-                topics: log.topics().to_vec(),
-                data: log.data.data.clone(),
-                emitter: log.address,
-            };
-            vec_size_bytes += 20; // emitter
-            vec_size_bytes += sol_log.topics.len() * 32; // topics (bytes32)
-            vec_size_bytes += sol_log.data.len(); // data (bytes)
-            sol_logs.push(sol_log);
-        }
+    let logs = context.logs_and_traces.tx_logs;
+    let sol_log_words = logs_size_bytes(logs).div_ceil(32);
+    let sol_log_cost = sol_log_words.saturating_mul(LOG_COST_PER_WORD);
+    if let Some(rax) = deduct_gas_and_check(&mut gas_left, sol_log_cost, gas_limit) {
+        return Ok(rax);
+    }
 
-        let sol_log_words: u64 = (vec_size_bytes as u64).div_ceil(32);
-        let sol_log_cost = sol_log_words * LOG_COST_PER_WORD;
-        if let Some(rax) = deduct_gas_and_check(&mut gas_left, sol_log_cost, gas_limit) {
-            return rax.into_bytes();
-        }
-
-        <alloy_sol_types::sol_data::Array<PhEvm::Log>>::abi_encode(sol_logs.as_slice()).into()
-    });
+    // `getLogs()` may be queried multiple times by one assertion run. Cache the encoded payload
+    // once per traced tx, but continue charging the same ABI-encoding gas every call so the
+    // precompile's externally visible cost model stays unchanged.
+    let encoded = context
+        .logs_and_traces
+        .call_traces
+        .encoded_logs_or_init(|| encode_logs(logs))
+        .clone();
 
     let encoded_words: u64 = (encoded.len() as u64).div_ceil(32);
-    let encoded_cost = encoded_words * ABI_ENCODE_COST;
+    let encoded_cost = encoded_words.saturating_mul(ABI_ENCODE_COST);
     if let Some(rax) = deduct_gas_and_check(&mut gas_left, encoded_cost, gas_limit) {
         return Ok(rax);
     }
 
     Ok(PhevmOutcome::new(encoded, gas_limit - gas_left))
+}
+
+fn logs_size_bytes(logs: &[alloy_primitives::Log]) -> u64 {
+    logs.iter().fold(0u64, |acc, log| {
+        let topics_bytes = (log.data.topics().len() as u64).saturating_mul(32);
+        let data_bytes = log.data.data.len() as u64;
+        acc.saturating_add(20 + topics_bytes + data_bytes)
+    })
+}
+
+fn encode_logs(logs: &[alloy_primitives::Log]) -> Bytes {
+    crate::arena::with_current_tx_arena(|arena| {
+        let mut sol_logs: Vec<PhEvm::Log, &Bump> = Vec::new_in(arena);
+        for log in logs {
+            sol_logs.push(PhEvm::Log {
+                topics: log.topics().to_vec(),
+                data: log.data.data.clone(),
+                emitter: log.address,
+            });
+        }
+
+        <alloy_sol_types::sol_data::Array<PhEvm::Log>>::abi_encode(sol_logs.as_slice()).into()
+    })
 }
 
 #[cfg(test)]
@@ -415,6 +430,29 @@ mod test {
             let result = with_logs_context(&logs, |context| get_logs(context, u64::MAX));
             assert!(result.is_ok(), "get_logs should never fail");
         }
+    }
+
+    #[test]
+    fn test_get_logs_populates_tracer_encoding_cache() {
+        let log = Log {
+            address: Address::ZERO,
+            data: LogData::new(vec![random_bytes32()], Bytes::from(random_bytes::<16>())).unwrap(),
+        };
+        let logs = [log];
+
+        let call_tracer = CallTracer::default();
+        let logs_and_traces = LogsAndTraces {
+            tx_logs: &logs,
+            call_traces: &call_tracer,
+        };
+        let tx_env = crate::primitives::TxEnv::default();
+        let context = PhEvmContext::new(&logs_and_traces, Address::ZERO, &tx_env);
+
+        assert!(!call_tracer.has_encoded_logs_cache());
+        let _ = get_logs(&context, u64::MAX).unwrap();
+        assert!(call_tracer.has_encoded_logs_cache());
+        let _ = get_logs(&context, u64::MAX).unwrap();
+        assert!(call_tracer.has_encoded_logs_cache());
     }
 
     #[tokio::test]

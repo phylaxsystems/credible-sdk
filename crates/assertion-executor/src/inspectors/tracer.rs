@@ -9,6 +9,7 @@ use crate::{
         Bytes,
         FixedBytes,
         JournalEntry,
+        U256,
     },
     store::AssertionStore,
 };
@@ -27,11 +28,100 @@ use revm::{
         CreateOutcome,
     },
 };
-use std::collections::{
-    HashMap,
-    HashSet,
+use std::{
+    collections::{
+        HashMap,
+        HashSet,
+    },
+    sync::OnceLock,
 };
 use tracing::error;
+
+/// Pre-computed index of journal `StorageChanged` entries, built lazily on first access.
+///
+/// Multiple state-oriented precompiles ask the same questions about the same tx journal.
+/// Building this once lets those precompiles reuse an indexed view instead of rescanning
+/// every journal entry for every query.
+#[derive(Clone, Debug)]
+pub struct StorageChangeIndex {
+    changes_by_key: HashMap<(Address, U256), Vec<StorageChangeEntry>>,
+    slots_by_address: HashMap<Address, Vec<U256>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StorageChangeEntry {
+    pub journal_idx: usize,
+    pub had_value: U256,
+}
+
+impl StorageChangeIndex {
+    fn build(journal: &JournalInner<JournalEntry>) -> Self {
+        let mut changes_by_key: HashMap<(Address, U256), Vec<StorageChangeEntry>> = HashMap::new();
+        let mut slots_set: HashMap<Address, HashSet<U256>> = HashMap::new();
+
+        for (journal_idx, entry) in journal.journal.iter().enumerate() {
+            if let JournalEntry::StorageChanged {
+                address,
+                key,
+                had_value,
+            } = entry
+            {
+                changes_by_key
+                    .entry((*address, *key))
+                    .or_default()
+                    .push(StorageChangeEntry {
+                        journal_idx,
+                        had_value: *had_value,
+                    });
+                slots_set.entry(*address).or_default().insert(*key);
+            }
+        }
+
+        let slots_by_address = slots_set
+            .into_iter()
+            .map(|(addr, slots)| {
+                let mut slots: Vec<U256> = slots.into_iter().collect();
+                slots.sort();
+                (addr, slots)
+            })
+            .collect();
+
+        Self {
+            changes_by_key,
+            slots_by_address,
+        }
+    }
+
+    #[inline]
+    pub fn first_had_value(&self, address: &Address, slot: &U256) -> Option<U256> {
+        self.changes_by_key
+            .get(&(*address, *slot))
+            .and_then(|entries| entries.first())
+            .map(|entry| entry.had_value)
+    }
+
+    #[inline]
+    pub fn has_changes(&self, address: &Address, slot: &U256) -> bool {
+        self.changes_by_key.contains_key(&(*address, *slot))
+    }
+
+    #[inline]
+    pub fn slots_for_address(&self, address: &Address) -> Option<&[U256]> {
+        self.slots_by_address.get(address).map(Vec::as_slice)
+    }
+
+    #[inline]
+    pub fn changes_for_key(&self, address: &Address, slot: &U256) -> Option<&[StorageChangeEntry]> {
+        self.changes_by_key
+            .get(&(*address, *slot))
+            .map(Vec::as_slice)
+    }
+
+    #[cfg(any(test, feature = "test"))]
+    pub fn build_from_journal(journal: &JournalInner<JournalEntry>) -> Self {
+        Self::build(journal)
+    }
+}
 
 #[derive(thiserror::Error, Debug, Clone, PartialEq, Eq)]
 pub enum CallTracerError {
@@ -45,6 +135,15 @@ pub enum CallTracerError {
     PostCallCheckpointNotInitialized { index: usize },
     #[error("Error trying to read store sled db!")]
     SledError,
+}
+
+#[derive(Clone, Debug, Default)]
+struct CallTracerLazyState {
+    /// Built on demand by state-oriented precompiles.
+    storage_change_index: OnceLock<StorageChangeIndex>,
+    /// `getLogs()` can be called more than once per traced tx. Cache the ABI encoding so
+    /// repeated calls only pay the EVM-visible gas charge, not repeated Rust-side encoding work.
+    encoded_logs_cache: OnceLock<Bytes>,
 }
 
 #[derive(Clone, Debug)]
@@ -71,6 +170,9 @@ pub struct CallTracer {
     pub target_and_selector_indices: HashMap<TargetAndSelector, Vec<usize>>,
     /// Result of call tracing operations. Check after tracing to detect errors.
     pub result: Result<(), CallTracerError>,
+    /// Cold precompile-only caches live off the hot tracing path to keep the common-case
+    /// call-recording footprint small.
+    lazy_state: Box<CallTracerLazyState>,
 }
 
 impl Default for CallTracer {
@@ -83,6 +185,7 @@ impl Default for CallTracer {
             target_and_selector_indices: HashMap::new(),
             result: Ok(()),
             adopter_cache: HashMap::new(),
+            lazy_state: Box::default(),
         }
     }
 }
@@ -98,6 +201,7 @@ impl CallTracer {
             target_and_selector_indices: HashMap::new(),
             result: Ok(()),
             adopter_cache: HashMap::new(),
+            lazy_state: Box::default(),
         }
     }
 
@@ -141,9 +245,11 @@ impl CallTracer {
         // In case where we are hit with a non-AA call, we want to ignore its calldata,
         // but we still have to store the rest of it to preserve the journal depth.
         if is_aa {
-            // Coerce the bytes at the time of recording the call,
-            // in case they are of the SharedBuffer variant
-            inputs.input = CallInput::Bytes(Bytes::from(input_bytes.to_vec()));
+            // Most calls already arrive as owned `Bytes`. Only allocate when revm handed us
+            // a shared buffer that would become invalid once execution continues.
+            if !matches!(inputs.input, CallInput::Bytes(_)) {
+                inputs.input = CallInput::Bytes(Bytes::from(input_bytes.to_vec()));
+            }
         } else {
             inputs.input = CallInput::Bytes(Bytes::default());
         }
@@ -163,16 +269,17 @@ impl CallTracer {
             selector,
         };
 
-        // Track position within the key's Vec for O(1) truncation
-        let position = self
-            .target_and_selector_indices
-            .get(&key)
-            .map_or(0, Vec::len);
-
-        self.target_and_selector_indices
-            .entry(key.clone())
-            .or_default()
-            .push(index);
+        // Use the entry API so the hot insert path does one hash-table lookup instead of
+        // probing once for len and again for the push.
+        let position = {
+            let indices = self
+                .target_and_selector_indices
+                .entry(key.clone())
+                .or_default();
+            let position = indices.len();
+            indices.push(index);
+            position
+        };
 
         self.call_records.push(CallRecord {
             inputs,
@@ -247,6 +354,32 @@ impl CallTracer {
                     self.target_and_selector_indices.remove(key);
                 }
             }
+        } else if entries_to_remove <= 1024 {
+            // Short reverted suffixes are the common case. Repeated lookups are cheaper than
+            // building a temporary map, so keep the small-range path allocation-free.
+            let mut keys_to_remove: Vec<TargetAndSelector> = Vec::new();
+
+            for i in index..old_len {
+                let record = &self.call_records[i];
+                let key = &record.target_and_selector;
+                let pos = record.key_index;
+
+                let mut remove_key = false;
+                if let Some(indices) = self.target_and_selector_indices.get_mut(key)
+                    && indices.len() > pos
+                {
+                    indices.truncate(pos);
+                    remove_key = indices.is_empty();
+                }
+
+                if remove_key {
+                    keys_to_remove.push(key.clone());
+                }
+            }
+
+            for key in keys_to_remove {
+                self.target_and_selector_indices.remove(&key);
+            }
         } else {
             // General path: for each unique key in the truncated range, find the minimum position
             // (first occurrence), then truncate to that position.
@@ -301,24 +434,24 @@ impl CallTracer {
         target: Address,
         selector: FixedBytes<4>,
     ) -> Vec<CallInputsWithId<'_>> {
-        // No filtering needed since all recorded calls are valid
-        match self
-            .target_and_selector_indices
+        self.call_ids_for(target, selector)
+            .iter()
+            .map(|&index| {
+                CallInputsWithId {
+                    call_input: self.call_records[index].inputs(),
+                    id: index,
+                }
+            })
+            .collect()
+    }
+
+    /// Borrow the matching call ids directly when callers only need indexing information.
+    #[inline]
+    #[must_use]
+    pub fn call_ids_for(&self, target: Address, selector: FixedBytes<4>) -> &[usize] {
+        self.target_and_selector_indices
             .get(&TargetAndSelector { target, selector })
-        {
-            Some(indices) => {
-                indices
-                    .iter()
-                    .map(|&index| {
-                        CallInputsWithId {
-                            call_input: self.call_records[index].inputs(),
-                            id: index,
-                        }
-                    })
-                    .collect()
-            }
-            None => vec![],
-        }
+            .map_or(&[], Vec::as_slice)
     }
 
     /// Check if a call is valid for forking (not inside a reverted subtree)
@@ -357,6 +490,26 @@ impl CallTracer {
         self.call_records
             .get(index)
             .and_then(|r| r.post_call_checkpoint)
+    }
+
+    #[must_use]
+    pub fn storage_change_index(&self) -> &StorageChangeIndex {
+        self.lazy_state
+            .storage_change_index
+            .get_or_init(|| StorageChangeIndex::build(&self.journal))
+    }
+
+    pub fn encoded_logs_or_init<F>(&self, init: F) -> &Bytes
+    where
+        F: FnOnce() -> Bytes,
+    {
+        self.lazy_state.encoded_logs_cache.get_or_init(init)
+    }
+
+    #[cfg(any(test, feature = "test"))]
+    #[must_use]
+    pub fn has_encoded_logs_cache(&self) -> bool {
+        self.lazy_state.encoded_logs_cache.get().is_some()
     }
 
     #[cfg(any(test, feature = "test"))]
@@ -1895,5 +2048,98 @@ mod test {
 
         let b_func2_calls = tracer.get_call_inputs(addr_b, selector_2);
         assert_eq!(b_func2_calls.len(), 0, "B.func2() calls all reverted");
+    }
+
+    #[test]
+    fn test_storage_change_index_basic() {
+        let addr1 = address!("1111111111111111111111111111111111111111");
+        let addr2 = address!("2222222222222222222222222222222222222222");
+
+        let mut tracer = CallTracer::default();
+        tracer.journal.journal.push(JournalEntry::StorageChanged {
+            address: addr1,
+            key: U256::from(1),
+            had_value: U256::from(100),
+        });
+        tracer.journal.journal.push(JournalEntry::StorageChanged {
+            address: addr1,
+            key: U256::from(2),
+            had_value: U256::from(200),
+        });
+        tracer.journal.journal.push(JournalEntry::StorageChanged {
+            address: addr2,
+            key: U256::from(1),
+            had_value: U256::from(300),
+        });
+        tracer.journal.journal.push(JournalEntry::StorageChanged {
+            address: addr1,
+            key: U256::from(1),
+            had_value: U256::from(150),
+        });
+
+        let index = tracer.storage_change_index();
+
+        assert_eq!(
+            index.first_had_value(&addr1, &U256::from(1)),
+            Some(U256::from(100))
+        );
+        assert_eq!(
+            index.first_had_value(&addr1, &U256::from(2)),
+            Some(U256::from(200))
+        );
+        assert_eq!(
+            index.first_had_value(&addr2, &U256::from(1)),
+            Some(U256::from(300))
+        );
+        assert_eq!(index.first_had_value(&addr2, &U256::from(2)), None);
+
+        assert!(index.has_changes(&addr1, &U256::from(1)));
+        assert!(index.has_changes(&addr1, &U256::from(2)));
+        assert!(index.has_changes(&addr2, &U256::from(1)));
+        assert!(!index.has_changes(&addr2, &U256::from(2)));
+
+        assert_eq!(
+            index.slots_for_address(&addr1).unwrap(),
+            &[U256::from(1), U256::from(2)]
+        );
+        assert_eq!(index.slots_for_address(&addr2).unwrap(), &[U256::from(1)]);
+
+        let changes = index.changes_for_key(&addr1, &U256::from(1)).unwrap();
+        assert_eq!(changes.len(), 2);
+        assert_eq!(changes[0].had_value, U256::from(100));
+        assert_eq!(changes[0].journal_idx, 0);
+        assert_eq!(changes[1].had_value, U256::from(150));
+        assert_eq!(changes[1].journal_idx, 3);
+    }
+
+    #[test]
+    fn test_storage_change_index_empty_journal() {
+        let tracer = CallTracer::default();
+        let addr = address!("1111111111111111111111111111111111111111");
+        let index = tracer.storage_change_index();
+
+        assert!(!index.has_changes(&addr, &U256::from(0)));
+        assert_eq!(index.first_had_value(&addr, &U256::from(0)), None);
+        assert_eq!(index.slots_for_address(&addr), None);
+        assert_eq!(index.changes_for_key(&addr, &U256::from(0)), None);
+    }
+
+    #[test]
+    fn test_storage_change_index_lazy_initialization() {
+        let mut tracer = CallTracer::default();
+        tracer.journal.journal.push(JournalEntry::StorageChanged {
+            address: address!("1111111111111111111111111111111111111111"),
+            key: U256::from(1),
+            had_value: U256::from(100),
+        });
+
+        let idx1 = tracer.storage_change_index();
+        assert!(idx1.has_changes(
+            &address!("1111111111111111111111111111111111111111"),
+            &U256::from(1)
+        ));
+
+        let idx2 = tracer.storage_change_index();
+        assert!(std::ptr::eq(idx1, idx2));
     }
 }

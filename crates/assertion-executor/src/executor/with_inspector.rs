@@ -358,11 +358,14 @@ impl AssertionExecutor {
         let current_span = tracing::Span::current();
         let results_vec: Vec<_> = current_span.in_scope(|| {
             if fn_selectors.len() < super::PARALLEL_THRESHOLD {
-                fn_selectors.iter().map(execute_fn).collect()
+                let mut results = Vec::with_capacity(fn_selectors.len());
+                for fn_selector in fn_selectors {
+                    results.push(execute_fn(fn_selector));
+                }
+                results
             } else {
-                assertion_executor_pool().install(|| {
-                    fn_selectors.into_par_iter().map(execute_fn).collect()
-                })
+                assertion_executor_pool()
+                    .install(|| fn_selectors.into_par_iter().map(execute_fn).collect())
             }
         });
 
