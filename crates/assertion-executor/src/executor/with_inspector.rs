@@ -160,7 +160,7 @@ impl AssertionExecutor {
         let assertion_timer = Instant::now();
         let (results, assertion_inspectors) = self
             .execute_assertions_with_inspector(
-                block_env,
+                &block_env,
                 fork_db,
                 &forked_tx_result,
                 tx_env,
@@ -242,7 +242,7 @@ impl AssertionExecutor {
     /// Returns the assertion results and a vector of inspectors (one per assertion function).
     fn execute_assertions_with_inspector<Active, I>(
         &self,
-        block_env: BlockEnv,
+        block_env: &BlockEnv,
         tx_fork_db: &ForkDb<Active>,
         forked_tx_result: &ExecuteForkedTxResult,
         tx_env: &TxEnv,

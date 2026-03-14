@@ -446,7 +446,12 @@ mod test {
             call_traces: &call_tracer,
         };
         let tx_env = crate::primitives::TxEnv::default();
-        let context = PhEvmContext::new(&logs_and_traces, Address::ZERO, &tx_env);
+        let context = PhEvmContext::new(
+            &logs_and_traces,
+            Address::ZERO,
+            &tx_env,
+            crate::inspectors::spec_recorder::AssertionSpec::Legacy,
+        );
 
         assert!(!call_tracer.has_encoded_logs_cache());
         let _ = get_logs(&context, u64::MAX).unwrap();
