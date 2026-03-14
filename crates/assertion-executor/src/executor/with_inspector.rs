@@ -324,6 +324,8 @@ impl AssertionExecutor {
             inspector,
             tx_arena_epoch,
         } = params;
+        // Mirror the non-inspector short-circuit so instrumentation stays semantically aligned
+        // with the regular executor path and does not allocate inspectors for empty work.
         if fn_selectors.is_empty() {
             debug!(
                 target: "assertion-executor::execute_assertions",
@@ -344,6 +346,8 @@ impl AssertionExecutor {
             self.prepare_assertion_contract(assertion_contract, fn_selectors, tx_fork_db, context);
 
         if fn_selectors.len() == 1 {
+            // Keep the direct single-selector fast path here as well so the inspector variant
+            // observes the same work partitioning as the non-inspector executor.
             let fn_selector = fn_selectors[0];
             let (fn_result, fn_inspector) =
                 self.execute_assertion_fn_with_inspector(AssertionExecutionWithInspectorParams {
@@ -383,6 +387,8 @@ impl AssertionExecutor {
             let mut inspectors = Vec::with_capacity(execution_count);
             let mut total_assertion_gas = 0;
 
+            // Preserve the inspector/result pairing in the same order the selectors were matched
+            // when the batch is too small to justify rayon scheduling.
             for fn_selector in fn_selectors {
                 let (fn_result, fn_inspector) = self.execute_assertion_fn_with_inspector(
                     AssertionExecutionWithInspectorParams {

@@ -604,6 +604,8 @@ impl AssertionExecutor {
         Active: DatabaseRef + Sync + Send + Clone,
         Active::Error: Send,
     {
+        // `AssertionStore::read` already prunes this case, but keep the guard here so callers that
+        // bypass the store still avoid db setup, persistent-account insertion, and inspector clones.
         if fn_selectors.is_empty() {
             debug!(
                 target: "assertion-executor::execute_assertions",
@@ -622,6 +624,8 @@ impl AssertionExecutor {
             self.prepare_assertion_contract(assertion_contract, fn_selectors, tx_fork_db, context);
 
         if fn_selectors.len() == 1 {
+            // The common case is one matched selector. Run it directly so we keep the same
+            // execution semantics without paying the scheduling/cloning cost of the general path.
             let fn_selector = fn_selectors[0];
             let fn_result = self.execute_assertion_fn(AssertionExecutionParams {
                 assertion_contract,
@@ -655,6 +659,8 @@ impl AssertionExecutor {
             let mut valid_results = Vec::with_capacity(execution_count);
             let mut total_assertion_gas = 0;
 
+            // Small selector batches are faster in a tight loop than in rayon, so keep the
+            // execution order local and preserve the same aggregation logic as the parallel path.
             for fn_selector in fn_selectors {
                 let fn_result = self.execute_assertion_fn(AssertionExecutionParams {
                     assertion_contract,
