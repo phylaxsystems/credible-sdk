@@ -423,6 +423,8 @@ impl CallTracer {
     #[inline]
     #[must_use]
     pub fn call_ids_for(&self, target: Address, selector: FixedBytes<4>) -> &[usize] {
+        // Hand out a borrowed slice so precompile callers can reuse the indexed call ids without
+        // rebuilding temporary vectors on every query.
         self.target_and_selector_indices
             .get(&TargetAndSelector { target, selector })
             .map_or(&[], Vec::as_slice)
@@ -468,6 +470,8 @@ impl CallTracer {
 
     #[must_use]
     pub fn storage_change_index(&self) -> &StorageChangeIndex {
+        // Build the storage index once per traced tx. Assertion execution only reads from a
+        // finalized journal, so a cached snapshot is both safe and cheaper than rescanning.
         self.lazy_state
             .storage_change_index
             .get_or_init(|| StorageChangeIndex::build(&self.journal))
@@ -477,6 +481,8 @@ impl CallTracer {
     where
         F: FnOnce() -> Bytes,
     {
+        // `getLogs()` may be queried multiple times by one assertion run; cache the ABI-encoded
+        // payload here so later reads do not re-encode the whole tx log list.
         self.lazy_state.encoded_logs_cache.get_or_init(init)
     }
 

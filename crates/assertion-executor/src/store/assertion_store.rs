@@ -850,6 +850,8 @@ impl AssertionStore {
                 if has_call_trigger
                     && let Some(selectors) = a.trigger_recorder.triggers.get(&TriggerType::AllCalls)
                 {
+                    // Only widen into `AllCalls` when at least one call trigger matched; storage
+                    // or balance-only reads should not pull call-wide assertion selectors in.
                     all_selectors.extend(selectors.iter().copied());
                 }
 
@@ -860,6 +862,8 @@ impl AssertionStore {
                         .triggers
                         .get(&TriggerType::AllStorageChanges)
                 {
+                    // Mirror the call behavior for storage: `AllStorageChanges` is an aggregate
+                    // of storage matches, not a blanket fallback for unrelated trigger types.
                     all_selectors.extend(selectors.iter().copied());
                 }
 
