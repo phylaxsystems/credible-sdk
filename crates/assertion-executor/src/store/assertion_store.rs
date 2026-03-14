@@ -350,6 +350,11 @@ pub struct AssertionStore {
     prune_task: Arc<tokio::task::JoinHandle<()>>,
     /// Current block number (updated externally for pruning reference)
     current_block: Arc<std::sync::atomic::AtomicU64>,
+    /// Conservative fast-empty hint for the read path.
+    /// `false` means the store is definitely empty; `true` means it may contain assertions.
+    /// Once set, it can stay true even after pruning. That is fine because it is only used
+    /// to skip obviously empty reads, never to skip real work when assertions might exist.
+    has_any_assertions: Arc<std::sync::atomic::AtomicBool>,
     /// Prune configuration
     prune_config: PruneConfig,
 }
@@ -361,6 +366,7 @@ impl std::fmt::Debug for AssertionStore {
             .field("inner", &self.inner)
             .field("shutdown_tx", &self.shutdown_tx)
             .field("current_block", &self.current_block)
+            .field("has_any_assertions", &self.has_any_assertions)
             .field("prune_config", &self.prune_config)
             .finish()
     }
@@ -411,8 +417,11 @@ impl AssertionStore {
 
     /// Creates a new assertion store with the given backend.
     fn with_backend(backend: StoreBackend, prune_config: PruneConfig) -> Self {
+        let has_any_assertions_init = matches!(&backend, StoreBackend::Sled { .. });
         let inner = Arc::new(Mutex::new(AssertionStoreInner { backend }));
         let current_block = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let has_any_assertions =
+            Arc::new(std::sync::atomic::AtomicBool::new(has_any_assertions_init));
 
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let shutdown_tx = Arc::new(shutdown_tx);
@@ -431,6 +440,7 @@ impl AssertionStore {
             shutdown_tx,
             prune_task: Arc::new(prune_task),
             current_block,
+            has_any_assertions,
             prune_config,
         }
     }
@@ -537,6 +547,8 @@ impl AssertionStore {
         }
 
         inner.backend.insert(assertion_adopter, assertions)?;
+        self.has_any_assertions
+            .store(true, std::sync::atomic::Ordering::Release);
 
         // Opportunistic prune on insert
         drop(inner);
@@ -554,6 +566,9 @@ impl AssertionStore {
         &self,
         pending_modifications: Vec<PendingModification>,
     ) -> Result<(), AssertionStoreError> {
+        let has_additions = pending_modifications
+            .iter()
+            .any(|modification| matches!(modification, PendingModification::Add { .. }));
         let mut map = HashMap::<Address, Vec<PendingModification>>::new();
 
         for modification in pending_modifications {
@@ -566,7 +581,12 @@ impl AssertionStore {
             self.apply_pending_modification(aa, &mods)?;
         }
 
-        // Opportunistic prune after modifications
+        if has_additions {
+            self.has_any_assertions
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+        // Opportunistic prune after modifications. The fast-empty flag must already be visible
+        // before we release the newly inserted assertions to concurrent readers.
         self.maybe_prune();
 
         Ok(())
@@ -668,6 +688,13 @@ impl AssertionStore {
             .try_into()
             .map_err(|_| AssertionStoreError::BlockNumberExceedsU64)?;
 
+        if !self
+            .has_any_assertions
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Ok(vec![]);
+        }
+
         // Update current block for pruning reference
         self.set_current_block(block_num);
 
@@ -678,19 +705,15 @@ impl AssertionStore {
 
         for (contract_address, triggers) in &triggers {
             let contract_assertions = self.read_adopter(contract_address, triggers, block_num)?;
-            let assertions_for_execution: Vec<AssertionsForExecution> = contract_assertions
-                .into_iter()
-                .map(|(assertion_contract, selectors, assertion_spec)| {
-                    AssertionsForExecution {
-                        assertion_contract,
-                        selectors,
-                        adopter: *contract_address,
-                        assertion_spec,
-                    }
-                })
-                .collect();
-
-            assertions.extend(assertions_for_execution);
+            assertions.reserve(contract_assertions.len());
+            for (assertion_contract, selectors, assertion_spec) in contract_assertions {
+                assertions.push(AssertionsForExecution {
+                    assertion_contract,
+                    selectors,
+                    adopter: *contract_address,
+                    assertion_spec,
+                });
+            }
         }
 
         if assertions.is_empty() {
@@ -803,7 +826,7 @@ impl AssertionStore {
                 let in_bound_end = block < inactive_block;
                 in_bound_start && in_bound_end
             })
-            .map(|a| {
+            .filter_map(|a| {
                 // Get all function selectors from matching triggers
                 let mut all_selectors = HashSet::new();
                 let mut has_call_trigger = false;
@@ -827,6 +850,8 @@ impl AssertionStore {
                 if has_call_trigger
                     && let Some(selectors) = a.trigger_recorder.triggers.get(&TriggerType::AllCalls)
                 {
+                    // Only widen into `AllCalls` when at least one call trigger matched; storage
+                    // or balance-only reads should not pull call-wide assertion selectors in.
                     all_selectors.extend(selectors.iter().copied());
                 }
 
@@ -837,14 +862,27 @@ impl AssertionStore {
                         .triggers
                         .get(&TriggerType::AllStorageChanges)
                 {
+                    // Mirror the call behavior for storage: `AllStorageChanges` is an aggregate
+                    // of storage matches, not a blanket fallback for unrelated trigger types.
                     all_selectors.extend(selectors.iter().copied());
                 }
-                // Convert HashSet to Vec to match the expected return type
-                (
+
+                // Skip assertions with no matched selectors to avoid wasted execution
+                if all_selectors.is_empty() {
+                    debug!(
+                        target: "assertion_store::read_adopter",
+                        assertion_id = ?a.assertion_contract.id,
+                        "Skipping assertion with no matched selectors"
+                    );
+                    return None;
+                }
+
+                // Convert HashSet to Vec to match the expected return type.
+                Some((
                     a.assertion_contract,
                     all_selectors.into_iter().collect(),
                     a.assertion_spec,
-                )
+                ))
             })
             .collect();
 
@@ -1073,6 +1111,23 @@ mod tests {
     };
     use std::collections::HashSet;
 
+    /// Default assertion function selector used by test assertions.
+    const TEST_ASSERTION_SELECTOR: FixedBytes<4> = FixedBytes::new([0xDE, 0xAD, 0xBE, 0xEF]);
+
+    /// Creates a `TriggerRecorder` that matches the default `insert_trace` call.
+    /// `insert_trace` creates a `Call` trigger with `selector: FixedBytes::default()`,
+    /// so we register that trigger to return a test assertion selector.
+    fn default_test_trigger_recorder() -> TriggerRecorder {
+        let mut recorder = TriggerRecorder::default();
+        recorder.triggers.insert(
+            TriggerType::Call {
+                trigger_selector: FixedBytes::default(),
+            },
+            vec![TEST_ASSERTION_SELECTOR].into_iter().collect(),
+        );
+        recorder
+    }
+
     fn create_test_assertion(
         activation_block: u64,
         inactivation_block: Option<u64>,
@@ -1084,7 +1139,7 @@ mod tests {
                 id: B256::random(),
                 ..Default::default()
             },
-            trigger_recorder: TriggerRecorder::default(),
+            trigger_recorder: default_test_trigger_recorder(),
             assertion_spec: AssertionSpec::Legacy,
         }
     }
@@ -1109,7 +1164,7 @@ mod tests {
                 id,
                 ..Default::default()
             },
-            trigger_recorder: TriggerRecorder::default(),
+            trigger_recorder: default_test_trigger_recorder(),
             assertion_spec: AssertionSpec::Legacy,
             activation_block: active_at,
             log_index,
@@ -1623,6 +1678,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_read_adopter_all_calls_not_added_for_storage_only_matches()
+    -> Result<(), AssertionStoreError> {
+        let aa = Address::random();
+        let selector_all_calls = FixedBytes::<4>::random();
+        let selector_storage = FixedBytes::<4>::random();
+
+        let store = AssertionStore::new_ephemeral();
+        let mut trigger_recorder = TriggerRecorder::default();
+        trigger_recorder.triggers.insert(
+            TriggerType::AllCalls,
+            vec![selector_all_calls].into_iter().collect(),
+        );
+        trigger_recorder.triggers.insert(
+            TriggerType::StorageChange {
+                trigger_slot: U256::from(1).into(),
+            },
+            vec![selector_storage].into_iter().collect(),
+        );
+
+        let mut assertion = create_test_assertion(100, None);
+        assertion.trigger_recorder = trigger_recorder;
+        store.insert(aa, assertion)?;
+
+        let mut tracer = CallTracer::default();
+        tracer.journal.journal.push(JournalEntry::StorageChanged {
+            address: aa,
+            key: U256::from(1),
+            had_value: U256::ZERO,
+        });
+
+        let assertions = store.read(&tracer, U256::from(100))?;
+        assert_eq!(assertions.len(), 1);
+        assert_sorted_selectors(&assertions, vec![selector_storage]);
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn test_all_trigger_types_comprehensive() -> Result<(), AssertionStoreError> {
         let aa = Address::random();
         let fixture = build_comprehensive_fixture();
@@ -1692,10 +1785,9 @@ mod tests {
         ];
 
         let assertions = setup_and_match(&recorded_triggers, journal_entries, aa)?;
-        assert_eq!(assertions.len(), 1);
 
-        // No selectors should match since triggers don't align
-        assert_eq!(assertions[0].selectors.len(), 0);
+        // Assertions with no matched selectors are now pruned from the read path
+        assert_eq!(assertions.len(), 0);
 
         Ok(())
     }
@@ -1752,6 +1844,134 @@ mod tests {
         let mut matched_selectors = assertions[0].selectors.clone();
         matched_selectors.sort();
         assert_eq!(matched_selectors, expected_selectors);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_read_adopter_deduplicates_shared_specific_and_all_selectors()
+    -> Result<(), AssertionStoreError> {
+        let aa = Address::random();
+
+        let call_selector = FixedBytes::<4>::random();
+        let storage_selector = FixedBytes::<4>::random();
+        let shared_selector = FixedBytes::<4>::random();
+        let trigger_selector = FixedBytes::<4>::default();
+        let trigger_slot = U256::from(7);
+
+        let recorded_triggers = vec![
+            (
+                TriggerType::Call { trigger_selector },
+                vec![call_selector, shared_selector]
+                    .into_iter()
+                    .collect::<HashSet<_>>(),
+            ),
+            (
+                TriggerType::AllCalls,
+                vec![shared_selector].into_iter().collect::<HashSet<_>>(),
+            ),
+            (
+                TriggerType::StorageChange {
+                    trigger_slot: trigger_slot.into(),
+                },
+                vec![storage_selector, shared_selector]
+                    .into_iter()
+                    .collect::<HashSet<_>>(),
+            ),
+            (
+                TriggerType::AllStorageChanges,
+                vec![shared_selector].into_iter().collect::<HashSet<_>>(),
+            ),
+        ];
+
+        let journal_entries = vec![JournalEntry::StorageChanged {
+            address: aa,
+            key: trigger_slot,
+            had_value: U256::ZERO,
+        }];
+
+        let assertions = setup_and_match(&recorded_triggers, journal_entries, aa)?;
+        assert_eq!(assertions.len(), 1);
+
+        let mut matched_selectors = assertions[0].selectors.clone();
+        matched_selectors.sort();
+
+        let mut expected_selectors = vec![call_selector, storage_selector, shared_selector];
+        expected_selectors.sort();
+
+        assert_eq!(matched_selectors, expected_selectors);
+        assert_eq!(
+            matched_selectors
+                .iter()
+                .filter(|selector| **selector == shared_selector)
+                .count(),
+            1
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_empty_selector_assertions_pruned_from_read() -> Result<(), AssertionStoreError> {
+        let aa = Address::random();
+        let selector_matched = FixedBytes::<4>::random();
+        let selector_unmatched = FixedBytes::<4>::random();
+
+        // insert_trace generates Call { trigger_selector: FixedBytes::default() }
+        let trigger_selector_default = FixedBytes::<4>::default();
+        let trigger_selector_unmatched = FixedBytes::<4>::from([0xFF, 0xFF, 0xFF, 0xFF]);
+
+        let store = AssertionStore::new_ephemeral();
+
+        // Assertion 1: has a trigger matching insert_trace's default Call trigger
+        let mut trigger_recorder1 = TriggerRecorder::default();
+        trigger_recorder1.triggers.insert(
+            TriggerType::Call {
+                trigger_selector: trigger_selector_default,
+            },
+            vec![selector_matched].into_iter().collect(),
+        );
+        let assertion1 = AssertionState {
+            activation_block: 100,
+            inactivation_block: None,
+            assertion_contract: AssertionContract {
+                id: B256::random(),
+                ..Default::default()
+            },
+            trigger_recorder: trigger_recorder1,
+            assertion_spec: AssertionSpec::Legacy,
+        };
+        store.insert(aa, assertion1)?;
+
+        // Assertion 2: has a trigger that will NOT match (different selector)
+        let mut trigger_recorder2 = TriggerRecorder::default();
+        trigger_recorder2.triggers.insert(
+            TriggerType::Call {
+                trigger_selector: trigger_selector_unmatched,
+            },
+            vec![selector_unmatched].into_iter().collect(),
+        );
+        let assertion2 = AssertionState {
+            activation_block: 100,
+            inactivation_block: None,
+            assertion_contract: AssertionContract {
+                id: B256::random(),
+                ..Default::default()
+            },
+            trigger_recorder: trigger_recorder2,
+            assertion_spec: AssertionSpec::Legacy,
+        };
+        store.insert(aa, assertion2)?;
+
+        // Build tracer that only triggers the default selector
+        let mut tracer = CallTracer::default();
+        tracer.insert_trace(aa);
+
+        let assertions = store.read(&tracer, U256::from(100))?;
+
+        // Only the assertion with matched selectors should be returned
+        assert_eq!(assertions.len(), 1);
+        assert_eq!(assertions[0].selectors, vec![selector_matched]);
 
         Ok(())
     }
