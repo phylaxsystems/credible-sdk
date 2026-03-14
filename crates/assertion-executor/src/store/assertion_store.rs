@@ -52,6 +52,7 @@ use std::collections::{
 };
 
 use revm::interpreter::CallScheme;
+use smallvec::SmallVec;
 use tokio::sync::watch;
 
 #[derive(thiserror::Error, Debug)]
@@ -116,6 +117,44 @@ fn filtered_call_ids(
         .copied()
         .filter(|call_id| call_id_matches_filter(tracer, *call_id, filter))
         .collect()
+}
+
+/// Materializes selectors for execution while keeping the common 0/1 trigger-call
+/// cases allocation-free.
+///
+/// Most matched selectors either run once with no call context or once with a
+/// single triggering call ID. Using `SmallVec<[usize; 1]>` preserves the existing
+/// semantics for multi-call selectors while avoiding a heap allocation on the hot
+/// path that regressed `assertion_store::read/hit_existing_assertion`.
+fn build_selectors_with_triggers(
+    selectors: &HashSet<FixedBytes<4>>,
+    trigger_calls: &[usize],
+) -> Vec<SelectorWithTrigger> {
+    if selectors.is_empty() {
+        return Vec::new();
+    }
+
+    if selectors.len() == 1 {
+        let selector = selectors
+            .iter()
+            .next()
+            .copied()
+            .expect("len checked above");
+        return vec![SelectorWithTrigger {
+            selector,
+            trigger_calls: SmallVec::from_slice(trigger_calls),
+        }];
+    }
+
+    let shared_trigger_calls = SmallVec::from_slice(trigger_calls);
+    let mut selectors_with_triggers = Vec::with_capacity(selectors.len());
+    for selector in selectors {
+        selectors_with_triggers.push(SelectorWithTrigger {
+            selector: *selector,
+            trigger_calls: shared_trigger_calls.clone(),
+        });
+    }
+    selectors_with_triggers
 }
 
 /// Storage backend for the assertion store.
@@ -318,7 +357,7 @@ pub struct SelectorWithTrigger {
     pub selector: FixedBytes<4>,
     /// Call record indices from the `CallTracer` that triggered this selector.
     /// Empty for non-call triggers (storage changes, balance changes).
-    pub trigger_calls: Vec<usize>,
+    pub trigger_calls: SmallVec<[usize; 1]>,
 }
 
 impl PartialOrd for SelectorWithTrigger {
@@ -838,18 +877,14 @@ impl AssertionStore {
         for (contract_address, trigger_types) in &triggers {
             let contract_assertions =
                 self.read_adopter(contract_address, trigger_types, traces, block_num)?;
-            let assertions_for_execution: Vec<AssertionsForExecution> = contract_assertions
-                .into_iter()
-                .map(|(assertion_contract, selectors)| {
-                    AssertionsForExecution {
-                        assertion_contract,
-                        selectors,
-                        adopter: *contract_address,
-                    }
-                })
-                .collect();
-
-            assertions.extend(assertions_for_execution);
+            assertions.reserve(contract_assertions.len());
+            for (assertion_contract, selectors) in contract_assertions {
+                assertions.push(AssertionsForExecution {
+                    assertion_contract,
+                    selectors,
+                    adopter: *contract_address,
+                });
+            }
         }
 
         if assertions.is_empty() {
@@ -976,53 +1011,45 @@ impl AssertionStore {
 
         if let Some(trigger_selector) = single_runtime_call_trigger {
             let all_simple_single_call = assertion_states.iter().all(|a| {
-                a.trigger_recorder.triggers.keys().all(|recorded_trigger| {
-                    matches!(
-                        recorded_trigger,
-                        TriggerType::Call {
-                            trigger_selector: s
-                        } if *s == trigger_selector
-                    )
-                })
+                // Assertions with no recorded triggers are allowed through this cheap
+                // shape check so the fast path stays branch-light. They are still
+                // skipped below because they cannot yield a matching `TriggerType::Call`.
+                a.trigger_recorder.triggers.len() <= 1
+                    && match a.trigger_recorder.triggers.iter().next() {
+                        None => true,
+                        Some((
+                            TriggerType::Call {
+                                trigger_selector: recorded_trigger_selector,
+                            },
+                            _,
+                        )) => *recorded_trigger_selector == trigger_selector,
+                        Some(_) => false,
+                    }
             });
 
             if all_simple_single_call {
-                let call_ids = tracer
-                    .call_ids_for(*assertion_adopter, trigger_selector)
-                    .to_vec();
-                let active_assertion_contracts = assertion_states
-                    .into_iter()
-                    .filter(|a| is_active(a))
-                    .filter_map(|a| {
-                        a.trigger_recorder
-                            .triggers
-                            .get(&TriggerType::Call { trigger_selector })
-                            .map(|selectors| {
-                                let selectors_with_triggers = if selectors.len() == 1 {
-                                    let selector = selectors
-                                        .iter()
-                                        .next()
-                                        .copied()
-                                        .expect("len checked above");
-                                    vec![SelectorWithTrigger {
-                                        selector,
-                                        trigger_calls: call_ids.clone(),
-                                    }]
-                                } else {
-                                    selectors
-                                        .iter()
-                                        .map(|selector| {
-                                            SelectorWithTrigger {
-                                                selector: *selector,
-                                                trigger_calls: call_ids.clone(),
-                                            }
-                                        })
-                                        .collect()
-                                };
-                                (a.assertion_contract, selectors_with_triggers)
-                            })
-                    })
-                    .collect();
+                let call_ids = tracer.call_ids_for(*assertion_adopter, trigger_selector);
+                let mut active_assertion_contracts =
+                    Vec::with_capacity(assertion_states.len());
+                for a in assertion_states {
+                    if !is_active(&a) {
+                        continue;
+                    }
+                    let selectors = match a.trigger_recorder.triggers.iter().next() {
+                        Some((
+                            TriggerType::Call {
+                                trigger_selector: recorded_trigger_selector,
+                            },
+                            selectors,
+                        )) if *recorded_trigger_selector == trigger_selector => selectors,
+                        None => continue,
+                        Some(_) => continue,
+                    };
+                    active_assertion_contracts.push((
+                        a.assertion_contract,
+                        build_selectors_with_triggers(selectors, call_ids),
+                    ));
+                }
                 return Ok(active_assertion_contracts);
             }
         }
@@ -1109,27 +1136,17 @@ impl AssertionStore {
             .filter(|a| is_active(a))
             .filter_map(|a| {
                 if let Some(trigger_selector) = single_runtime_call_trigger {
-                    let has_filtered_triggers = a.trigger_recorder.triggers.keys().any(|trigger| {
-                        matches!(
-                            trigger,
-                            TriggerType::CallFiltered { .. } | TriggerType::AllCallsFiltered { .. }
-                        )
-                    });
-                    let has_all_calls = a
-                        .trigger_recorder
-                        .triggers
-                        .contains_key(&TriggerType::AllCalls);
-                    let has_all_storage = a
-                        .trigger_recorder
-                        .triggers
-                        .contains_key(&TriggerType::AllStorageChanges);
-                    if !has_filtered_triggers
-                        && !has_all_calls
-                        && !has_all_storage
-                        && let Some(selectors) = a
-                            .trigger_recorder
-                            .triggers
-                            .get(&TriggerType::Call { trigger_selector })
+                    // Only exact single-call trigger matchers can take this shortcut.
+                    // `AllCalls`, filtered call triggers, and storage/balance triggers
+                    // still fall through to the general trigger-shape handling below.
+                    if a.trigger_recorder.triggers.len() == 1
+                        && let Some((
+                            TriggerType::Call {
+                                trigger_selector: recorded_trigger_selector,
+                            },
+                            selectors,
+                        )) = a.trigger_recorder.triggers.iter().next()
+                        && *recorded_trigger_selector == trigger_selector
                     {
                         if selectors.is_empty() {
                             return None;
@@ -1138,25 +1155,8 @@ impl AssertionStore {
                             .get(&trigger_selector)
                             .copied()
                             .unwrap_or(&[]);
-                        let selectors_with_triggers = if selectors.len() == 1 {
-                            let selector =
-                                selectors.iter().next().copied().expect("len checked above");
-                            vec![SelectorWithTrigger {
-                                selector,
-                                trigger_calls: call_ids.to_vec(),
-                            }]
-                        } else {
-                            let call_ids = call_ids.to_vec();
-                            selectors
-                                .iter()
-                                .map(|selector| {
-                                    SelectorWithTrigger {
-                                        selector: *selector,
-                                        trigger_calls: call_ids.clone(),
-                                    }
-                                })
-                                .collect()
-                        };
+                        let selectors_with_triggers =
+                            build_selectors_with_triggers(selectors, call_ids);
                         return Some((a.assertion_contract, selectors_with_triggers));
                     }
                 }
@@ -1309,7 +1309,7 @@ impl AssertionStore {
                     .map(|(selector, trigger_calls)| {
                         SelectorWithTrigger {
                             selector,
-                            trigger_calls,
+                            trigger_calls: trigger_calls.into(),
                         }
                     })
                     .collect();
@@ -2198,11 +2198,11 @@ mod tests {
 
         // selector_shared is both specific-call and AllCalls; trigger_calls should be deduped.
         assert_eq!(selectors[0].selector, selector_shared);
-        assert_eq!(selectors[0].trigger_calls, vec![0, 1, 2]);
+        assert_eq!(selectors[0].trigger_calls.as_slice(), &[0, 1, 2]);
 
         // selector_all only from AllCalls; should still include all call ids.
         assert_eq!(selectors[1].selector, selector_all);
-        assert_eq!(selectors[1].trigger_calls, vec![0, 1, 2]);
+        assert_eq!(selectors[1].trigger_calls.as_slice(), &[0, 1, 2]);
 
         Ok(())
     }
@@ -2255,7 +2255,113 @@ mod tests {
         assert_eq!(assertions.len(), 1);
         assert_eq!(assertions[0].selectors.len(), 1);
         assert_eq!(assertions[0].selectors[0].selector, assertion_selector);
-        assert_eq!(assertions[0].selectors[0].trigger_calls, vec![0, 1]);
+        assert_eq!(assertions[0].selectors[0].trigger_calls.as_slice(), &[0, 1]);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_single_call_trigger_keeps_trigger_calls_inline()
+    -> Result<(), AssertionStoreError> {
+        let aa = Address::random();
+        let trigger_selector = FixedBytes::<4>::from([0x10, 0x20, 0x30, 0x40]);
+        let assertion_selector = FixedBytes::<4>::from([0xAB, 0xCD, 0xEF, 0x01]);
+
+        let store = AssertionStore::new_ephemeral();
+        let mut trigger_recorder = TriggerRecorder::default();
+        trigger_recorder.triggers.insert(
+            TriggerType::Call { trigger_selector },
+            vec![assertion_selector].into_iter().collect(),
+        );
+
+        let mut assertion = create_test_assertion(100, None);
+        assertion.trigger_recorder = trigger_recorder;
+        store.insert(aa, assertion)?;
+
+        let mut tracer = CallTracer::default();
+        let mut journal = JournalInner::new();
+        let input: Bytes = trigger_selector.as_slice().to_vec().into();
+        tracer.record_call_start(
+            revm::interpreter::CallInputs {
+                input: revm::interpreter::CallInput::Bytes(input.clone()),
+                return_memory_offset: 0..0,
+                gas_limit: 0,
+                bytecode_address: aa,
+                known_bytecode: None,
+                target_address: aa,
+                caller: Address::random(),
+                value: revm::interpreter::CallValue::Transfer(U256::ZERO),
+                scheme: revm::interpreter::CallScheme::Call,
+                is_static: false,
+            },
+            &input,
+            &mut journal,
+        );
+        tracer.record_call_end(&mut journal, false);
+
+        let assertions = store.read(&tracer, U256::from(100))?;
+        assert_eq!(assertions.len(), 1);
+        assert_eq!(assertions[0].selectors.len(), 1);
+        assert_eq!(assertions[0].selectors[0].selector, assertion_selector);
+        assert_eq!(assertions[0].selectors[0].trigger_calls.as_slice(), &[0]);
+        assert!(
+            !assertions[0].selectors[0].trigger_calls.spilled(),
+            "single-call trigger IDs should stay inline"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_single_runtime_call_fast_path_skips_assertions_without_triggers()
+    -> Result<(), AssertionStoreError> {
+        let aa = Address::random();
+        let trigger_selector = FixedBytes::<4>::from([0x10, 0x20, 0x30, 0x40]);
+        let assertion_selector = FixedBytes::<4>::from([0xAB, 0xCD, 0xEF, 0x01]);
+
+        let store = AssertionStore::new_ephemeral();
+
+        let mut empty_trigger_assertion = create_test_assertion(100, None);
+        empty_trigger_assertion.trigger_recorder = TriggerRecorder::default();
+        let empty_trigger_id = empty_trigger_assertion.assertion_contract.id;
+        store.insert(aa, empty_trigger_assertion)?;
+
+        let mut matching_trigger_recorder = TriggerRecorder::default();
+        matching_trigger_recorder.triggers.insert(
+            TriggerType::Call { trigger_selector },
+            vec![assertion_selector].into_iter().collect(),
+        );
+        let mut matching_assertion = create_test_assertion(100, None);
+        matching_assertion.trigger_recorder = matching_trigger_recorder;
+        let matching_id = matching_assertion.assertion_contract.id;
+        store.insert(aa, matching_assertion)?;
+
+        let mut tracer = CallTracer::default();
+        let mut journal = JournalInner::new();
+        let input: Bytes = trigger_selector.as_slice().to_vec().into();
+        tracer.record_call_start(
+            revm::interpreter::CallInputs {
+                input: revm::interpreter::CallInput::Bytes(input.clone()),
+                return_memory_offset: 0..0,
+                gas_limit: 0,
+                bytecode_address: aa,
+                known_bytecode: None,
+                target_address: aa,
+                caller: Address::random(),
+                value: revm::interpreter::CallValue::Transfer(U256::ZERO),
+                scheme: revm::interpreter::CallScheme::Call,
+                is_static: false,
+            },
+            &input,
+            &mut journal,
+        );
+        tracer.record_call_end(&mut journal, false);
+
+        let assertions = store.read(&tracer, U256::from(100))?;
+        assert_eq!(assertions.len(), 1);
+        assert_eq!(assertions[0].assertion_contract.id, matching_id);
+        assert_ne!(assertions[0].assertion_contract.id, empty_trigger_id);
+        assert_eq!(assertions[0].selectors[0].selector, assertion_selector);
 
         Ok(())
     }
@@ -2343,7 +2449,7 @@ mod tests {
         assert_eq!(assertions.len(), 1);
         assert_eq!(assertions[0].selectors.len(), 1);
         assert_eq!(assertions[0].selectors[0].selector, assertion_selector);
-        assert_eq!(assertions[0].selectors[0].trigger_calls, vec![1]);
+        assert_eq!(assertions[0].selectors[0].trigger_calls.as_slice(), &[1]);
 
         Ok(())
     }
@@ -2421,7 +2527,7 @@ mod tests {
         assert_eq!(assertions.len(), 1);
         assert_eq!(assertions[0].selectors.len(), 1);
         assert_eq!(assertions[0].selectors[0].selector, assertion_selector);
-        assert_eq!(assertions[0].selectors[0].trigger_calls, vec![1]);
+        assert_eq!(assertions[0].selectors[0].trigger_calls.as_slice(), &[1]);
 
         Ok(())
     }

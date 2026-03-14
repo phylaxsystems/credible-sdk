@@ -1448,11 +1448,11 @@ mod test {
         let input = vec![
             crate::store::SelectorWithTrigger {
                 selector: sel_a,
-                trigger_calls: vec![3, 7],
+                trigger_calls: smallvec::smallvec![3, 7],
             },
             crate::store::SelectorWithTrigger {
                 selector: sel_b,
-                trigger_calls: vec![],
+                trigger_calls: smallvec::smallvec![],
             },
         ];
 

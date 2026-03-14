@@ -168,6 +168,9 @@ struct CallTracerLazyState {
     /// Lazily-built index of tx logs by `(emitter, topic0)`.
     /// Used by event-derived fact precompiles to avoid repeated full-log scans.
     log_index_by_emitter_topic0: OnceLock<HashMap<(Address, FixedBytes<32>), Vec<usize>>>,
+    /// Debug-only identity of the log slice used to initialize the cached log index.
+    #[cfg(debug_assertions)]
+    log_index_source: OnceLock<(usize, usize)>,
 }
 
 #[derive(Clone, Debug)]
@@ -643,6 +646,19 @@ impl CallTracer {
         emitter: Address,
         topic0: FixedBytes<32>,
     ) -> &[usize] {
+        #[cfg(debug_assertions)]
+        {
+            // The cached index is per traced transaction, so every caller must pass the
+            // same `tx_logs` slice for the lifetime of this `CallTracer`.
+            let source = (tx_logs.as_ptr() as usize, tx_logs.len());
+            let cached_source = self.lazy_state.log_index_source.get_or_init(|| source);
+            debug_assert_eq!(
+                *cached_source,
+                source,
+                "log index cache must be reused with the same tx_logs slice"
+            );
+        }
+
         let index = self.lazy_state.log_index_by_emitter_topic0.get_or_init(|| {
             let mut map: HashMap<(Address, FixedBytes<32>), Vec<usize>> = HashMap::new();
             for (idx, log) in tx_logs.iter().enumerate() {
@@ -2240,5 +2256,50 @@ mod test {
         // Second access returns same cached index (pointer equality)
         let idx2 = tracer.storage_change_index();
         assert!(std::ptr::eq(idx1, idx2));
+    }
+
+    fn test_log(address: Address, topic0: FixedBytes<32>) -> Log {
+        Log {
+            address,
+            data: alloy_primitives::LogData::new(vec![topic0], Bytes::new()).unwrap(),
+        }
+    }
+
+    #[test]
+    fn test_log_indices_by_emitter_topic0_reuses_cached_index() {
+        let emitter = address!("1111111111111111111111111111111111111111");
+        let other_emitter = address!("2222222222222222222222222222222222222222");
+        let transfer = FixedBytes::<32>::from([0xAA; 32]);
+        let approval = FixedBytes::<32>::from([0xBB; 32]);
+        let logs = vec![
+            test_log(emitter, transfer),
+            test_log(other_emitter, transfer),
+            test_log(emitter, transfer),
+            test_log(emitter, approval),
+        ];
+
+        let tracer = CallTracer::default();
+        let first = tracer.log_indices_by_emitter_topic0(&logs, emitter, transfer);
+        let second = tracer.log_indices_by_emitter_topic0(&logs, emitter, transfer);
+
+        assert_eq!(first, &[0, 2]);
+        assert_eq!(second, &[0, 2]);
+        assert_eq!(first.as_ptr(), second.as_ptr());
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "log index cache must be reused with the same tx_logs slice")]
+    fn test_log_indices_by_emitter_topic0_rejects_different_log_slices() {
+        let emitter = address!("1111111111111111111111111111111111111111");
+        let transfer = FixedBytes::<32>::from([0xAA; 32]);
+        let approval = FixedBytes::<32>::from([0xBB; 32]);
+        let tracer = CallTracer::default();
+
+        let logs_a = vec![test_log(emitter, transfer)];
+        let logs_b = vec![test_log(emitter, approval)];
+
+        let _ = tracer.log_indices_by_emitter_topic0(&logs_a, emitter, transfer);
+        let _ = tracer.log_indices_by_emitter_topic0(&logs_b, emitter, transfer);
     }
 }
