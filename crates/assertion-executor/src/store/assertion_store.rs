@@ -350,6 +350,11 @@ pub struct AssertionStore {
     prune_task: Arc<tokio::task::JoinHandle<()>>,
     /// Current block number (updated externally for pruning reference)
     current_block: Arc<std::sync::atomic::AtomicU64>,
+    /// Conservative fast-empty hint for the read path.
+    /// `false` means the store is definitely empty; `true` means it may contain assertions.
+    /// Once set, it can stay true even after pruning. That is fine because it is only used
+    /// to skip obviously empty reads, never to skip real work when assertions might exist.
+    has_any_assertions: Arc<std::sync::atomic::AtomicBool>,
     /// Prune configuration
     prune_config: PruneConfig,
 }
@@ -361,6 +366,7 @@ impl std::fmt::Debug for AssertionStore {
             .field("inner", &self.inner)
             .field("shutdown_tx", &self.shutdown_tx)
             .field("current_block", &self.current_block)
+            .field("has_any_assertions", &self.has_any_assertions)
             .field("prune_config", &self.prune_config)
             .finish()
     }
@@ -411,8 +417,11 @@ impl AssertionStore {
 
     /// Creates a new assertion store with the given backend.
     fn with_backend(backend: StoreBackend, prune_config: PruneConfig) -> Self {
+        let has_any_assertions_init = matches!(&backend, StoreBackend::Sled { .. });
         let inner = Arc::new(Mutex::new(AssertionStoreInner { backend }));
         let current_block = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let has_any_assertions =
+            Arc::new(std::sync::atomic::AtomicBool::new(has_any_assertions_init));
 
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let shutdown_tx = Arc::new(shutdown_tx);
@@ -431,6 +440,7 @@ impl AssertionStore {
             shutdown_tx,
             prune_task: Arc::new(prune_task),
             current_block,
+            has_any_assertions,
             prune_config,
         }
     }
@@ -537,6 +547,8 @@ impl AssertionStore {
         }
 
         inner.backend.insert(assertion_adopter, assertions)?;
+        self.has_any_assertions
+            .store(true, std::sync::atomic::Ordering::Release);
 
         // Opportunistic prune on insert
         drop(inner);
@@ -554,6 +566,9 @@ impl AssertionStore {
         &self,
         pending_modifications: Vec<PendingModification>,
     ) -> Result<(), AssertionStoreError> {
+        let has_additions = pending_modifications
+            .iter()
+            .any(|modification| matches!(modification, PendingModification::Add { .. }));
         let mut map = HashMap::<Address, Vec<PendingModification>>::new();
 
         for modification in pending_modifications {
@@ -566,7 +581,12 @@ impl AssertionStore {
             self.apply_pending_modification(aa, &mods)?;
         }
 
-        // Opportunistic prune after modifications
+        if has_additions {
+            self.has_any_assertions
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+        // Opportunistic prune after modifications. The fast-empty flag must already be visible
+        // before we release the newly inserted assertions to concurrent readers.
         self.maybe_prune();
 
         Ok(())
@@ -668,6 +688,13 @@ impl AssertionStore {
             .try_into()
             .map_err(|_| AssertionStoreError::BlockNumberExceedsU64)?;
 
+        if !self
+            .has_any_assertions
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Ok(vec![]);
+        }
+
         // Update current block for pruning reference
         self.set_current_block(block_num);
 
@@ -678,19 +705,15 @@ impl AssertionStore {
 
         for (contract_address, triggers) in &triggers {
             let contract_assertions = self.read_adopter(contract_address, triggers, block_num)?;
-            let assertions_for_execution: Vec<AssertionsForExecution> = contract_assertions
-                .into_iter()
-                .map(|(assertion_contract, selectors, assertion_spec)| {
-                    AssertionsForExecution {
-                        assertion_contract,
-                        selectors,
-                        adopter: *contract_address,
-                        assertion_spec,
-                    }
-                })
-                .collect();
-
-            assertions.extend(assertions_for_execution);
+            assertions.reserve(contract_assertions.len());
+            for (assertion_contract, selectors, assertion_spec) in contract_assertions {
+                assertions.push(AssertionsForExecution {
+                    assertion_contract,
+                    selectors,
+                    adopter: *contract_address,
+                    assertion_spec,
+                });
+            }
         }
 
         if assertions.is_empty() {
