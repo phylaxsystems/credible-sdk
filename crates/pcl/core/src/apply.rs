@@ -124,6 +124,8 @@ struct ApplyAssertionPayload {
     contract_name: String,
     evm_version: String,
     optimizer_runs: u64,
+    optimizer_enabled: bool,
+    metadata_bytecode_hash: String,
     libraries: HashMap<String, String>,
 }
 
@@ -277,6 +279,8 @@ impl ApplyArgs {
                     contract_name,
                     evm_version: built.evm_version.clone(),
                     optimizer_runs: built.optimizer_runs,
+                    optimizer_enabled: built.optimizer_enabled,
+                    metadata_bytecode_hash: built.metadata_bytecode_hash.clone(),
                     libraries: built.libraries.clone(),
                 });
             }
