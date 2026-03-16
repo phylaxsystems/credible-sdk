@@ -22,6 +22,7 @@ use foundry_compilers::{
 use alloy_json_abi::JsonAbi;
 use serde_json::Value;
 
+use foundry_compilers::artifacts::BytecodeHash;
 use foundry_config::find_project_root;
 use std::{
     collections::HashMap,
@@ -49,7 +50,7 @@ pub struct BuildAndFlatOutput {
     /// Target EVM version
     pub evm_version: String,
     /// Metadata bytecode hash strategy
-    pub metadata_bytecode_hash: String,
+    pub metadata_bytecode_hash: BytecodeHash,
     /// Solidity remappings used during compilation
     pub remappings: Vec<String>,
     /// Linked libraries keyed by fully-qualified library name
@@ -69,7 +70,7 @@ impl BuildAndFlatOutput {
         optimizer_enabled: bool,
         optimizer_runs: u64,
         evm_version: String,
-        metadata_bytecode_hash: String,
+        metadata_bytecode_hash: BytecodeHash,
         remappings: Vec<String>,
         libraries: HashMap<String, String>,
         compilation_target: String,
@@ -216,8 +217,8 @@ impl BuildAndFlattenArgs {
             settings
                 .pointer("/metadata/bytecodeHash")
                 .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
+                .and_then(|s| s.parse::<BytecodeHash>().ok())
+                .unwrap_or_default(),
             settings
                 .get("remappings")
                 .and_then(Value::as_array)
@@ -374,7 +375,7 @@ contract TestContract {
             true,
             200,
             "prague".to_string(),
-            "ipfs".to_string(),
+            BytecodeHash::Ipfs,
             vec!["@openzeppelin/=lib/openzeppelin/".to_string()],
             HashMap::new(),
             "assertions/src/TestContract.sol".to_string(),
@@ -395,7 +396,7 @@ contract TestContract {
             true,
             200,
             "prague".to_string(),
-            "ipfs".to_string(),
+            BytecodeHash::Ipfs,
             vec![],
             HashMap::new(),
             "assertions/src/TestContract.sol".to_string(),

@@ -280,7 +280,7 @@ impl ApplyArgs {
                     evm_version: built.evm_version.clone(),
                     optimizer_runs: built.optimizer_runs,
                     optimizer_enabled: built.optimizer_enabled,
-                    metadata_bytecode_hash: built.metadata_bytecode_hash.clone(),
+                    metadata_bytecode_hash: built.metadata_bytecode_hash.to_string(),
                     libraries: built.libraries.clone(),
                 });
             }
