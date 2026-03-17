@@ -170,6 +170,14 @@ impl BenchmarkPhaseStats {
     }
 }
 
+fn usize_from_u64(value: u64) -> usize {
+    usize::try_from(value).expect("benchmark counters should fit in usize")
+}
+
+fn u32_from_usize(value: usize) -> u32 {
+    u32::try_from(value).expect("synthetic benchmark fanout should fit in u32")
+}
+
 #[derive(Debug, Clone)]
 struct PreparedStoreReadCase {
     // Store-read benchmarks should only pay the assertion-selection lookup, so the
@@ -229,6 +237,11 @@ fn ensure_success(result: &ExecutionResult) -> Result<(), BenchmarkPackageError>
 
 impl BenchmarkPackage<BenchmarkDb> {
     /// End-to-end benchmark path: execute txs and immediately run matched assertions.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if transaction execution, assertion selection, or assertion
+    /// execution fails for any benchmarked transaction.
     pub fn run_full_phase(&mut self) -> Result<BenchmarkPhaseStats, BenchmarkPackageError> {
         let mut stats = BenchmarkPhaseStats::default();
 
@@ -241,7 +254,7 @@ impl BenchmarkPackage<BenchmarkDb> {
             ensure_success(&result.result_and_state.result)?;
             stats.transactions += 1;
             stats.matched_assertion_contracts += result.assertions_executions.len();
-            let executed_assertion_functions = result.total_assertion_funcs_ran() as usize;
+            let executed_assertion_functions = usize_from_u64(result.total_assertion_funcs_ran());
             stats.matched_assertion_selectors += executed_assertion_functions;
             stats.executed_assertion_functions += executed_assertion_functions;
         }
@@ -249,6 +262,12 @@ impl BenchmarkPackage<BenchmarkDb> {
         Ok(stats)
     }
 
+    /// Run the transaction bundle without tracing or assertions so the bench can
+    /// compare executor overhead against plain EVM execution.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any benchmark transaction fails plain EVM execution.
     pub fn run_vanilla_phase(&mut self) -> Result<BenchmarkPhaseStats, BenchmarkPackageError> {
         let mut stats = BenchmarkPhaseStats::default();
         let env = evm_env(
@@ -273,6 +292,10 @@ impl BenchmarkPackage<BenchmarkDb> {
 
     /// Trace-only path: commit the tx state changes but skip all assertion selection and
     /// execution so the benchmark reflects transaction validation/tracing cost alone.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if tx execution or tracing fails for any benchmark transaction.
     pub fn run_trace_only(&mut self) -> Result<BenchmarkPhaseStats, BenchmarkPackageError> {
         let mut stats = BenchmarkPhaseStats::default();
 
@@ -292,6 +315,10 @@ impl BenchmarkPackage<BenchmarkDb> {
 
     /// Execute the traced txs once and retain only the call tracer needed to benchmark
     /// assertion-store reads without paying tx execution again inside the bench loop.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if preparing the traced transactions fails.
     pub fn prepare_store_read(self) -> Result<PreparedStoreReadPackage, BenchmarkPackageError> {
         let mut package = self;
         let mut cases = Vec::with_capacity(package.bundle.len());
@@ -319,6 +346,11 @@ impl BenchmarkPackage<BenchmarkDb> {
     /// Execute the traced txs once, capture the matched assertions, and retain the
     /// pre-tx fork snapshot so assertion setup and assertion execution can be benchmarked
     /// independently of the tx path that discovered them.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if tx tracing or assertion selection fails while preparing
+    /// the assertion-phase benchmark cases.
     pub fn prepare_assertion_phases(
         self,
     ) -> Result<PreparedAssertionPhasePackage, BenchmarkPackageError> {
@@ -359,6 +391,10 @@ impl BenchmarkPackage<BenchmarkDb> {
 impl PreparedStoreReadPackage {
     /// Re-read the store from a prepared tracer so the benchmark only measures the
     /// selector/adopter lookup work.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the prepared store lookup fails for any traced case.
     pub fn run(&self) -> Result<BenchmarkPhaseStats, BenchmarkPackageError> {
         let mut stats = BenchmarkPhaseStats::default();
 
@@ -379,6 +415,10 @@ impl PreparedStoreReadPackage {
 impl PreparedAssertionPhasePackage {
     /// Measure just the contract/selector preparation fanout by black-boxing the
     /// cloned setup artifacts before any assertion bytecode is executed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if preparing any matched assertion contract fails.
     pub fn run_assertion_setup_only(&self) -> Result<BenchmarkPhaseStats, BenchmarkPackageError> {
         let mut stats = BenchmarkPhaseStats::default();
 
@@ -404,6 +444,10 @@ impl PreparedAssertionPhasePackage {
 
     /// Measure assertion execution after setup inputs have already been captured by
     /// `prepare_assertion_phases`, so the bench does not repay store reads.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if executing any prepared assertion fails.
     pub fn run_assertions_only(&self) -> Result<BenchmarkPhaseStats, BenchmarkPackageError> {
         let mut stats = BenchmarkPhaseStats::default();
 
@@ -423,7 +467,7 @@ impl PreparedAssertionPhasePackage {
             stats.accumulate_matches(&case.matched_assertions);
             stats.executed_assertion_functions += executions
                 .iter()
-                .map(|execution| execution.total_assertion_funcs_ran as usize)
+                .map(|execution| usize_from_u64(execution.total_assertion_funcs_ran))
                 .sum::<usize>();
         }
 
@@ -454,6 +498,13 @@ impl SyntheticAssertionSetupCase {
     }
 }
 
+/// Build a synthetic assertion-setup benchmark case that reuses one real traced
+/// transaction while varying assertion contract fanout and selector fanout.
+///
+/// # Errors
+///
+/// Returns an error if the preset cannot produce a real matched assertion to use
+/// as the template for the synthetic setup case.
 pub fn synthetic_assertion_setup_case(
     preset: BenchmarkPreset,
     contract_count: usize,
@@ -476,15 +527,15 @@ pub fn synthetic_assertion_setup_case(
         .ok_or(BenchmarkPackageError::BenchmarkError)?;
 
     let selectors = (0..selectors_per_contract)
-        .map(|idx| FixedBytes::<4>::from((idx as u32).to_be_bytes()))
+        .map(|idx| FixedBytes::<4>::from(u32_from_usize(idx).to_be_bytes()))
         .collect::<Vec<_>>();
     let matched_assertions = (0..contract_count)
         .map(|idx| {
             let mut assertion = template_assertion.clone();
             let mut adopter_bytes = [0u8; 20];
-            adopter_bytes[16..20].copy_from_slice(&(idx as u32).to_be_bytes());
+            adopter_bytes[16..20].copy_from_slice(&u32_from_usize(idx).to_be_bytes());
             assertion.adopter = Address::from(adopter_bytes);
-            assertion.selectors = selectors.clone();
+            assertion.selectors.clone_from(&selectors);
             assertion
         })
         .collect::<Vec<_>>();

@@ -74,7 +74,11 @@ fn unique_targets() -> Vec<Address> {
     (0..CALL_COUNT)
         .map(|idx| {
             let mut bytes = [0u8; 20];
-            bytes[16..20].copy_from_slice(&(idx as u32).to_be_bytes());
+            bytes[16..20].copy_from_slice(
+                &u32::try_from(idx)
+                    .expect("bench call count fits in u32")
+                    .to_be_bytes(),
+            );
             Address::from(bytes)
         })
         .collect()

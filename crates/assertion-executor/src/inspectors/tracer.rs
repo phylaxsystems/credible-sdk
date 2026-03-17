@@ -2143,7 +2143,7 @@ mod test {
         let idx1_ptr = {
             let idx1 = tracer.storage_change_index();
             assert_eq!(idx1.slots_for_address(&addr).unwrap(), &[U256::from(1)]);
-            idx1 as *const StorageChangeIndex
+            std::ptr::from_ref(idx1)
         };
 
         tracer.journal.journal.push(JournalEntry::StorageChanged {
@@ -2153,7 +2153,7 @@ mod test {
         });
 
         let idx2 = tracer.storage_change_index();
-        assert_eq!(idx1_ptr, idx2 as *const StorageChangeIndex);
+        assert_eq!(idx1_ptr, std::ptr::from_ref(idx2));
         assert_eq!(idx2.slots_for_address(&addr).unwrap(), &[U256::from(1)]);
         assert_eq!(idx2.first_had_value(&addr, &U256::from(2)), None);
     }

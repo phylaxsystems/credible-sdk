@@ -69,6 +69,8 @@ use crate::evm::build_evm::{
 type InspectorAssertionExecutions<I> = (Vec<AssertionContractExecution>, Vec<I>);
 type InspectorContractExecution<I> = (AssertionContractExecution, Vec<I>);
 type InspectorFnExecution<I> = (AssertionFunctionResult, I);
+type InspectorFnExecutionResults<Active, I> =
+    Vec<Result<InspectorFnExecution<I>, AssertionExecutionError<<Active as DatabaseRef>::Error>>>;
 
 /// Per-contract arguments passed into `run_assertion_contract_with_inspector`.
 #[derive(Debug)]
@@ -111,6 +113,7 @@ impl AssertionExecutor {
     /// Returns an error if transaction execution fails internally or if assertion
     /// execution fails after the transaction succeeds.
     #[instrument(level = "debug", skip_all, target = "executor::validate_tx")]
+    #[allow(clippy::needless_pass_by_value)]
     pub fn validate_transaction_with_inspector<ExtDb, Active, I>(
         &mut self,
         block_env: BlockEnv,
@@ -269,13 +272,15 @@ impl AssertionExecutor {
             )
             .map_err(AssertionExecutionError::AssertionReadError)?;
 
-        let results = self.execute_selected_assertions(
-            block_env,
-            tx_fork_db,
-            assertions,
-            forked_tx_result,
-            tx_env,
-            tx_arena_epoch,
+        let results = Self::execute_selected_assertions(
+            super::SelectedAssertionsExecutionParams {
+                block_env,
+                tx_fork_db,
+                assertions,
+                forked_tx_result,
+                tx_env,
+                tx_arena_epoch,
+            },
             |assertion_contract, fn_selectors, block_env, tx_fork_db, context, tx_arena_epoch| {
                 self.run_assertion_contract_with_inspector(AssertionContractWithInspectorParams {
                     assertion_contract,
@@ -393,63 +398,25 @@ impl AssertionExecutor {
             "Assertion fn scheduling decision"
         );
 
-        if !parallel_fns {
-            let mut valid_results = Vec::with_capacity(execution_count);
-            let mut inspectors = Vec::with_capacity(execution_count);
-            let mut total_assertion_gas = 0;
-
-            // Preserve the inspector/result pairing in the same order the selectors were matched
-            // when the batch is too small to justify rayon scheduling.
-            for fn_selector in fn_selectors {
-                let (fn_result, fn_inspector) = self.execute_assertion_fn_with_inspector(
-                    AssertionExecutionWithInspectorParams {
-                        assertion_contract,
-                        fn_selector: *fn_selector,
-                        tx_arena_epoch,
-                        block_env: block_env.clone(),
-                        multi_fork_db: prepared.multi_fork_db.clone(),
-                        phevm_inspector: prepared.inspector.clone(),
-                        inspector: inspector.clone(),
-                    },
-                )?;
-                total_assertion_gas += fn_result.as_result().gas_used();
-                valid_results.push(fn_result);
-                inspectors.push(fn_inspector);
-            }
-
-            let total_assertion_funcs_ran = valid_results.len() as u64;
-            return Ok((
-                AssertionContractExecution {
-                    adopter: context.adopter,
-                    assertion_fns_results: valid_results,
-                    total_assertion_gas,
-                    total_assertion_funcs_ran,
-                },
-                inspectors,
-            ));
-        }
-
-        let current_span = tracing::Span::current();
-        let results_vec: Vec<_> = current_span.in_scope(|| {
-            assertion_executor_pool().install(|| {
-                fn_selectors
-                    .into_par_iter()
-                    .map(|fn_selector| {
-                        self.execute_assertion_fn_with_inspector(
-                            AssertionExecutionWithInspectorParams {
-                                assertion_contract,
-                                fn_selector: *fn_selector,
-                                tx_arena_epoch,
-                                block_env: block_env.clone(),
-                                multi_fork_db: prepared.multi_fork_db.clone(),
-                                phevm_inspector: prepared.inspector.clone(),
-                                inspector: inspector.clone(),
-                            },
-                        )
-                    })
-                    .collect()
-            })
-        });
+        let results_vec = if parallel_fns {
+            self.parallel_assertion_fn_results_with_inspector(
+                assertion_contract,
+                fn_selectors,
+                block_env,
+                &prepared,
+                &inspector,
+                tx_arena_epoch,
+            )
+        } else {
+            self.sequential_assertion_fn_results_with_inspector(
+                assertion_contract,
+                fn_selectors,
+                block_env,
+                &prepared,
+                &inspector,
+                tx_arena_epoch,
+            )?
+        };
 
         let mut valid_results = Vec::with_capacity(results_vec.len());
         let mut inspectors = Vec::with_capacity(results_vec.len());
@@ -471,6 +438,85 @@ impl AssertionExecutor {
             },
             inspectors,
         ))
+    }
+
+    fn sequential_assertion_fn_results_with_inspector<Active, I>(
+        &self,
+        assertion_contract: &AssertionContract,
+        fn_selectors: &[FixedBytes<4>],
+        block_env: &BlockEnv,
+        prepared: &super::PreparedAssertionContract<'_, Active>,
+        inspector: &I,
+        tx_arena_epoch: u64,
+    ) -> Result<
+        InspectorFnExecutionResults<Active, I>,
+        AssertionExecutionError<<Active as DatabaseRef>::Error>,
+    >
+    where
+        Active: DatabaseRef + Sync + Send + Clone,
+        Active::Error: Send,
+        I: Clone + Send + Sync,
+        for<'db> I: Inspector<EthCtx<'db, MultiForkDb<ForkDb<Active>>>>,
+        for<'db> I: Inspector<OpCtx<'db, MultiForkDb<ForkDb<Active>>>>,
+    {
+        let mut results = Vec::with_capacity(fn_selectors.len());
+
+        // Preserve the inspector/result pairing in the same order the selectors were matched
+        // when the batch is too small to justify rayon scheduling.
+        for fn_selector in fn_selectors {
+            results.push(Ok(self.execute_assertion_fn_with_inspector(
+                AssertionExecutionWithInspectorParams {
+                    assertion_contract,
+                    fn_selector: *fn_selector,
+                    tx_arena_epoch,
+                    block_env: block_env.clone(),
+                    multi_fork_db: prepared.multi_fork_db.clone(),
+                    phevm_inspector: prepared.inspector.clone(),
+                    inspector: inspector.clone(),
+                },
+            )?));
+        }
+
+        Ok(results)
+    }
+
+    fn parallel_assertion_fn_results_with_inspector<Active, I>(
+        &self,
+        assertion_contract: &AssertionContract,
+        fn_selectors: &[FixedBytes<4>],
+        block_env: &BlockEnv,
+        prepared: &super::PreparedAssertionContract<'_, Active>,
+        inspector: &I,
+        tx_arena_epoch: u64,
+    ) -> InspectorFnExecutionResults<Active, I>
+    where
+        Active: DatabaseRef + Sync + Send + Clone,
+        Active::Error: Send,
+        I: Clone + Send + Sync,
+        for<'db> I: Inspector<EthCtx<'db, MultiForkDb<ForkDb<Active>>>>,
+        for<'db> I: Inspector<OpCtx<'db, MultiForkDb<ForkDb<Active>>>>,
+    {
+        let current_span = tracing::Span::current();
+        current_span.in_scope(|| {
+            assertion_executor_pool().install(|| {
+                fn_selectors
+                    .into_par_iter()
+                    .map(|fn_selector| {
+                        self.execute_assertion_fn_with_inspector(
+                            AssertionExecutionWithInspectorParams {
+                                assertion_contract,
+                                fn_selector: *fn_selector,
+                                tx_arena_epoch,
+                                block_env: block_env.clone(),
+                                multi_fork_db: prepared.multi_fork_db.clone(),
+                                phevm_inspector: prepared.inspector.clone(),
+                                inspector: inspector.clone(),
+                            },
+                        )
+                    })
+                    .collect()
+            })
+        })
     }
 
     /// Execute a single assertion function with a custom inspector.
@@ -504,7 +550,7 @@ impl AssertionExecutor {
         // Compose inspector: (custom_inspector, phevm_inspector).
         let composed_inspector = (&mut inspector, &mut phevm_inspector);
         let result = self.execute_assertion_fn_call(
-            block_env,
+            &block_env,
             fn_selector,
             &mut multi_fork_db,
             composed_inspector,

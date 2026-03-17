@@ -1967,11 +1967,11 @@ mod tests {
         let mut tracer = CallTracer::default();
         tracer.insert_trace(aa);
 
-        let assertions = store.read(&tracer, U256::from(100))?;
+        let matched_assertions = store.read(&tracer, U256::from(100))?;
 
         // Only the assertion with matched selectors should be returned
-        assert_eq!(assertions.len(), 1);
-        assert_eq!(assertions[0].selectors, vec![selector_matched]);
+        assert_eq!(matched_assertions.len(), 1);
+        assert_eq!(matched_assertions[0].selectors, vec![selector_matched]);
 
         Ok(())
     }

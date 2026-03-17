@@ -144,6 +144,20 @@ struct AssertionExecutionParams<'a, Active> {
     inspector: PhEvmInspector<'a>,
 }
 
+/// Shared inputs for executing the already-matched assertion set.
+///
+/// Packaging these arguments keeps the benchmark-only execution path and the
+/// production path on the same helper without adding another long parameter list.
+#[derive(Debug)]
+struct SelectedAssertionsExecutionParams<'a, Active> {
+    block_env: &'a BlockEnv,
+    tx_fork_db: &'a ForkDb<Active>,
+    assertions: Vec<AssertionsForExecution>,
+    forked_tx_result: &'a ExecuteForkedTxResult,
+    tx_env: &'a TxEnv,
+    tx_arena_epoch: u64,
+}
+
 #[derive(Debug, Clone)]
 pub struct ExecuteForkedTxResult {
     pub call_tracer: CallTracer,
@@ -172,7 +186,8 @@ pub struct BenchmarkAssertionSetupStats {
 ///
 /// Separating preparation from parallel execution keeps the per-variant code
 /// (with/without custom inspector) to just a rayon `.map` body, while the
-/// setup (inserting persistent accounts, building the overlay db and phevm
+/// setup (inserting persistent accounts, building the overlay db, and creating
+/// the phevm inspector) remains in one place.
 struct PreparedAssertionContract<'ctx, Active> {
     multi_fork_db: MultiForkDb<ForkDb<Active>>,
     inspector: PhEvmInspector<'ctx>,
@@ -289,13 +304,7 @@ impl AssertionExecutor {
     /// isolate store lookup from execution, but production validation still feeds
     /// this helper from the store immediately before running assertions.
     fn execute_selected_assertions<Active, T, F>(
-        &self,
-        block_env: &BlockEnv,
-        tx_fork_db: &ForkDb<Active>,
-        assertions: Vec<AssertionsForExecution>,
-        forked_tx_result: &ExecuteForkedTxResult,
-        tx_env: &TxEnv,
-        tx_arena_epoch: u64,
+        params: SelectedAssertionsExecutionParams<'_, Active>,
         run_assertion_contract: F,
     ) -> Result<Vec<T>, AssertionExecutionError<<Active as DatabaseRef>::Error>>
     where
@@ -313,6 +322,15 @@ impl AssertionExecutor {
             + Sync
             + Send,
     {
+        let SelectedAssertionsExecutionParams {
+            block_env,
+            tx_fork_db,
+            assertions,
+            forked_tx_result,
+            tx_env,
+            tx_arena_epoch,
+        } = params;
+
         let logs_and_traces = LogsAndTraces {
             tx_logs: forked_tx_result.result_and_state.result.logs(),
             call_traces: &forked_tx_result.call_tracer,
@@ -393,7 +411,7 @@ impl AssertionExecutor {
     /// Executes a single assertion call with the provided inspector.
     fn execute_assertion_fn_call<'db, Active, I>(
         &self,
-        block_env: BlockEnv,
+        block_env: &BlockEnv,
         fn_selector: FixedBytes<4>,
         multi_fork_db: &'db mut MultiForkDb<ForkDb<Active>>,
         inspector: I,
@@ -406,8 +424,8 @@ impl AssertionExecutor {
         I: Inspector<EthCtx<'db, MultiForkDb<ForkDb<Active>>>>
             + Inspector<OpCtx<'db, MultiForkDb<ForkDb<Active>>>>,
     {
-        let tx_env = self.assertion_fn_tx_env(&block_env, fn_selector);
-        let env = evm_env(self.config.chain_id, self.config.spec_id, block_env);
+        let tx_env = self.assertion_fn_tx_env(block_env, fn_selector);
+        let env = evm_env(self.config.chain_id, self.config.spec_id, block_env.clone());
 
         let mut evm = crate::build_evm_by_features!(multi_fork_db, &env, inspector);
         let tx_env = crate::wrap_tx_env_for_optimism!(tx_env);
@@ -493,6 +511,7 @@ impl AssertionExecutor {
     ///
     /// Returns an error if executing the transaction or assertions fails.
     #[instrument(level = "debug", skip_all, target = "executor::validate_tx")]
+    #[allow(clippy::needless_pass_by_value)]
     pub fn validate_transaction_ext_db<ExtDb, Active>(
         &mut self,
         block_env: BlockEnv,
@@ -572,13 +591,15 @@ impl AssertionExecutor {
             .read(&forked_tx_result.call_tracer, U256::from(block_env.number))
             .map_err(AssertionExecutionError::AssertionReadError)?;
 
-        let results = self.execute_selected_assertions(
-            block_env,
-            tx_fork_db,
-            assertions,
-            forked_tx_result,
-            tx_env,
-            tx_arena_epoch,
+        let results = Self::execute_selected_assertions(
+            SelectedAssertionsExecutionParams {
+                block_env,
+                tx_fork_db,
+                assertions,
+                forked_tx_result,
+                tx_env,
+                tx_arena_epoch,
+            },
             |assertion_contract, fn_selectors, block_env, tx_fork_db, context, tx_arena_epoch| {
                 self.run_assertion_contract(
                     assertion_contract,
@@ -674,6 +695,11 @@ impl AssertionExecutor {
     #[cfg(any(test, feature = "test"))]
     /// Bench helper that executes already-selected assertions so the perf harness can
     /// measure assertion execution separately from store lookup and setup preparation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any selected assertion fails to execute against the
+    /// prepared post-transaction state.
     pub fn benchmark_execute_selected_assertions<Active>(
         &self,
         block_env: &BlockEnv,
@@ -687,13 +713,15 @@ impl AssertionExecutor {
         Active::Error: Send,
     {
         let tx_arena_epoch = next_tx_arena_epoch();
-        self.execute_selected_assertions(
-            block_env,
-            tx_fork_db,
-            assertions,
-            forked_tx_result,
-            tx_env,
-            tx_arena_epoch,
+        Self::execute_selected_assertions(
+            SelectedAssertionsExecutionParams {
+                block_env,
+                tx_fork_db,
+                assertions,
+                forked_tx_result,
+                tx_env,
+                tx_arena_epoch,
+            },
             |assertion_contract, fn_selectors, block_env, tx_fork_db, context, tx_arena_epoch| {
                 self.run_assertion_contract(
                     assertion_contract,
@@ -879,7 +907,7 @@ impl AssertionExecutor {
         prepare_tx_arena_for_current_thread(tx_arena_epoch);
 
         let result = self.execute_assertion_fn_call(
-            block_env,
+            &block_env,
             *fn_selector,
             &mut multi_fork_db,
             &mut inspector,
@@ -898,6 +926,7 @@ impl AssertionExecutor {
     ///
     /// Returns an error if executing the transaction or assertions fails.
     #[instrument(level = "debug", skip_all, target = "executor::validate_tx")]
+    #[allow(clippy::needless_pass_by_value)]
     pub fn validate_transaction<Active>(
         &mut self,
         block_env: BlockEnv,
