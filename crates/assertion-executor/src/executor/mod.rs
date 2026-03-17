@@ -73,7 +73,6 @@ use rayon::{
     ThreadPoolBuilder,
     prelude::{
         IntoParallelIterator,
-        IntoParallelRefIterator,
         ParallelIterator,
     },
 };

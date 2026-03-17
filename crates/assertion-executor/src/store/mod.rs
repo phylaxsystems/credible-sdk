@@ -19,9 +19,9 @@ pub use assertion_store::{
     PruneConfig,
 };
 
-#[cfg(any(test, feature = "test"))]
-// Benchmarks need to hold onto matched assertions between phases, but production
-// callers should keep using the store through its read API.
+// Benchmarks need to hold onto matched assertions between phases, and executor
+// internals also thread this type through their shared execution helpers.
+// Production callers should still prefer the store read API.
 pub use assertion_store::AssertionsForExecution;
 
 pub mod models;

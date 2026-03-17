@@ -162,5 +162,4 @@ Use the targeted bench that matches the hotspot, plus at least one end-to-end wo
 
 ## References
 
-- Repo skill: `/Users/odysseas/.codex/skills/rust-samply-profiling-loop/SKILL.md`
 - OneUptime guide: `https://oneuptime.com/blog/post/2026-01-07-rust-profiling-perf-flamegraph/view`
