@@ -76,6 +76,8 @@ use rayon::{
         ParallelIterator,
     },
 };
+#[cfg(any(test, feature = "test"))]
+use rayon::prelude::IntoParallelRefIterator;
 
 use crate::{
     arena::{
