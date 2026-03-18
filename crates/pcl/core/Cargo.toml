@@ -13,6 +13,7 @@ pcl-phoundry = { workspace = true }
 
 # alloy deps
 alloy-primitives = { workspace = true }
+alloy-json-abi = { workspace = true }
 
 # assertion-da deps
 assertion-da-client = { workspace = true }

@@ -9,6 +9,10 @@ use chrono::{
 };
 use clap::ValueHint;
 use inquire::Select;
+use alloy_json_abi::{
+    JsonAbi,
+    Param,
+};
 use pcl_common::args::CliArgs;
 use pcl_phoundry::build_and_flatten::BuildAndFlattenArgs;
 use serde::{
@@ -119,6 +123,7 @@ struct ApplyAssertionPayload {
     file: String,
     args: Vec<String>,
     bytecode: String,
+    constructor_abi_signature: String,
     flattened_source: String,
     compiler_version: String,
     contract_name: String,
@@ -270,6 +275,7 @@ impl ApplyArgs {
                     args: assertion.args.clone(),
                     flattened_source: built.flattened_source.clone(),
                     bytecode: built.bytecode.clone(),
+                    constructor_abi_signature: constructor_abi_signature(&built.abi),
                     compiler_version: built.compiler_version.clone(),
                     contract_name,
                 });
@@ -421,6 +427,21 @@ impl ApplyArgs {
                 ToString::to_string
             )
         );
+    }
+}
+
+fn constructor_abi_signature(abi: &JsonAbi) -> String {
+    match abi.constructor.as_ref() {
+        Some(constructor) if !constructor.inputs.is_empty() => format!(
+            "constructor({})",
+            constructor
+                .inputs
+                .iter()
+                .map(|input: &Param| input.selector_type().into_owned())
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+        _ => "constructor()".to_string(),
     }
 }
 

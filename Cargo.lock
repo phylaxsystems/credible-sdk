@@ -8541,6 +8541,7 @@ name = "pcl-core"
 version = "1.1.2"
 dependencies = [
  "alloy",
+ "alloy-json-abi",
  "alloy-primitives",
  "anyhow",
  "assertion-da-client 1.1.2",
