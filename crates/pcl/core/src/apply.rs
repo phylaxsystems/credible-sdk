@@ -48,6 +48,15 @@ pub struct ApplyArgs {
     )]
     pub root: PathBuf,
 
+    #[arg(
+        short = 'c',
+        long = "config",
+        value_hint = ValueHint::FilePath,
+        default_value = "assertions/credible.toml",
+        help = "Path to credible.toml, relative to root or absolute"
+    )]
+    pub config: PathBuf,
+
     #[arg(long, help = "Emit machine-readable output for this command")]
     pub json: bool,
 
@@ -156,7 +165,8 @@ impl ApplyArgs {
     pub async fn run(&self, cli_args: &CliArgs, config: &CliConfig) -> Result<(), ApplyError> {
         let json_output = cli_args.json_output() || self.json;
         let root = canonicalize_root(&self.root)?;
-        let credible = read_credible_toml(&root)?;
+        let config_path = root.join(&self.config);
+        let credible = read_credible_toml(&config_path)?;
         let project_id = match credible.project_id {
             Some(project_id) => project_id,
             None if json_output => {
@@ -454,12 +464,21 @@ fn value_to_string(value: Value) -> String {
 }
 
 fn canonicalize_root(root: &Path) -> Result<PathBuf, ApplyError> {
-    std::fs::canonicalize(root).map_err(ApplyError::Io)
+    std::fs::canonicalize(root).map_err(|e| {
+        ApplyError::Io {
+            message: format!("Project root not found: {}", root.display()),
+            source: e,
+        }
+    })
 }
 
-fn read_credible_toml(root: &Path) -> Result<CredibleToml, ApplyError> {
-    let path = root.join("credible.toml");
-    let contents = std::fs::read_to_string(path).map_err(ApplyError::Io)?;
+fn read_credible_toml(path: &Path) -> Result<CredibleToml, ApplyError> {
+    let contents = std::fs::read_to_string(path).map_err(|e| {
+        ApplyError::Io {
+            message: format!("credible.toml not found at {}", path.display()),
+            source: e,
+        }
+    })?;
     toml::from_str(&contents).map_err(ApplyError::Toml)
 }
 
@@ -555,9 +574,19 @@ fn render_preview(preview: &Value) {
 // TODO: to reuse when preview diff is activated
 fn confirm_apply() -> Result<bool, ApplyError> {
     eprint!("Do you want to apply these changes? Only 'yes' will be accepted: ");
-    stderr().flush().map_err(ApplyError::Io)?;
+    stderr().flush().map_err(|e| {
+        ApplyError::Io {
+            message: "Failed to flush stderr".to_string(),
+            source: e,
+        }
+    })?;
     let mut input = String::new();
-    stdin().read_line(&mut input).map_err(ApplyError::Io)?;
+    stdin().read_line(&mut input).map_err(|e| {
+        ApplyError::Io {
+            message: "Failed to read from stdin".to_string(),
+            source: e,
+        }
+    })?;
     Ok(input.trim() == "yes")
 }
 
@@ -565,6 +594,17 @@ fn confirm_apply() -> Result<bool, ApplyError> {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::fs;
+    use tempfile::TempDir;
+
+    const VALID_CREDIBLE_TOML: &str = r#"
+        environment = "production"
+        [contracts.my_contract]
+        address = "0x1234567890abcdef1234567890abcdef12345678"
+        name = "MockProtocol"
+        [[contracts.my_contract.assertions]]
+        file = "src/NoArgsAssertion.a.sol"
+    "#;
 
     #[test]
     fn infers_assertion_contract_name_from_solidity_path() {
@@ -591,5 +631,41 @@ mod tests {
         });
 
         assert!(!preview_has_changes(&preview));
+    }
+
+    #[test]
+    fn read_credible_toml_resolves_config_path() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+
+        // default — assertions/credible.toml
+        let assertions_dir = root.join("assertions");
+        fs::create_dir_all(&assertions_dir).unwrap();
+        fs::write(assertions_dir.join("credible.toml"), VALID_CREDIBLE_TOML).unwrap();
+
+        let credible = read_credible_toml(&root.join("assertions/credible.toml")).unwrap();
+        assert_eq!(credible.environment, "production");
+        assert_eq!(
+            credible.contracts.get("my_contract").unwrap().name,
+            "MockProtocol"
+        );
+
+        // backward compat, credible.toml at project root
+        fs::write(root.join("credible.toml"), VALID_CREDIBLE_TOML).unwrap();
+
+        let credible = read_credible_toml(&root.join("credible.toml")).unwrap();
+        assert_eq!(credible.environment, "production");
+
+        // arbitrary path — custom/path/credible.toml
+        let custom_dir = root.join("custom").join("path");
+        fs::create_dir_all(&custom_dir).unwrap();
+        fs::write(custom_dir.join("credible.toml"), VALID_CREDIBLE_TOML).unwrap();
+
+        let credible = read_credible_toml(&root.join("custom/path/credible.toml")).unwrap();
+        assert_eq!(credible.environment, "production");
+
+        // missing config yields ConfigNotFound
+        let err = read_credible_toml(&root.join("nonexistent/credible.toml")).unwrap_err();
+        assert!(matches!(err, ApplyError::Io { .. }));
     }
 }

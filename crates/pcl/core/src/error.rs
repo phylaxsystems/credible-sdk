@@ -88,8 +88,12 @@ pub enum ApplyError {
     #[error("Run `pcl auth login` first")]
     NoAuthToken,
 
-    #[error("Failed to read or write local files: {0}")]
-    Io(#[source] std::io::Error),
+    #[error("{message}: {source}")]
+    Io {
+        message: String,
+        #[source]
+        source: std::io::Error,
+    },
 
     #[error("Failed to parse credible.toml: {0}")]
     Toml(#[source] toml::de::Error),
