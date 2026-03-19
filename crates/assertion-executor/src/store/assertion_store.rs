@@ -346,8 +346,8 @@ pub struct AssertionStore {
     inner: Arc<Mutex<AssertionStoreInner>>,
     /// Shutdown signal sender - when dropped, signals the background task to stop
     shutdown_tx: Arc<watch::Sender<bool>>,
-    /// Handle to the background pruning task
-    prune_task: Arc<tokio::task::JoinHandle<()>>,
+    /// Handle to the background pruning task when a Tokio runtime is available.
+    prune_task: Option<Arc<tokio::task::JoinHandle<()>>>,
     /// Current block number (updated externally for pruning reference)
     current_block: Arc<std::sync::atomic::AtomicU64>,
     /// Conservative fast-empty hint for the read path.
@@ -426,19 +426,26 @@ impl AssertionStore {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let shutdown_tx = Arc::new(shutdown_tx);
 
-        let task_inner = Arc::clone(&inner);
-        let task_current_block = Arc::clone(&current_block);
-        let task_config = prune_config.clone();
+        let prune_task = tokio::runtime::Handle::try_current().ok().map(|handle| {
+            let task_inner = Arc::clone(&inner);
+            let task_current_block = Arc::clone(&current_block);
+            let task_config = prune_config.clone();
 
-        let prune_task = tokio::spawn(async move {
-            Self::prune_background_task(task_inner, task_current_block, task_config, shutdown_rx)
+            Arc::new(handle.spawn(async move {
+                Self::prune_background_task(
+                    task_inner,
+                    task_current_block,
+                    task_config,
+                    shutdown_rx,
+                )
                 .await;
+            }))
         });
 
         Self {
             inner,
             shutdown_tx,
-            prune_task: Arc::new(prune_task),
+            prune_task,
             current_block,
             has_any_assertions,
             prune_config,
@@ -2301,7 +2308,12 @@ mod tests {
         let task_handle = {
             let store = AssertionStore::new_ephemeral_with_config(config);
             // Clone the task handle to check its state after drop
-            Arc::clone(&store.prune_task)
+            Arc::clone(
+                store
+                    .prune_task
+                    .as_ref()
+                    .expect("tokio tests should spawn a prune task"),
+            )
         };
         // Store is dropped here, which should signal shutdown
 

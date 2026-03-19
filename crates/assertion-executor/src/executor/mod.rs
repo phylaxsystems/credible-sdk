@@ -69,6 +69,8 @@ use revm::{
     Inspector,
 };
 
+#[cfg(any(test, feature = "test"))]
+use rayon::prelude::IntoParallelRefIterator;
 use rayon::{
     ThreadPoolBuilder,
     prelude::{
@@ -76,8 +78,6 @@ use rayon::{
         ParallelIterator,
     },
 };
-#[cfg(any(test, feature = "test"))]
-use rayon::prelude::IntoParallelRefIterator;
 
 use crate::{
     arena::{
