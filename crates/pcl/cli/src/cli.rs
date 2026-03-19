@@ -139,8 +139,34 @@ mod tests {
                     args.root,
                     std::path::PathBuf::from("./testdata/mock-protocol")
                 );
+                assert_eq!(
+                    args.config,
+                    std::path::PathBuf::from("assertions/credible.toml")
+                );
                 assert!(!args.json);
                 assert!(!args.yes);
+            }
+            _ => panic!("expected apply command"),
+        }
+    }
+
+    #[test]
+    fn parses_apply_command_with_custom_config() {
+        let cli = Cli::try_parse_from([
+            "pcl",
+            "apply",
+            "--root",
+            "./testdata/mock-protocol",
+            "-c",
+            "custom/path/credible.toml",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Apply(args) => {
+                assert_eq!(
+                    args.config,
+                    std::path::PathBuf::from("custom/path/credible.toml")
+                );
             }
             _ => panic!("expected apply command"),
         }
