@@ -387,7 +387,7 @@ impl std::fmt::Debug for AssertionStoreInner {
 impl AssertionStore {
     /// Create a new assertion store with a sled backend for persistence.
     ///
-    /// Runs schema migrations before opening the store. See [`super::migration`].
+    /// Runs schema migrations before opening the store. See `super::migration`.
     ///
     /// # Errors
     ///
