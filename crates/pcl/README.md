@@ -141,6 +141,47 @@ Display options:
 ... // rest of the `forge test` help output
 ```
 
+### Apply
+
+Preview and apply declarative deployment changes from `credible.toml`. This command builds assertions, then creates a release on the platform.
+
+```bash
+pcl apply [OPTIONS]
+
+Options:
+      --root <ROOT>      Project root directory [default: .]
+  -c, --config <CONFIG>  Path to credible.toml, relative to root or absolute [default: assertions/credible.toml]
+      --json             Emit machine-readable output
+      --yes              Apply without interactive confirmation
+  -u, --api-url <URL>    Base URL for the platform API [env: PCL_API_URL=] [default: https://app.phylax.systems]
+  -h, --help             Print help
+```
+
+By default, `pcl apply` looks for `credible.toml` inside the `assertions/` directory of your project:
+
+```
+my-project/
+├── foundry.toml
+├── src/                         # protocol contracts
+├── assertions/
+│   ├── credible.toml            # <- default location
+│   ├── src/                     # assertion contracts
+│   └── test/
+```
+
+Use `-c` to override the config path:
+
+```bash
+# Default: reads ./assertions/credible.toml
+pcl apply --root ./my-project
+
+# Legacy layout: credible.toml at project root
+pcl apply --root ./my-project -c credible.toml
+
+# Custom path
+pcl apply --root ./my-project -c path/to/credible.toml
+```
+
 ### Assertion Submission
 
 `pcl store` uploads the assertion bytecode and flattened source to the Credible Assertion Data Availability (DA) service. Once the DA has the assertion, `pcl submit` (or the dApp) can link it to a project so that it can be enforced. The full workflow is documented at https://docs.phylax.systems/credible/store-submit-assertions.
