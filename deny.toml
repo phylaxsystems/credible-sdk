@@ -87,6 +87,15 @@ ignore = [
     "RUSTSEC-2025-0140",
     # https://rustsec.org/advisories/RUSTSEC-2025-0141.html, bincode deprecation
     "RUSTSEC-2025-0141",
+    # TODO: remove once https://github.com/rustls/rustls/pull/2996 is released and upgrade rustls
+    "RUSTSEC-2026-0049", # rustls-webpki CRL matching logic
+    "RUSTSEC-2026-0048", # aws-lc-sys CRL distribution point logic
+    "RUSTSEC-2026-0047", # aws-lc-sys PKCS7_verify signature bypass
+    "RUSTSEC-2026-0046", # aws-lc-sys PKCS7_verify certificate chain bypass
+    "RUSTSEC-2026-0045", # aws-lc-sys AES-CCM timing side-channel
+    # astral-tokio-tar PAX extension validation — via testcontainers
+    # TODO: remove once https://github.com/testcontainers/testcontainers-rs/pull/927 is released
+    "RUSTSEC-2026-0066",
 ]
 # If this is true, then cargo deny will use the git executable to fetch advisory database.
 # If this is false, then it uses a built-in git library.
