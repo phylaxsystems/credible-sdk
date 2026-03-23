@@ -86,6 +86,42 @@ struct CredibleToml {
     contracts: BTreeMap<String, CredibleContract>,
 }
 
+impl CredibleToml {
+    /// Reads and validates a `credible.toml` file at the given path.
+    fn from_path(path: &Path) -> Result<Self, ApplyError> {
+        let contents = std::fs::read_to_string(path).map_err(|e| {
+            ApplyError::Io {
+                message: format!("credible.toml not found at {}", path.display()),
+                source: e,
+            }
+        })?;
+        let credible: Self = toml::from_str(&contents).map_err(ApplyError::Toml)?;
+        credible.validate()?;
+        Ok(credible)
+    }
+
+    /// Runs all config validations.
+    fn validate(&self) -> Result<(), ApplyError> {
+        self.validate_unique_addresses()?;
+        Ok(())
+    }
+
+    /// Ensures no two contracts share the same address.
+    fn validate_unique_addresses(&self) -> Result<(), ApplyError> {
+        let mut seen: HashMap<&str, &str> = HashMap::new();
+        for (key, contract) in &self.contracts {
+            if let Some(existing_key) = seen.get(contract.address.as_str()) {
+                return Err(ApplyError::InvalidConfig(format!(
+                    "duplicate contract address {}: used by both `{}` and `{}`",
+                    contract.address, existing_key, key
+                )));
+            }
+            seen.insert(&contract.address, key);
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct CredibleContract {
     address: String,
@@ -166,7 +202,7 @@ impl ApplyArgs {
         let json_output = cli_args.json_output() || self.json;
         let root = canonicalize_root(&self.root)?;
         let config_path = root.join(&self.config);
-        let credible = read_credible_toml(&config_path)?;
+        let credible = CredibleToml::from_path(&config_path)?;
         let project_id = match credible.project_id {
             Some(project_id) => project_id,
             None if json_output => {
@@ -472,16 +508,6 @@ fn canonicalize_root(root: &Path) -> Result<PathBuf, ApplyError> {
     })
 }
 
-fn read_credible_toml(path: &Path) -> Result<CredibleToml, ApplyError> {
-    let contents = std::fs::read_to_string(path).map_err(|e| {
-        ApplyError::Io {
-            message: format!("credible.toml not found at {}", path.display()),
-            source: e,
-        }
-    })?;
-    toml::from_str(&contents).map_err(ApplyError::Toml)
-}
-
 fn assertion_contract_name(file: &str) -> Result<String, ApplyError> {
     if let Some((_, contract_name)) = file.rsplit_once(':') {
         return Ok(contract_name.to_string());
@@ -634,6 +660,52 @@ mod tests {
     }
 
     #[test]
+    fn rejects_duplicate_contract_addresses() {
+        let toml_str = r#"
+            environment = "production"
+            [contracts.ownable]
+            address = "0xD1f444eA1D2d9fA567F8fD73b15199F90e630074"
+            name = "Ownable"
+            [[contracts.ownable.assertions]]
+            file = "src/OwnableAssertion.a.sol"
+
+            [contracts.ownable2]
+            address = "0xD1f444eA1D2d9fA567F8fD73b15199F90e630074"
+            name = "Ownable2"
+            [[contracts.ownable2.assertions]]
+            file = "src/OwnableAssertion.a.sol"
+        "#;
+        let credible: CredibleToml = toml::from_str(toml_str).unwrap();
+        let err = credible.validate_unique_addresses().unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("duplicate contract address"),
+            "expected duplicate address error, got: {msg}"
+        );
+        assert!(msg.contains("0xD1f444eA1D2d9fA567F8fD73b15199F90e630074"));
+    }
+
+    #[test]
+    fn accepts_distinct_contract_addresses() {
+        let toml_str = r#"
+            environment = "production"
+            [contracts.ownable]
+            address = "0xD1f444eA1D2d9fA567F8fD73b15199F90e630074"
+            name = "Ownable"
+            [[contracts.ownable.assertions]]
+            file = "src/OwnableAssertion.a.sol"
+
+            [contracts.ownable2]
+            address = "0xC9734723aAD51626dC9244fed32668ccb280856A"
+            name = "Ownable2"
+            [[contracts.ownable2.assertions]]
+            file = "src/OwnableAssertion.a.sol"
+        "#;
+        let credible: CredibleToml = toml::from_str(toml_str).unwrap();
+        credible.validate_unique_addresses().unwrap();
+    }
+
+    #[test]
     fn read_credible_toml_resolves_config_path() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path();
@@ -643,7 +715,7 @@ mod tests {
         fs::create_dir_all(&assertions_dir).unwrap();
         fs::write(assertions_dir.join("credible.toml"), VALID_CREDIBLE_TOML).unwrap();
 
-        let credible = read_credible_toml(&root.join("assertions/credible.toml")).unwrap();
+        let credible = CredibleToml::from_path(&root.join("assertions/credible.toml")).unwrap();
         assert_eq!(credible.environment, "production");
         assert_eq!(
             credible.contracts.get("my_contract").unwrap().name,
@@ -653,7 +725,7 @@ mod tests {
         // backward compat, credible.toml at project root
         fs::write(root.join("credible.toml"), VALID_CREDIBLE_TOML).unwrap();
 
-        let credible = read_credible_toml(&root.join("credible.toml")).unwrap();
+        let credible = CredibleToml::from_path(&root.join("credible.toml")).unwrap();
         assert_eq!(credible.environment, "production");
 
         // arbitrary path — custom/path/credible.toml
@@ -661,11 +733,11 @@ mod tests {
         fs::create_dir_all(&custom_dir).unwrap();
         fs::write(custom_dir.join("credible.toml"), VALID_CREDIBLE_TOML).unwrap();
 
-        let credible = read_credible_toml(&root.join("custom/path/credible.toml")).unwrap();
+        let credible = CredibleToml::from_path(&root.join("custom/path/credible.toml")).unwrap();
         assert_eq!(credible.environment, "production");
 
         // missing config yields ConfigNotFound
-        let err = read_credible_toml(&root.join("nonexistent/credible.toml")).unwrap_err();
+        let err = CredibleToml::from_path(&root.join("nonexistent/credible.toml")).unwrap_err();
         assert!(matches!(err, ApplyError::Io { .. }));
     }
 }
