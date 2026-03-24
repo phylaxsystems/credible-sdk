@@ -94,6 +94,34 @@ impl crate::state_sync::supervisor::SupervisedWorker for TestShutdownAwareWorker
     }
 }
 
+#[test]
+fn test_shutdown_cancels_startup_future() {
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let shutdown_signal = Arc::clone(&shutdown);
+    let handle = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(25));
+        shutdown_signal.store(true, Ordering::Release);
+    });
+
+    let result = runtime
+        .block_on(crate::state_sync::supervisor::run_until_shutdown(
+            Arc::clone(&shutdown),
+            async {
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                Ok::<_, anyhow::Error>(())
+            },
+        ))
+        .unwrap();
+    handle.join().unwrap();
+
+    assert!(result.is_none());
+}
+
 struct TestHealthyWorker;
 
 impl crate::state_sync::supervisor::SupervisedWorker for TestHealthyWorker {

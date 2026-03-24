@@ -13,6 +13,7 @@ use state_worker::{
     validate_geth_version,
 };
 use std::{
+    future::Future,
     panic::{
         AssertUnwindSafe,
         catch_unwind,
@@ -216,28 +217,38 @@ impl SupervisedWorker for EmbeddedWorkerTask {
             .context("failed to create embedded worker tokio runtime")?;
 
         runtime.block_on(async move {
-            let provider = connect_provider(&self.config.ws_url)
-                .await
-                .with_context(|| {
-                    format!(
-                        "failed to connect to embedded worker websocket {}",
-                        self.config.ws_url
-                    )
-                })?;
-            validate_geth_version(&provider).await?;
+            let startup = run_until_shutdown(Arc::clone(&shutdown), async {
+                let provider = connect_provider(&self.config.ws_url)
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "failed to connect to embedded worker websocket {}",
+                            self.config.ws_url
+                        )
+                    })?;
+                validate_geth_version(&provider).await?;
 
-            let mdbx_runtime = mdbx_runtime::init(&self.config.mdbx_path)?;
-            let writer_reader = mdbx_runtime.writer();
-            let trace_provider = state::create_trace_provider(provider.clone(), TRACE_TIMEOUT);
-            let worker = StateWorker::new(
-                provider,
-                trace_provider,
-                writer_reader,
-                None,
-                SystemCalls::default(),
-            );
-            let mut runtime =
-                EmbeddedStateWorkerRuntime::new(worker).with_auto_advance_commit_target();
+                let mdbx_runtime = mdbx_runtime::init(&self.config.mdbx_path)?;
+                let writer_reader = mdbx_runtime.writer();
+                let trace_provider = state::create_trace_provider(provider.clone(), TRACE_TIMEOUT);
+                let worker = StateWorker::new(
+                    provider,
+                    trace_provider,
+                    writer_reader,
+                    None,
+                    SystemCalls::default(),
+                );
+
+                Ok::<_, anyhow::Error>(
+                    EmbeddedStateWorkerRuntime::new(worker).with_auto_advance_commit_target(),
+                )
+            })
+            .await?;
+            let Some(mut runtime) = startup else {
+                clear_control(&self.control);
+                return Ok(());
+            };
+
             let handle = runtime.handle();
             if let Ok(mut guard) = self.control.lock() {
                 *guard = Some(handle);
@@ -259,6 +270,25 @@ impl SupervisedWorker for EmbeddedWorkerTask {
             monitor.abort();
             result
         })
+    }
+}
+
+pub(crate) async fn run_until_shutdown<F, T>(
+    shutdown: Arc<AtomicBool>,
+    future: F,
+) -> Result<Option<T>>
+where
+    F: Future<Output = Result<T>>,
+{
+    tokio::select! {
+        result = future => result.map(Some),
+        _ = wait_for_shutdown(shutdown) => Ok(None),
+    }
+}
+
+async fn wait_for_shutdown(shutdown: Arc<AtomicBool>) {
+    while !shutdown.load(Ordering::Acquire) {
+        tokio::time::sleep(SHUTDOWN_POLL_INTERVAL).await;
     }
 }
 

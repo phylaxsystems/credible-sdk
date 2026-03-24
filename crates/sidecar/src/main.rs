@@ -356,12 +356,37 @@ fn open_mdbx_source(path: &str) -> Option<Arc<dyn Source>> {
     }
 }
 
+fn resolve_single_mdbx_path<I>(paths: I) -> anyhow::Result<Option<String>>
+where
+    I: IntoIterator<Item = String>,
+{
+    let distinct_paths = paths.into_iter().fold(Vec::new(), |mut acc, path| {
+        if !acc.contains(&path) {
+            acc.push(path);
+        }
+        acc
+    });
+
+    match distinct_paths.as_slice() {
+        [] => Ok(None),
+        [path] => Ok(Some(path.clone())),
+        _ => {
+            Err(anyhow::anyhow!(
+                "multiple distinct MDBX source paths are not supported in sidecar Task 3: {}",
+                distinct_paths.join(", ")
+            ))
+        }
+    }
+}
+
 fn embedded_worker_config_from(config: &Config) -> Option<EmbeddedWorkerConfig> {
-    let mut mdbx_path = None;
+    let mut mdbx_paths = Vec::new();
     let mut ws_url = None;
 
     if config.state.sources.is_empty() {
-        mdbx_path = config.state.legacy.state_worker_mdbx_path.clone();
+        if let Some(path) = config.state.legacy.state_worker_mdbx_path.clone() {
+            mdbx_paths.push(path);
+        }
         ws_url = config.state.legacy.eth_rpc_source_ws_url.clone();
     } else {
         for source_config in &config.state.sources {
@@ -369,8 +394,8 @@ fn embedded_worker_config_from(config: &Config) -> Option<EmbeddedWorkerConfig> 
                 StateSourceConfig::Mdbx {
                     mdbx_path: configured_path,
                     depth: _,
-                } if mdbx_path.is_none() => {
-                    mdbx_path = Some(configured_path.clone());
+                } => {
+                    mdbx_paths.push(configured_path.clone());
                 }
                 StateSourceConfig::EthRpc {
                     ws_url: configured_ws_url,
@@ -382,6 +407,14 @@ fn embedded_worker_config_from(config: &Config) -> Option<EmbeddedWorkerConfig> 
             }
         }
     }
+
+    let mdbx_path = match resolve_single_mdbx_path(mdbx_paths) {
+        Ok(path) => path,
+        Err(error) => {
+            error!(error = ?error, "Invalid MDBX source configuration");
+            return None;
+        }
+    };
 
     match (mdbx_path, ws_url) {
         (Some(mdbx_path), Some(ws_url)) => {
@@ -397,6 +430,7 @@ fn embedded_worker_config_from(config: &Config) -> Option<EmbeddedWorkerConfig> 
 
 async fn build_sources_from_config(config: &Config) -> anyhow::Result<Vec<Arc<dyn Source>>> {
     let mut sources: Vec<Arc<dyn Source>> = Vec::new();
+    let mut mdbx_paths = Vec::new();
 
     if config.state.sources.is_empty() {
         if config.state.legacy.has_any() {
@@ -406,9 +440,7 @@ async fn build_sources_from_config(config: &Config) -> anyhow::Result<Vec<Arc<dy
             config.state.legacy.state_worker_mdbx_path.as_ref(),
             config.state.legacy.state_worker_depth,
         ) {
-            if let Some(source) = open_mdbx_source(state_worker_path) {
-                sources.push(source);
-            }
+            mdbx_paths.push(state_worker_path.clone());
         }
 
         if let (Some(eth_rpc_source_ws_url), Some(eth_rpc_source_http_url)) = (
@@ -432,9 +464,7 @@ async fn build_sources_from_config(config: &Config) -> anyhow::Result<Vec<Arc<dy
                     mdbx_path,
                     depth: _,
                 } => {
-                    if let Some(source) = open_mdbx_source(mdbx_path) {
-                        sources.push(source);
-                    }
+                    mdbx_paths.push(mdbx_path.clone());
                 }
                 StateSourceConfig::EthRpc { ws_url, http_url } => {
                     if let Ok(eth_rpc_source) =
@@ -444,6 +474,12 @@ async fn build_sources_from_config(config: &Config) -> anyhow::Result<Vec<Arc<dy
                     }
                 }
             }
+        }
+    }
+
+    if let Some(path) = resolve_single_mdbx_path(mdbx_paths)? {
+        if let Some(source) = open_mdbx_source(&path) {
+            sources.push(source);
         }
     }
 
@@ -774,4 +810,18 @@ async fn run_sidecar_once(
     thread_handles.join_all();
 
     Ok(should_shutdown)
+}
+
+#[cfg(test)]
+#[test]
+fn test_rejects_multiple_distinct_mdbx_paths() {
+    let error =
+        resolve_single_mdbx_path(["/tmp/one.mdbx".to_string(), "/tmp/two.mdbx".to_string()])
+            .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("multiple distinct MDBX source paths are not supported")
+    );
 }
