@@ -49,6 +49,7 @@ const RESTART_BACKOFF: Duration = Duration::from_secs(1);
 const SHUTDOWN_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const TRACE_TIMEOUT: Duration = Duration::from_secs(30);
 const TEST_WAIT_TIMEOUT: Duration = Duration::from_secs(3);
+const NONE_BLOCK_SENTINEL: u64 = u64::MAX;
 
 pub trait CommitTargetSink: std::fmt::Debug + Send + Sync {
     fn publish(&self, block_number: u64);
@@ -61,6 +62,59 @@ pub trait WorkerStatusReader: std::fmt::Debug + Send + Sync {
 }
 
 pub type WorkerStatusHandle = Arc<dyn WorkerStatusReader>;
+
+trait CommitTargetPublisher {
+    fn publish(&self, block_number: u64);
+}
+
+impl CommitTargetPublisher for state_worker::CommitTargetHandle {
+    fn publish(&self, block_number: u64) {
+        state_worker::CommitTargetHandle::publish(self, block_number);
+    }
+}
+
+#[derive(Debug)]
+struct StableCommitTarget {
+    latest_target: AtomicU64,
+}
+
+impl Default for StableCommitTarget {
+    fn default() -> Self {
+        Self {
+            latest_target: AtomicU64::new(NONE_BLOCK_SENTINEL),
+        }
+    }
+}
+
+impl StableCommitTarget {
+    fn publish(&self, block_number: u64) {
+        let _ = self
+            .latest_target
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                if current == NONE_BLOCK_SENTINEL || block_number > current {
+                    Some(block_number)
+                } else {
+                    None
+                }
+            });
+    }
+
+    fn current_target(&self) -> Option<u64> {
+        match self.latest_target.load(Ordering::Acquire) {
+            NONE_BLOCK_SENTINEL => None,
+            block_number => Some(block_number),
+        }
+    }
+}
+
+fn replay_latest_commit_target(
+    stable_target: &StableCommitTarget,
+    publisher: &impl CommitTargetPublisher,
+) {
+    if let Some(block_number) = stable_target.current_target() {
+        publisher.publish(block_number);
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SupervisorStatusSnapshot {
@@ -106,6 +160,7 @@ pub struct EmbeddedWorkerConfig {
 
 pub struct StateWorkerSupervisor {
     control: Arc<Mutex<Option<EmbeddedStateWorkerHandle>>>,
+    stable_commit_target: Arc<StableCommitTarget>,
     status: Arc<SupervisorStatus>,
     restart_count: Arc<AtomicU64>,
     shutdown: Arc<AtomicBool>,
@@ -115,6 +170,7 @@ pub struct StateWorkerSupervisor {
 #[derive(Clone, Debug)]
 struct SupervisorWorkerHandleFacade {
     control: Arc<Mutex<Option<EmbeddedStateWorkerHandle>>>,
+    stable_commit_target: Arc<StableCommitTarget>,
     supervisor_status: Arc<SupervisorStatus>,
 }
 
@@ -126,6 +182,7 @@ impl SupervisorWorkerHandleFacade {
 
 impl CommitTargetSink for SupervisorWorkerHandleFacade {
     fn publish(&self, block_number: u64) {
+        self.stable_commit_target.publish(block_number);
         if let Some(handle) = self.current_handle() {
             handle.control.publish(block_number);
         }
@@ -157,14 +214,18 @@ impl StateWorkerSupervisor {
     pub fn spawn(config: EmbeddedWorkerConfig) -> Result<Self> {
         let control = Arc::new(Mutex::new(None));
         let factory_control = Arc::clone(&control);
+        let stable_commit_target = Arc::new(StableCommitTarget::default());
+        let worker_commit_target = Arc::clone(&stable_commit_target);
         Self::spawn_with_factory(
             Box::new(move || {
                 Ok::<Box<dyn SupervisedWorker>, anyhow::Error>(Box::new(EmbeddedWorkerTask {
                     config: config.clone(),
                     control: Arc::clone(&factory_control),
+                    stable_commit_target: Arc::clone(&worker_commit_target),
                 }))
             }),
             Some(control),
+            Some(stable_commit_target),
             SUPERVISOR_THREAD_NAME,
             RESTART_BACKOFF,
         )
@@ -173,10 +234,13 @@ impl StateWorkerSupervisor {
     fn spawn_with_factory(
         factory: WorkerFactory,
         control: Option<Arc<Mutex<Option<EmbeddedStateWorkerHandle>>>>,
+        stable_commit_target: Option<Arc<StableCommitTarget>>,
         thread_name: &'static str,
         restart_backoff: Duration,
     ) -> Result<Self> {
         let effective_control = control.unwrap_or_else(|| Arc::new(Mutex::new(None)));
+        let stable_commit_target =
+            stable_commit_target.unwrap_or_else(|| Arc::new(StableCommitTarget::default()));
         let status = Arc::new(SupervisorStatus::default());
         let restart_count = Arc::new(AtomicU64::new(0));
         let shutdown = Arc::new(AtomicBool::new(false));
@@ -205,6 +269,7 @@ impl StateWorkerSupervisor {
 
         Ok(Self {
             control: thread_control,
+            stable_commit_target,
             status,
             restart_count,
             shutdown,
@@ -234,6 +299,7 @@ impl StateWorkerSupervisor {
     pub fn commit_target_sink(&self) -> CommitTargetHandle {
         Arc::new(SupervisorWorkerHandleFacade {
             control: Arc::clone(&self.control),
+            stable_commit_target: Arc::clone(&self.stable_commit_target),
             supervisor_status: Arc::clone(&self.status),
         })
     }
@@ -242,6 +308,7 @@ impl StateWorkerSupervisor {
     pub fn worker_status_handle(&self) -> WorkerStatusHandle {
         Arc::new(SupervisorWorkerHandleFacade {
             control: Arc::clone(&self.control),
+            stable_commit_target: Arc::clone(&self.stable_commit_target),
             supervisor_status: Arc::clone(&self.status),
         })
     }
@@ -261,6 +328,7 @@ impl StateWorkerSupervisor {
         Self::spawn_with_factory(
             factory,
             None,
+            None,
             TEST_SUPERVISOR_THREAD_NAME,
             Duration::from_millis(10),
         )
@@ -277,6 +345,7 @@ impl Drop for StateWorkerSupervisor {
 struct EmbeddedWorkerTask {
     config: EmbeddedWorkerConfig,
     control: Arc<Mutex<Option<EmbeddedStateWorkerHandle>>>,
+    stable_commit_target: Arc<StableCommitTarget>,
 }
 
 impl SupervisedWorker for EmbeddedWorkerTask {
@@ -309,9 +378,7 @@ impl SupervisedWorker for EmbeddedWorkerTask {
                     SystemCalls::default(),
                 );
 
-                Ok::<_, anyhow::Error>(
-                    EmbeddedStateWorkerRuntime::new(worker).with_auto_advance_commit_target(),
-                )
+                Ok::<_, anyhow::Error>(EmbeddedStateWorkerRuntime::new(worker))
             })
             .await?;
             let Some(mut runtime) = startup else {
@@ -320,6 +387,7 @@ impl SupervisedWorker for EmbeddedWorkerTask {
             };
 
             let handle = runtime.handle();
+            replay_latest_commit_target(&self.stable_commit_target, &handle.control);
             if let Ok(mut guard) = self.control.lock() {
                 *guard = Some(handle);
             }
@@ -486,4 +554,38 @@ pub(crate) fn wait_for_restart_count(supervisor: &StateWorkerSupervisor, expecte
         "timed out waiting for restart count {expected}; saw {}",
         supervisor.restart_count()
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Debug, Default)]
+    struct RecordingPublisher {
+        values: Mutex<Vec<u64>>,
+    }
+
+    impl RecordingPublisher {
+        fn values(&self) -> Vec<u64> {
+            self.values.lock().unwrap().clone()
+        }
+    }
+
+    impl CommitTargetPublisher for RecordingPublisher {
+        fn publish(&self, block_number: u64) {
+            self.values.lock().unwrap().push(block_number);
+        }
+    }
+
+    #[test]
+    fn test_stable_commit_target_replays_latest_target_to_restarted_worker() {
+        let stable_target = StableCommitTarget::default();
+        stable_target.publish(41);
+        stable_target.publish(40);
+
+        let publisher = RecordingPublisher::default();
+        replay_latest_commit_target(&stable_target, &publisher);
+
+        assert_eq!(publisher.values(), vec![41]);
+    }
 }

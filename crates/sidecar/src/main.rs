@@ -357,6 +357,20 @@ fn open_mdbx_source(path: &str, worker_status: WorkerStatusHandle) -> Option<Arc
     }
 }
 
+fn require_embedded_worker_for_mdbx(
+    path: Option<&str>,
+    has_worker_status: bool,
+) -> anyhow::Result<()> {
+    if let Some(path) = path
+        && !has_worker_status
+    {
+        anyhow::bail!(
+            "MDBX source configured at {path}, but embedded worker supervisor is required"
+        );
+    }
+    Ok(())
+}
+
 fn resolve_single_mdbx_path<I>(paths: I) -> anyhow::Result<Option<String>>
 where
     I: IntoIterator<Item = String>,
@@ -482,13 +496,12 @@ async fn build_sources_from_config(
     }
 
     if let Some(path) = resolve_single_mdbx_path(mdbx_paths)? {
-        if let Some(worker_status) = worker_status {
-            if let Some(source) = open_mdbx_source(&path, worker_status) {
-                sources.push(source);
-            }
-        } else {
-            warn!(mdbx_path = %path, "Skipping MDBX source: embedded worker supervisor unavailable");
-        }
+        require_embedded_worker_for_mdbx(Some(path.as_str()), worker_status.is_some())?;
+        let worker_status = worker_status.expect("worker status required for configured mdbx");
+        let source = open_mdbx_source(&path, worker_status).ok_or_else(|| {
+            anyhow::anyhow!("failed to initialize configured MDBX source at {path}")
+        })?;
+        sources.push(source);
     }
 
     Ok(sources)
@@ -499,6 +512,23 @@ fn result_ttl(config: &Config) -> Duration {
         Duration::from_secs(2)
     } else {
         config.credible.accepted_txs_ttl_ms
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::require_embedded_worker_for_mdbx;
+
+    #[test]
+    fn test_require_embedded_worker_for_mdbx_errors_when_mdbx_configured_without_supervisor() {
+        let error = require_embedded_worker_for_mdbx(Some("/tmp/state.mdbx"), false).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("embedded worker supervisor is required"),
+            "unexpected error: {error}"
+        );
     }
 }
 
