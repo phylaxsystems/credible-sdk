@@ -613,6 +613,22 @@ async fn stop_da_reachability_monitor(da_reachability_handle: tokio::task::JoinH
     }
 }
 
+fn start_iteration_state_worker(config: &Config, thread_handles: &mut ThreadHandles) {
+    match start_state_worker_host(config) {
+        Ok(state_worker_host) => {
+            thread_handles.state_worker = Some(state_worker_host);
+        }
+        Err(error) => {
+            tracing::error!(
+                error = ?error,
+                degraded = true,
+                subsystem = "state-worker",
+                "state worker startup failed"
+            );
+        }
+    }
+}
+
 async fn run_sidecar_once(
     config: &Config,
     executor_config: &assertion_executor::ExecutorConfig,
@@ -655,20 +671,7 @@ async fn run_sidecar_once(
         engine_state_results.clone(),
         result_event_rx,
     )?;
-
-    match start_state_worker_host(config) {
-        Ok(state_worker_host) => {
-            thread_handles.state_worker = Some(state_worker_host);
-        }
-        Err(error) => {
-            tracing::error!(
-                error = ?error,
-                degraded = true,
-                subsystem = "state-worker",
-                "state worker startup failed"
-            );
-        }
-    }
+    start_iteration_state_worker(config, &mut thread_handles);
 
     // Spawn EventSequencing on a dedicated OS thread
     let event_sequencing = EventSequencing::new(event_sequencing_rx, event_sequencing_tx);
