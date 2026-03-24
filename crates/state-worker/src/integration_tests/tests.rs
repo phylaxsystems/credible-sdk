@@ -1,7 +1,10 @@
 use crate::{
     control::ControlMessage,
     genesis,
-    integration_tests::setup::TestInstance,
+    integration_tests::setup::{
+        TestInstance,
+        TestInstanceOptions,
+    },
 };
 use alloy::primitives::{
     B256,
@@ -155,6 +158,21 @@ fn assert_storage(
         .context("Storage should exist")?;
     assert_eq!(value, U256::from(expected));
     Ok(())
+}
+
+async fn wait_for_latest_block(
+    reader: &dyn crate::integration_tests::setup::ReaderHelper,
+    expected: Option<u64>,
+) -> Result<Option<u64>> {
+    let mut latest = None;
+    for _ in 0..40 {
+        latest = reader_latest_block(reader)?;
+        if latest == expected {
+            return Ok(latest);
+        }
+        sleep(Duration::from_millis(50)).await;
+    }
+    Ok(latest)
 }
 
 fn trace_state_changes_block_1(test_address: &str) -> serde_json::Value {
@@ -476,6 +494,79 @@ async fn test_state_worker_handles_rapid_state_changes() -> Result<()> {
         current_block_num, 5,
         "Expected 5 blocks to be processed, got {current_block_num}",
     );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_state_worker_buffers_updates_until_commit_head_watermark_arrives() -> Result<()> {
+    let instance = TestInstance::new_mdbx_with_options(
+        |_| {},
+        None,
+        TestInstanceOptions {
+            initial_commit_head: None,
+            buffer_capacity: 16,
+            start_block: 1,
+        },
+    )
+    .await
+    .map_err(anyhow::Error::msg)?;
+
+    instance.http_server_mock.add_response(
+        "debug_traceBlockByNumber",
+        trace_state_changes_block_1("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+    );
+    instance.http_server_mock.send_new_head();
+    sleep(Duration::from_millis(250)).await;
+
+    let reader = instance.create_reader();
+    assert_eq!(reader_latest_block(&*reader)?, None);
+
+    instance.send_commit_head(1).map_err(anyhow::Error::msg)?;
+    let latest = wait_for_latest_block(&*reader, Some(1)).await?;
+    assert_eq!(latest, Some(1));
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_state_worker_watermark_flushes_only_eligible_contiguous_prefix() -> Result<()> {
+    let instance = TestInstance::new_mdbx_with_options(
+        |_| {},
+        None,
+        TestInstanceOptions {
+            initial_commit_head: None,
+            buffer_capacity: 16,
+            start_block: 1,
+        },
+    )
+    .await
+    .map_err(anyhow::Error::msg)?;
+
+    let test_address = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let address_hash = address_hash_from_hex(test_address)?;
+    for trace in [
+        trace_state_changes_block_1(test_address),
+        trace_state_changes_block_2(test_address),
+        trace_state_changes_block_3(test_address),
+    ] {
+        instance
+            .http_server_mock
+            .add_response("debug_traceBlockByNumber", trace);
+        instance.http_server_mock.send_new_head();
+        sleep(Duration::from_millis(120)).await;
+    }
+
+    let reader = instance.create_reader();
+    assert_eq!(reader_latest_block(&*reader)?, None);
+
+    instance.send_commit_head(2).map_err(anyhow::Error::msg)?;
+    let latest = wait_for_latest_block(&*reader, Some(2)).await?;
+    assert_eq!(latest, Some(2));
+    assert!(reader_get_account(&*reader, address_hash.into(), 2)?.is_some());
+    assert_eq!(reader_latest_block(&*reader)?, Some(2));
+
+    instance.send_commit_head(3).map_err(anyhow::Error::msg)?;
+    let latest = wait_for_latest_block(&*reader, Some(3)).await?;
+    assert_eq!(latest, Some(3));
     Ok(())
 }
 
@@ -938,7 +1029,6 @@ async fn test_state_worker_restart_resumes_from_latest_mdbx_block() -> Result<()
         Some(latest_block_number)
     );
     let verification_reader = writer_reader.reader().clone();
-
     let mock_server = int_test_utils::node_protocol_mock_server::DualProtocolMockServer::new()
         .await
         .map_err(anyhow::Error::msg)?;
@@ -1023,5 +1113,152 @@ async fn test_state_worker_restart_resumes_from_latest_mdbx_block() -> Result<()
         .context("resumed block account should exist")?;
     assert_eq!(resumed_block, latest_block_number + 1);
     assert_eq!(resumed_account.balance, U256::from(1));
+    Ok(())
+}
+
+#[allow(clippy::too_many_lines)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_state_worker_restart_replays_latest_commit_head_before_draining_buffered_work()
+-> Result<()> {
+    use crate::{
+        host::connect_provider,
+        state,
+        system_calls::SystemCalls,
+        worker::StateWorker,
+    };
+    use mdbx::{
+        StateWriter,
+        common::CircularBufferConfig,
+    };
+    use tokio::sync::{
+        broadcast,
+        mpsc,
+    };
+
+    let test_address = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let address_hash = address_hash_from_hex(test_address)?;
+    let mdbx_dir =
+        crate::integration_tests::mdbx_fixture::MdbxTestDir::new().map_err(anyhow::Error::msg)?;
+    let mdbx_path = mdbx_dir.path_str().map_err(anyhow::Error::msg)?;
+    let writer_reader = StateWriter::new(mdbx_path, CircularBufferConfig::new(3)?)
+        .context("Failed to create MDBX")?;
+    let verification_reader = writer_reader.reader().clone();
+
+    let mock_server = int_test_utils::node_protocol_mock_server::DualProtocolMockServer::new()
+        .await
+        .map_err(anyhow::Error::msg)?;
+    mock_server.add_response(
+        "eth_blockNumber",
+        json!({"jsonrpc": "2.0", "id": 1, "result": "0x2"}),
+    );
+    for (number, parent, trace) in [
+        (1_u64, 0_u64, trace_state_changes_block_1(test_address)),
+        (2_u64, 1_u64, trace_state_changes_block_2(test_address)),
+    ] {
+        mock_server.add_response(
+            "eth_getBlockByNumber",
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                    "hash": format!("0x{:064x}", number),
+                    "parentHash": format!("0x{:064x}", parent),
+                    "sha3Uncles": "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347",
+                    "miner": "0x0000000000000000000000000000000000000000",
+                    "number": format!("0x{:x}", number),
+                    "stateRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+                    "transactionsRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+                    "receiptsRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+                    "logsBloom": format!("0x{:0512}", 0),
+                    "difficulty": "0x0",
+                    "timestamp": format!("0x{:x}", number * 12),
+                    "extraData": "0x",
+                    "mixHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+                    "nonce": "0x0000000000000000",
+                    "gasLimit": "0x1c9c380",
+                    "gasUsed": "0x0",
+                    "parentBeaconBlockRoot": format!("0x{:064x}", number * 0xbeac_0000 + 0xbeef),
+                    "transactions": [],
+                    "totalDifficulty": "0x0",
+                    "baseFeePerGas": "0x7",
+                    "size": "0x21c",
+                    "uncles": []
+                }
+            }),
+        );
+        mock_server.add_response("debug_traceBlockByNumber", trace);
+    }
+
+    let provider = connect_provider(&mock_server.ws_url())
+        .await
+        .context("Failed to connect to provider")?;
+    let trace_provider = state::create_trace_provider(provider.clone(), Duration::from_secs(30));
+    let (control_tx, control_rx) = mpsc::unbounded_channel();
+    let mut worker = StateWorker::new(
+        provider,
+        trace_provider,
+        writer_reader,
+        None,
+        SystemCalls::default(),
+        16,
+        control_rx,
+    );
+    let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
+    let worker_task = tokio::spawn(async move { worker.run(Some(1), shutdown_rx).await });
+
+    let _ = control_tx.send(ControlMessage::CommitHead(1));
+    for _ in 0..20 {
+        if verification_reader.latest_block_number()? == Some(1) {
+            break;
+        }
+        sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(verification_reader.latest_block_number()?, Some(1));
+
+    mock_server.send_new_head_with_block_number(2);
+    sleep(Duration::from_millis(200)).await;
+    assert_eq!(verification_reader.latest_block_number()?, Some(1));
+
+    shutdown_tx.send(()).ok();
+    worker_task.await??;
+    drop(verification_reader);
+
+    let provider = connect_provider(&mock_server.ws_url())
+        .await
+        .context("Failed to reconnect to provider")?;
+    let trace_provider = state::create_trace_provider(provider.clone(), Duration::from_secs(30));
+    let writer_reader = StateWriter::new(mdbx_path, CircularBufferConfig::new(3)?)
+        .context("Failed to reopen MDBX")?;
+    let restarted_reader = writer_reader.reader().clone();
+    let (replayed_control_tx, replayed_control_rx) = mpsc::unbounded_channel();
+    let _ = replayed_control_tx.send(ControlMessage::CommitHead(2));
+    let mut restarted_worker = StateWorker::new(
+        provider,
+        trace_provider,
+        writer_reader,
+        None,
+        SystemCalls::default(),
+        16,
+        replayed_control_rx,
+    );
+    let (restart_shutdown_tx, restart_shutdown_rx) = broadcast::channel(1);
+    let restarted_task =
+        tokio::spawn(async move { restarted_worker.run(Some(2), restart_shutdown_rx).await });
+
+    for _ in 0..30 {
+        if restarted_reader.latest_block_number()? == Some(2) {
+            break;
+        }
+        sleep(Duration::from_millis(50)).await;
+    }
+
+    restart_shutdown_tx.send(()).ok();
+    restarted_task.await??;
+
+    assert_eq!(restarted_reader.latest_block_number()?, Some(2));
+    let resumed_account = restarted_reader
+        .get_account(address_hash.into(), 2)?
+        .context("replayed watermark should flush buffered block 2")?;
+    assert_eq!(resumed_account.balance, U256::from(2));
     Ok(())
 }

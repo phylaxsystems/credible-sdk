@@ -820,6 +820,79 @@ mod tests {
         }));
     }
 
+    #[test]
+    fn state_worker_host_replays_cached_commit_head_into_restarted_worker() {
+        let config = write_config(
+            r#"{
+    "sources": [
+      {"type": "eth-rpc", "ws_url": "ws://rpc.example:8546", "http_url": "http://rpc.example:8545"},
+      {"type": "mdbx", "mdbx_path": "/tmp/state-worker-host-watermark-replay.mdbx", "depth": 7}
+    ],
+    "worker_genesis_path": "/tmp/genesis.json",
+    "minimum_state_diff": 10,
+    "sources_sync_timeout_ms": 30000,
+    "sources_monitoring_period_ms": 1000
+  }"#,
+        );
+
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let replayed_messages = Arc::new(Mutex::new(Vec::new()));
+        let runner = {
+            let attempts = Arc::clone(&attempts);
+            let replayed_messages = Arc::clone(&replayed_messages);
+            Arc::new(
+                move |_config,
+                      mut control_rx: mpsc::UnboundedReceiver<ControlMessage>,
+                      mut shutdown_rx: broadcast::Receiver<()>| {
+                    let attempts = Arc::clone(&attempts);
+                    let replayed_messages = Arc::clone(&replayed_messages);
+                    let future: super::WorkerRunFuture = Box::pin(async move {
+                        let attempt = attempts.fetch_add(1, Ordering::Relaxed);
+                        let replayed =
+                            tokio::time::timeout(Duration::from_millis(250), control_rx.recv())
+                                .await
+                                .expect("control replay timeout");
+                        replayed_messages
+                            .lock()
+                            .expect("replayed messages lock")
+                            .push((attempt, replayed));
+                        if attempt == 0 {
+                            Err(WorkerRunError::runtime(anyhow!("force restart")))
+                        } else {
+                            let _ = shutdown_rx.recv().await;
+                            Ok(())
+                        }
+                    });
+                    future
+                },
+            ) as Arc<dyn super::WorkerRunner>
+        };
+
+        let handle =
+            start_state_worker_host_with_runner(&config, runner).expect("start host with runner");
+        handle.control_handle().update_commit_head(42);
+
+        wait_for_attempts(&attempts, 2);
+        handle.signal_shutdown();
+        let result = handle.join().expect("worker thread should join");
+        assert!(
+            result.is_ok(),
+            "worker thread should exit cleanly: {result:?}"
+        );
+
+        let replayed_messages = replayed_messages
+            .lock()
+            .expect("replayed messages lock")
+            .clone();
+        assert_eq!(
+            replayed_messages,
+            vec![
+                (0, Some(ControlMessage::CommitHead(42))),
+                (1, Some(ControlMessage::CommitHead(42))),
+            ]
+        );
+    }
+
     #[traced_test]
     #[test]
     fn state_worker_host_panic_is_contained_and_restarted_until_shutdown() {

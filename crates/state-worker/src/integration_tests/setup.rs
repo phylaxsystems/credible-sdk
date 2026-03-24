@@ -28,12 +28,30 @@ use tokio::sync::{
 };
 use tracing::error;
 
+#[derive(Clone, Copy, Debug)]
+pub struct TestInstanceOptions {
+    pub initial_commit_head: Option<u64>,
+    pub buffer_capacity: usize,
+    pub start_block: u64,
+}
+
+impl Default for TestInstanceOptions {
+    fn default() -> Self {
+        Self {
+            initial_commit_head: Some(u64::MAX),
+            buffer_capacity: 16,
+            start_block: 0,
+        }
+    }
+}
+
 /// Unified test instance for MDBX-backed integration tests.
 pub struct TestInstance {
     /// Mock server for HTTP/WS protocol simulation.
     pub http_server_mock: DualProtocolMockServer,
     /// Handle to the running worker task.
     pub handle_worker: tokio::task::JoinHandle<()>,
+    control_tx: mpsc::UnboundedSender<ControlMessage>,
     // Backend-specific handles for cleanup.
     mdbx_dir: MdbxTestDir,
     // Pre-created reader for MDBX (shares the same db connection).
@@ -47,18 +65,18 @@ impl TestInstance {
     }
 
     pub async fn new_mdbx() -> Result<Self, String> {
-        Self::new_mdbx_internal(|_| {}, None).await
+        Self::new_mdbx_internal(|_| {}, None, TestInstanceOptions::default()).await
     }
 
     pub async fn new_mdbx_with_setup<F>(setup: F) -> Result<Self, String>
     where
         F: FnOnce(&DualProtocolMockServer),
     {
-        Self::new_mdbx_internal(setup, None).await
+        Self::new_mdbx_internal(setup, None, TestInstanceOptions::default()).await
     }
 
     pub async fn new_mdbx_with_genesis(genesis: GenesisState) -> Result<Self, String> {
-        Self::new_mdbx_internal(|_| {}, Some(genesis)).await
+        Self::new_mdbx_internal(|_| {}, Some(genesis), TestInstanceOptions::default()).await
     }
 
     pub async fn new_mdbx_with_setup_and_genesis<F>(
@@ -68,12 +86,24 @@ impl TestInstance {
     where
         F: FnOnce(&DualProtocolMockServer),
     {
-        Self::new_mdbx_internal(setup, genesis).await
+        Self::new_mdbx_internal(setup, genesis, TestInstanceOptions::default()).await
+    }
+
+    pub async fn new_mdbx_with_options<F>(
+        setup: F,
+        genesis: Option<GenesisState>,
+        options: TestInstanceOptions,
+    ) -> Result<Self, String>
+    where
+        F: FnOnce(&DualProtocolMockServer),
+    {
+        Self::new_mdbx_internal(setup, genesis, options).await
     }
 
     async fn new_mdbx_internal<F>(
         setup: F,
         genesis_state: Option<GenesisState>,
+        options: TestInstanceOptions,
     ) -> Result<Self, String>
     where
         F: FnOnce(&DualProtocolMockServer),
@@ -122,19 +152,26 @@ impl TestInstance {
             .unwrap_or_default();
 
         let (control_tx, control_rx) = mpsc::unbounded_channel();
-        let _ = control_tx.send(ControlMessage::CommitHead(u64::MAX));
+        if let Some(initial_commit_head) = options.initial_commit_head {
+            let _ = control_tx.send(ControlMessage::CommitHead(initial_commit_head));
+        }
         let mut worker = StateWorker::new(
             provider,
             trace_provider,
             writer_reader,
             genesis_state,
             system_calls,
-            16,
+            options.buffer_capacity,
             control_rx,
         );
         let (shutdown_tx, _) = broadcast::channel(1);
+        let worker_shutdown_tx = shutdown_tx.clone();
+        let start_block = options.start_block;
         let handle_worker = tokio::spawn(async move {
-            if let Err(e) = worker.run(Some(0), shutdown_tx.subscribe()).await {
+            if let Err(e) = worker
+                .run(Some(start_block), worker_shutdown_tx.subscribe())
+                .await
+            {
                 error!("worker server error: {}", e);
             }
         });
@@ -142,6 +179,7 @@ impl TestInstance {
         Ok(Self {
             http_server_mock,
             handle_worker,
+            control_tx,
             mdbx_dir,
             mdbx_reader,
         })
@@ -154,6 +192,12 @@ impl TestInstance {
     pub fn create_reader(&self) -> Box<dyn ReaderHelper> {
         let reader = self.mdbx_reader.clone();
         Box::new(MdbxReaderWrapper(reader))
+    }
+
+    pub fn send_commit_head(&self, block_number: u64) -> Result<(), String> {
+        self.control_tx
+            .send(ControlMessage::CommitHead(block_number))
+            .map_err(|e| format!("Failed to send commit head {block_number}: {e}"))
     }
 }
 
