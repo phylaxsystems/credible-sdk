@@ -7,6 +7,7 @@ use state_worker::{
     EmbeddedStateWorkerHandle,
     EmbeddedStateWorkerRuntime,
     StateWorker,
+    WorkerStatusSnapshot,
     connect_provider,
     state,
     system_calls::SystemCalls,
@@ -48,6 +49,18 @@ const RESTART_BACKOFF: Duration = Duration::from_secs(1);
 const SHUTDOWN_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const TRACE_TIMEOUT: Duration = Duration::from_secs(30);
 const TEST_WAIT_TIMEOUT: Duration = Duration::from_secs(3);
+
+pub trait CommitTargetSink: std::fmt::Debug + Send + Sync {
+    fn publish(&self, block_number: u64);
+}
+
+pub type CommitTargetHandle = Arc<dyn CommitTargetSink>;
+
+pub trait WorkerStatusReader: std::fmt::Debug + Send + Sync {
+    fn snapshot(&self) -> WorkerStatusSnapshot;
+}
+
+pub type WorkerStatusHandle = Arc<dyn WorkerStatusReader>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SupervisorStatusSnapshot {
@@ -97,6 +110,47 @@ pub struct StateWorkerSupervisor {
     restart_count: Arc<AtomicU64>,
     shutdown: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
+}
+
+#[derive(Clone, Debug)]
+struct SupervisorWorkerHandleFacade {
+    control: Arc<Mutex<Option<EmbeddedStateWorkerHandle>>>,
+    supervisor_status: Arc<SupervisorStatus>,
+}
+
+impl SupervisorWorkerHandleFacade {
+    fn current_handle(&self) -> Option<EmbeddedStateWorkerHandle> {
+        self.control.lock().ok().and_then(|guard| guard.clone())
+    }
+}
+
+impl CommitTargetSink for SupervisorWorkerHandleFacade {
+    fn publish(&self, block_number: u64) {
+        if let Some(handle) = self.current_handle() {
+            handle.control.publish(block_number);
+        }
+    }
+}
+
+impl WorkerStatusReader for SupervisorWorkerHandleFacade {
+    fn snapshot(&self) -> WorkerStatusSnapshot {
+        let supervisor_status = self.supervisor_status.snapshot();
+
+        if let Some(handle) = self.current_handle() {
+            let mut snapshot = handle.status.snapshot();
+            snapshot.healthy &= supervisor_status.healthy;
+            snapshot.restarting |= supervisor_status.restarting;
+            return snapshot;
+        }
+
+        WorkerStatusSnapshot {
+            latest_head_seen: None,
+            highest_staged_block: None,
+            mdbx_synced_through: None,
+            healthy: false,
+            restarting: supervisor_status.restarting,
+        }
+    }
 }
 
 impl StateWorkerSupervisor {
@@ -174,6 +228,22 @@ impl StateWorkerSupervisor {
     #[must_use]
     pub fn control(&self) -> Option<EmbeddedStateWorkerHandle> {
         self.control.lock().ok().and_then(|guard| guard.clone())
+    }
+
+    #[must_use]
+    pub fn commit_target_sink(&self) -> CommitTargetHandle {
+        Arc::new(SupervisorWorkerHandleFacade {
+            control: Arc::clone(&self.control),
+            supervisor_status: Arc::clone(&self.status),
+        })
+    }
+
+    #[must_use]
+    pub fn worker_status_handle(&self) -> WorkerStatusHandle {
+        Arc::new(SupervisorWorkerHandleFacade {
+            control: Arc::clone(&self.control),
+            supervisor_status: Arc::clone(&self.status),
+        })
     }
 
     #[must_use]

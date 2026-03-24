@@ -278,6 +278,7 @@ impl CommonSetup {
                 state_sources_sync_timeout: Duration::from_millis(100),
                 source_monitoring_period: Duration::from_millis(20),
                 overlay_cache_invalidation_every_block: false,
+                commit_target_sink: None,
                 incident_sender,
                 #[cfg(feature = "cache_validation")]
                 provider_ws_url: Some(self.eth_rpc_source_http_mock.ws_url()),

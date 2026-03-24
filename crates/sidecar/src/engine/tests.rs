@@ -128,6 +128,7 @@ impl<DB> CoreEngine<DB> {
             state_sources_sync_timeout: Duration::from_millis(100),
             check_sources_available: true,
             overlay_cache_invalidation_every_block: false,
+            commit_target_sink: None,
             system_calls: SystemCalls,
             #[cfg(feature = "cache_validation")]
             processed_transactions: Arc::new(
@@ -253,6 +254,7 @@ async fn create_test_engine_with_timeout(
             state_sources_sync_timeout: timeout,
             source_monitoring_period: timeout / 2,
             overlay_cache_invalidation_every_block: false,
+            commit_target_sink: None,
             incident_sender: None,
             #[cfg(feature = "cache_validation")]
             provider_ws_url: None,
@@ -260,6 +262,68 @@ async fn create_test_engine_with_timeout(
     )
     .await;
     (engine, tx_sender)
+}
+
+#[derive(Clone, Debug, Default)]
+struct RecordingCommitTargetSink {
+    values: Arc<parking_lot::Mutex<Vec<u64>>>,
+}
+
+impl RecordingCommitTargetSink {
+    fn values(&self) -> Vec<u64> {
+        self.values.lock().clone()
+    }
+}
+
+impl crate::state_sync::supervisor::CommitTargetSink for RecordingCommitTargetSink {
+    fn publish(&self, block_number: u64) {
+        self.values.lock().push(block_number);
+    }
+}
+
+async fn build_engine_with_commit_sink(
+    sink: RecordingCommitTargetSink,
+) -> CoreEngine<CacheDB<EmptyDBTyped<TestDbError>>> {
+    let (tx_sender, tx_receiver) = flume::unbounded();
+    drop(tx_sender);
+
+    let underlying_db = CacheDB::new(EmptyDBTyped::default());
+    let state = OverlayDb::new(Some(std::sync::Arc::new(underlying_db)));
+    let assertion_store = AssertionStore::new_ephemeral();
+    let assertion_executor = AssertionExecutor::new(ExecutorConfig::default(), assertion_store);
+    let state_results = TransactionsState::new();
+    let sources = Arc::new(Sources::new(vec![], 10));
+
+    CoreEngine::new(
+        state,
+        sources,
+        tx_receiver,
+        assertion_executor,
+        state_results,
+        CoreEngineConfig {
+            transaction_results_max_capacity: 10,
+            state_sources_sync_timeout: Duration::from_millis(100),
+            source_monitoring_period: Duration::from_millis(50),
+            overlay_cache_invalidation_every_block: false,
+            commit_target_sink: Some(Arc::new(sink)),
+            incident_sender: None,
+            #[cfg(feature = "cache_validation")]
+            provider_ws_url: None,
+        },
+    )
+    .await
+}
+
+fn commit_head(block_number: u64) -> CommitHead {
+    CommitHead::new(
+        U256::from(block_number),
+        0,
+        None,
+        0,
+        B256::ZERO,
+        Some(B256::ZERO),
+        U256::ZERO,
+    )
 }
 
 async fn create_test_engine() -> (
@@ -667,6 +731,18 @@ async fn test_failed_commit_head_does_not_mark_first_commit_processed() {
         !engine.first_commit_head_processed,
         "first_commit_head_processed must remain false when CommitHead processing fails"
     );
+}
+
+#[tokio::test]
+async fn test_process_commit_head_publishes_committed_block_to_state_worker() {
+    let sink = RecordingCommitTargetSink::default();
+    let mut engine = build_engine_with_commit_sink(sink.clone()).await;
+
+    engine
+        .process_commit_head(&commit_head(101), &mut 0, &mut Instant::now())
+        .unwrap();
+
+    assert_eq!(sink.values(), vec![101]);
 }
 
 #[crate::utils::engine_test(all)]
@@ -1941,6 +2017,7 @@ async fn build_canonical_setup(caller: Address) -> CanonicalSetup {
             state_sources_sync_timeout: Duration::from_millis(100),
             source_monitoring_period: Duration::from_millis(20),
             overlay_cache_invalidation_every_block: false,
+            commit_target_sink: None,
             incident_sender: None,
             #[cfg(feature = "cache_validation")]
             provider_ws_url: None,

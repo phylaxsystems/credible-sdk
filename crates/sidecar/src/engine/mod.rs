@@ -128,6 +128,7 @@ use crate::{
         BlockExecutionId,
         TxExecutionId,
     },
+    state_sync::supervisor::CommitTargetHandle,
     utils::ErrorRecoverability,
 };
 use alloy::primitives::{
@@ -198,6 +199,7 @@ pub struct CoreEngineConfig {
     pub state_sources_sync_timeout: Duration,
     pub source_monitoring_period: Duration,
     pub overlay_cache_invalidation_every_block: bool,
+    pub commit_target_sink: Option<CommitTargetHandle>,
     pub incident_sender: Option<IncidentReportSender>,
     #[cfg(feature = "cache_validation")]
     pub provider_ws_url: Option<String>,
@@ -543,6 +545,8 @@ pub struct CoreEngine<DB> {
     tx_receiver: TransactionQueueReceiver,
     /// Channel on which the core engine sends invalidation reports.
     incident_sender: Option<IncidentReportSender>,
+    /// Optional sink for publishing accepted commit targets to the embedded state worker.
+    commit_target_sink: Option<CommitTargetHandle>,
     /// Core engines instance of the assertion executor, executes transactions and assertions
     assertion_executor: AssertionExecutor,
     /// Stores results of executed transactions
@@ -626,6 +630,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             sources: sources.clone(),
             tx_receiver,
             incident_sender: config.incident_sender,
+            commit_target_sink: config.commit_target_sink,
             assertion_executor,
             transaction_results: TransactionsResults::new(
                 state_results,
@@ -1628,6 +1633,9 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         };
 
         if !is_valid_state {
+            if let Some(sink) = &self.commit_target_sink {
+                sink.publish(commit_head.block_number.saturating_to::<u64>());
+            }
             // Cache was invalidated (missing iteration, head/hash/count mismatch).
             // Skip block finalization since there's no valid cached state to commit,
             // we only update metrics and head tracking.
@@ -1697,6 +1705,10 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                     .insert(block_number, Arc::new(iteration));
             }
             self.iteration_pending_processed_transactions.clear();
+        }
+
+        if let Some(sink) = &self.commit_target_sink {
+            sink.publish(commit_head.block_number.saturating_to::<u64>());
         }
 
         self.finalize_block_metrics(

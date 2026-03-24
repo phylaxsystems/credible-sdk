@@ -44,6 +44,7 @@ use sidecar::{
         supervisor::{
             EmbeddedWorkerConfig,
             StateWorkerSupervisor,
+            WorkerStatusHandle,
         },
     },
     transaction_observer::{
@@ -346,9 +347,9 @@ fn transaction_observer_config_from(config: &Config) -> Option<TransactionObserv
     }
 }
 
-fn open_mdbx_source(path: &str) -> Option<Arc<dyn Source>> {
+fn open_mdbx_source(path: &str, worker_status: WorkerStatusHandle) -> Option<Arc<dyn Source>> {
     match mdbx_runtime::init(path) {
-        Ok(runtime) => Some(Arc::new(MdbxSource::new(runtime.reader()))),
+        Ok(runtime) => Some(Arc::new(MdbxSource::new(runtime.reader(), worker_status))),
         Err(e) => {
             error!(error = ?e, mdbx_path = path, "Failed to connect MDBX");
             None
@@ -428,7 +429,10 @@ fn embedded_worker_config_from(config: &Config) -> Option<EmbeddedWorkerConfig> 
     }
 }
 
-async fn build_sources_from_config(config: &Config) -> anyhow::Result<Vec<Arc<dyn Source>>> {
+async fn build_sources_from_config(
+    config: &Config,
+    worker_status: Option<WorkerStatusHandle>,
+) -> anyhow::Result<Vec<Arc<dyn Source>>> {
     let mut sources: Vec<Arc<dyn Source>> = Vec::new();
     let mut mdbx_paths = Vec::new();
 
@@ -478,8 +482,12 @@ async fn build_sources_from_config(config: &Config) -> anyhow::Result<Vec<Arc<dy
     }
 
     if let Some(path) = resolve_single_mdbx_path(mdbx_paths)? {
-        if let Some(source) = open_mdbx_source(&path) {
-            sources.push(source);
+        if let Some(worker_status) = worker_status {
+            if let Some(source) = open_mdbx_source(&path, worker_status) {
+                sources.push(source);
+            }
+        } else {
+            warn!(mdbx_path = %path, "Skipping MDBX source: embedded worker supervisor unavailable");
         }
     }
 
@@ -687,7 +695,20 @@ async fn run_sidecar_once(
     let shutdown_flag = Arc::new(AtomicBool::new(false));
     let embedded_worker_config = embedded_worker_config_from(config);
 
-    let sources = build_sources_from_config(config).await?;
+    let mut state_worker_supervisor = if let Some(embedded_worker_config) = embedded_worker_config {
+        Some(StateWorkerSupervisor::spawn(embedded_worker_config)?)
+    } else {
+        tracing::info!("Embedded state worker supervisor disabled: missing MDBX or Eth RPC config");
+        None
+    };
+    let worker_status_handle = state_worker_supervisor
+        .as_ref()
+        .map(StateWorkerSupervisor::worker_status_handle);
+    let commit_target_sink = state_worker_supervisor
+        .as_ref()
+        .map(StateWorkerSupervisor::commit_target_sink);
+
+    let sources = build_sources_from_config(config, worker_status_handle).await?;
     let state = Arc::new(Sources::new(sources, config.state.minimum_state_diff));
     let cache: OverlayDb<Sources> = OverlayDb::new(Some(state.clone()));
 
@@ -723,12 +744,7 @@ async fn run_sidecar_once(
     let (seq_handle, seq_exited) = event_sequencing.spawn(Arc::clone(&shutdown_flag))?;
     thread_handles.event_sequencing = Some(seq_handle);
 
-    if let Some(embedded_worker_config) = embedded_worker_config {
-        thread_handles.state_worker_supervisor =
-            Some(StateWorkerSupervisor::spawn(embedded_worker_config)?);
-    } else {
-        tracing::info!("Embedded state worker supervisor disabled: missing MDBX or Eth RPC config");
-    }
+    thread_handles.state_worker_supervisor = state_worker_supervisor.take();
 
     // Spawn CoreEngine on a dedicated OS thread
     let engine_config = CoreEngineConfig {
@@ -739,6 +755,7 @@ async fn run_sidecar_once(
             .credible
             .overlay_cache_invalidation_every_block
             .unwrap_or(false),
+        commit_target_sink,
         incident_sender: incident_report_tx,
         #[cfg(feature = "cache_validation")]
         provider_ws_url: Some(config.credible.cache_checker_ws_url.clone()),
