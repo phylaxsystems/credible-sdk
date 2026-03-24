@@ -285,7 +285,12 @@ where
         next_block: &mut u64,
         shutdown_rx: &mut broadcast::Receiver<()>,
     ) -> Result<()> {
-        let mut stream = self.worker.provider().subscribe_blocks().await?.into_stream();
+        let mut stream = self
+            .worker
+            .provider()
+            .subscribe_blocks()
+            .await?
+            .into_stream();
         metrics::set_syncing(false);
         metrics::set_following_head(true);
 

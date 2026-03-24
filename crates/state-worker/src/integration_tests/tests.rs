@@ -525,6 +525,34 @@ async fn test_worker_flushes_only_up_to_commit_target() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_worker_flush_uses_staged_block_metadata() -> Result<()> {
+    let harness = EmbeddedWorkerHarness::new()
+        .await
+        .map_err(anyhow::Error::msg)?;
+
+    harness.push_new_head();
+    harness
+        .wait_for_staged(1)
+        .await
+        .map_err(anyhow::Error::msg)?;
+
+    harness
+        .http_server_mock
+        .mock_rpc_error("eth_getBlockByNumber", -32000, "block header unavailable");
+
+    harness.publish_commit_target(1);
+
+    let status = harness
+        .wait_for_flushed(1)
+        .await
+        .map_err(anyhow::Error::msg)?;
+
+    assert_eq!(status.mdbx_synced_through, Some(1));
+    assert!(status.healthy);
+    Ok(())
+}
+
 #[traced_test]
 #[tokio::test]
 async fn test_state_worker_non_consecutive_blocks_critical_alert() -> Result<()> {

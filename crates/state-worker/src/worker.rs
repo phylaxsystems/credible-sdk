@@ -120,7 +120,7 @@ where
             return self.build_genesis_update().await;
         }
 
-        let update = match self.trace_provider.fetch_block_state(block_number).await {
+        let mut update = match self.trace_provider.fetch_block_state(block_number).await {
             Ok(update) => update,
             Err(err) => {
                 critical!(error = ?err, block_number, "failed to trace block");
@@ -129,12 +129,13 @@ where
             }
         };
 
+        self.apply_system_calls(&mut update, block_number).await?;
+
         Ok(Some(update))
     }
 
-    pub async fn commit_prepared_update(&mut self, mut update: BlockStateUpdate) -> Result<()> {
+    pub async fn commit_prepared_update(&mut self, update: BlockStateUpdate) -> Result<()> {
         let block_number = update.block_number;
-        self.apply_system_calls(&mut update, block_number).await?;
 
         match self.writer_reader.commit_block(&update) {
             Ok(stats) => {
