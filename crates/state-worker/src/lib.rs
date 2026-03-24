@@ -4,6 +4,7 @@
 #[macro_use]
 extern crate credible_utils;
 
+pub mod control;
 pub mod genesis;
 pub mod geth_version;
 pub mod host;

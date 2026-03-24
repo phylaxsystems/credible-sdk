@@ -17,9 +17,13 @@ use mdbx::{
     StateReader,
     common::CircularBufferConfig,
 };
-use state_worker::host::{
-    EmbeddedStateWorkerConfig,
-    run_embedded_worker,
+use parking_lot::Mutex;
+use state_worker::{
+    control::ControlMessage,
+    host::{
+        EmbeddedStateWorkerConfig,
+        run_embedded_worker,
+    },
 };
 use std::{
     any::Any,
@@ -38,7 +42,10 @@ use std::{
 };
 use tokio::{
     runtime::Builder,
-    sync::broadcast,
+    sync::{
+        broadcast,
+        mpsc,
+    },
     time::sleep,
 };
 use tracing::{
@@ -52,17 +59,50 @@ const MAX_RESTART_BACKOFF: Duration = Duration::from_secs(30);
 
 type WorkerRunFuture = Pin<Box<dyn Future<Output = Result<(), WorkerRunError>> + Send + 'static>>;
 
+#[derive(Debug, Default)]
+struct WorkerControlState {
+    latest_permitted_watermark: Option<u64>,
+    control_tx: Option<mpsc::UnboundedSender<ControlMessage>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct StateWorkerControlHandle {
+    state: Arc<Mutex<WorkerControlState>>,
+}
+
+impl StateWorkerControlHandle {
+    pub fn update_commit_head(&self, block_number: u64) {
+        let mut state = self.state.lock();
+        state.latest_permitted_watermark = Some(block_number);
+        if let Some(control_tx) = &state.control_tx
+            && let Err(error) = control_tx.send(ControlMessage::CommitHead(block_number))
+        {
+            warn!(
+                block_number,
+                error = ?error,
+                "failed to deliver commit-head watermark to embedded state worker"
+            );
+            state.control_tx = None;
+        }
+    }
+}
+
 trait WorkerRunner: Send + Sync + 'static {
     fn run(
         &self,
         config: EmbeddedStateWorkerConfig,
+        control_rx: mpsc::UnboundedReceiver<ControlMessage>,
         shutdown_rx: broadcast::Receiver<()>,
     ) -> WorkerRunFuture;
 }
 
 impl<F> WorkerRunner for F
 where
-    F: Fn(EmbeddedStateWorkerConfig, broadcast::Receiver<()>) -> WorkerRunFuture
+    F: Fn(
+            EmbeddedStateWorkerConfig,
+            mpsc::UnboundedReceiver<ControlMessage>,
+            broadcast::Receiver<()>,
+        ) -> WorkerRunFuture
         + Send
         + Sync
         + 'static,
@@ -70,9 +110,10 @@ where
     fn run(
         &self,
         config: EmbeddedStateWorkerConfig,
+        control_rx: mpsc::UnboundedReceiver<ControlMessage>,
         shutdown_rx: broadcast::Receiver<()>,
     ) -> WorkerRunFuture {
-        self(config, shutdown_rx)
+        self(config, control_rx, shutdown_rx)
     }
 }
 
@@ -143,6 +184,7 @@ impl SupervisorHooks for NoopSupervisorHooks {}
 pub struct StateWorkerHostHandle {
     shutdown_requested: Arc<AtomicBool>,
     shutdown_tx: broadcast::Sender<()>,
+    control: StateWorkerControlHandle,
     join_handle: JoinHandle<Result<()>>,
 }
 
@@ -156,6 +198,11 @@ impl StateWorkerHostHandle {
     /// Join the worker host thread.
     pub fn join(self) -> std::thread::Result<Result<()>> {
         self.join_handle.join()
+    }
+
+    #[must_use]
+    pub fn control_handle(&self) -> StateWorkerControlHandle {
+        self.control.clone()
     }
 }
 
@@ -185,8 +232,10 @@ fn start_state_worker_host_with_runner_and_hooks(
     let worker_config = embedded_state_worker_config(config)?;
     let (shutdown_tx, _) = broadcast::channel(1);
     let shutdown_requested = Arc::new(AtomicBool::new(false));
+    let control_state = Arc::new(Mutex::new(WorkerControlState::default()));
     let worker_shutdown_tx = shutdown_tx.clone();
     let worker_shutdown_requested = Arc::clone(&shutdown_requested);
+    let worker_control_state = Arc::clone(&control_state);
     let worker_hooks = Arc::clone(hooks);
 
     let join_handle = std::thread::Builder::new()
@@ -196,6 +245,7 @@ fn start_state_worker_host_with_runner_and_hooks(
                 &worker_config,
                 &worker_shutdown_tx,
                 &worker_shutdown_requested,
+                &worker_control_state,
                 &runner,
                 &worker_hooks,
             )
@@ -205,6 +255,9 @@ fn start_state_worker_host_with_runner_and_hooks(
     Ok(StateWorkerHostHandle {
         shutdown_requested,
         shutdown_tx,
+        control: StateWorkerControlHandle {
+            state: control_state,
+        },
         join_handle,
     })
 }
@@ -237,6 +290,7 @@ fn run_worker_thread(
     worker_config: &EmbeddedStateWorkerConfig,
     shutdown_tx: &broadcast::Sender<()>,
     shutdown_requested: &Arc<AtomicBool>,
+    control_state: &Arc<Mutex<WorkerControlState>>,
     runner: &Arc<dyn WorkerRunner>,
     hooks: &Arc<dyn SupervisorHooks>,
 ) -> Result<()> {
@@ -269,11 +323,33 @@ fn run_worker_thread(
         );
 
         let worker_config_for_run = worker_config.clone();
+        let (control_tx, control_rx) = mpsc::unbounded_channel();
+        let latest_permitted_watermark = {
+            let mut control_state = control_state.lock();
+            control_state.control_tx = Some(control_tx.clone());
+            control_state.latest_permitted_watermark
+        };
+        if let Some(latest_permitted_watermark) = latest_permitted_watermark {
+            info!(
+                latest_permitted_watermark,
+                "replaying cached commit-head watermark for embedded state worker restart"
+            );
+            control_tx
+                .send(ControlMessage::CommitHead(latest_permitted_watermark))
+                .map_err(|error| {
+                    anyhow!("failed to replay commit-head watermark before worker start: {error}")
+                })?;
+        }
         let shutdown_rx = shutdown_tx.subscribe();
         let runner = Arc::clone(runner);
         let run_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            runtime.block_on(async move { runner.run(worker_config_for_run, shutdown_rx).await })
+            runtime.block_on(async move {
+                runner
+                    .run(worker_config_for_run, control_rx, shutdown_rx)
+                    .await
+            })
         }));
+        control_state.lock().control_tx = None;
 
         match run_result {
             Ok(Ok(())) => {
@@ -356,9 +432,11 @@ fn run_worker_thread(
 
 fn default_worker_runner() -> Arc<dyn WorkerRunner> {
     Arc::new(
-        |config: EmbeddedStateWorkerConfig, shutdown_rx: broadcast::Receiver<()>| {
+        |config: EmbeddedStateWorkerConfig,
+         control_rx: mpsc::UnboundedReceiver<ControlMessage>,
+         shutdown_rx: broadcast::Receiver<()>| {
             let future: WorkerRunFuture = Box::pin(async move {
-                run_embedded_worker(&config, shutdown_rx)
+                run_embedded_worker(&config, control_rx, shutdown_rx)
                     .await
                     .map_err(WorkerRunError::runtime)
             });
@@ -512,7 +590,10 @@ mod tests {
         time::Duration,
     };
     use tempfile::NamedTempFile;
-    use tokio::sync::broadcast;
+    use tokio::sync::{
+        broadcast,
+        mpsc,
+    };
     use tracing_test::traced_test;
 
     enum TestRunOutcome {
@@ -780,38 +861,42 @@ mod tests {
         attempts: Arc<AtomicUsize>,
         outcomes: Arc<Mutex<VecDeque<TestRunOutcome>>>,
     ) -> Arc<dyn super::WorkerRunner> {
-        Arc::new(move |_config, mut shutdown_rx: broadcast::Receiver<()>| {
-            let attempts = Arc::clone(&attempts);
-            let outcomes = Arc::clone(&outcomes);
-            let future: super::WorkerRunFuture = Box::pin(async move {
-                attempts.fetch_add(1, Ordering::Relaxed);
-                let outcome = outcomes
-                    .lock()
-                    .expect("runner outcomes lock")
-                    .pop_front()
-                    .unwrap_or(TestRunOutcome::WaitForShutdown);
-                match outcome {
-                    TestRunOutcome::StartupError(message) => {
-                        Err(WorkerRunError {
-                            kind: WorkerFailureKind::StartupError,
-                            error: anyhow!(message),
-                        })
+        Arc::new(
+            move |_config,
+                  _control_rx: mpsc::UnboundedReceiver<ControlMessage>,
+                  mut shutdown_rx: broadcast::Receiver<()>| {
+                let attempts = Arc::clone(&attempts);
+                let outcomes = Arc::clone(&outcomes);
+                let future: super::WorkerRunFuture = Box::pin(async move {
+                    attempts.fetch_add(1, Ordering::Relaxed);
+                    let outcome = outcomes
+                        .lock()
+                        .expect("runner outcomes lock")
+                        .pop_front()
+                        .unwrap_or(TestRunOutcome::WaitForShutdown);
+                    match outcome {
+                        TestRunOutcome::StartupError(message) => {
+                            Err(WorkerRunError {
+                                kind: WorkerFailureKind::StartupError,
+                                error: anyhow!(message),
+                            })
+                        }
+                        TestRunOutcome::RuntimeError(message) => {
+                            Err(WorkerRunError {
+                                kind: WorkerFailureKind::RuntimeError,
+                                error: anyhow!(message),
+                            })
+                        }
+                        TestRunOutcome::Panic(message) => panic!("{message}"),
+                        TestRunOutcome::WaitForShutdown => {
+                            let _ = shutdown_rx.recv().await;
+                            Ok(())
+                        }
                     }
-                    TestRunOutcome::RuntimeError(message) => {
-                        Err(WorkerRunError {
-                            kind: WorkerFailureKind::RuntimeError,
-                            error: anyhow!(message),
-                        })
-                    }
-                    TestRunOutcome::Panic(message) => panic!("{message}"),
-                    TestRunOutcome::WaitForShutdown => {
-                        let _ = shutdown_rx.recv().await;
-                        Ok(())
-                    }
-                }
-            });
-            future
-        })
+                });
+                future
+            },
+        )
     }
 
     fn wait_for_attempts(attempts: &AtomicUsize, expected_attempts: usize) {

@@ -1,6 +1,7 @@
 //! Reusable state-worker bootstrap helpers for embedders and the compatibility binary.
 
 use crate::{
+    control::ControlMessage,
     genesis::{
         self,
         GenesisState,
@@ -34,7 +35,10 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-use tokio::sync::broadcast;
+use tokio::sync::{
+    broadcast,
+    mpsc,
+};
 use tracing::{
     info,
     warn,
@@ -79,6 +83,7 @@ impl EmbeddedStateWorkerConfig {
 /// or the worker loop fails.
 pub async fn run_embedded_worker(
     config: &EmbeddedStateWorkerConfig,
+    control_rx: mpsc::UnboundedReceiver<ControlMessage>,
     shutdown_rx: broadcast::Receiver<()>,
 ) -> Result<()> {
     let provider = connect_provider(&config.ws_url).await?;
@@ -115,6 +120,7 @@ pub async fn run_embedded_worker(
         writer_reader,
         Some(genesis_state),
         system_calls,
+        control_rx,
     );
 
     worker
@@ -136,7 +142,9 @@ pub fn run_embedded_worker_until_shutdown(config: EmbeddedStateWorkerConfig) -> 
         .context("failed to build state worker runtime")?
         .block_on(async move {
             let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
+            let (control_tx, control_rx) = mpsc::unbounded_channel();
             let shutdown_tx_clone = shutdown_tx.clone();
+            let _ = control_tx.send(ControlMessage::CommitHead(u64::MAX));
 
             tokio::spawn(async move {
                 if let Err(err) = shutdown_signal().await {
@@ -148,7 +156,7 @@ pub fn run_embedded_worker_until_shutdown(config: EmbeddedStateWorkerConfig) -> 
                 let _ = shutdown_tx_clone.send(());
             });
 
-            run_embedded_worker(&config, shutdown_rx).await
+            run_embedded_worker(&config, control_rx, shutdown_rx).await
         })
 }
 

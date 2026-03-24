@@ -1,4 +1,5 @@
 use crate::{
+    control::ControlMessage,
     genesis,
     integration_tests::setup::TestInstance,
 };
@@ -901,7 +902,10 @@ async fn test_state_worker_restart_resumes_from_latest_mdbx_block() -> Result<()
         Writer,
         common::CircularBufferConfig,
     };
-    use tokio::sync::broadcast;
+    use tokio::sync::{
+        broadcast,
+        mpsc,
+    };
 
     let latest_block_number = 5_u64;
     let resumed_block = latest_block_number + 1;
@@ -986,12 +990,15 @@ async fn test_state_worker_restart_resumes_from_latest_mdbx_block() -> Result<()
         .await
         .context("Failed to connect to provider")?;
     let trace_provider = state::create_trace_provider(provider.clone(), Duration::from_secs(30));
+    let (control_tx, control_rx) = mpsc::unbounded_channel();
+    let _ = control_tx.send(ControlMessage::CommitHead(u64::MAX));
     let mut worker = StateWorker::new(
         provider,
         trace_provider,
         writer_reader,
         None,
         SystemCalls::default(),
+        control_rx,
     );
     let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
     let worker_task = tokio::spawn(async move { worker.run(None, shutdown_rx).await });

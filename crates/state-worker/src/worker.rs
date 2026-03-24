@@ -4,6 +4,7 @@
 //! RPC, and then tails new blocks from the `newHeads` subscription. Each block
 //! is traced with the pre-state tracer and written into the database.
 use crate::{
+    control::ControlMessage,
     genesis::GenesisState,
     metrics,
     state::{
@@ -36,7 +37,10 @@ use std::{
     time::Duration,
 };
 use tokio::{
-    sync::broadcast,
+    sync::{
+        broadcast,
+        mpsc,
+    },
     time,
 };
 use tracing::{
@@ -47,7 +51,6 @@ use tracing::{
 
 const SUBSCRIPTION_RETRY_DELAY_SECS: u64 = 5;
 const MAX_MISSING_BLOCK_RETRIES: u32 = 3;
-
 /// Coordinates block ingestion, tracing, and persistence.
 pub struct StateWorker<WR>
 where
@@ -58,6 +61,7 @@ where
     writer_reader: WR,
     genesis_state: Option<GenesisState>,
     system_calls: SystemCalls,
+    _control_rx: mpsc::UnboundedReceiver<ControlMessage>,
 }
 
 impl<WR> StateWorker<WR>
@@ -72,6 +76,7 @@ where
         writer_reader: WR,
         genesis_state: Option<GenesisState>,
         system_calls: SystemCalls,
+        control_rx: mpsc::UnboundedReceiver<ControlMessage>,
     ) -> Self {
         Self {
             provider,
@@ -79,6 +84,7 @@ where
             writer_reader,
             genesis_state,
             system_calls,
+            _control_rx: control_rx,
         }
     }
 

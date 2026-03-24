@@ -4,6 +4,7 @@
 //! the MDBX database backend for running integration tests.
 
 use crate::{
+    control::ControlMessage,
     genesis::GenesisState,
     host::connect_provider,
     integration_tests::mdbx_fixture::MdbxTestDir,
@@ -21,7 +22,10 @@ use mdbx::{
     Reader,
 };
 use std::time::Duration;
-use tokio::sync::broadcast;
+use tokio::sync::{
+    broadcast,
+    mpsc,
+};
 use tracing::error;
 
 /// Unified test instance for MDBX-backed integration tests.
@@ -117,12 +121,15 @@ impl TestInstance {
             })
             .unwrap_or_default();
 
+        let (control_tx, control_rx) = mpsc::unbounded_channel();
+        let _ = control_tx.send(ControlMessage::CommitHead(u64::MAX));
         let mut worker = StateWorker::new(
             provider,
             trace_provider,
             writer_reader,
             genesis_state,
             system_calls,
+            control_rx,
         );
         let (shutdown_tx, _) = broadcast::channel(1);
         let handle_worker = tokio::spawn(async move {
