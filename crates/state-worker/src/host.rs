@@ -44,6 +44,8 @@ use tracing::{
     warn,
 };
 
+pub const DEFAULT_BUFFER_CAPACITY: usize = 128;
+
 /// Shared configuration for running the state worker in-process.
 #[derive(Debug, Clone)]
 pub struct EmbeddedStateWorkerConfig {
@@ -53,6 +55,7 @@ pub struct EmbeddedStateWorkerConfig {
     pub state_depth: u8,
     pub genesis_path: PathBuf,
     pub trace_timeout: Duration,
+    pub buffer_capacity: usize,
 }
 
 impl EmbeddedStateWorkerConfig {
@@ -71,6 +74,7 @@ impl EmbeddedStateWorkerConfig {
             state_depth,
             genesis_path: genesis_path.into(),
             trace_timeout: Duration::from_secs(30),
+            buffer_capacity: DEFAULT_BUFFER_CAPACITY,
         }
     }
 }
@@ -120,7 +124,7 @@ pub async fn run_embedded_worker(
         writer_reader,
         Some(genesis_state),
         system_calls,
-        usize::from(config.state_depth),
+        config.buffer_capacity,
         control_rx,
     );
 

@@ -53,6 +53,7 @@ use tracing::{
 const SUBSCRIPTION_RETRY_DELAY_SECS: u64 = 5;
 const MAX_MISSING_BLOCK_RETRIES: u32 = 3;
 const MIN_PENDING_UPDATE_LIMIT: usize = 1;
+const BUFFER_PRESSURE_POLL_INTERVAL_MS: u64 = 100;
 /// Coordinates block ingestion, tracing, and persistence.
 pub struct StateWorker<WR>
 where
@@ -68,6 +69,7 @@ where
     latest_commit_head: Option<u64>,
     pending_updates: VecDeque<BlockStateUpdate>,
     pending_update_limit: usize,
+    tracing_paused_for_backpressure: bool,
 }
 
 impl<WR> StateWorker<WR>
@@ -96,6 +98,7 @@ where
             latest_commit_head: None,
             pending_updates: VecDeque::new(),
             pending_update_limit: pending_update_limit.max(MIN_PENDING_UPDATE_LIMIT),
+            tracing_paused_for_backpressure: false,
         }
     }
 
@@ -125,7 +128,7 @@ where
         start_override: Option<u64>,
         mut shutdown_rx: broadcast::Receiver<()>,
     ) -> Result<()> {
-        self.handle_pending_control_messages()?;
+        self.handle_pending_control_messages();
         self.drain_permitted_updates()?;
         let mut next_block = self.compute_start_block(start_override)?;
         let mut missing_block_retries: u32 = 0;
@@ -137,7 +140,7 @@ where
                 return Ok(());
             }
 
-            self.handle_pending_control_messages()?;
+            self.handle_pending_control_messages();
             self.drain_permitted_updates()?;
 
             // Catch up block-by-block, checking shutdown between each
@@ -211,7 +214,7 @@ where
         shutdown_rx: &mut broadcast::Receiver<()>,
     ) -> Result<bool> {
         loop {
-            self.handle_pending_control_messages()?;
+            self.handle_pending_control_messages();
             self.drain_permitted_updates()?;
             let head = self.provider.get_block_number().await?;
             Self::update_sync_metrics(*next_block, head);
@@ -222,10 +225,12 @@ where
 
             while *next_block <= head {
                 // Process the block fully before checking shutdown
-                self.process_block(*next_block).await?;
+                if self.process_block(*next_block, shutdown_rx).await? {
+                    return Ok(true);
+                }
                 *next_block += 1;
                 Self::update_sync_metrics(*next_block, head);
-                self.handle_pending_control_messages()?;
+                self.handle_pending_control_messages();
                 self.drain_permitted_updates()?;
 
                 // Check for shutdown after the block is complete
@@ -292,10 +297,13 @@ where
                             }
 
                             while *next_block <= block_number {
-                                self.process_block(*next_block).await?;
+                                if self.process_block(*next_block, shutdown_rx).await? {
+                                    info!("Shutdown signal received while processing streamed block");
+                                    return Ok(());
+                                }
                                 *next_block += 1;
                                 Self::update_sync_metrics(*next_block, block_number);
-                                self.handle_pending_control_messages()?;
+                                self.handle_pending_control_messages();
                                 self.drain_permitted_updates()?;
                             }
                         }
@@ -309,7 +317,18 @@ where
     }
 
     /// Pull, trace, and enqueue a single block update for later gated persistence.
-    async fn process_block(&mut self, block_number: u64) -> Result<()> {
+    async fn process_block(
+        &mut self,
+        block_number: u64,
+        shutdown_rx: &mut broadcast::Receiver<()>,
+    ) -> Result<bool> {
+        if self
+            .wait_for_buffer_capacity(block_number, shutdown_rx)
+            .await?
+        {
+            return Ok(true);
+        }
+
         info!(block_number, "processing block");
 
         if block_number == 0 && self.genesis_state.is_some() {
@@ -317,7 +336,7 @@ where
                 self.enqueue_update(update)?;
             }
             self.drain_permitted_updates()?;
-            return Ok(());
+            return Ok(false);
         }
 
         let mut update = match self.trace_provider.fetch_block_state(block_number).await {
@@ -333,7 +352,7 @@ where
         self.apply_system_calls(&mut update, block_number).await?;
         self.enqueue_update(update)?;
         self.drain_permitted_updates()?;
-        Ok(())
+        Ok(false)
     }
 
     /// Apply EIP-2935 and EIP-4788 system call state changes
@@ -447,14 +466,14 @@ where
         }
     }
 
-    fn handle_pending_control_messages(&mut self) -> Result<()> {
+    fn handle_pending_control_messages(&mut self) {
         loop {
             match self.control_rx.try_recv() {
                 Ok(control) => self.apply_control_message(control),
-                Err(mpsc::error::TryRecvError::Empty) => return Ok(()),
+                Err(mpsc::error::TryRecvError::Empty) => return,
                 Err(mpsc::error::TryRecvError::Disconnected) => {
                     self.control_channel_closed = true;
-                    return Ok(());
+                    return;
                 }
             }
         }
@@ -463,23 +482,23 @@ where
     fn enqueue_update(&mut self, update: BlockStateUpdate) -> Result<()> {
         self.drain_permitted_updates()?;
         if self.pending_updates.len() >= self.pending_update_limit {
-            let blocked_on = self
-                .pending_updates
-                .front()
-                .map_or(update.block_number, |pending| pending.block_number);
             return Err(anyhow!(
-                "state worker pending update buffer is full while waiting to flush block {blocked_on}"
+                "state worker pending update buffer is full before enqueueing block {}",
+                update.block_number
             ));
         }
         self.pending_updates.push_back(update);
+        self.update_backpressure_state();
         Ok(())
     }
 
     fn drain_permitted_updates(&mut self) -> Result<()> {
         let Some(latest_commit_head) = self.latest_commit_head else {
+            self.update_backpressure_state();
             return Ok(());
         };
 
+        let mut drained_any = false;
         while self
             .pending_updates
             .front()
@@ -488,6 +507,7 @@ where
             let Some(update) = self.pending_updates.pop_front() else {
                 break;
             };
+            drained_any = true;
             match self.writer_reader.commit_block(&update) {
                 Ok(stats) => {
                     metrics::set_db_healthy(true);
@@ -511,6 +531,78 @@ where
             }
         }
 
+        if drained_any {
+            self.handle_pending_control_messages();
+        }
+        self.update_backpressure_state();
         Ok(())
+    }
+
+    async fn wait_for_buffer_capacity(
+        &mut self,
+        next_block: u64,
+        shutdown_rx: &mut broadcast::Receiver<()>,
+    ) -> Result<bool> {
+        while self.pending_updates.len() >= self.pending_update_limit {
+            self.update_backpressure_state();
+            let blocked_on = self
+                .pending_updates
+                .front()
+                .map_or(next_block, |pending| pending.block_number);
+            warn!(
+                next_block,
+                blocked_on,
+                backlog = self.pending_updates.len(),
+                buffer_capacity = self.pending_update_limit,
+                latest_commit_head = self.latest_commit_head,
+                "pausing trace intake because the buffered update queue is full"
+            );
+
+            tokio::select! {
+                _ = shutdown_rx.recv() => return Ok(true),
+                maybe_control = self.control_rx.recv(), if !self.control_channel_closed => {
+                    match maybe_control {
+                        Some(control) => {
+                            self.apply_control_message(control);
+                            self.drain_permitted_updates()?;
+                        }
+                        None => {
+                            self.control_channel_closed = true;
+                        }
+                    }
+                }
+                () = time::sleep(Duration::from_millis(BUFFER_PRESSURE_POLL_INTERVAL_MS)) => {
+                    self.handle_pending_control_messages();
+                    self.drain_permitted_updates()?;
+                }
+            }
+        }
+
+        self.update_backpressure_state();
+        Ok(false)
+    }
+
+    fn update_backpressure_state(&mut self) {
+        let paused = self.pending_updates.len() >= self.pending_update_limit;
+        if paused != self.tracing_paused_for_backpressure {
+            if paused {
+                warn!(
+                    backlog = self.pending_updates.len(),
+                    buffer_capacity = self.pending_update_limit,
+                    oldest_buffered_block = self.pending_updates.front().map(|update| update.block_number),
+                    latest_commit_head = self.latest_commit_head,
+                    "state worker paused trace intake due to buffered update pressure"
+                );
+            } else {
+                info!(
+                    backlog = self.pending_updates.len(),
+                    buffer_capacity = self.pending_update_limit,
+                    oldest_buffered_block = self.pending_updates.front().map(|update| update.block_number),
+                    latest_commit_head = self.latest_commit_head,
+                    "state worker resumed trace intake after buffered update pressure eased"
+                );
+            }
+        }
+        self.tracing_paused_for_backpressure = paused;
     }
 }
