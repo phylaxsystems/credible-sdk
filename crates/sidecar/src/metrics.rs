@@ -198,6 +198,28 @@ impl Drop for TransactionMetrics {
     }
 }
 
+pub fn record_state_worker_failure(failure_kind: &str, consecutive_failures: u64) {
+    counter!("sidecar_state_worker_failures_total", "failure_kind" => failure_kind.to_string())
+        .increment(1);
+    set_state_worker_consecutive_failures(consecutive_failures);
+}
+
+pub fn record_state_worker_restart(
+    backoff: std::time::Duration,
+    restart_attempt: u64,
+    resume_from_block: Option<u64>,
+) {
+    counter!("sidecar_state_worker_restarts_total").increment(1);
+    gauge!("sidecar_state_worker_restart_attempt").set(restart_attempt as f64);
+    gauge!("sidecar_state_worker_restart_backoff_seconds").set(backoff.as_secs_f64());
+    gauge!("sidecar_state_worker_resume_block")
+        .set(resume_from_block.map_or(-1.0, |block| block as f64));
+}
+
+pub fn set_state_worker_consecutive_failures(consecutive_failures: u64) {
+    gauge!("sidecar_state_worker_consecutive_failures").set(consecutive_failures as f64);
+}
+
 /// State metrics. The metrics are committed to prometheus on write. The fields in this struct are
 /// for tracking purposes.
 #[derive(Debug)]
