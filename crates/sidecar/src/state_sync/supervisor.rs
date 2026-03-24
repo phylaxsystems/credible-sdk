@@ -77,9 +77,11 @@ impl SupervisorStatus {
     }
 }
 
-trait SupervisedWorker: Send {
+pub(crate) trait SupervisedWorker: Send {
     fn run(self: Box<Self>, shutdown: Arc<AtomicBool>) -> Result<()>;
 }
+
+type WorkerFactory = Box<dyn FnMut() -> Result<Box<dyn SupervisedWorker>> + Send + 'static>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EmbeddedWorkerConfig {
@@ -99,38 +101,53 @@ pub struct StateWorkerSupervisor {
 impl StateWorkerSupervisor {
     pub fn spawn(config: EmbeddedWorkerConfig) -> Result<Self> {
         let control = Arc::new(Mutex::new(None));
+        let factory_control = Arc::clone(&control);
+        Self::spawn_with_factory(
+            Box::new(move || {
+                Ok::<Box<dyn SupervisedWorker>, anyhow::Error>(Box::new(EmbeddedWorkerTask {
+                    config: config.clone(),
+                    control: Arc::clone(&factory_control),
+                }))
+            }),
+            Some(control),
+            SUPERVISOR_THREAD_NAME,
+            RESTART_BACKOFF,
+        )
+    }
+
+    fn spawn_with_factory(
+        factory: WorkerFactory,
+        control: Option<Arc<Mutex<Option<EmbeddedStateWorkerHandle>>>>,
+        thread_name: &'static str,
+        restart_backoff: Duration,
+    ) -> Result<Self> {
+        let effective_control = control.unwrap_or_else(|| Arc::new(Mutex::new(None)));
         let status = Arc::new(SupervisorStatus::default());
         let restart_count = Arc::new(AtomicU64::new(0));
         let shutdown = Arc::new(AtomicBool::new(false));
+        let thread_control = Arc::clone(&effective_control);
 
         let thread = Builder::new()
-            .name(SUPERVISOR_THREAD_NAME.to_string())
+            .name(thread_name.to_string())
             .spawn({
-                let control = Arc::clone(&control);
                 let status = Arc::clone(&status);
                 let restart_count = Arc::clone(&restart_count);
                 let shutdown = Arc::clone(&shutdown);
+                let mut factory = factory;
                 move || {
                     run_supervisor_loop(
-                        move || {
-                            Ok::<Box<dyn SupervisedWorker>, anyhow::Error>(Box::new(
-                                EmbeddedWorkerTask {
-                                    config: config.clone(),
-                                    control: Arc::clone(&control),
-                                },
-                            ))
-                        },
+                        &mut factory,
                         status,
                         restart_count,
                         shutdown,
-                        RESTART_BACKOFF,
+                        restart_backoff,
                     );
                 }
             })
             .context("failed to spawn embedded state worker supervisor")?;
 
         Ok(Self {
-            control,
+            control: thread_control,
             status,
             restart_count,
             shutdown,
@@ -163,6 +180,23 @@ impl StateWorkerSupervisor {
     #[must_use]
     pub fn restart_count(&self) -> u64 {
         self.restart_count.load(Ordering::Acquire)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn spawn_test_with_factory(factory: WorkerFactory) -> Result<Self> {
+        Self::spawn_with_factory(
+            factory,
+            None,
+            TEST_SUPERVISOR_THREAD_NAME,
+            Duration::from_millis(10),
+        )
+    }
+}
+
+impl Drop for StateWorkerSupervisor {
+    fn drop(&mut self) {
+        self.shutdown();
+        self.join();
     }
 }
 
@@ -199,7 +233,8 @@ impl SupervisedWorker for EmbeddedWorkerTask {
                 None,
                 SystemCalls::default(),
             );
-            let mut runtime = EmbeddedStateWorkerRuntime::new(worker);
+            let mut runtime =
+                EmbeddedStateWorkerRuntime::new(worker).with_auto_advance_commit_target();
             let handle = runtime.handle();
             if let Ok(mut guard) = self.control.lock() {
                 *guard = Some(handle);
@@ -225,7 +260,7 @@ impl SupervisedWorker for EmbeddedWorkerTask {
 }
 
 fn run_supervisor_loop<F>(
-    mut worker_factory: F,
+    worker_factory: &mut F,
     status: Arc<SupervisorStatus>,
     restart_count: Arc<AtomicU64>,
     shutdown: Arc<AtomicBool>,
@@ -289,88 +324,6 @@ fn sleep_with_shutdown(shutdown: &Arc<AtomicBool>, duration: Duration) {
     }
 }
 
-pub struct TestSupervisor {
-    status: Arc<SupervisorStatus>,
-    restart_count: Arc<AtomicU64>,
-    shutdown: Arc<AtomicBool>,
-    thread: Option<JoinHandle<()>>,
-}
-
-impl TestSupervisor {
-    #[must_use]
-    pub fn spawn_with_panicking_worker() -> Self {
-        let status = Arc::new(SupervisorStatus::default());
-        let restart_count = Arc::new(AtomicU64::new(0));
-        let shutdown = Arc::new(AtomicBool::new(false));
-        let panicked = Arc::new(AtomicBool::new(false));
-
-        let thread = Builder::new()
-            .name(TEST_SUPERVISOR_THREAD_NAME.to_string())
-            .spawn({
-                let status = Arc::clone(&status);
-                let restart_count = Arc::clone(&restart_count);
-                let shutdown = Arc::clone(&shutdown);
-                let panicked = Arc::clone(&panicked);
-                move || {
-                    run_supervisor_loop(
-                        move || {
-                            if panicked.swap(true, Ordering::AcqRel) {
-                                Ok::<Box<dyn SupervisedWorker>, anyhow::Error>(Box::new(
-                                    HealthyTestWorker,
-                                ))
-                            } else {
-                                Ok::<Box<dyn SupervisedWorker>, anyhow::Error>(Box::new(
-                                    PanickingTestWorker,
-                                ))
-                            }
-                        },
-                        status,
-                        restart_count,
-                        shutdown,
-                        Duration::from_millis(10),
-                    );
-                }
-            })
-            .expect("failed to spawn test supervisor thread");
-
-        Self {
-            status,
-            restart_count,
-            shutdown,
-            thread: Some(thread),
-        }
-    }
-
-    #[must_use]
-    pub fn status(&self) -> SupervisorStatusSnapshot {
-        self.status.snapshot()
-    }
-
-    pub fn wait_for_restart_count(&self, expected: u64) {
-        let deadline = Instant::now() + TEST_WAIT_TIMEOUT;
-        while Instant::now() < deadline {
-            if self.restart_count.load(Ordering::Acquire) >= expected && self.status().healthy {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-
-        panic!(
-            "timed out waiting for restart count {expected}; saw {}",
-            self.restart_count.load(Ordering::Acquire)
-        );
-    }
-}
-
-impl Drop for TestSupervisor {
-    fn drop(&mut self) {
-        self.shutdown.store(true, Ordering::Release);
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
-    }
-}
-
 struct PanickingTestWorker;
 
 impl SupervisedWorker for PanickingTestWorker {
@@ -388,4 +341,36 @@ impl SupervisedWorker for HealthyTestWorker {
         }
         Ok(())
     }
+}
+
+#[cfg(test)]
+pub(crate) fn test_supervisor_with_panicking_worker() -> StateWorkerSupervisor {
+    let panicked = Arc::new(AtomicBool::new(false));
+    StateWorkerSupervisor::spawn_test_with_factory(Box::new({
+        let panicked = Arc::clone(&panicked);
+        move || {
+            if panicked.swap(true, Ordering::AcqRel) {
+                Ok::<Box<dyn SupervisedWorker>, anyhow::Error>(Box::new(HealthyTestWorker))
+            } else {
+                Ok::<Box<dyn SupervisedWorker>, anyhow::Error>(Box::new(PanickingTestWorker))
+            }
+        }
+    }))
+    .expect("failed to spawn test supervisor")
+}
+
+#[cfg(test)]
+pub(crate) fn wait_for_restart_count(supervisor: &StateWorkerSupervisor, expected: u64) {
+    let deadline = Instant::now() + TEST_WAIT_TIMEOUT;
+    while Instant::now() < deadline {
+        if supervisor.restart_count() >= expected && supervisor.status().healthy {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    panic!(
+        "timed out waiting for restart count {expected}; saw {}",
+        supervisor.restart_count()
+    );
 }

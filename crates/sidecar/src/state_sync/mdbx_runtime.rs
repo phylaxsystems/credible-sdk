@@ -43,9 +43,12 @@ impl MdbxRuntime {
     }
 }
 
-pub fn init(path: impl AsRef<Path>) -> Result<Arc<MdbxRuntime>> {
+fn init_with_cell(
+    cell: &OnceLock<Arc<MdbxRuntime>>,
+    path: impl AsRef<Path>,
+) -> Result<Arc<MdbxRuntime>> {
     let path = path.as_ref().to_path_buf();
-    let runtime = if let Some(runtime) = MDBX_RUNTIME.get() {
+    let runtime = if let Some(runtime) = cell.get() {
         runtime.clone()
     } else {
         let writer = StateWriter::new(&path)?;
@@ -56,12 +59,11 @@ pub fn init(path: impl AsRef<Path>) -> Result<Arc<MdbxRuntime>> {
             reader,
         });
 
-        match MDBX_RUNTIME.set(Arc::clone(&candidate)) {
+        match cell.set(Arc::clone(&candidate)) {
             Ok(()) => candidate,
             Err(candidate) => {
                 drop(candidate);
-                MDBX_RUNTIME
-                    .get()
+                cell.get()
                     .cloned()
                     .ok_or_else(|| anyhow!("shared MDBX runtime initialization race"))?
             }
@@ -77,6 +79,18 @@ pub fn init(path: impl AsRef<Path>) -> Result<Arc<MdbxRuntime>> {
     }
 
     Ok(runtime)
+}
+
+pub fn init(path: impl AsRef<Path>) -> Result<Arc<MdbxRuntime>> {
+    init_with_cell(&MDBX_RUNTIME, path)
+}
+
+#[cfg(test)]
+pub(crate) fn init_test_cell(
+    cell: &OnceLock<Arc<MdbxRuntime>>,
+    path: impl AsRef<Path>,
+) -> Result<Arc<MdbxRuntime>> {
+    init_with_cell(cell, path)
 }
 
 #[must_use]
