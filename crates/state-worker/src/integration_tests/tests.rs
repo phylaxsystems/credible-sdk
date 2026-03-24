@@ -1,6 +1,8 @@
 use crate::{
-    genesis,
-    integration_tests::setup::TestInstance,
+    integration_tests::setup::{
+        EmbeddedWorkerHarness,
+        TestInstance,
+    },
 };
 use alloy::primitives::{
     B256,
@@ -9,7 +11,6 @@ use alloy::primitives::{
     keccak256,
 };
 use anyhow::{
-    Context,
     Result,
 };
 use mdbx::{
@@ -478,6 +479,52 @@ async fn test_state_worker_handles_rapid_state_changes() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_worker_stages_heads_without_flushing_before_commit_target() -> Result<()> {
+    let harness = EmbeddedWorkerHarness::new()
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let _ = harness.mdbx_path().map_err(anyhow::Error::msg)?;
+    let _ = &harness.handle_worker;
+
+    harness.push_new_head();
+
+    let status = harness
+        .wait_for_staged(1)
+        .await
+        .map_err(anyhow::Error::msg)?;
+
+    assert_eq!(status.latest_head_seen, Some(1));
+    assert_eq!(status.highest_staged_block, Some(1));
+    assert_eq!(status.mdbx_synced_through, None);
+    assert!(status.healthy);
+    assert!(!status.restarting);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_worker_flushes_only_up_to_commit_target() -> Result<()> {
+    let harness = EmbeddedWorkerHarness::new()
+        .await
+        .map_err(anyhow::Error::msg)?;
+
+    harness.push_new_head();
+    harness.push_new_head();
+    harness.publish_commit_target(1);
+
+    let status = harness
+        .wait_for_flushed(1)
+        .await
+        .map_err(anyhow::Error::msg)?;
+
+    assert_eq!(status.latest_head_seen, Some(2));
+    assert_eq!(status.highest_staged_block, Some(2));
+    assert_eq!(status.mdbx_synced_through, Some(1));
+    assert!(status.healthy);
+    assert!(!status.restarting);
+    Ok(())
+}
+
 #[traced_test]
 #[tokio::test]
 async fn test_state_worker_non_consecutive_blocks_critical_alert() -> Result<()> {
@@ -815,10 +862,9 @@ async fn test_mdbx_bootstrap_recovery_without_diffs() -> Result<()> {
         )
         .context("bootstrap should succeed")?;
 
-    assert_eq!(
-        stats.accounts_written, 3,
-        "should write to all 3 namespaces"
-    );
+    assert_eq!(stats.accounts_written, 1, "should write one latest-state account");
+    assert_eq!(stats.storage_slots_written, 2, "should write both storage slots");
+    assert_eq!(stats.bytecodes_written, 1, "should write bytecode once");
 
     let reader = writer.reader();
 
@@ -853,10 +899,7 @@ async fn test_mdbx_bootstrap_recovery_without_diffs() -> Result<()> {
     let stats_102 = writer
         .commit_block(&update_102)
         .context("Block 102 should commit")?;
-    assert_eq!(
-        stats_102.diffs_applied, 1,
-        "Block 102 should apply 1 diff (block 101)"
-    );
+    assert_eq!(stats_102.diffs_applied, 0, "latest-state MDBX does not replay diffs");
     assert_block_available(reader, 102)?;
 
     let update_103 = make_update(
@@ -868,17 +911,14 @@ async fn test_mdbx_bootstrap_recovery_without_diffs() -> Result<()> {
     let stats_103 = writer
         .commit_block(&update_103)
         .context("Block 103 should commit")?;
-    assert_eq!(
-        stats_103.diffs_applied, 2,
-        "Block 103 should apply 2 diffs (101, 102)"
-    );
+    assert_eq!(stats_103.diffs_applied, 0, "latest-state MDBX does not replay diffs");
     assert_block_available(reader, 103)?;
     assert_latest_block(reader, 103)?;
     assert_account(reader, test_address_hash, 103, 1300, 8)?;
 
     assert_block_unavailable(reader, 100)?;
-    assert_block_available(reader, 101)?;
-    assert_block_available(reader, 102)?;
+    assert_block_unavailable(reader, 101)?;
+    assert_block_unavailable(reader, 102)?;
     assert_block_available(reader, 103)?;
     Ok(())
 }
