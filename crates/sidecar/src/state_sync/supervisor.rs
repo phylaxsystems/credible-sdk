@@ -116,6 +116,18 @@ fn replay_latest_commit_target(
     }
 }
 
+fn store_handle_then_replay<T: Clone>(
+    control: &Arc<Mutex<Option<T>>>,
+    handle: T,
+    stable_target: &StableCommitTarget,
+    publisher: &impl CommitTargetPublisher,
+) {
+    if let Ok(mut guard) = control.lock() {
+        *guard = Some(handle);
+    }
+    replay_latest_commit_target(stable_target, publisher);
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SupervisorStatusSnapshot {
     pub healthy: bool,
@@ -387,10 +399,12 @@ impl SupervisedWorker for EmbeddedWorkerTask {
             };
 
             let handle = runtime.handle();
-            replay_latest_commit_target(&self.stable_commit_target, &handle.control);
-            if let Ok(mut guard) = self.control.lock() {
-                *guard = Some(handle);
-            }
+            store_handle_then_replay(
+                &self.control,
+                handle.clone(),
+                &self.stable_commit_target,
+                &handle.control,
+            );
 
             let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
             let monitor = tokio::spawn({
@@ -559,6 +573,7 @@ pub(crate) fn wait_for_restart_count(supervisor: &StateWorkerSupervisor, expecte
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicBool;
 
     #[derive(Debug, Default)]
     struct RecordingPublisher {
@@ -587,5 +602,47 @@ mod tests {
         replay_latest_commit_target(&stable_target, &publisher);
 
         assert_eq!(publisher.values(), vec![41]);
+    }
+
+    #[derive(Debug)]
+    struct OrderingPublisher {
+        control: Arc<Mutex<Option<u64>>>,
+        values: Mutex<Vec<u64>>,
+        saw_handle_stored: AtomicBool,
+    }
+
+    impl OrderingPublisher {
+        fn new(control: Arc<Mutex<Option<u64>>>) -> Self {
+            Self {
+                control,
+                values: Mutex::new(Vec::new()),
+                saw_handle_stored: AtomicBool::new(false),
+            }
+        }
+    }
+
+    impl CommitTargetPublisher for OrderingPublisher {
+        fn publish(&self, block_number: u64) {
+            let has_handle = self.control.lock().unwrap().is_some();
+            self.saw_handle_stored.store(has_handle, Ordering::Release);
+            self.values.lock().unwrap().push(block_number);
+        }
+    }
+
+    #[test]
+    fn test_store_handle_then_replay_installs_handle_before_replay() {
+        let control = Arc::new(Mutex::new(None));
+        let stable_target = StableCommitTarget::default();
+        stable_target.publish(41);
+        let publisher = OrderingPublisher::new(Arc::clone(&control));
+
+        store_handle_then_replay(&control, 7_u64, &stable_target, &publisher);
+
+        assert_eq!(*control.lock().unwrap(), Some(7));
+        assert_eq!(*publisher.values.lock().unwrap(), vec![41]);
+        assert!(
+            publisher.saw_handle_stored.load(Ordering::Acquire),
+            "handle should be installed before replay"
+        );
     }
 }
