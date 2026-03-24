@@ -107,9 +107,11 @@ fn worker_ws_url(config: &Config) -> Option<String> {
         .state
         .sources
         .iter()
-        .find_map(|source| match source {
-            StateSourceConfig::EthRpc { ws_url, .. } => Some(ws_url.clone()),
-            StateSourceConfig::Mdbx { .. } => None,
+        .find_map(|source| {
+            match source {
+                StateSourceConfig::EthRpc { ws_url, .. } => Some(ws_url.clone()),
+                StateSourceConfig::Mdbx { .. } => None,
+            }
         })
         .or_else(|| config.state.legacy.eth_rpc_source_ws_url.clone())
 }
@@ -119,11 +121,13 @@ fn worker_mdbx_config(config: &Config) -> Option<(PathBuf, usize)> {
         .state
         .sources
         .iter()
-        .find_map(|source| match source {
-            StateSourceConfig::Mdbx { mdbx_path, depth } => {
-                Some((PathBuf::from(mdbx_path), *depth))
+        .find_map(|source| {
+            match source {
+                StateSourceConfig::Mdbx { mdbx_path, depth } => {
+                    Some((PathBuf::from(mdbx_path), *depth))
+                }
+                StateSourceConfig::EthRpc { .. } => None,
             }
-            StateSourceConfig::EthRpc { .. } => None,
         })
         .or_else(|| {
             config
@@ -191,7 +195,10 @@ mod tests {
             embedded_state_worker_config(&config).expect("embedded worker config from sources");
 
         assert_eq!(worker_config.ws_url, "ws://rpc.example:8546");
-        assert_eq!(worker_config.mdbx_path.as_os_str(), "/data/state_worker.mdbx");
+        assert_eq!(
+            worker_config.mdbx_path.as_os_str(),
+            "/data/state_worker.mdbx"
+        );
         assert_eq!(worker_config.state_depth, 7);
         assert_eq!(worker_config.genesis_path.as_os_str(), "/data/genesis.json");
         assert_eq!(worker_config.start_block, None);
