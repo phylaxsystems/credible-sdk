@@ -71,6 +71,7 @@ use crate::{
         BlockMetrics,
         TransactionMetrics,
     },
+    state_worker_host::StateWorkerControlHandle,
     transaction_observer::{
         IncidentData,
         IncidentReport,
@@ -199,6 +200,7 @@ pub struct CoreEngineConfig {
     pub source_monitoring_period: Duration,
     pub overlay_cache_invalidation_every_block: bool,
     pub incident_sender: Option<IncidentReportSender>,
+    pub state_worker_control: Option<StateWorkerControlHandle>,
     #[cfg(feature = "cache_validation")]
     pub provider_ws_url: Option<String>,
 }
@@ -570,6 +572,7 @@ pub struct CoreEngine<DB> {
     /// Prevents duplicate logging/metrics on re-execution.
     assertion_failure_cache: moka::sync::Cache<TxHash, ()>,
     custom_tx_executor: Option<Arc<dyn CustomTxExecutor<DB>>>,
+    state_worker_control: Option<StateWorkerControlHandle>,
 }
 
 #[cfg(feature = "cache_validation")]
@@ -648,6 +651,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             cache_checker,
             assertion_failure_cache,
             custom_tx_executor: None,
+            state_worker_control: config.state_worker_control,
         }
     }
 
@@ -1706,6 +1710,9 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         );
         self.current_block_iterations.clear();
         self.first_commit_head_processed = true;
+        if let Some(state_worker_control) = &self.state_worker_control {
+            state_worker_control.update_commit_head(commit_head.block_number.saturating_to());
+        }
 
         debug!(
             target = "engine",

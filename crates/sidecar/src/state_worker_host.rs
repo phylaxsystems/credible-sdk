@@ -576,6 +576,7 @@ mod tests {
     };
     use crate::args::Config;
     use anyhow::anyhow;
+    use state_worker::control::ControlMessage;
     use std::{
         collections::VecDeque,
         io::Write,

@@ -129,6 +129,7 @@ impl TestInstance {
             writer_reader,
             genesis_state,
             system_calls,
+            16,
             control_rx,
         );
         let (shutdown_tx, _) = broadcast::channel(1);

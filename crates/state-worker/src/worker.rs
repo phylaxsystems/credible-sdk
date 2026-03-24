@@ -33,6 +33,7 @@ use mdbx::{
     Writer,
 };
 use std::{
+    collections::VecDeque,
     sync::Arc,
     time::Duration,
 };
@@ -51,6 +52,7 @@ use tracing::{
 
 const SUBSCRIPTION_RETRY_DELAY_SECS: u64 = 5;
 const MAX_MISSING_BLOCK_RETRIES: u32 = 3;
+const MIN_PENDING_UPDATE_LIMIT: usize = 1;
 /// Coordinates block ingestion, tracing, and persistence.
 pub struct StateWorker<WR>
 where
@@ -61,7 +63,11 @@ where
     writer_reader: WR,
     genesis_state: Option<GenesisState>,
     system_calls: SystemCalls,
-    _control_rx: mpsc::UnboundedReceiver<ControlMessage>,
+    control_rx: mpsc::UnboundedReceiver<ControlMessage>,
+    control_channel_closed: bool,
+    latest_commit_head: Option<u64>,
+    pending_updates: VecDeque<BlockStateUpdate>,
+    pending_update_limit: usize,
 }
 
 impl<WR> StateWorker<WR>
@@ -76,6 +82,7 @@ where
         writer_reader: WR,
         genesis_state: Option<GenesisState>,
         system_calls: SystemCalls,
+        pending_update_limit: usize,
         control_rx: mpsc::UnboundedReceiver<ControlMessage>,
     ) -> Self {
         Self {
@@ -84,7 +91,11 @@ where
             writer_reader,
             genesis_state,
             system_calls,
-            _control_rx: control_rx,
+            control_rx,
+            control_channel_closed: false,
+            latest_commit_head: None,
+            pending_updates: VecDeque::new(),
+            pending_update_limit: pending_update_limit.max(MIN_PENDING_UPDATE_LIMIT),
         }
     }
 
@@ -114,6 +125,8 @@ where
         start_override: Option<u64>,
         mut shutdown_rx: broadcast::Receiver<()>,
     ) -> Result<()> {
+        self.handle_pending_control_messages()?;
+        self.drain_permitted_updates()?;
         let mut next_block = self.compute_start_block(start_override)?;
         let mut missing_block_retries: u32 = 0;
 
@@ -123,6 +136,9 @@ where
                 info!("Shutdown signal received");
                 return Ok(());
             }
+
+            self.handle_pending_control_messages()?;
+            self.drain_permitted_updates()?;
 
             // Catch up block-by-block, checking shutdown between each
             if self.catch_up(&mut next_block, &mut shutdown_rx).await? {
@@ -195,6 +211,8 @@ where
         shutdown_rx: &mut broadcast::Receiver<()>,
     ) -> Result<bool> {
         loop {
+            self.handle_pending_control_messages()?;
+            self.drain_permitted_updates()?;
             let head = self.provider.get_block_number().await?;
             Self::update_sync_metrics(*next_block, head);
 
@@ -207,6 +225,8 @@ where
                 self.process_block(*next_block).await?;
                 *next_block += 1;
                 Self::update_sync_metrics(*next_block, head);
+                self.handle_pending_control_messages()?;
+                self.drain_permitted_updates()?;
 
                 // Check for shutdown after the block is complete
                 if shutdown_rx.try_recv().is_ok() {
@@ -233,6 +253,17 @@ where
                 _ = shutdown_rx.recv() => {
                     info!("Shutdown signal received during block streaming");
                     return Ok(());
+                }
+                maybe_control = self.control_rx.recv(), if !self.control_channel_closed => {
+                    match maybe_control {
+                        Some(control) => {
+                            self.apply_control_message(control);
+                            self.drain_permitted_updates()?;
+                        }
+                        None => {
+                            self.control_channel_closed = true;
+                        }
+                    }
                 }
                 maybe_header = stream.next() => {
                     match maybe_header {
@@ -264,6 +295,8 @@ where
                                 self.process_block(*next_block).await?;
                                 *next_block += 1;
                                 Self::update_sync_metrics(*next_block, block_number);
+                                self.handle_pending_control_messages()?;
+                                self.drain_permitted_updates()?;
                             }
                         }
                         None => {
@@ -275,12 +308,16 @@ where
         }
     }
 
-    /// Pull, trace, and persist a single block.
+    /// Pull, trace, and enqueue a single block update for later gated persistence.
     async fn process_block(&mut self, block_number: u64) -> Result<()> {
         info!(block_number, "processing block");
 
         if block_number == 0 && self.genesis_state.is_some() {
-            return self.process_genesis_block().await;
+            if let Some(update) = self.process_genesis_block().await? {
+                self.enqueue_update(update)?;
+            }
+            self.drain_permitted_updates()?;
+            return Ok(());
         }
 
         let mut update = match self.trace_provider.fetch_block_state(block_number).await {
@@ -294,21 +331,8 @@ where
 
         // Apply system call state changes (EIP-2935 & EIP-4788)
         self.apply_system_calls(&mut update, block_number).await?;
-
-        match self.writer_reader.commit_block(&update) {
-            Ok(stats) => {
-                metrics::set_db_healthy(true);
-                metrics::record_commit(block_number, &stats);
-            }
-            Err(err) => {
-                critical!(error = ?err, block_number, "failed to persist block");
-                metrics::set_db_healthy(false);
-                metrics::record_block_failure();
-                return Err(anyhow!("failed to persist block {block_number}"));
-            }
-        }
-
-        info!(block_number, "block persisted to database");
+        self.enqueue_update(update)?;
+        self.drain_permitted_updates()?;
         Ok(())
     }
 
@@ -367,10 +391,10 @@ where
     }
 
     /// Process block 0 using the configured genesis state
-    async fn process_genesis_block(&mut self) -> Result<()> {
+    async fn process_genesis_block(&mut self) -> Result<Option<BlockStateUpdate>> {
         let Some(genesis) = self.genesis_state.take() else {
             warn!("no genesis state configured; skipping genesis hydration");
-            return Ok(());
+            return Ok(None);
         };
 
         let already_exists = match self.writer_reader.latest_block_number() {
@@ -388,14 +412,14 @@ where
 
         if already_exists {
             info!("block 0 already exists in database; skipping genesis hydration");
-            return Ok(());
+            return Ok(None);
         }
 
         let accounts = genesis.into_accounts();
 
         if accounts.is_empty() {
             warn!("genesis file contained no accounts; skipping hydration");
-            return Ok(());
+            return Ok(None);
         }
 
         // Fetch genesis block header to get hash and state root
@@ -407,27 +431,88 @@ where
 
         info!("hydrating genesis state from genesis file");
 
-        let update = BlockStateUpdateBuilder::from_accounts(
+        Ok(Some(BlockStateUpdateBuilder::from_accounts(
             0,
             block.header.hash,
             block.header.state_root,
             accounts,
-        );
+        )))
+    }
 
-        match self.writer_reader.commit_block(&update) {
-            Ok(stats) => {
-                metrics::set_db_healthy(true);
-                metrics::record_commit(0, &stats);
+    fn apply_control_message(&mut self, control: ControlMessage) {
+        match control {
+            ControlMessage::CommitHead(block_number) => {
+                self.latest_commit_head = Some(block_number);
             }
-            Err(err) => {
-                critical!(error = ?err, block_number = 0, "failed to persist genesis block");
-                metrics::set_db_healthy(false);
-                metrics::record_block_failure();
-                return Err(anyhow!("failed to persist genesis block"));
+        }
+    }
+
+    fn handle_pending_control_messages(&mut self) -> Result<()> {
+        loop {
+            match self.control_rx.try_recv() {
+                Ok(control) => self.apply_control_message(control),
+                Err(mpsc::error::TryRecvError::Empty) => return Ok(()),
+                Err(mpsc::error::TryRecvError::Disconnected) => {
+                    self.control_channel_closed = true;
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    fn enqueue_update(&mut self, update: BlockStateUpdate) -> Result<()> {
+        self.drain_permitted_updates()?;
+        if self.pending_updates.len() >= self.pending_update_limit {
+            let blocked_on = self
+                .pending_updates
+                .front()
+                .map(|pending| pending.block_number)
+                .unwrap_or(update.block_number);
+            return Err(anyhow!(
+                "state worker pending update buffer is full while waiting to flush block {blocked_on}"
+            ));
+        }
+        self.pending_updates.push_back(update);
+        Ok(())
+    }
+
+    fn drain_permitted_updates(&mut self) -> Result<()> {
+        let Some(latest_commit_head) = self.latest_commit_head else {
+            return Ok(());
+        };
+
+        while self
+            .pending_updates
+            .front()
+            .is_some_and(|pending| pending.block_number <= latest_commit_head)
+        {
+            let update = self
+                .pending_updates
+                .pop_front()
+                .expect("pending update exists when draining");
+            match self.writer_reader.commit_block(&update) {
+                Ok(stats) => {
+                    metrics::set_db_healthy(true);
+                    metrics::record_commit(update.block_number, &stats);
+                    info!(
+                        block_number = update.block_number,
+                        latest_commit_head,
+                        "block persisted to database after commit-head permission"
+                    );
+                }
+                Err(err) => {
+                    critical!(
+                        error = ?err,
+                        block_number = update.block_number,
+                        "failed to persist block"
+                    );
+                    metrics::set_db_healthy(false);
+                    metrics::record_block_failure();
+                    return Err(anyhow!("failed to persist block {}", update.block_number));
+                }
             }
         }
 
-        info!(block_number = 0, "genesis block persisted to database");
         Ok(())
     }
 }

@@ -998,6 +998,7 @@ async fn test_state_worker_restart_resumes_from_latest_mdbx_block() -> Result<()
         writer_reader,
         None,
         SystemCalls::default(),
+        16,
         control_rx,
     );
     let (shutdown_tx, shutdown_rx) = broadcast::channel(1);

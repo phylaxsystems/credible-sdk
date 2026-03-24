@@ -120,6 +120,7 @@ pub async fn run_embedded_worker(
         writer_reader,
         Some(genesis_state),
         system_calls,
+        usize::from(config.state_depth),
         control_rx,
     );
 
