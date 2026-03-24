@@ -74,6 +74,11 @@ impl StateWorkerControlHandle {
     pub fn update_commit_head(&self, block_number: u64) {
         let mut state = self.state.lock();
         state.latest_permitted_watermark = Some(block_number);
+        info!(
+            latest_permitted_watermark = block_number,
+            control_connected = state.control_tx.is_some(),
+            "cached latest commit-head watermark for embedded state worker"
+        );
         if let Some(control_tx) = &state.control_tx
             && let Err(error) = control_tx.send(ControlMessage::CommitHead(block_number))
         {
@@ -332,6 +337,7 @@ fn run_worker_thread(
         if let Some(latest_permitted_watermark) = latest_permitted_watermark {
             info!(
                 latest_permitted_watermark,
+                resume_from_block = ?resume_from_block,
                 "replaying cached commit-head watermark for embedded state worker restart"
             );
             control_tx

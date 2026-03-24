@@ -115,6 +115,37 @@ pub fn set_following_head(is_following_head: bool) {
     gauge!("state_worker_is_following_head").set(bool_to_f64(is_following_head));
 }
 
+/// Record the current buffered backlog size inside the worker.
+pub fn set_backlog_size(backlog: usize) {
+    gauge!("state_worker_buffer_backlog").set(usize_to_f64(backlog));
+}
+
+/// Record the configured bounded buffer capacity.
+pub fn set_backlog_capacity(capacity: usize) {
+    gauge!("state_worker_buffer_capacity").set(usize_to_f64(capacity));
+}
+
+/// Record the oldest buffered block still waiting for commit-head permission.
+pub fn set_oldest_buffered_block(block_number: Option<u64>) {
+    gauge!("state_worker_oldest_buffered_block")
+        .set(block_number.map_or(0.0, u64_to_f64));
+}
+
+/// Record the latest commit-head watermark known to the worker.
+pub fn set_latest_commit_head(block_number: Option<u64>) {
+    gauge!("state_worker_latest_commit_head").set(block_number.map_or(0.0, u64_to_f64));
+}
+
+/// Record whether trace intake is currently paused by buffer pressure.
+pub fn set_tracing_paused_for_backpressure(paused: bool) {
+    gauge!("state_worker_tracing_paused_for_backpressure").set(bool_to_f64(paused));
+}
+
+/// Count each time the worker enters paused intake due to backlog pressure.
+pub fn record_backpressure_pause() {
+    counter!("state_worker_backpressure_pauses_total").increment(1);
+}
+
 fn usize_to_f64(value: usize) -> f64 {
     let capped = u32::try_from(value).unwrap_or(u32::MAX);
     f64::from(capped)
