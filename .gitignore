@@ -44,6 +44,7 @@ crates/dapp-api-client/openapi/
 
 # Local sidecar artifacts
 .local/
+.worktrees/
 assertion_store_database/
 indexer_database/
 geth/
