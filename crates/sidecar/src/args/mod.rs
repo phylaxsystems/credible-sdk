@@ -336,6 +336,8 @@ impl LegacyStateConfig {
 pub struct StateConfigFile {
     /// State sources
     pub sources: Option<Vec<StateSourceConfig>>,
+    /// Genesis file consumed by the embedded state worker.
+    pub worker_genesis_path: Option<String>,
     /// Legacy state source fields (deprecated).
     #[serde(flatten)]
     pub legacy: LegacyStateConfig,
@@ -353,6 +355,8 @@ pub struct StateConfig {
     /// State sources
     #[serde(default)]
     pub sources: Vec<StateSourceConfig>,
+    /// Genesis file consumed by the embedded state worker.
+    pub worker_genesis_path: Option<String>,
     /// Legacy state source fields (deprecated).
     #[serde(flatten)]
     pub legacy: LegacyStateConfig,
@@ -469,6 +473,9 @@ fn resolve_state(state_file: &StateConfigFile) -> Result<StateConfig, ConfigErro
 
     Ok(StateConfig {
         sources,
+        worker_genesis_path: parse_env("SIDECAR_STATE_WORKER_GENESIS_PATH")?
+            .or(parse_env("STATE_WORKER_FILE_TO_GENESIS")?)
+            .or_else(|| state_file.worker_genesis_path.clone()),
         legacy: LegacyStateConfig {
             eth_rpc_source_ws_url: parse_env("SIDECAR_STATE_ETH_RPC_SOURCE_WS_URL")?
                 .or_else(|| state_file.legacy.eth_rpc_source_ws_url.clone()),
