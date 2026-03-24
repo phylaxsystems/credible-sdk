@@ -660,6 +660,27 @@ mod tests {
     }
 
     #[test]
+    fn toml_rejects_duplicate_contract_keys() {
+        let toml_str = r#"
+            environment = "production"
+            [contracts.ownable]
+            address = "0xD1f444eA1D2d9fA567F8fD73b15199F90e630074"
+            name = "Ownable"
+            [[contracts.ownable.assertions]]
+            file = "src/OwnableAssertion.a.sol"
+
+            [contracts.ownable]
+            address = "0xC9734723aAD51626dC9244fed32668ccb280856A"
+            name = "Ownable2"
+            [[contracts.ownable.assertions]]
+            file = "src/OwnableAssertion.a.sol"
+        "#;
+        let result: Result<CredibleToml, toml::de::Error> =
+            toml::from_str::<CredibleToml>(toml_str);
+        assert!(result.is_err(), "TOML should reject duplicate keys");
+    }
+
+    #[test]
     fn rejects_duplicate_contract_addresses() {
         let toml_str = r#"
             environment = "production"
