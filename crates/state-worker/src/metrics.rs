@@ -127,8 +127,7 @@ pub fn set_backlog_capacity(capacity: usize) {
 
 /// Record the oldest buffered block still waiting for commit-head permission.
 pub fn set_oldest_buffered_block(block_number: Option<u64>) {
-    gauge!("state_worker_oldest_buffered_block")
-        .set(block_number.map_or(0.0, u64_to_f64));
+    gauge!("state_worker_oldest_buffered_block").set(block_number.map_or(0.0, u64_to_f64));
 }
 
 /// Record the latest commit-head watermark known to the worker.

@@ -466,7 +466,10 @@ where
                 debug!(
                     latest_commit_head = block_number,
                     backlog = self.pending_updates.len(),
-                    oldest_buffered_block = self.pending_updates.front().map(|update| update.block_number),
+                    oldest_buffered_block = self
+                        .pending_updates
+                        .front()
+                        .map(|update| update.block_number),
                     "updated state worker commit-head watermark"
                 );
             }
@@ -597,7 +600,10 @@ where
                 warn!(
                     backlog = self.pending_updates.len(),
                     buffer_capacity = self.pending_update_limit,
-                    oldest_buffered_block = self.pending_updates.front().map(|update| update.block_number),
+                    oldest_buffered_block = self
+                        .pending_updates
+                        .front()
+                        .map(|update| update.block_number),
                     latest_commit_head = self.latest_commit_head,
                     "state worker paused trace intake due to buffered update pressure"
                 );
@@ -605,7 +611,10 @@ where
                 info!(
                     backlog = self.pending_updates.len(),
                     buffer_capacity = self.pending_update_limit,
-                    oldest_buffered_block = self.pending_updates.front().map(|update| update.block_number),
+                    oldest_buffered_block = self
+                        .pending_updates
+                        .front()
+                        .map(|update| update.block_number),
                     latest_commit_head = self.latest_commit_head,
                     "state worker resumed trace intake after buffered update pressure eased"
                 );
@@ -615,7 +624,9 @@ where
         metrics::set_backlog_size(self.pending_updates.len());
         metrics::set_backlog_capacity(self.pending_update_limit);
         metrics::set_oldest_buffered_block(
-            self.pending_updates.front().map(|update| update.block_number),
+            self.pending_updates
+                .front()
+                .map(|update| update.block_number),
         );
         metrics::set_latest_commit_head(self.latest_commit_head);
         metrics::set_tracing_paused_for_backpressure(paused);
