@@ -4,8 +4,8 @@
 //! the MDBX database backend for running integration tests.
 
 use crate::{
-    connect_provider,
     genesis::GenesisState,
+    host::connect_provider,
     integration_tests::mdbx_fixture::MdbxTestDir,
     state,
     system_calls::SystemCalls,
