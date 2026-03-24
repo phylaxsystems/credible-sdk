@@ -8,7 +8,6 @@ use assertion_executor::{
 };
 use credible_utils::shutdown::wait_for_sigterm;
 use flume::unbounded;
-use mdbx::StateReader;
 use metrics::counter;
 use sidecar::{
     args::{
@@ -40,6 +39,13 @@ use sidecar::{
     health::HealthServer,
     indexer,
     indexer::IndexerCfg,
+    state_sync::{
+        mdbx_runtime,
+        supervisor::{
+            EmbeddedWorkerConfig,
+            StateWorkerSupervisor,
+        },
+    },
     transaction_observer::{
         TransactionObserver,
         TransactionObserverConfig,
@@ -265,6 +271,7 @@ struct ThreadHandles {
     engine: Option<JoinHandle<Result<(), sidecar::engine::EngineError>>>,
     event_sequencing:
         Option<JoinHandle<Result<(), sidecar::event_sequencing::EventSequencingError>>>,
+    state_worker_supervisor: Option<StateWorkerSupervisor>,
     transaction_observer:
         Option<JoinHandle<Result<(), sidecar::transaction_observer::TransactionObserverError>>>,
 }
@@ -274,6 +281,7 @@ impl ThreadHandles {
         Self {
             engine: None,
             event_sequencing: None,
+            state_worker_supervisor: None,
             transaction_observer: None,
         }
     }
@@ -294,6 +302,9 @@ impl ThreadHandles {
                 }
                 Err(_) => tracing::error!("Event sequencing thread panicked"),
             }
+        }
+        if let Some(mut supervisor) = self.state_worker_supervisor.take() {
+            supervisor.join();
         }
         if let Some(handle) = self.transaction_observer.take() {
             match handle.join() {
@@ -335,6 +346,55 @@ fn transaction_observer_config_from(config: &Config) -> Option<TransactionObserv
     }
 }
 
+fn open_mdbx_source(path: &str) -> Option<Arc<dyn Source>> {
+    match mdbx_runtime::init(path) {
+        Ok(runtime) => Some(Arc::new(MdbxSource::new(runtime.reader()))),
+        Err(e) => {
+            error!(error = ?e, mdbx_path = path, "Failed to connect MDBX");
+            None
+        }
+    }
+}
+
+fn embedded_worker_config_from(config: &Config) -> Option<EmbeddedWorkerConfig> {
+    let mut mdbx_path = None;
+    let mut ws_url = None;
+
+    if config.state.sources.is_empty() {
+        mdbx_path = config.state.legacy.state_worker_mdbx_path.clone();
+        ws_url = config.state.legacy.eth_rpc_source_ws_url.clone();
+    } else {
+        for source_config in &config.state.sources {
+            match source_config {
+                StateSourceConfig::Mdbx {
+                    mdbx_path: configured_path,
+                    depth: _,
+                } if mdbx_path.is_none() => {
+                    mdbx_path = Some(configured_path.clone());
+                }
+                StateSourceConfig::EthRpc {
+                    ws_url: configured_ws_url,
+                    http_url: _,
+                } if ws_url.is_none() => {
+                    ws_url = Some(configured_ws_url.clone());
+                }
+                _ => {}
+            }
+        }
+    }
+
+    match (mdbx_path, ws_url) {
+        (Some(mdbx_path), Some(ws_url)) => {
+            Some(EmbeddedWorkerConfig {
+                ws_url,
+                mdbx_path,
+                start_block: None,
+            })
+        }
+        _ => None,
+    }
+}
+
 async fn build_sources_from_config(config: &Config) -> anyhow::Result<Vec<Arc<dyn Source>>> {
     let mut sources: Vec<Arc<dyn Source>> = Vec::new();
 
@@ -346,13 +406,8 @@ async fn build_sources_from_config(config: &Config) -> anyhow::Result<Vec<Arc<dy
             config.state.legacy.state_worker_mdbx_path.as_ref(),
             config.state.legacy.state_worker_depth,
         ) {
-            match StateReader::new(state_worker_path) {
-                Ok(state_worker_client) => {
-                    sources.push(Arc::new(MdbxSource::new(state_worker_client)));
-                }
-                Err(e) => {
-                    error!(error = ?e, "Failed to connect MDBX");
-                }
+            if let Some(source) = open_mdbx_source(state_worker_path) {
+                sources.push(source);
             }
         }
 
@@ -377,13 +432,8 @@ async fn build_sources_from_config(config: &Config) -> anyhow::Result<Vec<Arc<dy
                     mdbx_path,
                     depth: _,
                 } => {
-                    match StateReader::new(mdbx_path) {
-                        Ok(state_worker_client) => {
-                            sources.push(Arc::new(MdbxSource::new(state_worker_client)));
-                        }
-                        Err(e) => {
-                            error!(error = ?e, "Failed to connect MDBX");
-                        }
+                    if let Some(source) = open_mdbx_source(mdbx_path) {
+                        sources.push(source);
                     }
                 }
                 StateSourceConfig::EthRpc { ws_url, http_url } => {
@@ -599,6 +649,7 @@ async fn run_sidecar_once(
 
     // Shared shutdown flag for this iteration
     let shutdown_flag = Arc::new(AtomicBool::new(false));
+    let embedded_worker_config = embedded_worker_config_from(config);
 
     let sources = build_sources_from_config(config).await?;
     let state = Arc::new(Sources::new(sources, config.state.minimum_state_diff));
@@ -635,6 +686,13 @@ async fn run_sidecar_once(
     let event_sequencing = EventSequencing::new(event_sequencing_rx, event_sequencing_tx);
     let (seq_handle, seq_exited) = event_sequencing.spawn(Arc::clone(&shutdown_flag))?;
     thread_handles.event_sequencing = Some(seq_handle);
+
+    if let Some(embedded_worker_config) = embedded_worker_config {
+        thread_handles.state_worker_supervisor =
+            Some(StateWorkerSupervisor::spawn(embedded_worker_config)?);
+    } else {
+        tracing::info!("Embedded state worker supervisor disabled: missing MDBX or Eth RPC config");
+    }
 
     // Spawn CoreEngine on a dedicated OS thread
     let engine_config = CoreEngineConfig {
@@ -710,6 +768,9 @@ async fn run_sidecar_once(
     drop(health_server);
 
     // Wait for threads
+    if let Some(supervisor) = thread_handles.state_worker_supervisor.as_ref() {
+        supervisor.shutdown();
+    }
     thread_handles.join_all();
 
     Ok(should_shutdown)

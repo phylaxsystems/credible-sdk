@@ -30,10 +30,14 @@ pub mod graphql_event_source;
 pub mod health;
 pub mod indexer;
 pub mod metrics;
+pub mod state_sync;
 pub mod transaction_observer;
 pub mod transactions_state;
 pub mod transport;
 pub mod utils;
+
+#[cfg(test)]
+include!("state_sync/tests.rs");
 
 pub use credible_utils::critical;
 
