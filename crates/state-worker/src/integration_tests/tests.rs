@@ -887,6 +887,7 @@ async fn test_mdbx_bootstrap_recovery_without_diffs() -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_state_worker_restart_resumes_from_latest_mdbx_block() -> Result<()> {
     use crate::{
@@ -928,7 +929,10 @@ async fn test_state_worker_restart_resumes_from_latest_mdbx_block() -> Result<()
             B256::repeat_byte(0x22),
         )
         .context("bootstrap should succeed")?;
-    assert_eq!(writer_reader.latest_block_number()?, Some(latest_block_number));
+    assert_eq!(
+        writer_reader.latest_block_number()?,
+        Some(latest_block_number)
+    );
     let verification_reader = writer_reader.reader().clone();
 
     let mock_server = int_test_utils::node_protocol_mock_server::DualProtocolMockServer::new()
@@ -973,7 +977,10 @@ async fn test_state_worker_restart_resumes_from_latest_mdbx_block() -> Result<()
             }
         }),
     );
-    mock_server.add_response("debug_traceBlockByNumber", trace_state_changes_block_1(test_address));
+    mock_server.add_response(
+        "debug_traceBlockByNumber",
+        trace_state_changes_block_1(test_address),
+    );
 
     let provider = connect_provider(&mock_server.ws_url())
         .await
@@ -999,7 +1006,10 @@ async fn test_state_worker_restart_resumes_from_latest_mdbx_block() -> Result<()
     shutdown_tx.send(()).ok();
     worker_task.await??;
 
-    assert_eq!(verification_reader.latest_block_number()?, Some(resumed_block));
+    assert_eq!(
+        verification_reader.latest_block_number()?,
+        Some(resumed_block)
+    );
     let resumed_account = verification_reader
         .get_account(address_hash.into(), resumed_block)?
         .context("resumed block account should exist")?;

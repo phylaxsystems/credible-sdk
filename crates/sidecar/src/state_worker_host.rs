@@ -1,8 +1,11 @@
 //! Sidecar-owned lifecycle wrapper for the embedded state worker.
 
-use crate::args::{
-    Config,
-    StateSourceConfig,
+use crate::{
+    args::{
+        Config,
+        StateSourceConfig,
+    },
+    metrics,
 };
 use anyhow::{
     Context,
@@ -14,7 +17,6 @@ use mdbx::{
     StateReader,
     common::CircularBufferConfig,
 };
-use crate::metrics;
 use state_worker::host::{
     EmbeddedStateWorkerConfig,
     run_embedded_worker,
@@ -171,30 +173,31 @@ fn start_state_worker_host_with_runner(
     config: &Config,
     runner: Arc<dyn WorkerRunner>,
 ) -> Result<StateWorkerHostHandle> {
-    start_state_worker_host_with_runner_and_hooks(config, runner, Arc::new(NoopSupervisorHooks))
+    let hooks: Arc<dyn SupervisorHooks> = Arc::new(NoopSupervisorHooks);
+    start_state_worker_host_with_runner_and_hooks(config, runner, &hooks)
 }
 
 fn start_state_worker_host_with_runner_and_hooks(
     config: &Config,
     runner: Arc<dyn WorkerRunner>,
-    hooks: Arc<dyn SupervisorHooks>,
+    hooks: &Arc<dyn SupervisorHooks>,
 ) -> Result<StateWorkerHostHandle> {
     let worker_config = embedded_state_worker_config(config)?;
     let (shutdown_tx, _) = broadcast::channel(1);
     let shutdown_requested = Arc::new(AtomicBool::new(false));
     let worker_shutdown_tx = shutdown_tx.clone();
     let worker_shutdown_requested = Arc::clone(&shutdown_requested);
-    let worker_hooks = Arc::clone(&hooks);
+    let worker_hooks = Arc::clone(hooks);
 
     let join_handle = std::thread::Builder::new()
         .name("sidecar-state-worker".into())
         .spawn(move || {
             run_worker_thread(
-                worker_config,
-                worker_shutdown_tx,
-                worker_shutdown_requested,
-                runner,
-                worker_hooks,
+                &worker_config,
+                &worker_shutdown_tx,
+                &worker_shutdown_requested,
+                &runner,
+                &worker_hooks,
             )
         })
         .context("failed to spawn state worker host thread")?;
@@ -229,12 +232,13 @@ pub fn embedded_state_worker_config(config: &Config) -> Result<EmbeddedStateWork
     ))
 }
 
+#[allow(clippy::too_many_lines)]
 fn run_worker_thread(
-    worker_config: EmbeddedStateWorkerConfig,
-    shutdown_tx: broadcast::Sender<()>,
-    shutdown_requested: Arc<AtomicBool>,
-    runner: Arc<dyn WorkerRunner>,
-    hooks: Arc<dyn SupervisorHooks>,
+    worker_config: &EmbeddedStateWorkerConfig,
+    shutdown_tx: &broadcast::Sender<()>,
+    shutdown_requested: &Arc<AtomicBool>,
+    runner: &Arc<dyn WorkerRunner>,
+    hooks: &Arc<dyn SupervisorHooks>,
 ) -> Result<()> {
     let runtime = Builder::new_current_thread()
         .enable_all()
@@ -256,7 +260,7 @@ fn run_worker_thread(
             return Ok(());
         }
 
-        let resume_from_block = latest_resume_block(&worker_config);
+        let resume_from_block = latest_resume_block(worker_config);
         info!(
             restart_attempt,
             consecutive_failures,
@@ -266,7 +270,7 @@ fn run_worker_thread(
 
         let worker_config_for_run = worker_config.clone();
         let shutdown_rx = shutdown_tx.subscribe();
-        let runner = Arc::clone(&runner);
+        let runner = Arc::clone(runner);
         let run_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             runtime.block_on(async move { runner.run(worker_config_for_run, shutdown_rx).await })
         }));
@@ -351,30 +355,34 @@ fn run_worker_thread(
 }
 
 fn default_worker_runner() -> Arc<dyn WorkerRunner> {
-    Arc::new(|config: EmbeddedStateWorkerConfig, shutdown_rx: broadcast::Receiver<()>| {
-        let future: WorkerRunFuture = Box::pin(async move {
-            run_embedded_worker(&config, shutdown_rx)
-                .await
-                .map_err(WorkerRunError::runtime)
-        });
-        future
-    })
+    Arc::new(
+        |config: EmbeddedStateWorkerConfig, shutdown_rx: broadcast::Receiver<()>| {
+            let future: WorkerRunFuture = Box::pin(async move {
+                run_embedded_worker(&config, shutdown_rx)
+                    .await
+                    .map_err(WorkerRunError::runtime)
+            });
+            future
+        },
+    )
 }
 
 fn latest_resume_block(worker_config: &EmbeddedStateWorkerConfig) -> Option<u64> {
     let config = CircularBufferConfig::new(worker_config.state_depth).ok()?;
     match StateReader::new(&worker_config.mdbx_path, config) {
-        Ok(reader) => match reader.latest_block_number() {
-            Ok(latest_block_number) => latest_block_number,
-            Err(error) => {
-                warn!(
-                    error = ?error,
-                    mdbx_path = %worker_config.mdbx_path.display(),
-                    "failed to read latest MDBX block for worker resume point"
-                );
-                None
+        Ok(reader) => {
+            match reader.latest_block_number() {
+                Ok(latest_block_number) => latest_block_number,
+                Err(error) => {
+                    warn!(
+                        error = ?error,
+                        mdbx_path = %worker_config.mdbx_path.display(),
+                        "failed to read latest MDBX block for worker resume point"
+                    );
+                    None
+                }
             }
-        },
+        }
         Err(error) => {
             warn!(
                 error = ?error,
@@ -485,8 +493,8 @@ mod tests {
         WorkerRunError,
         embedded_state_worker_config,
         restart_backoff,
-        start_state_worker_host_with_runner_and_hooks,
         start_state_worker_host_with_runner,
+        start_state_worker_host_with_runner_and_hooks,
     };
     use crate::args::Config;
     use anyhow::anyhow;
@@ -543,12 +551,15 @@ mod tests {
             _resume_from_block: Option<u64>,
             panic_payload: Option<&str>,
         ) {
-            self.events.lock().expect("hooks lock").push(SupervisorEvent::Failure {
-                failure_kind,
-                restart_attempt,
-                consecutive_failures,
-                panic_payload: panic_payload.map(str::to_string),
-            });
+            self.events
+                .lock()
+                .expect("hooks lock")
+                .push(SupervisorEvent::Failure {
+                    failure_kind,
+                    restart_attempt,
+                    consecutive_failures,
+                    panic_payload: panic_payload.map(str::to_string),
+                });
         }
 
         fn on_restart_scheduled(
@@ -689,19 +700,18 @@ mod tests {
         ])));
         let runner = test_runner(Arc::clone(&attempts), Arc::clone(&outcomes));
         let hooks = Arc::new(TestSupervisorHooks::default());
-
-        let handle = start_state_worker_host_with_runner_and_hooks(
-            &config,
-            runner,
-            Arc::clone(&hooks) as Arc<dyn SupervisorHooks>,
-        )
-        .expect("start host with runner");
+        let hooks_trait: Arc<dyn SupervisorHooks> = hooks.clone();
+        let handle = start_state_worker_host_with_runner_and_hooks(&config, runner, &hooks_trait)
+            .expect("start host with runner");
 
         wait_for_attempts(&attempts, 3);
         handle.signal_shutdown();
 
         let result = handle.join().expect("worker thread should join");
-        assert!(result.is_ok(), "worker thread should exit cleanly: {result:?}");
+        assert!(
+            result.is_ok(),
+            "worker thread should exit cleanly: {result:?}"
+        );
         let events = hooks.events.lock().expect("hooks lock").clone();
         assert!(events.contains(&SupervisorEvent::Failure {
             failure_kind: WorkerFailureKind::StartupError,
@@ -745,19 +755,18 @@ mod tests {
         ])));
         let runner = test_runner(Arc::clone(&attempts), Arc::clone(&outcomes));
         let hooks = Arc::new(TestSupervisorHooks::default());
-
-        let handle = start_state_worker_host_with_runner_and_hooks(
-            &config,
-            runner,
-            Arc::clone(&hooks) as Arc<dyn SupervisorHooks>,
-        )
-        .expect("start host with runner");
+        let hooks_trait: Arc<dyn SupervisorHooks> = hooks.clone();
+        let handle = start_state_worker_host_with_runner_and_hooks(&config, runner, &hooks_trait)
+            .expect("start host with runner");
 
         wait_for_attempts(&attempts, 2);
         handle.signal_shutdown();
 
         let result = handle.join().expect("worker thread should join");
-        assert!(result.is_ok(), "worker thread should exit cleanly: {result:?}");
+        assert!(
+            result.is_ok(),
+            "worker thread should exit cleanly: {result:?}"
+        );
         let events = hooks.events.lock().expect("hooks lock").clone();
         assert!(events.contains(&SupervisorEvent::Failure {
             failure_kind: WorkerFailureKind::Panic,
@@ -782,14 +791,18 @@ mod tests {
                     .pop_front()
                     .unwrap_or(TestRunOutcome::WaitForShutdown);
                 match outcome {
-                    TestRunOutcome::StartupError(message) => Err(WorkerRunError {
-                        kind: WorkerFailureKind::StartupError,
-                        error: anyhow!(message),
-                    }),
-                    TestRunOutcome::RuntimeError(message) => Err(WorkerRunError {
-                        kind: WorkerFailureKind::RuntimeError,
-                        error: anyhow!(message),
-                    }),
+                    TestRunOutcome::StartupError(message) => {
+                        Err(WorkerRunError {
+                            kind: WorkerFailureKind::StartupError,
+                            error: anyhow!(message),
+                        })
+                    }
+                    TestRunOutcome::RuntimeError(message) => {
+                        Err(WorkerRunError {
+                            kind: WorkerFailureKind::RuntimeError,
+                            error: anyhow!(message),
+                        })
+                    }
                     TestRunOutcome::Panic(message) => panic!("{message}"),
                     TestRunOutcome::WaitForShutdown => {
                         let _ = shutdown_rx.recv().await;
