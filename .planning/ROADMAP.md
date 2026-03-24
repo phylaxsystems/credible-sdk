@@ -31,8 +31,8 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 Plans:
 - [x] 01-01-PLAN.md — Move worker startup/runtime bootstrap into embeddable library surfaces
-- [ ] 01-02-PLAN.md — Add sidecar-owned worker host, lifecycle controls, and shutdown wiring
-- [ ] 01-03-PLAN.md — Add restart supervision, panic isolation, and resume-from-MDBX coverage
+- [x] 01-02-PLAN.md — Add sidecar-owned worker host, lifecycle controls, and shutdown wiring
+- [x] 01-03-PLAN.md — Add restart supervision, panic isolation, and resume-from-MDBX coverage
 
 ### Phase 2: Commit-Gated MDBX Flush
 **Goal**: Decouple tracing from persistence by buffering traced updates in memory and allowing MDBX writes only up to the engine's committed head.
@@ -45,9 +45,9 @@ Plans:
 **Plans**: 3 plans
 
 Plans:
-- [ ] 02-01: Introduce buffered block update pipeline and commit-head flush control messages
-- [ ] 02-02: Enforce MDBX max-height invariants and bounded-buffer backpressure
-- [ ] 02-03: Add commit-gating and resume-path integration tests across sidecar/state-worker/mdbx
+- [x] 02-01-PLAN.md — Define commit-head control contracts and split tracing from gated flushing
+- [ ] 02-02-PLAN.md — Enforce bounded commit-gated draining, backpressure, and backlog telemetry
+- [ ] 02-03-PLAN.md — Add integration coverage for watermark delivery, max-height invariants, and full-buffer pause behavior
 
 ### Phase 3: Simplify MDBX Source
 **Goal**: Rework `MdbxSource` around shared in-process MDBX height so sidecar reads no longer depend on polling, overlap math, or replica-depth workarounds.
@@ -85,7 +85,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. In-Process Worker Host | 0/3 | Not started | - |
+| 1. In-Process Worker Host | 3/3 | Complete | 2026-03-24 |
 | 2. Commit-Gated MDBX Flush | 0/3 | Not started | - |
 | 3. Simplify MDBX Source | 0/2 | Not started | - |
 | 4. Fallback and Regression Hardening | 0/3 | Not started | - |

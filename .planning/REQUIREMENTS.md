@@ -7,16 +7,16 @@
 
 ### Thread Integration
 
-- [ ] **THREAD-01**: Sidecar starts the state worker as a dedicated OS thread inside the sidecar process
+- [x] **THREAD-01**: Sidecar starts the state worker as a dedicated OS thread inside the sidecar process
 - [x] **THREAD-02**: The in-process state worker owns a single-threaded Tokio runtime isolated from the sidecar main runtime
-- [ ] **THREAD-03**: A panic or recoverable failure in the state worker does not crash the sidecar process
-- [ ] **THREAD-04**: The sidecar automatically restarts the state worker with backoff after worker failure
+- [x] **THREAD-03**: A panic or recoverable failure in the state worker does not crash the sidecar process
+- [x] **THREAD-04**: The sidecar automatically restarts the state worker with backoff after worker failure
 - [x] **THREAD-05**: On restart, the state worker resumes from the last committed MDBX block
 
 ### Commit-Gated Persistence
 
-- [ ] **SYNC-01**: The state worker buffers `BlockStateUpdate` values in memory after tracing each block
-- [ ] **SYNC-02**: The core engine signals the worker to flush state updates only after successful `process_commit_head` progress
+- [x] **SYNC-01**: The state worker buffers `BlockStateUpdate` values in memory after tracing each block
+- [x] **SYNC-02**: The core engine signals the worker to flush state updates only after successful `process_commit_head` progress
 - [ ] **SYNC-03**: The worker flushes only updates where `block_number <= commit_head.block_number`
 - [ ] **SYNC-04**: MDBX readable height never exceeds the current commit head block number
 - [ ] **SYNC-05**: The buffered update queue is bounded and the worker pauses tracing when the buffer is full
@@ -58,13 +58,13 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| THREAD-01 | Phase 1 | Pending |
+| THREAD-01 | Phase 1 | Complete |
 | THREAD-02 | Phase 1 | Complete |
-| THREAD-03 | Phase 1 | Pending |
-| THREAD-04 | Phase 1 | Pending |
+| THREAD-03 | Phase 1 | Complete |
+| THREAD-04 | Phase 1 | Complete |
 | THREAD-05 | Phase 1 | Complete |
-| SYNC-01 | Phase 2 | Pending |
-| SYNC-02 | Phase 2 | Pending |
+| SYNC-01 | Phase 2 | Complete |
+| SYNC-02 | Phase 2 | Complete |
 | SYNC-03 | Phase 2 | Pending |
 | SYNC-04 | Phase 2 | Pending |
 | SYNC-05 | Phase 2 | Pending |
@@ -85,4 +85,4 @@
 
 ---
 *Requirements defined: 2026-03-24*
-*Last updated: 2026-03-24 after initial definition*
+*Last updated: 2026-03-24 after Phase 1 completion*
