@@ -25,6 +25,12 @@ use mdbx::{
 };
 use std::collections::HashMap;
 
+/// Convert geth prestate tracer output into MDBX account state updates.
+///
+/// # Errors
+///
+/// Returns an error if any trace result is malformed or cannot be converted
+/// into account state.
 pub fn process_geth_traces(traces: Vec<TraceResult>) -> anyhow::Result<Vec<AccountState>> {
     let mut accounts: HashMap<AddressHash, AccountSnapshot> = HashMap::new();
 

@@ -29,16 +29,19 @@ pub struct GenesisState {
 impl GenesisState {
     /// Immutable view of the parsed account commits.
     #[cfg(test)]
+    #[must_use]
     pub fn accounts(&self) -> &[AccountState] {
         &self.accounts
     }
 
     /// Consume the state and return the owned account commits.
+    #[must_use]
     pub fn into_accounts(self) -> Vec<AccountState> {
         self.accounts
     }
 
     /// Immutable view of the parsed genesis config.
+    #[must_use]
     pub fn config(&self) -> &Config {
         &self.config
     }
@@ -68,6 +71,11 @@ struct GenesisAccount {
 }
 
 /// Parse accounts from a genesis JSON blob.
+///
+/// # Errors
+///
+/// Returns an error if the JSON payload cannot be deserialized or any account
+/// entry cannot be converted into MDBX account state.
 pub fn parse_from_str(data: &str) -> Result<GenesisState> {
     let genesis: GenesisFile =
         serde_json::from_str(data).context("failed to deserialize genesis JSON")?;

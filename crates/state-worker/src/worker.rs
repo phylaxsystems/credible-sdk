@@ -98,6 +98,11 @@ where
 
     /// Drive the catch-up + streaming loop. We keep retrying the subscription
     /// because websocket connections can drop in practice.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if MDBX reads fail, provider calls fail, tracing fails,
+    /// or block persistence cannot complete.
     pub async fn run(
         &mut self,
         start_override: Option<u64>,

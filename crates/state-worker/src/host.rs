@@ -72,6 +72,11 @@ impl EmbeddedStateWorkerConfig {
 }
 
 /// Run the worker using an externally-owned shutdown channel.
+///
+/// # Errors
+///
+/// Returns an error if provider setup, genesis loading, MDBX initialization,
+/// or the worker loop fails.
 pub async fn run_embedded_worker(
     config: &EmbeddedStateWorkerConfig,
     shutdown_rx: broadcast::Receiver<()>,
@@ -83,13 +88,11 @@ pub async fn run_embedded_worker(
         &config.mdbx_path,
         CircularBufferConfig::new(config.state_depth)?,
     )
-    .map(|writer_reader| {
+    .inspect(|_| {
         metrics::set_db_healthy(true);
-        writer_reader
     })
-    .map_err(|err| {
+    .inspect_err(|_| {
         metrics::set_db_healthy(false);
-        err
     })
     .context("failed to initialize database client")?;
 
@@ -121,6 +124,11 @@ pub async fn run_embedded_worker(
 }
 
 /// Run the worker on an isolated single-threaded Tokio runtime and stop on process signals.
+///
+/// # Errors
+///
+/// Returns an error if runtime creation, signal handling, or the worker run
+/// fails.
 pub fn run_embedded_worker_until_shutdown(config: EmbeddedStateWorkerConfig) -> Result<()> {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -161,6 +169,10 @@ fn load_genesis_state(path: &PathBuf) -> Result<GenesisState> {
 }
 
 /// Wait for SIGTERM or SIGINT (Ctrl+C).
+///
+/// # Errors
+///
+/// Returns an error if the process signal handlers cannot be installed.
 pub async fn shutdown_signal() -> Result<()> {
     use tokio::signal;
 
@@ -193,6 +205,10 @@ pub async fn shutdown_signal() -> Result<()> {
 }
 
 /// Establish a WebSocket connection to the execution node.
+///
+/// # Errors
+///
+/// Returns an error if the websocket connection cannot be established.
 pub async fn connect_provider(ws_url: &str) -> Result<Arc<RootProvider>> {
     let ws = WsConnect::new(ws_url);
     let provider = ProviderBuilder::new()
@@ -204,6 +220,11 @@ pub async fn connect_provider(ws_url: &str) -> Result<Arc<RootProvider>> {
 }
 
 /// Validate that the connected execution client meets trace-version requirements.
+///
+/// # Errors
+///
+/// Returns an error if the client version cannot be queried or if Geth is
+/// older than the minimum supported version.
 pub async fn validate_geth_version(provider: &RootProvider) -> Result<()> {
     let client_version = provider
         .get_client_version()

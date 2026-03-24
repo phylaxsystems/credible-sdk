@@ -33,6 +33,7 @@ pub struct GethTraceProvider {
 }
 
 impl GethTraceProvider {
+    #[must_use]
     pub fn new(provider: Arc<RootProvider>, trace_timeout: Duration) -> Self {
         Self {
             provider,
