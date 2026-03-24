@@ -43,6 +43,10 @@ use sidecar::{
     health::HealthServer,
     indexer,
     indexer::IndexerCfg,
+    state_worker_host::{
+        StateWorkerHostHandle,
+        start_state_worker_host,
+    },
     transaction_observer::{
         TransactionObserver,
         TransactionObserverConfig,
@@ -268,6 +272,7 @@ struct ThreadHandles {
     engine: Option<JoinHandle<Result<(), sidecar::engine::EngineError>>>,
     event_sequencing:
         Option<JoinHandle<Result<(), sidecar::event_sequencing::EventSequencingError>>>,
+    state_worker: Option<StateWorkerHostHandle>,
     transaction_observer:
         Option<JoinHandle<Result<(), sidecar::transaction_observer::TransactionObserverError>>>,
 }
@@ -277,7 +282,14 @@ impl ThreadHandles {
         Self {
             engine: None,
             event_sequencing: None,
+            state_worker: None,
             transaction_observer: None,
+        }
+    }
+
+    fn signal_shutdown(&self) {
+        if let Some(state_worker) = self.state_worker.as_ref() {
+            state_worker.signal_shutdown();
         }
     }
 
@@ -296,6 +308,13 @@ impl ThreadHandles {
                     tracing::error!(error = ?e, "Event sequencing thread exited with error");
                 }
                 Err(_) => tracing::error!("Event sequencing thread panicked"),
+            }
+        }
+        if let Some(handle) = self.state_worker.take() {
+            match handle.join() {
+                Ok(Ok(())) => tracing::info!("State worker thread exited cleanly"),
+                Ok(Err(e)) => tracing::error!(error = ?e, "State worker thread exited with error"),
+                Err(_) => tracing::error!("State worker thread panicked"),
             }
         }
         if let Some(handle) = self.transaction_observer.take() {
@@ -637,6 +656,20 @@ async fn run_sidecar_once(
         result_event_rx,
     )?;
 
+    match start_state_worker_host(config) {
+        Ok(state_worker_host) => {
+            thread_handles.state_worker = Some(state_worker_host);
+        }
+        Err(error) => {
+            tracing::error!(
+                error = ?error,
+                degraded = true,
+                subsystem = "state-worker",
+                "state worker startup failed"
+            );
+        }
+    }
+
     // Spawn EventSequencing on a dedicated OS thread
     let event_sequencing = EventSequencing::new(event_sequencing_rx, event_sequencing_tx);
     let (seq_handle, seq_exited) = event_sequencing.spawn(Arc::clone(&shutdown_flag))?;
@@ -708,6 +741,7 @@ async fn run_sidecar_once(
     // Signal threads to stop
     tracing::info!("Signaling threads to shutdown...");
     shutdown_flag.store(true, Ordering::Relaxed);
+    thread_handles.signal_shutdown();
 
     // Cleanup async components
     transport.stop();
