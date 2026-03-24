@@ -130,6 +130,7 @@ impl StateWorkerSupervisor {
         let thread = Builder::new()
             .name(thread_name.to_string())
             .spawn({
+                let control = Arc::clone(&effective_control);
                 let status = Arc::clone(&status);
                 let restart_count = Arc::clone(&restart_count);
                 let shutdown = Arc::clone(&shutdown);
@@ -137,6 +138,7 @@ impl StateWorkerSupervisor {
                 move || {
                     run_supervisor_loop(
                         &mut factory,
+                        control,
                         status,
                         restart_count,
                         shutdown,
@@ -157,6 +159,7 @@ impl StateWorkerSupervisor {
 
     pub fn shutdown(&self) {
         self.shutdown.store(true, Ordering::Release);
+        clear_control(&self.control);
     }
 
     pub fn join(&mut self) {
@@ -261,6 +264,7 @@ impl SupervisedWorker for EmbeddedWorkerTask {
 
 fn run_supervisor_loop<F>(
     worker_factory: &mut F,
+    control: Arc<Mutex<Option<EmbeddedStateWorkerHandle>>>,
     status: Arc<SupervisorStatus>,
     restart_count: Arc<AtomicU64>,
     shutdown: Arc<AtomicBool>,
@@ -272,6 +276,7 @@ fn run_supervisor_loop<F>(
         let worker = match worker_factory() {
             Ok(worker) => worker,
             Err(error) => {
+                clear_control(&control);
                 status.set_healthy(false);
                 status.set_restarting(true);
                 restart_count.fetch_add(1, Ordering::AcqRel);
@@ -285,6 +290,7 @@ fn run_supervisor_loop<F>(
         status.set_restarting(false);
 
         let result = catch_unwind(AssertUnwindSafe(|| worker.run(Arc::clone(&shutdown))));
+        clear_control(&control);
         if shutdown.load(Ordering::Acquire) {
             break;
         }
@@ -312,6 +318,13 @@ fn run_supervisor_loop<F>(
     }
 
     status.set_restarting(false);
+    clear_control(&control);
+}
+
+fn clear_control(control: &Arc<Mutex<Option<EmbeddedStateWorkerHandle>>>) {
+    if let Ok(mut guard) = control.lock() {
+        *guard = None;
+    }
 }
 
 fn sleep_with_shutdown(shutdown: &Arc<AtomicBool>, duration: Duration) {

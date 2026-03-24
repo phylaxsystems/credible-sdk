@@ -9,6 +9,7 @@ use crate::state_sync::{
 use anyhow::anyhow;
 use std::sync::{
     Arc,
+    Barrier,
     OnceLock,
     atomic::{
         AtomicBool,
@@ -38,16 +39,20 @@ fn test_supervisor_restarts_worker_after_panic() {
 #[test]
 fn test_supervisor_drop_shuts_down_thread() {
     let shutdown_seen = Arc::new(AtomicBool::new(false));
+    let started = Arc::new(Barrier::new(2));
     let supervisor = StateWorkerSupervisor::spawn_test_with_factory(Box::new({
         let shutdown_seen = Arc::clone(&shutdown_seen);
+        let started = Arc::clone(&started);
         move || {
             Ok(Box::new(TestShutdownAwareWorker {
                 shutdown_seen: Arc::clone(&shutdown_seen),
+                started: Arc::clone(&started),
             }))
         }
     }))
     .unwrap();
 
+    started.wait();
     drop(supervisor);
 
     assert!(shutdown_seen.load(Ordering::Acquire));
@@ -75,10 +80,12 @@ fn test_supervisor_restarts_after_factory_error() {
 
 struct TestShutdownAwareWorker {
     shutdown_seen: Arc<AtomicBool>,
+    started: Arc<Barrier>,
 }
 
 impl crate::state_sync::supervisor::SupervisedWorker for TestShutdownAwareWorker {
     fn run(self: Box<Self>, shutdown: Arc<AtomicBool>) -> anyhow::Result<()> {
+        self.started.wait();
         while !shutdown.load(Ordering::Acquire) {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
