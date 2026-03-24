@@ -466,8 +466,7 @@ where
             let blocked_on = self
                 .pending_updates
                 .front()
-                .map(|pending| pending.block_number)
-                .unwrap_or(update.block_number);
+                .map_or(update.block_number, |pending| pending.block_number);
             return Err(anyhow!(
                 "state worker pending update buffer is full while waiting to flush block {blocked_on}"
             ));
@@ -486,10 +485,9 @@ where
             .front()
             .is_some_and(|pending| pending.block_number <= latest_commit_head)
         {
-            let update = self
-                .pending_updates
-                .pop_front()
-                .expect("pending update exists when draining");
+            let Some(update) = self.pending_updates.pop_front() else {
+                break;
+            };
             match self.writer_reader.commit_block(&update) {
                 Ok(stats) => {
                     metrics::set_db_healthy(true);
