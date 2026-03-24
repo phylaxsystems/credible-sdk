@@ -1262,3 +1262,55 @@ async fn test_state_worker_restart_replays_latest_commit_head_before_draining_bu
     assert_eq!(resumed_account.balance, U256::from(2));
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_state_worker_pauses_on_full_buffer_and_resumes_without_dropping_updates() -> Result<()>
+{
+    let instance = TestInstance::new_mdbx_with_options(
+        |_| {},
+        None,
+        TestInstanceOptions {
+            initial_commit_head: None,
+            buffer_capacity: 2,
+            start_block: 1,
+        },
+    )
+    .await
+    .map_err(anyhow::Error::msg)?;
+
+    let test_address = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let address_hash = address_hash_from_hex(test_address)?;
+    for trace in [
+        trace_state_changes_block_1(test_address),
+        trace_state_changes_block_2(test_address),
+        trace_state_changes_block_3(test_address),
+    ] {
+        instance
+            .http_server_mock
+            .add_response("debug_traceBlockByNumber", trace);
+    }
+
+    sleep(Duration::from_millis(150)).await;
+    instance.http_server_mock.send_new_head_with_block_number(1);
+    instance.http_server_mock.send_new_head_with_block_number(2);
+    instance.http_server_mock.send_new_head_with_block_number(3);
+    sleep(Duration::from_millis(350)).await;
+
+    let reader = instance.create_reader();
+    assert_eq!(reader_latest_block(&*reader)?, None);
+
+    instance.send_commit_head(2).map_err(anyhow::Error::msg)?;
+    let latest = wait_for_latest_block(&*reader, Some(2)).await?;
+    assert_eq!(latest, Some(2));
+    assert!(reader_get_account(&*reader, address_hash.into(), 2)?.is_some());
+
+    instance.send_commit_head(3).map_err(anyhow::Error::msg)?;
+    let latest = wait_for_latest_block(&*reader, Some(3)).await?;
+    assert_eq!(
+        latest,
+        Some(3),
+        "buffered updates should resume instead of dropping block 3"
+    );
+    assert!(reader_get_account(&*reader, address_hash.into(), 3)?.is_some());
+    Ok(())
+}

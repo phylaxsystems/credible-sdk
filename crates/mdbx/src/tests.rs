@@ -234,6 +234,29 @@ fn test_single_block() {
 }
 
 #[test]
+fn test_latest_block_number_advances_only_after_committed_flushes() {
+    let (w, tmp) = writer_env(3);
+    let a = addr(0x12);
+
+    let buffered_but_unflushed = simple_update(1, a, 2000, 2);
+    assert_eq!(w.latest_block_number().unwrap(), None);
+
+    w.commit_block(&simple_update(0, a, 1000, 1)).unwrap();
+    assert_eq!(w.latest_block_number().unwrap(), Some(0));
+
+    w.commit_block(&buffered_but_unflushed).unwrap();
+    assert_eq!(w.latest_block_number().unwrap(), Some(1));
+    drop(w);
+
+    let r = reader_for(&tmp, 3);
+    assert_eq!(r.latest_block_number().unwrap(), Some(1));
+    assert_eq!(
+        r.get_account(a.into(), 1).unwrap().unwrap().balance,
+        u256(2000)
+    );
+}
+
+#[test]
 fn test_large_scale_rotation() {
     let (w, tmp) = writer_env(5);
     let a = addr(0xcc);
