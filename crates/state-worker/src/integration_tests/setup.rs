@@ -175,7 +175,9 @@ impl EmbeddedWorkerHarness {
             }
 
             if tokio::time::Instant::now() >= deadline {
-                return Ok(status);
+                return Err(format!(
+                    "timed out waiting for worker status transition: {status:?}"
+                ));
             }
 
             sleep(Duration::from_millis(50)).await;

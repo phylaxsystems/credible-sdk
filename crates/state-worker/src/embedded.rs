@@ -212,6 +212,9 @@ where
                 return Ok(());
             }
 
+            self.handle.status.set_healthy(true);
+            self.handle.status.set_restarting(false);
+
             if self.catch_up(&mut next_block, shutdown_rx).await? {
                 info!("Shutdown signal received during catch-up");
                 return Ok(());
@@ -240,6 +243,8 @@ where
                         missing_block_retries = 0;
                     }
 
+                    self.handle.status.set_healthy(false);
+                    self.handle.status.set_restarting(true);
                     warn!(error = %err, "block subscription ended, retrying");
                     tokio::select! {
                         _ = shutdown_rx.recv() => {
@@ -260,7 +265,7 @@ where
     ) -> Result<bool> {
         loop {
             let head = self.worker.provider_head().await?;
-            self.observe_head(*next_block, head);
+            self.observe_head(head);
 
             if *next_block > head {
                 self.flush_ready_blocks().await?;
@@ -271,7 +276,7 @@ where
                 self.prepare_and_stage_block(*next_block).await?;
                 self.flush_ready_blocks().await?;
                 *next_block += 1;
-                self.observe_head(*next_block, head);
+                self.observe_head(head);
 
                 if shutdown_rx.try_recv().is_ok() {
                     return Ok(true);
@@ -317,7 +322,7 @@ where
                                 continue;
                             }
 
-                            self.observe_head(*next_block, block_number);
+                            self.observe_head(block_number);
 
                             if block_number > *next_block {
                                 warn!("Missing block {block_number} (next block: {next_block})");
@@ -330,7 +335,7 @@ where
                                 self.prepare_and_stage_block(*next_block).await?;
                                 self.flush_ready_blocks().await?;
                                 *next_block += 1;
-                                self.observe_head(*next_block, block_number);
+                                self.observe_head(block_number);
                             }
                         }
                         None => return Err(anyhow!("block subscription completed")),
@@ -373,9 +378,11 @@ where
 
             let update = self
                 .staged_updates
-                .remove(&block_number)
+                .get(&block_number)
+                .cloned()
                 .expect("staged block should exist");
             self.worker.commit_prepared_update(update).await?;
+            self.staged_updates.remove(&block_number);
             self.handle
                 .status
                 .set_mdbx_synced_through(Some(block_number));
@@ -386,26 +393,30 @@ where
                 .last_key_value()
                 .map(|(block, _)| *block),
         );
+        self.refresh_sync_metrics();
         Ok(())
     }
 
-    fn observe_head(&self, next_block: u64, head_block: u64) {
-        let lag_blocks = if next_block > head_block {
-            0
-        } else {
-            head_block.saturating_sub(next_block).saturating_add(1)
-        };
-        let is_syncing = lag_blocks > 0;
-
-        metrics::set_head_block(head_block);
-        metrics::set_sync_lag_blocks(lag_blocks);
-        metrics::set_syncing(is_syncing);
-        metrics::set_following_head(!is_syncing);
+    fn observe_head(&self, head_block: u64) {
         self.handle.status.set_latest_head_seen(Some(head_block));
+        self.refresh_sync_metrics();
 
         if self.auto_advance_commit_target {
             self.handle.control.publish(head_block);
         }
+    }
+
+    fn refresh_sync_metrics(&self) {
+        let snapshot = self.handle.status.snapshot();
+        let head_block = snapshot
+            .latest_head_seen
+            .or(snapshot.mdbx_synced_through)
+            .unwrap_or(0);
+        let next_block = snapshot
+            .mdbx_synced_through
+            .map_or(0, |block| block.saturating_add(1));
+
+        StateWorker::<WR>::update_sync_metrics(next_block, head_block);
     }
 }
 
@@ -418,5 +429,79 @@ fn decode_block(block_number: u64) -> Option<u64> {
         None
     } else {
         Some(block_number)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::EmbeddedStateWorkerRuntime;
+    use crate::{
+        connect_provider,
+        integration_tests::mdbx_fixture::MdbxTestDir,
+        state,
+        system_calls::SystemCalls,
+        worker::StateWorker,
+    };
+    use alloy::primitives::{
+        B256,
+        U256,
+    };
+    use anyhow::Result;
+    use int_test_utils::node_protocol_mock_server::DualProtocolMockServer;
+    use mdbx::{
+        AccountState,
+        AddressHash,
+        BlockStateUpdate,
+        StateWriter,
+    };
+    use std::{
+        collections::HashMap,
+        time::Duration,
+    };
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_flush_failure_keeps_staged_block() -> Result<()> {
+        let _mdbx_dir = MdbxTestDir::new().map_err(anyhow::Error::msg)?;
+        let http_server_mock = DualProtocolMockServer::new()
+            .await
+            .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+        let provider = connect_provider(&http_server_mock.ws_url()).await?;
+        let writer_reader = StateWriter::new(_mdbx_dir.path_str().map_err(anyhow::Error::msg)?)?;
+        let trace_provider =
+            state::create_trace_provider(provider.clone(), Duration::from_secs(30));
+        let worker = StateWorker::new(
+            provider,
+            trace_provider,
+            writer_reader,
+            None,
+            SystemCalls::default(),
+        );
+        let mut runtime = EmbeddedStateWorkerRuntime::new(worker);
+
+        let duplicate_address = AddressHash::from_hash(B256::repeat_byte(0x11));
+        let duplicate_account = AccountState {
+            address_hash: duplicate_address,
+            balance: U256::ZERO,
+            nonce: 0,
+            code_hash: B256::ZERO,
+            code: None,
+            storage: HashMap::new(),
+            deleted: false,
+        };
+        runtime.staged_updates.insert(
+            1,
+            BlockStateUpdate {
+                block_number: 1,
+                block_hash: B256::repeat_byte(0x22),
+                state_root: B256::repeat_byte(0x33),
+                accounts: vec![duplicate_account.clone(), duplicate_account],
+            },
+        );
+        runtime.handle.control.publish(1);
+
+        let _err = runtime.flush_ready_blocks().await.unwrap_err();
+        assert!(runtime.staged_updates.contains_key(&1));
+        assert_eq!(runtime.handle.status.snapshot().mdbx_synced_through, None);
+        Ok(())
     }
 }
