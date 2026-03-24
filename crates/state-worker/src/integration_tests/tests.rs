@@ -886,3 +886,124 @@ async fn test_mdbx_bootstrap_recovery_without_diffs() -> Result<()> {
     assert_block_available(reader, 103)?;
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_state_worker_restart_resumes_from_latest_mdbx_block() -> Result<()> {
+    use crate::{
+        host::connect_provider,
+        state,
+        system_calls::SystemCalls,
+        worker::StateWorker,
+    };
+    use mdbx::{
+        StateWriter,
+        Writer,
+        common::CircularBufferConfig,
+    };
+    use tokio::sync::broadcast;
+
+    let latest_block_number = 5_u64;
+    let resumed_block = latest_block_number + 1;
+    let test_address = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let address_hash = address_hash_from_hex(test_address)?;
+
+    let mdbx_dir =
+        crate::integration_tests::mdbx_fixture::MdbxTestDir::new().map_err(anyhow::Error::msg)?;
+    let mdbx_path = mdbx_dir.path_str().map_err(anyhow::Error::msg)?;
+    let config = CircularBufferConfig::new(3).context("Failed to build circular buffer config")?;
+    let writer_reader = StateWriter::new(mdbx_path, config).context("Failed to create MDBX")?;
+
+    let bootstrap_accounts = vec![make_account_state(
+        address_hash.into(),
+        100,
+        1,
+        Some(Bytes::from(vec![0x60, 0x80])),
+        &[(0x01, 0xAA)],
+    )];
+    writer_reader
+        .bootstrap_from_snapshot(
+            bootstrap_accounts,
+            latest_block_number,
+            B256::repeat_byte(0x11),
+            B256::repeat_byte(0x22),
+        )
+        .context("bootstrap should succeed")?;
+    assert_eq!(writer_reader.latest_block_number()?, Some(latest_block_number));
+    let verification_reader = writer_reader.reader().clone();
+
+    let mock_server = int_test_utils::node_protocol_mock_server::DualProtocolMockServer::new()
+        .await
+        .map_err(anyhow::Error::msg)?;
+    mock_server.add_response(
+        "eth_blockNumber",
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": format!("0x{:x}", resumed_block)
+        }),
+    );
+    mock_server.add_response(
+        "eth_getBlockByNumber",
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "hash": format!("0x{:064x}", resumed_block),
+                "parentHash": format!("0x{:064x}", latest_block_number),
+                "sha3Uncles": "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347",
+                "miner": "0x0000000000000000000000000000000000000000",
+                "number": format!("0x{:x}", resumed_block),
+                "stateRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+                "transactionsRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+                "receiptsRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+                "logsBloom": format!("0x{:0512}", 0),
+                "difficulty": "0x0",
+                "timestamp": format!("0x{:x}", resumed_block * 12),
+                "extraData": "0x",
+                "mixHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+                "nonce": "0x0000000000000000",
+                "gasLimit": "0x1c9c380",
+                "gasUsed": "0x0",
+                "parentBeaconBlockRoot": format!("0x{:064x}", resumed_block * 0xbeac_0000 + 0xbeef),
+                "transactions": [],
+                "totalDifficulty": "0x0",
+                "baseFeePerGas": "0x7",
+                "size": "0x21c",
+                "uncles": []
+            }
+        }),
+    );
+    mock_server.add_response("debug_traceBlockByNumber", trace_state_changes_block_1(test_address));
+
+    let provider = connect_provider(&mock_server.ws_url())
+        .await
+        .context("Failed to connect to provider")?;
+    let trace_provider = state::create_trace_provider(provider.clone(), Duration::from_secs(30));
+    let mut worker = StateWorker::new(
+        provider,
+        trace_provider,
+        writer_reader,
+        None,
+        SystemCalls::default(),
+    );
+    let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
+    let worker_task = tokio::spawn(async move { worker.run(None, shutdown_rx).await });
+
+    for _ in 0..40 {
+        if verification_reader.latest_block_number()? == Some(resumed_block) {
+            break;
+        }
+        sleep(Duration::from_millis(50)).await;
+    }
+
+    shutdown_tx.send(()).ok();
+    worker_task.await??;
+
+    assert_eq!(verification_reader.latest_block_number()?, Some(resumed_block));
+    let resumed_account = verification_reader
+        .get_account(address_hash.into(), resumed_block)?
+        .context("resumed block account should exist")?;
+    assert_eq!(resumed_block, latest_block_number + 1);
+    assert_eq!(resumed_account.balance, U256::from(1));
+    Ok(())
+}
