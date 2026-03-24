@@ -790,16 +790,12 @@ async fn test_mdbx_bootstrap_recovery_without_diffs() -> Result<()> {
     use mdbx::{
         StateWriter,
         Writer,
-        common::CircularBufferConfig,
     };
 
     let mdbx_dir =
         crate::integration_tests::mdbx_fixture::MdbxTestDir::new().map_err(anyhow::Error::msg)?;
     let mdbx_path = mdbx_dir.path_str().map_err(anyhow::Error::msg)?;
-    let config = CircularBufferConfig::new(3).context("Failed to build circular buffer config")?;
-
-    let writer = StateWriter::new(mdbx_path, config.clone())
-        .context("Failed to create MDBX test instance")?;
+    let writer = StateWriter::new(mdbx_path).context("Failed to create MDBX test instance")?;
 
     let test_address_hash = AddressHash::from_hash(B256::repeat_byte(0xAA));
     let accounts = vec![make_account_state(

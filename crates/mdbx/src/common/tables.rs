@@ -1,6 +1,6 @@
 //! # MDBX Table Definitions
 //!
-//! This module defines all database tables used by the circular buffer state storage.
+//! This module defines all database tables used by MDBX state storage.
 //! Each table is implemented using reth's database abstractions over MDBX.
 //!
 //! ## MDBX Primer
@@ -15,12 +15,10 @@
 //!
 //! | Table | Key | Value | Purpose |
 //! |-------|-----|-------|---------|
-//! | `NamespaceBlocks` | `u8` | `u64` | Current block in each namespace |
 //! | `NamespacedAccounts` | `(ns, addr_hash)` | `AccountData` | Account state |
 //! | `NamespacedStorage` | `(ns, addr_hash, slot)` | `U256` | Storage slots |
 //! | `Bytecodes` | `code_hash` | `Bytes` | Contract code (shared) |
 //! | `BlockMetadata` | `block_number` | `(hash, root)` | Block info |
-//! | `StateDiffs` | `block_number` | `JSON` | Diffs for reconstruction |
 //! | `Metadata` | `0` | `GlobalMetadata` | Latest block, buffer size |
 //!
 //! ## Key Encoding Strategy
@@ -28,7 +26,6 @@
 //! ### Simple Keys
 //!
 //! ```text
-//! NamespaceIdx (u8):     [1 byte]
 //! BlockNumber (u64):     [8 bytes, big-endian for ordering]
 //! CodeHash (B256):       [32 bytes]
 //! ```
@@ -66,51 +63,6 @@ use serde::{
     Deserialize,
     Serialize,
 };
-
-/// Wrapper for namespace index (0..`buffer_size`).
-///
-/// Encoded as a single byte, supporting up to 255 namespaces.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize,
-)]
-pub struct NamespaceIdx(pub u8);
-
-impl Encode for NamespaceIdx {
-    type Encoded = [u8; 1];
-    fn encode(self) -> Self::Encoded {
-        [self.0]
-    }
-}
-
-impl Decode for NamespaceIdx {
-    fn decode(value: &[u8]) -> Result<Self, reth_db_api::DatabaseError> {
-        Ok(Self(*value.first().ok_or(
-            reth_db_api::DatabaseError::Other(
-                "Invalid namespace index encoding: buffer too short".to_string(),
-            ),
-        )?))
-    }
-}
-
-impl Compress for NamespaceIdx {
-    type Compressed = Vec<u8>;
-    fn compress(self) -> Self::Compressed {
-        vec![self.0]
-    }
-    fn compress_to_buf<B: BufMut + AsMut<[u8]>>(&self, buf: &mut B) {
-        buf.put_u8(self.0);
-    }
-}
-
-impl Decompress for NamespaceIdx {
-    fn decompress(value: &[u8]) -> Result<Self, reth_db_api::DatabaseError> {
-        Ok(Self(*value.first().ok_or(
-            reth_db_api::DatabaseError::Other(
-                "Invalid namespace index encoding: buffer too short".to_string(),
-            ),
-        )?))
-    }
-}
 
 /// Wrapper for block number.
 ///
@@ -171,26 +123,6 @@ impl Compress for Bytecode {
 impl Decompress for Bytecode {
     fn decompress(value: &[u8]) -> Result<Self, reth_db_api::DatabaseError> {
         Ok(Self(alloy::primitives::Bytes::copy_from_slice(value)))
-    }
-}
-
-/// Wrapper for state diff data (JSON serialized).
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
-pub struct StateDiffData(pub Vec<u8>);
-
-impl Compress for StateDiffData {
-    type Compressed = Vec<u8>;
-    fn compress(self) -> Self::Compressed {
-        self.0
-    }
-    fn compress_to_buf<B: BufMut + AsMut<[u8]>>(&self, buf: &mut B) {
-        buf.put_slice(&self.0);
-    }
-}
-
-impl Decompress for StateDiffData {
-    fn decompress(value: &[u8]) -> Result<Self, reth_db_api::DatabaseError> {
-        Ok(Self(value.to_vec()))
     }
 }
 
@@ -282,30 +214,6 @@ impl_compact_table_codec!(StorageValue, 32);
 impl_compact_table_codec!(BlockMetadata, 64);
 impl_compact_table_codec!(GlobalMetadata, 16);
 
-/// Maps namespace index (0..`buffer_size`) to current block number in that namespace.
-///
-/// This is the primary lookup for determining which block is in which namespace.
-///
-/// ```text
-/// Example with buffer_size=3 at block 105:
-/// ┌─────┬───────┐
-/// │ Key │ Value │
-/// ├─────┼───────┤
-/// │  0  │  105  │
-/// │  1  │  103  │
-/// │  2  │  104  │
-/// └─────┴───────┘
-/// ```
-#[derive(Debug)]
-pub struct NamespaceBlocks;
-
-impl Table for NamespaceBlocks {
-    const NAME: &'static str = "NamespaceBlocks";
-    const DUPSORT: bool = false;
-    type Key = NamespaceIdx;
-    type Value = BlockNumber;
-}
-
 /// Account data per namespace.
 ///
 /// Key: `NamespacedAccountKey` (`namespace_idx` + `address_hash`)
@@ -374,24 +282,6 @@ impl Table for BlockMetadataTable {
     type Value = BlockMetadata;
 }
 
-/// State diffs for reconstructing state during circular buffer rotation.
-///
-/// Key: `BlockNumber` (u64)
-/// Value: `StateDiffData` (JSON serialized `BlockStateUpdate`)
-///
-/// When namespace N rotates from block B to block B+`buffer_size`, we need
-/// to apply all intermediate diffs (B+1, B+2, ..., B+`buffer_size`-1) to
-/// bring the state up to date.
-#[derive(Debug)]
-pub struct StateDiffs;
-
-impl Table for StateDiffs {
-    const NAME: &'static str = "StateDiffs";
-    const DUPSORT: bool = false;
-    type Key = BlockNumber;
-    type Value = StateDiffData;
-}
-
 /// Global metadata (latest block, buffer size).
 ///
 /// Key: `MetadataKey` (always 0 - single entry table)
@@ -406,13 +296,11 @@ impl Table for Metadata {
     type Value = GlobalMetadata;
 }
 
-/// All tables used by the state store.
-pub const TABLES: [&str; 7] = [
-    NamespaceBlocks::NAME,
+/// All tables used by the latest-state store.
+pub const TABLES: [&str; 5] = [
     NamespacedAccounts::NAME,
     NamespacedStorage::NAME,
     Bytecodes::NAME,
     BlockMetadataTable::NAME,
-    StateDiffs::NAME,
     Metadata::NAME,
 ];

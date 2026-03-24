@@ -74,10 +74,7 @@ impl TestInstance {
     where
         F: FnOnce(&DualProtocolMockServer),
     {
-        use mdbx::{
-            StateWriter,
-            common::CircularBufferConfig,
-        };
+        use mdbx::StateWriter;
 
         let mdbx_dir = MdbxTestDir::new()?;
 
@@ -91,11 +88,9 @@ impl TestInstance {
             .await
             .map_err(|e| format!("Failed to connect to provider: {e}"))?;
 
-        let config = CircularBufferConfig::new(3).map_err(|e| e.to_string())?;
-
         // For MDBX, StateWriter implements both Reader and Writer.
         let mdbx_path = mdbx_dir.path_str()?;
-        let writer_reader = StateWriter::new(mdbx_path, config.clone())
+        let writer_reader = StateWriter::new(mdbx_path)
             .map_err(|e| format!("Failed to initialize MDBX writer: {e}"))?;
 
         // Clone the reader BEFORE the worker takes ownership of the writer.

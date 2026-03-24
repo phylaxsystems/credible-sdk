@@ -19,7 +19,6 @@ use mdbx::{
     AddressHash,
     Reader,
     StateWriter,
-    common::CircularBufferConfig,
 };
 use regex::Regex;
 use serde::Deserialize;
@@ -49,7 +48,7 @@ use std::{
 
 #[derive(Parser)]
 #[command(name = "geth-dump")]
-#[command(about = "Dump Geth state into Redis/MDBX")]
+#[command(about = "Dump Geth state into MDBX")]
 struct Args {
     /// Path to the Geth data directory (required if --json not provided)
     #[arg(long)]
@@ -82,10 +81,6 @@ struct Args {
     /// MDBX path
     #[arg(long, default_value = "state")]
     mdbx_path: Option<String>,
-
-    /// State worker buffer size
-    #[arg(long, default_value = "3")]
-    buffer_size: u8,
 
     /// JSON output file (use - for stdout)
     #[arg(long)]
@@ -1005,9 +1000,8 @@ fn fix_metadata(args: &Args) -> Result<()> {
 
     eprintln!("Opening database at: {mdbx_path}");
 
-    // Open writer with same buffer size (it will read actual buffer size from db)
-    let writer = StateWriter::new(mdbx_path, CircularBufferConfig::new(args.buffer_size)?)
-        .context("Failed to open MDBX database")?;
+    // Open writer against the existing latest-state database.
+    let writer = StateWriter::new(mdbx_path).context("Failed to open MDBX database")?;
 
     // Show current state
     let current_block = writer.latest_block_number()?.unwrap_or(0);
@@ -1039,7 +1033,7 @@ fn main() -> Result<()> {
 
     // Setup MDBX writer if path provided
     let writer = if let Some(ref path) = args.mdbx_path {
-        let w = StateWriter::new(path, CircularBufferConfig::new(args.buffer_size)?)?;
+        let w = StateWriter::new(path)?;
         Some(w)
     } else {
         None
@@ -1113,11 +1107,8 @@ fn main() -> Result<()> {
 
         if args.verbose {
             eprintln!(
-                "MDBX: wrote {} accounts, {} storage slots to {} namespaces in {:?}",
-                stats.accounts_written / usize::from(writer.as_ref().unwrap().buffer_size()),
-                storage_slots_count,
-                writer.as_ref().unwrap().buffer_size(),
-                stats.total_duration,
+                "MDBX: wrote {} accounts, {} storage slots to latest state in {:?}",
+                stats.accounts_written, storage_slots_count, stats.total_duration,
             );
         }
     }

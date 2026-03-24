@@ -508,14 +508,11 @@ mod tests {
     use alloy::primitives::keccak256;
 
     #[test]
-    fn test_namespace_calculation() {
-        let config = CircularBufferConfig::new(3).unwrap();
-        assert_eq!(config.namespace_for_block(0).unwrap(), 0);
-        assert_eq!(config.namespace_for_block(1).unwrap(), 1);
-        assert_eq!(config.namespace_for_block(2).unwrap(), 2);
-        assert_eq!(config.namespace_for_block(3).unwrap(), 0);
-        assert_eq!(config.namespace_for_block(4).unwrap(), 1);
-        assert_eq!(config.namespace_for_block(1000).unwrap(), 1);
+    fn test_buffer_config_rejects_zero_size() {
+        assert!(matches!(
+            CircularBufferConfig::new(0),
+            Err(StateError::InvalidBufferSize)
+        ));
     }
 
     #[test]

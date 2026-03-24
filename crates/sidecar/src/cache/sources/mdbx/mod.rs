@@ -1061,16 +1061,13 @@ mod tests {
             StateReader,
             StateWriter,
             Writer as _,
-            common::CircularBufferConfig,
         };
         use std::collections::HashMap;
         use tempfile::TempDir;
 
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("state");
-        let config = CircularBufferConfig::new(5).unwrap();
-
-        let writer = StateWriter::new(&path, config.clone()).unwrap();
+        let writer = StateWriter::new(&path).unwrap();
         let addr = Address::repeat_byte(0x11);
         writer
             .bootstrap_from_snapshot(
@@ -1090,7 +1087,7 @@ mod tests {
             .unwrap();
         drop(writer);
 
-        let reader = StateReader::new(&path, config).unwrap();
+        let reader = StateReader::new(&path).unwrap();
         let source = MdbxSource::new(reader);
 
         // Requesting blocks below the bootstrap block should not consider the MDBX source synced

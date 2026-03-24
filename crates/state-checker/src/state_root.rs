@@ -283,7 +283,6 @@ mod tests {
         BlockStateUpdate,
         StateWriter,
         Writer,
-        common::CircularBufferConfig,
     };
     use revm::primitives::KECCAK_EMPTY;
     use tempfile::TempDir;
@@ -836,8 +835,7 @@ mod tests {
     #[test]
     fn test_mdbx_state_root_matches_metadata_with_hashed_storage_keys() {
         let temp_dir = TempDir::new().expect("temp dir");
-        let config = CircularBufferConfig::new(3).expect("buffer config");
-        let writer = StateWriter::new(temp_dir.path(), config).expect("state writer");
+        let writer = StateWriter::new(temp_dir.path()).expect("state writer");
 
         let block_number = 1;
         let block_hash = B256::repeat_byte(0x11);

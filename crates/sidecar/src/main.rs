@@ -8,10 +8,7 @@ use assertion_executor::{
 };
 use credible_utils::shutdown::wait_for_sigterm;
 use flume::unbounded;
-use mdbx::{
-    StateReader,
-    common::CircularBufferConfig,
-};
+use mdbx::StateReader;
 use metrics::counter;
 use sidecar::{
     args::{
@@ -345,14 +342,11 @@ async fn build_sources_from_config(config: &Config) -> anyhow::Result<Vec<Arc<dy
         if config.state.legacy.has_any() {
             warn!("Using legacy state source configuration; migrate to state.sources.");
         }
-        if let (Some(state_worker_path), Some(state_worker_depth)) = (
+        if let (Some(state_worker_path), Some(_state_worker_depth)) = (
             config.state.legacy.state_worker_mdbx_path.as_ref(),
             config.state.legacy.state_worker_depth,
         ) {
-            match StateReader::new(
-                state_worker_path,
-                CircularBufferConfig::new(u8::try_from(state_worker_depth)?)?,
-            ) {
+            match StateReader::new(state_worker_path) {
                 Ok(state_worker_client) => {
                     sources.push(Arc::new(MdbxSource::new(state_worker_client)));
                 }
@@ -379,11 +373,11 @@ async fn build_sources_from_config(config: &Config) -> anyhow::Result<Vec<Arc<dy
         }
         for source_config in &config.state.sources {
             match source_config {
-                StateSourceConfig::Mdbx { mdbx_path, depth } => {
-                    match StateReader::new(
-                        mdbx_path,
-                        CircularBufferConfig::new(u8::try_from(*depth)?)?,
-                    ) {
+                StateSourceConfig::Mdbx {
+                    mdbx_path,
+                    depth: _,
+                } => {
+                    match StateReader::new(mdbx_path) {
                         Ok(state_worker_client) => {
                             sources.push(Arc::new(MdbxSource::new(state_worker_client)));
                         }

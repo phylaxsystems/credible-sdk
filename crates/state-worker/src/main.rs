@@ -43,10 +43,7 @@ use anyhow::{
     Result,
 };
 use clap::Parser;
-use mdbx::{
-    StateWriter,
-    common::CircularBufferConfig,
-};
+use mdbx::StateWriter;
 use std::{
     panic::AssertUnwindSafe,
     sync::Arc,
@@ -115,10 +112,7 @@ async fn run_once(args: &Args) -> Result<()> {
 
     // Validate Geth version for prestateTracer diffMode EIP-6780 correctness
     validate_geth_version(&provider).await?;
-    let writer_reader = match StateWriter::new(
-        args.mdbx_path.as_str(),
-        CircularBufferConfig::new(args.state_depth)?,
-    ) {
+    let writer_reader = match StateWriter::new(args.mdbx_path.as_str()) {
         Ok(writer_reader) => {
             metrics::set_db_healthy(true);
             writer_reader
