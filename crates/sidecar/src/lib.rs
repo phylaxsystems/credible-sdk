@@ -33,6 +33,7 @@ pub mod metrics;
 pub mod transaction_observer;
 pub mod transactions_state;
 pub mod transport;
+pub mod state_worker_thread;
 pub mod utils;
 
 pub use credible_utils::critical;

@@ -43,6 +43,7 @@ use sidecar::{
     health::HealthServer,
     indexer,
     indexer::IndexerCfg,
+    state_worker_thread::StateWorkerThread,
     transaction_observer::{
         TransactionObserver,
         TransactionObserverConfig,
@@ -270,6 +271,7 @@ struct ThreadHandles {
         Option<JoinHandle<Result<(), sidecar::event_sequencing::EventSequencingError>>>,
     transaction_observer:
         Option<JoinHandle<Result<(), sidecar::transaction_observer::TransactionObserverError>>>,
+    state_worker: Option<JoinHandle<Result<(), sidecar::state_worker_thread::StateWorkerError>>>,
 }
 
 impl ThreadHandles {
@@ -278,6 +280,7 @@ impl ThreadHandles {
             engine: None,
             event_sequencing: None,
             transaction_observer: None,
+            state_worker: None,
         }
     }
 
@@ -287,6 +290,13 @@ impl ThreadHandles {
                 Ok(Ok(())) => tracing::info!("Engine thread exited cleanly"),
                 Ok(Err(e)) => tracing::error!(error = ?e, "Engine thread exited with error"),
                 Err(_) => tracing::error!("Engine thread panicked"),
+            }
+        }
+        if let Some(handle) = self.state_worker.take() {
+            match handle.join() {
+                Ok(Ok(())) => tracing::info!("State worker thread exited cleanly"),
+                Ok(Err(e)) => tracing::error!(error = ?e, "State worker thread exited with error"),
+                Err(_) => tracing::error!("State worker thread panicked"),
             }
         }
         if let Some(handle) = self.event_sequencing.take() {
@@ -471,6 +481,27 @@ fn handle_engine_exit(
     }
 }
 
+fn handle_state_worker_exit(
+    result: Result<
+        Result<(), sidecar::state_worker_thread::StateWorkerError>,
+        tokio::sync::oneshot::error::RecvError,
+    >,
+) {
+    match result {
+        Ok(Ok(())) => tracing::warn!("State worker exited unexpectedly"),
+        Ok(Err(e)) => {
+            let recoverable = ErrorRecoverability::from(&e).is_recoverable();
+            record_error_recoverability(recoverable);
+            if recoverable {
+                tracing::error!(error = ?e, "State worker exited with recoverable error");
+            } else {
+                critical!(error = ?e, "State worker exited with unrecoverable error");
+            }
+        }
+        Err(_) => tracing::error!("State worker notification channel dropped"),
+    }
+}
+
 fn handle_event_sequencing_exit(
     result: Result<
         Result<(), sidecar::event_sequencing::EventSequencingError>,
@@ -534,6 +565,9 @@ async fn run_async_components(
             Result<(), sidecar::transaction_observer::TransactionObserverError>,
         >,
     >,
+    sw_exited: tokio::sync::oneshot::Receiver<
+        Result<(), sidecar::state_worker_thread::StateWorkerError>,
+    >,
 ) -> bool {
     let mut should_shutdown = false;
     let observer_exited = observer_exit_future(observer_exited_rx);
@@ -558,6 +592,9 @@ async fn run_async_components(
         }
         result = observer_exited => {
             handle_observer_exit(result);
+        }
+        result = sw_exited => {
+            handle_state_worker_exit(result);
         }
         result = health_server.run() => {
             if let Err(e) = result {
@@ -681,6 +718,13 @@ async fn run_sidecar_once(
         None
     };
 
+    // Spawn StateWorkerThread on a dedicated OS thread (Phase 1: empty scaffold)
+    let state_worker = StateWorkerThread::new(Arc::clone(&shutdown_flag));
+    let (sw_handle, sw_exited) = state_worker
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("Failed to spawn state worker thread: {e}"))?;
+    thread_handles.state_worker = Some(sw_handle);
+
     let mut health_server = HealthServer::new(health_bind_addr);
 
     let da_client = DaClient::new(&config.credible.assertion_da_rpc_url)?;
@@ -700,6 +744,7 @@ async fn run_sidecar_once(
         engine_exited,
         seq_exited,
         observer_exited_rx,
+        sw_exited,
     ))
     .await;
 
