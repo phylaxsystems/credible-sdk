@@ -31,7 +31,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 **Plans**: 2 plans
 
 Plans:
-- [ ] 01-01-PLAN.md — StateWorkerError enum + StateWorkerThread scaffold (error types, spawn, isolated runtime, panic catch, shutdown polling, restart backoff)
+- [x] 01-01-PLAN.md — StateWorkerError enum + StateWorkerThread scaffold (error types, spawn, isolated runtime, panic catch, shutdown polling, restart backoff)
 - [ ] 01-02-PLAN.md — Wire StateWorkerThread into sidecar main.rs (ThreadHandles, run_sidecar_once, run_async_components select!, EthRpcSource fallback preserved)
 
 ### Phase 2: CommitHead Flow Control
@@ -63,6 +63,6 @@ Phases execute in numeric order: 1 → 2 → 3
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Thread Scaffold | 0/2 | Not started | - |
+| 1. Thread Scaffold | 1/2 | In Progress|  |
 | 2. CommitHead Flow Control | 0/? | Not started | - |
 | 3. MdbxSource Simplification and Cleanup | 0/? | Not started | - |
