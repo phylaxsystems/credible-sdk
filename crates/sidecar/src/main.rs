@@ -64,6 +64,7 @@ use std::{
         Arc,
         atomic::{
             AtomicBool,
+            AtomicU64,
             Ordering,
         },
     },
@@ -719,8 +720,18 @@ async fn run_sidecar_once(
         None
     };
 
-    // Spawn StateWorkerThread on a dedicated OS thread (Phase 1: empty scaffold)
-    let state_worker = StateWorkerThread::new(Arc::clone(&shutdown_flag));
+    // Spawn StateWorkerThread on a dedicated OS thread.
+    // Plan 04 will wire the real commit_head_rx from CoreEngine; for now we create a
+    // disconnected channel so the state worker exits cleanly on sender drop.
+    let (_commit_head_tx_placeholder, commit_head_rx_placeholder) =
+        flume::unbounded::<sidecar::state_worker_thread::CommitHeadSignal>();
+    let committed_head = Arc::new(AtomicU64::new(0));
+    let state_worker = StateWorkerThread::new(
+        Arc::clone(&shutdown_flag),
+        commit_head_rx_placeholder,
+        config.state_worker.clone(),
+        Arc::clone(&committed_head),
+    );
     let (sw_handle, sw_exited) = state_worker
         .spawn()
         .map_err(|e| anyhow::anyhow!("Failed to spawn state worker thread: {e}"))?;
