@@ -125,7 +125,8 @@ impl DatabaseRef for MdbxSource {
 
         // Fallback: try EIP-2935 contract storage lookup
         // Check if block is within the EIP-2935 history window
-        let target_block = Self::u256_to_u64(U256::from(self.committed_head.load(Ordering::Acquire)))?;
+        let target_block =
+            Self::u256_to_u64(U256::from(self.committed_head.load(Ordering::Acquire)))?;
         let min_block = target_block.saturating_sub(HISTORY_SERVE_WINDOW as u64);
         if number == 0 || number > target_block || number <= min_block {
             return Err(Self::Error::BlockNotFound);

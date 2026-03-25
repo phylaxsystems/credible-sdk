@@ -360,10 +360,7 @@ async fn build_sources_from_config(
             warn!("Using legacy state source configuration; migrate to state.sources.");
         }
         if let Some(state_worker_path) = config.state.legacy.state_worker_mdbx_path.as_ref() {
-            match StateReader::new(
-                state_worker_path,
-                CircularBufferConfig::new(1)?,
-            ) {
+            match StateReader::new(state_worker_path, CircularBufferConfig::new(1)?) {
                 Ok(state_worker_client) => {
                     sources.push(Arc::new(MdbxSource::new(
                         state_worker_client,
@@ -394,10 +391,7 @@ async fn build_sources_from_config(
         for source_config in &config.state.sources {
             match source_config {
                 StateSourceConfig::Mdbx { mdbx_path, .. } => {
-                    match StateReader::new(
-                        mdbx_path,
-                        CircularBufferConfig::new(1)?,
-                    ) {
+                    match StateReader::new(mdbx_path, CircularBufferConfig::new(1)?) {
                         Ok(state_worker_client) => {
                             sources.push(Arc::new(MdbxSource::new(
                                 state_worker_client,
@@ -449,17 +443,15 @@ async fn observer_exit_future(
 
 async fn sw_exit_future(
     sw_exited_rx: Option<
-        tokio::sync::oneshot::Receiver<
-            Result<(), sidecar::state_worker_thread::StateWorkerError>,
-        >,
+        tokio::sync::oneshot::Receiver<Result<(), sidecar::state_worker_thread::StateWorkerError>>,
     >,
 ) -> Result<(), sidecar::state_worker_thread::StateWorkerError> {
     if let Some(sw_exited) = sw_exited_rx {
-        sw_exited
-            .await
-            .map_err(|_| sidecar::state_worker_thread::StateWorkerError::ThreadSpawn(
+        sw_exited.await.map_err(|_| {
+            sidecar::state_worker_thread::StateWorkerError::ThreadSpawn(
                 "state worker notification channel closed".to_string(),
-            ))?
+            )
+        })?
     } else {
         // State worker not configured: this arm never resolves, which is correct —
         // the sidecar keeps running without it (EthRpcSource fallback is active).
@@ -508,9 +500,7 @@ fn handle_engine_exit(
     }
 }
 
-fn handle_state_worker_exit(
-    result: Result<(), sidecar::state_worker_thread::StateWorkerError>,
-) {
+fn handle_state_worker_exit(result: Result<(), sidecar::state_worker_thread::StateWorkerError>) {
     match result {
         Ok(()) => tracing::warn!("State worker exited unexpectedly"),
         Err(e) => {
@@ -589,9 +579,7 @@ async fn run_async_components(
         >,
     >,
     sw_exited_rx: Option<
-        tokio::sync::oneshot::Receiver<
-            Result<(), sidecar::state_worker_thread::StateWorkerError>,
-        >,
+        tokio::sync::oneshot::Receiver<Result<(), sidecar::state_worker_thread::StateWorkerError>>,
     >,
 ) -> bool {
     let mut should_shutdown = false;
@@ -654,6 +642,41 @@ async fn stop_da_reachability_monitor(da_reachability_handle: tokio::task::JoinH
             error = ?join_err,
             "Assertion DA reachability monitor exited unexpectedly"
         );
+    }
+}
+
+/// Spawns the embedded state worker thread when all required config fields are present.
+/// Returns `Some(exit_rx)` if spawned, `None` if config is incomplete (EthRpcSource fallback).
+fn spawn_state_worker_if_configured(
+    config: &Config,
+    shutdown_flag: &Arc<AtomicBool>,
+    commit_head_rx: flume::Receiver<sidecar::state_worker_thread::CommitHeadSignal>,
+    committed_head: &Arc<AtomicU64>,
+    thread_handles: &mut ThreadHandles,
+) -> anyhow::Result<Option<tokio::sync::oneshot::Receiver<Result<(), sidecar::state_worker_thread::error::StateWorkerError>>>> {
+    if config.state_worker.ws_url.is_some()
+        && config.state_worker.mdbx_path.is_some()
+        && config.state_worker.genesis_path.is_some()
+        && config.state_worker.state_depth.is_some()
+    {
+        let state_worker = StateWorkerThread::new(
+            Arc::clone(shutdown_flag),
+            commit_head_rx,
+            config.state_worker.clone(),
+            Arc::clone(committed_head),
+        );
+        let (sw_handle, sw_rx) = state_worker
+            .spawn()
+            .map_err(|e| anyhow::anyhow!("Failed to spawn state worker thread: {e}"))?;
+        thread_handles.state_worker = Some(sw_handle);
+        Ok(Some(sw_rx))
+    } else {
+        tracing::warn!(
+            "Embedded state worker not configured \
+             (missing ws_url, mdbx_path, genesis_path, or state_depth); \
+             relying on EthRpcSource for state"
+        );
+        Ok(None)
     }
 }
 
@@ -756,34 +779,13 @@ async fn run_sidecar_once(
         None
     };
 
-    // Spawn StateWorkerThread only when all required config fields are present.
-    // If any field is missing, the state worker is skipped; EthRpcSource remains the fallback.
-    // sw_exited_rx is Option<...>: None causes sw_exit_future to return pending() — the select!
-    // arm never fires, which is correct when the state worker never starts.
-    let sw_exited_rx = if config.state_worker.ws_url.is_some()
-        && config.state_worker.mdbx_path.is_some()
-        && config.state_worker.genesis_path.is_some()
-        && config.state_worker.state_depth.is_some()
-    {
-        let state_worker = StateWorkerThread::new(
-            Arc::clone(&shutdown_flag),
-            commit_head_rx,
-            config.state_worker.clone(),
-            Arc::clone(&committed_head),
-        );
-        let (sw_handle, sw_rx) = state_worker
-            .spawn()
-            .map_err(|e| anyhow::anyhow!("Failed to spawn state worker thread: {e}"))?;
-        thread_handles.state_worker = Some(sw_handle);
-        Some(sw_rx)
-    } else {
-        tracing::warn!(
-            "Embedded state worker not configured \
-             (missing ws_url, mdbx_path, genesis_path, or state_depth); \
-             relying on EthRpcSource for state"
-        );
-        None
-    };
+    let sw_exited_rx = spawn_state_worker_if_configured(
+        config,
+        &shutdown_flag,
+        commit_head_rx,
+        &committed_head,
+        &mut thread_handles,
+    )?;
 
     let mut health_server = HealthServer::new(health_bind_addr);
 

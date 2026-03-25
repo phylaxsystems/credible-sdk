@@ -114,6 +114,8 @@ impl AccountSnapshot {
 pub struct BlockStateUpdateBuilder;
 
 impl BlockStateUpdateBuilder {
+    /// # Errors
+    /// Returns an error if trace processing fails for the given block.
     pub fn from_geth_traces(
         block_number: u64,
         block_hash: B256,
@@ -131,6 +133,7 @@ impl BlockStateUpdateBuilder {
         })
     }
 
+    #[must_use]
     pub fn from_accounts(
         block_number: u64,
         block_hash: B256,
@@ -147,6 +150,7 @@ impl BlockStateUpdateBuilder {
 }
 
 /// Create a trace provider.
+#[must_use]
 pub fn create_trace_provider(
     provider: Arc<RootProvider>,
     trace_timeout: Duration,

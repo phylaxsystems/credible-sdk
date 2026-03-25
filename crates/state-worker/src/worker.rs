@@ -618,10 +618,7 @@ mod tests {
             Ok(None)
         }
 
-        fn scan_account_hashes(
-            &self,
-            _block_number: u64,
-        ) -> Result<Vec<AddressHash>, Self::Error> {
+        fn scan_account_hashes(&self, _block_number: u64) -> Result<Vec<AddressHash>, Self::Error> {
             Ok(vec![])
         }
     }
@@ -678,10 +675,7 @@ mod tests {
         impl Writer for CommitTrackingWriter {
             type Error = NoopError;
 
-            fn commit_block(
-                &self,
-                _update: &BlockStateUpdate,
-            ) -> Result<CommitStats, Self::Error> {
+            fn commit_block(&self, _update: &BlockStateUpdate) -> Result<CommitStats, Self::Error> {
                 self.committed.store(true, Ordering::SeqCst);
                 Ok(CommitStats::default())
             }

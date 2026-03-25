@@ -25,6 +25,8 @@ use mdbx::{
 };
 use std::collections::HashMap;
 
+/// # Errors
+/// Returns an error if a trace result indicates failure.
 pub fn process_geth_traces(traces: Vec<TraceResult>) -> anyhow::Result<Vec<AccountState>> {
     let mut accounts: HashMap<AddressHash, AccountSnapshot> = HashMap::new();
 

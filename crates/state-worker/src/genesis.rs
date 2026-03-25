@@ -34,11 +34,13 @@ impl GenesisState {
     }
 
     /// Consume the state and return the owned account commits.
+    #[must_use]
     pub fn into_accounts(self) -> Vec<AccountState> {
         self.accounts
     }
 
     /// Immutable view of the parsed genesis config.
+    #[must_use]
     pub fn config(&self) -> &Config {
         &self.config
     }
@@ -68,6 +70,9 @@ struct GenesisAccount {
 }
 
 /// Parse accounts from a genesis JSON blob.
+///
+/// # Errors
+/// Returns an error if the JSON is malformed or account addresses cannot be parsed.
 pub fn parse_from_str(data: &str) -> Result<GenesisState> {
     let genesis: GenesisFile =
         serde_json::from_str(data).context("failed to deserialize genesis JSON")?;

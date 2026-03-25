@@ -30,10 +30,10 @@ pub mod graphql_event_source;
 pub mod health;
 pub mod indexer;
 pub mod metrics;
+pub mod state_worker_thread;
 pub mod transaction_observer;
 pub mod transactions_state;
 pub mod transport;
-pub mod state_worker_thread;
 pub mod utils;
 
 pub use credible_utils::critical;

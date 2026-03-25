@@ -31,13 +31,13 @@ use crate::{
     utils::ErrorRecoverability,
 };
 use alloy_provider::Provider;
-use metrics::{
-    counter,
-    gauge,
-};
 use mdbx::{
     BlockStateUpdate,
     Writer,
+};
+use metrics::{
+    counter,
+    gauge,
 };
 use std::{
     collections::VecDeque,
@@ -276,12 +276,9 @@ async fn build_worker(
         .mdbx_path
         .as_deref()
         .ok_or_else(|| StateWorkerError::Config("state_worker.mdbx_path not configured".into()))?;
-    let genesis_path = config
-        .genesis_path
-        .as_deref()
-        .ok_or_else(|| {
-            StateWorkerError::Config("state_worker.genesis_path not configured".into())
-        })?;
+    let genesis_path = config.genesis_path.as_deref().ok_or_else(|| {
+        StateWorkerError::Config("state_worker.genesis_path not configured".into())
+    })?;
     // Connect provider (same pattern as state-worker/src/main.rs::connect_provider)
     let ws = alloy_provider::WsConnect::new(ws_url);
     let provider = alloy_provider::ProviderBuilder::new()
