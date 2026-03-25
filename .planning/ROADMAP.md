@@ -43,7 +43,13 @@ Plans:
   2. When the in-memory buffer reaches 128 entries, the state worker stops tracing new blocks until the buffer drains — no unbounded memory growth under engine stall
   3. After a state worker restart, tracing resumes from the last committed block in MDBX — no gap, no duplicate writes
   4. `state_worker_buffer_depth`, `state_worker_buffer_full_pauses_total`, and `state_worker_restarts_total` metrics are present and update in real time
-**Plans**: TBD
+**Plans**: 4 plans
+
+Plans:
+- [ ] 02-01-PLAN.md — Foundation: refactor process_block to return BlockStateUpdate, define CommitHeadSignal type, add EmbeddedStateWorkerConfig to sidecar args, extend StateWorkerError
+- [ ] 02-02-PLAN.md — CoreEngine CommitHead sender: add commit_head_tx field to CoreEngineConfig + CoreEngine, send signal on all process_commit_head return paths
+- [ ] 02-03-PLAN.md — State worker buffer+flush loop: replace no-op run_blocking_inner with full outer-sync-loop, flush_ready_blocks, backpressure at 128, best-effort shutdown flush, all 3 metrics
+- [ ] 02-04-PLAN.md — Wire run_sidecar_once: create flume::unbounded channel, Arc<AtomicU64> committed_head, conditional state worker spawn with config
 
 ### Phase 3: MdbxSource Simplification and Cleanup
 **Goal**: MdbxSource reads MDBX height from an in-process atomic instead of polling, all range-overlap logic is removed, the circular buffer depth is 1, and the standalone state-worker binary no longer exists in the workspace
@@ -64,5 +70,5 @@ Phases execute in numeric order: 1 → 2 → 3
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Thread Scaffold | 2/2 | Complete   | 2026-03-25 |
-| 2. CommitHead Flow Control | 0/? | Not started | - |
+| 2. CommitHead Flow Control | 0/4 | Not started | - |
 | 3. MdbxSource Simplification and Cleanup | 0/? | Not started | - |
