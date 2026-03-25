@@ -28,7 +28,11 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. Sending SIGTERM to the sidecar causes the state worker to exit cleanly within the normal shutdown window — no hang on join
   4. EthRpcSource serves state without interruption when the state worker is down or restarting
   5. `StateWorkerError` variants are classified as Recoverable or Unrecoverable and drive the restart vs. abort decision
-**Plans**: TBD
+**Plans**: 2 plans
+
+Plans:
+- [ ] 01-01-PLAN.md — StateWorkerError enum + StateWorkerThread scaffold (error types, spawn, isolated runtime, panic catch, shutdown polling, restart backoff)
+- [ ] 01-02-PLAN.md — Wire StateWorkerThread into sidecar main.rs (ThreadHandles, run_sidecar_once, run_async_components select!, EthRpcSource fallback preserved)
 
 ### Phase 2: CommitHead Flow Control
 **Goal**: MDBX writes are gated by CommitHead signals from the engine — the state worker buffers traced blocks in memory and only flushes to MDBX when authorized, so MDBX height never exceeds commit_head.block_number
@@ -59,6 +63,6 @@ Phases execute in numeric order: 1 → 2 → 3
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Thread Scaffold | 0/? | Not started | - |
+| 1. Thread Scaffold | 0/2 | Not started | - |
 | 2. CommitHead Flow Control | 0/? | Not started | - |
 | 3. MdbxSource Simplification and Cleanup | 0/? | Not started | - |
