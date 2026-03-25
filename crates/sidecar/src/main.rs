@@ -349,23 +349,26 @@ fn transaction_observer_config_from(config: &Config) -> Option<TransactionObserv
     }
 }
 
-async fn build_sources_from_config(config: &Config) -> anyhow::Result<Vec<Arc<dyn Source>>> {
+async fn build_sources_from_config(
+    config: &Config,
+    committed_head: Arc<AtomicU64>,
+) -> anyhow::Result<Vec<Arc<dyn Source>>> {
     let mut sources: Vec<Arc<dyn Source>> = Vec::new();
 
     if config.state.sources.is_empty() {
         if config.state.legacy.has_any() {
             warn!("Using legacy state source configuration; migrate to state.sources.");
         }
-        if let (Some(state_worker_path), Some(state_worker_depth)) = (
-            config.state.legacy.state_worker_mdbx_path.as_ref(),
-            config.state.legacy.state_worker_depth,
-        ) {
+        if let Some(state_worker_path) = config.state.legacy.state_worker_mdbx_path.as_ref() {
             match StateReader::new(
                 state_worker_path,
-                CircularBufferConfig::new(u8::try_from(state_worker_depth)?)?,
+                CircularBufferConfig::new(1)?,
             ) {
                 Ok(state_worker_client) => {
-                    sources.push(Arc::new(MdbxSource::new(state_worker_client)));
+                    sources.push(Arc::new(MdbxSource::new(
+                        state_worker_client,
+                        Arc::clone(&committed_head),
+                    )));
                 }
                 Err(e) => {
                     error!(error = ?e, "Failed to connect MDBX");
@@ -390,13 +393,16 @@ async fn build_sources_from_config(config: &Config) -> anyhow::Result<Vec<Arc<dy
         }
         for source_config in &config.state.sources {
             match source_config {
-                StateSourceConfig::Mdbx { mdbx_path, depth } => {
+                StateSourceConfig::Mdbx { mdbx_path, .. } => {
                     match StateReader::new(
                         mdbx_path,
-                        CircularBufferConfig::new(u8::try_from(*depth)?)?,
+                        CircularBufferConfig::new(1)?,
                     ) {
                         Ok(state_worker_client) => {
-                            sources.push(Arc::new(MdbxSource::new(state_worker_client)));
+                            sources.push(Arc::new(MdbxSource::new(
+                                state_worker_client,
+                                Arc::clone(&committed_head),
+                            )));
                         }
                         Err(e) => {
                             error!(error = ?e, "Failed to connect MDBX");
@@ -663,7 +669,13 @@ async fn run_sidecar_once(
     // Shared shutdown flag for this iteration
     let shutdown_flag = Arc::new(AtomicBool::new(false));
 
-    let sources = build_sources_from_config(config).await?;
+    // Constructed before build_sources_from_config so MdbxSource and StateWorkerThread share
+    // the same Arc. State worker writes with Release ordering after each flush; MdbxSource
+    // reads with Acquire ordering in is_synced. Initial value 0 — MdbxSource falls back to
+    // EthRpcSource until the first flush.
+    let committed_head = Arc::new(AtomicU64::new(0));
+
+    let sources = build_sources_from_config(config, Arc::clone(&committed_head)).await?;
     let state = Arc::new(Sources::new(sources, config.state.minimum_state_diff));
     let cache: OverlayDb<Sources> = OverlayDb::new(Some(state.clone()));
 
@@ -698,12 +710,6 @@ async fn run_sidecar_once(
     let event_sequencing = EventSequencing::new(event_sequencing_rx, event_sequencing_tx);
     let (seq_handle, seq_exited) = event_sequencing.spawn(Arc::clone(&shutdown_flag))?;
     thread_handles.event_sequencing = Some(seq_handle);
-
-    // Phase 3 will wire committed_head to MdbxSource.
-    // Constructed here (not inside the thread) so both consumers share the same Arc.
-    // Arc<AtomicU64>: state worker writes with Release ordering after each flush.
-    // Initial value 0 — MdbxSource will fall back to EthRpcSource until first flush.
-    let committed_head = Arc::new(AtomicU64::new(0));
 
     // CommitHead channel: CoreEngine -> StateWorkerThread
     // MUST be unbounded — a bounded channel with a full buffer causes circular deadlock.
