@@ -57,12 +57,19 @@ use sidecar::{
     },
     utils::ErrorRecoverability,
 };
+use state_worker::{
+    StateWorkerConfig,
+    commit_head_signal_channel,
+    run_state_worker_until_shutdown,
+};
 use std::{
+    env,
     net::SocketAddr,
     sync::{
         Arc,
         atomic::{
             AtomicBool,
+            AtomicU64,
             Ordering,
         },
     },
@@ -268,6 +275,7 @@ struct ThreadHandles {
     engine: Option<JoinHandle<Result<(), sidecar::engine::EngineError>>>,
     event_sequencing:
         Option<JoinHandle<Result<(), sidecar::event_sequencing::EventSequencingError>>>,
+    state_worker: Option<JoinHandle<anyhow::Result<()>>>,
     transaction_observer:
         Option<JoinHandle<Result<(), sidecar::transaction_observer::TransactionObserverError>>>,
 }
@@ -277,6 +285,7 @@ impl ThreadHandles {
         Self {
             engine: None,
             event_sequencing: None,
+            state_worker: None,
             transaction_observer: None,
         }
     }
@@ -298,6 +307,15 @@ impl ThreadHandles {
                 Err(_) => tracing::error!("Event sequencing thread panicked"),
             }
         }
+        if let Some(handle) = self.state_worker.take() {
+            match handle.join() {
+                Ok(Ok(())) => tracing::info!("State worker thread exited cleanly"),
+                Ok(Err(err)) => {
+                    tracing::error!(error = ?err, "State worker thread exited with error");
+                }
+                Err(_) => tracing::error!("State worker thread panicked"),
+            }
+        }
         if let Some(handle) = self.transaction_observer.take() {
             match handle.join() {
                 Ok(Ok(())) => tracing::info!("Transaction observer thread exited cleanly"),
@@ -308,6 +326,67 @@ impl ThreadHandles {
             }
         }
     }
+}
+
+fn state_worker_runtime_config(config: &Config) -> anyhow::Result<Option<StateWorkerConfig>> {
+    let configured_mdbx = if config.state.sources.is_empty() {
+        match (
+            config.state.legacy.state_worker_mdbx_path.as_ref(),
+            config.state.legacy.state_worker_depth,
+        ) {
+            (Some(mdbx_path), Some(depth)) => Some((mdbx_path.clone(), depth)),
+            _ => None,
+        }
+    } else {
+        config.state.sources.iter().find_map(|source| {
+            match source {
+                StateSourceConfig::Mdbx { mdbx_path, depth } => Some((mdbx_path.clone(), *depth)),
+                StateSourceConfig::EthRpc { .. } => None,
+            }
+        })
+    };
+
+    let Some((mdbx_path, configured_depth)) = configured_mdbx else {
+        return Ok(None);
+    };
+
+    let ws_url = env::var("STATE_WORKER_WS_URL").ok().or_else(|| {
+        if config.state.sources.is_empty() {
+            config.state.legacy.eth_rpc_source_ws_url.clone()
+        } else {
+            config.state.sources.iter().find_map(|source| {
+                match source {
+                    StateSourceConfig::EthRpc { ws_url, .. } => Some(ws_url.clone()),
+                    StateSourceConfig::Mdbx { .. } => None,
+                }
+            })
+        }
+    });
+
+    let Some(ws_url) = ws_url else {
+        anyhow::bail!(
+            "state worker MDBX source is configured but no websocket URL was found; set STATE_WORKER_WS_URL or configure an eth-rpc state source"
+        );
+    };
+
+    let state_depth = env::var("STATE_WORKER_STATE_DEPTH")
+        .ok()
+        .map(|value| value.parse::<u8>())
+        .transpose()?
+        .unwrap_or(u8::try_from(configured_depth)?);
+    let start_block = env::var("STATE_WORKER_START_BLOCK")
+        .ok()
+        .map(|value| value.parse::<u64>())
+        .transpose()?;
+    let file_to_genesis = env::var("STATE_WORKER_FILE_TO_GENESIS").ok();
+
+    Ok(Some(StateWorkerConfig {
+        ws_url,
+        mdbx_path,
+        start_block,
+        state_depth,
+        file_to_genesis,
+    }))
 }
 
 fn transaction_observer_config_from(config: &Config) -> Option<TransactionObserverConfig> {
@@ -356,8 +435,8 @@ async fn build_sources_from_config(config: &Config) -> anyhow::Result<Vec<Arc<dy
                 Ok(state_worker_client) => {
                     sources.push(Arc::new(MdbxSource::new(state_worker_client)));
                 }
-                Err(e) => {
-                    error!(error = ?e, "Failed to connect MDBX");
+                Err(err) => {
+                    error!(error = ?err, "Failed to connect MDBX");
                 }
             }
         }
@@ -387,8 +466,8 @@ async fn build_sources_from_config(config: &Config) -> anyhow::Result<Vec<Arc<dy
                         Ok(state_worker_client) => {
                             sources.push(Arc::new(MdbxSource::new(state_worker_client)));
                         }
-                        Err(e) => {
-                            error!(error = ?e, "Failed to connect MDBX");
+                        Err(err) => {
+                            error!(error = ?err, "Failed to connect MDBX");
                         }
                     }
                 }
@@ -605,8 +684,15 @@ async fn run_sidecar_once(
 
     // Shared shutdown flag for this iteration
     let shutdown_flag = Arc::new(AtomicBool::new(false));
-
+    let state_worker_config = state_worker_runtime_config(config)?;
     let sources = build_sources_from_config(config).await?;
+    let (commit_head_signal_sender, commit_head_signal_receiver) = if state_worker_config.is_some()
+    {
+        let (sender, receiver) = commit_head_signal_channel();
+        (Some(sender), Some(receiver))
+    } else {
+        (None, None)
+    };
     let state = Arc::new(Sources::new(sources, config.state.minimum_state_diff));
     let cache: OverlayDb<Sources> = OverlayDb::new(Some(state.clone()));
 
@@ -637,6 +723,23 @@ async fn run_sidecar_once(
         result_event_rx,
     )?;
 
+    if let (Some(state_worker_config), Some(commit_head_signal_receiver)) =
+        (state_worker_config, commit_head_signal_receiver)
+    {
+        let shutdown = Arc::clone(&shutdown_flag);
+        let state_worker_handle = std::thread::Builder::new()
+            .name("sidecar-state-worker".into())
+            .spawn(move || {
+                run_state_worker_until_shutdown(
+                    state_worker_config,
+                    shutdown,
+                    Some(commit_head_signal_receiver),
+                    Arc::new(AtomicU64::new(0)),
+                )
+            })?;
+        thread_handles.state_worker = Some(state_worker_handle);
+    }
+
     // Spawn EventSequencing on a dedicated OS thread
     let event_sequencing = EventSequencing::new(event_sequencing_rx, event_sequencing_tx);
     let (seq_handle, seq_exited) = event_sequencing.spawn(Arc::clone(&shutdown_flag))?;
@@ -655,7 +758,7 @@ async fn run_sidecar_once(
         #[cfg(feature = "cache_validation")]
         provider_ws_url: Some(config.credible.cache_checker_ws_url.clone()),
     };
-    let engine = CoreEngine::new(
+    let mut engine = CoreEngine::new(
         cache,
         state,
         engine_rx,
@@ -664,6 +767,9 @@ async fn run_sidecar_once(
         engine_config,
     )
     .await;
+    if let Some(commit_head_signal_sender) = commit_head_signal_sender {
+        engine.set_commit_head_signal_sender(commit_head_signal_sender);
+    }
     let (engine_handle, engine_exited) = engine.spawn(Arc::clone(&shutdown_flag))?;
     thread_handles.engine = Some(engine_handle);
 

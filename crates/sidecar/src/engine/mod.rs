@@ -98,6 +98,7 @@ use assertion_executor::{
     },
 };
 use revm::state::EvmState;
+use state_worker::CommitHeadSignalSender;
 use std::{
     fmt::Debug,
     sync::{
@@ -570,6 +571,7 @@ pub struct CoreEngine<DB> {
     /// Prevents duplicate logging/metrics on re-execution.
     assertion_failure_cache: moka::sync::Cache<TxHash, ()>,
     custom_tx_executor: Option<Arc<dyn CustomTxExecutor<DB>>>,
+    commit_head_signal_sender: Option<CommitHeadSignalSender>,
 }
 
 #[cfg(feature = "cache_validation")]
@@ -648,7 +650,12 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             cache_checker,
             assertion_failure_cache,
             custom_tx_executor: None,
+            commit_head_signal_sender: None,
         }
+    }
+
+    pub fn set_commit_head_signal_sender(&mut self, sender: CommitHeadSignalSender) {
+        self.commit_head_signal_sender = Some(sender);
     }
 
     #[cfg(any(test, feature = "bench-utils"))]
@@ -1618,6 +1625,9 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         );
 
         let block_execution_id = BlockExecutionId::from(commit_head);
+        if let Some(sender) = self.commit_head_signal_sender.as_ref() {
+            sender.send_replace(Some(commit_head.block_number.saturating_to::<u64>()));
+        }
 
         // Check if cache should be invalidated
         let is_valid_state = if self.overlay_cache_invalidation_every_block {

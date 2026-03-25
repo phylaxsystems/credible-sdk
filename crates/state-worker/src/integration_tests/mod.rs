@@ -1,3 +1,3 @@
-mod mdbx_fixture;
+pub(crate) mod mdbx_fixture;
 mod setup;
 mod tests;
