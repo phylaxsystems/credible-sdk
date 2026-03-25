@@ -60,7 +60,12 @@ Plans:
   2. `calculate_target_block` and all call sites are deleted — grep finds no references
   3. `crates/state-worker/` directory is removed from the workspace and `cargo build` succeeds cleanly
   4. Sidecar processes blocks end-to-end with MDBX circular buffer depth 1 — no "went too far" panics or range errors under normal operation
-**Plans**: TBD
+**Plans**: 3 plans
+
+Plans:
+- [ ] 03-01-PLAN.md — MdbxSource simplification: remove polling + range-intersection, wire Arc<AtomicU64> committed_head, hardcode StateReader depth=1 in main.rs
+- [ ] 03-02-PLAN.md — Circular buffer depth=1 for StateWriter in state_worker_thread/mod.rs
+- [ ] 03-03-PLAN.md — Delete standalone state-worker binary (src/main.rs + [[bin]] from Cargo.toml)
 
 ## Progress
 
@@ -71,4 +76,4 @@ Phases execute in numeric order: 1 → 2 → 3
 |-------|----------------|--------|-----------|
 | 1. Thread Scaffold | 2/2 | Complete   | 2026-03-25 |
 | 2. CommitHead Flow Control | 3/4 | In Progress|  |
-| 3. MdbxSource Simplification and Cleanup | 0/? | Not started | - |
+| 3. MdbxSource Simplification and Cleanup | 0/3 | Not started | - |
