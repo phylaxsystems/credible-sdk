@@ -282,10 +282,6 @@ async fn build_worker(
         .ok_or_else(|| {
             StateWorkerError::Config("state_worker.genesis_path not configured".into())
         })?;
-    let state_depth = config.state_depth.ok_or_else(|| {
-        StateWorkerError::Config("state_worker.state_depth not configured".into())
-    })?;
-
     // Connect provider (same pattern as state-worker/src/main.rs::connect_provider)
     let ws = alloy_provider::WsConnect::new(ws_url);
     let provider = alloy_provider::ProviderBuilder::new()
@@ -294,8 +290,11 @@ async fn build_worker(
         .map_err(|e| StateWorkerError::Config(format!("Failed to connect WS provider: {e}")))?;
     let provider = std::sync::Arc::new(provider.root().clone());
 
-    // Construct StateWriter (MDBX write handle — exclusive to state worker)
-    let circular_config = mdbx::common::CircularBufferConfig::new(state_depth)
+    // Circular buffer depth is always 1 (SIMP-02).
+    // CommitHead gating ensures MDBX writes never exceed commit_head.block_number,
+    // making the "went too far" scenario architecturally impossible.
+    // Depth > 1 provided no safety benefit and added namespace-rotation overhead.
+    let circular_config = mdbx::common::CircularBufferConfig::new(1)
         .map_err(|e| StateWorkerError::Config(format!("Invalid CircularBufferConfig: {e}")))?;
     let writer = mdbx::StateWriter::new(mdbx_path, circular_config)
         .map_err(|e| StateWorkerError::Config(format!("Failed to open MDBX writer: {e}")))?;
