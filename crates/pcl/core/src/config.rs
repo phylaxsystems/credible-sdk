@@ -297,7 +297,6 @@ impl CliConfig {
                 .unwrap_or(Self::get_config_dir()),
         )
     }
-
 }
 
 impl fmt::Display for CliConfig {

@@ -232,9 +232,7 @@ impl AuthCommand {
         status: AuthStatusResponse,
         auth_response: &AuthResponse,
     ) -> Result<(), AuthError> {
-        let wallet_address = status
-            .address
-            .and_then(|a| a.parse::<Address>().ok());
+        let wallet_address = status.address.and_then(|a| a.parse::<Address>().ok());
 
         config.auth = Some(UserAuth {
             access_token: status
@@ -295,7 +293,11 @@ mod tests {
                 refresh_token: "test_refresh".to_string(),
                 expires_at: Utc.with_ymd_and_hms(2024, 12, 31, 0, 0, 0).unwrap(),
                 user_id: Some(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap()),
-                wallet_address: Some("0x1234567890123456789012345678901234567890".parse().unwrap()),
+                wallet_address: Some(
+                    "0x1234567890123456789012345678901234567890"
+                        .parse()
+                        .unwrap(),
+                ),
                 email: None,
             }),
             ..Default::default()
@@ -350,9 +352,11 @@ mod tests {
         let auth = config.auth.as_ref().unwrap();
         assert_eq!(
             auth.wallet_address,
-            Some("0x1234567890123456789012345678901234567890"
-                .parse::<Address>()
-                .unwrap())
+            Some(
+                "0x1234567890123456789012345678901234567890"
+                    .parse::<Address>()
+                    .unwrap()
+            )
         );
         assert_eq!(auth.access_token, "test_token");
         assert_eq!(auth.refresh_token, "test_refresh");
@@ -510,9 +514,11 @@ mod tests {
         assert!(result.is_ok());
         assert_eq!(
             config.auth.as_ref().unwrap().wallet_address,
-            Some("0x1234567890123456789012345678901234567890"
-                .parse::<Address>()
-                .unwrap())
+            Some(
+                "0x1234567890123456789012345678901234567890"
+                    .parse::<Address>()
+                    .unwrap()
+            )
         );
     }
 }
