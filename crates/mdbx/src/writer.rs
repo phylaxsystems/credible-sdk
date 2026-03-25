@@ -551,7 +551,7 @@ impl BootstrapWriter {
 ///
 /// MDBX enforces single-writer semantics, so only one `StateWriter`
 /// should be active at a time per database path.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct StateWriter {
     reader: StateReader,
 }

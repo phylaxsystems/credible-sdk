@@ -162,7 +162,7 @@ where
 
     /// Determine the next block to ingest. We respect manual overrides so
     /// operators can force a resync of historical ranges when needed.
-    fn compute_start_block(&self, override_start: Option<u64>) -> Result<u64> {
+    pub fn compute_start_block(&self, override_start: Option<u64>) -> Result<u64> {
         if let Some(block) = override_start {
             return Ok(block);
         }

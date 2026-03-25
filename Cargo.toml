@@ -66,6 +66,9 @@ eip-system-calls = { path = "crates/eip-system-calls" }
 assertion-verification = { path = "crates/assertion-verification" }
 
 sidecar = { path = "crates/sidecar" }
+
+# state-worker library (embedded in sidecar for in-process block tracing)
+state-worker = { path = "crates/state-worker" }
 mdbx = { path = "crates/mdbx", features = ["reader"] }
 benchmark-utils = { path = "crates/benchmark-utils", features = [] }
 
