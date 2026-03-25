@@ -2,14 +2,14 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: Phase complete — ready for verification
-stopped_at: "Checkpoint: 01-thread-scaffold-02 — awaiting human verification"
-last_updated: "2026-03-25T01:49:58.900Z"
+status: Ready to execute
+stopped_at: Completed 02-commithead-flow-control-01-PLAN.md
+last_updated: "2026-03-25T02:53:57.328Z"
 progress:
   total_phases: 3
   completed_phases: 1
-  total_plans: 2
-  completed_plans: 2
+  total_plans: 6
+  completed_plans: 3
 ---
 
 # Project State
@@ -19,12 +19,12 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-25)
 
 **Core value:** MDBX writes never exceed the current commit head — the core engine controls exactly when state becomes visible, eliminating all "went too far" and range-synchronization bugs.
-**Current focus:** Phase 01 — thread-scaffold
+**Current focus:** Phase 02 — commithead-flow-control
 
 ## Current Position
 
-Phase: 01 (thread-scaffold) — EXECUTING
-Plan: 2 of 2
+Phase: 02 (commithead-flow-control) — EXECUTING
+Plan: 2 of 4
 
 ## Performance Metrics
 
@@ -48,6 +48,7 @@ Plan: 2 of 2
 *Updated after each plan completion*
 | Phase 01-thread-scaffold P01 | 3 | 2 tasks | 3 files |
 | Phase 01-thread-scaffold P02 | 2 | 1 tasks | 4 files |
+| Phase 02-commithead-flow-control P01 | 30 | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -65,6 +66,9 @@ Recent decisions affecting current work:
 - [Phase 01-thread-scaffold]: Phase 1 run_blocking_inner is a no-op poll loop; Phase 2+ replaces with StateWorker::run()
 - [Phase 01-thread-scaffold]: StateWorkerError used via full path in function signatures to avoid unused import lint error
 - [Phase 01-thread-scaffold]: state_worker joined AFTER engine in join_all() per PITFALLS.md — engine must send final CommitHead before state worker stops
+- [Phase 02-commithead-flow-control]: process_block returns BlockStateUpdate; run() commits via commit_update() — separation of concerns for sidecar buffer in Plan 03
+- [Phase 02-commithead-flow-control]: CommitHeadSignal is a separate type from engine::queue::CommitHead — avoids coupling state worker to engine internals
+- [Phase 02-commithead-flow-control]: EmbeddedStateWorkerConfig uses all-Option fields — validation deferred to Plan 03/04 when fields are consumed
 
 ### Pending Todos
 
@@ -78,6 +82,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-25T01:49:58.898Z
-Stopped at: Checkpoint: 01-thread-scaffold-02 — awaiting human verification
+Last session: 2026-03-25T02:53:57.325Z
+Stopped at: Completed 02-commithead-flow-control-01-PLAN.md
 Resume file: None

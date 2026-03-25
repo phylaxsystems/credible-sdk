@@ -19,12 +19,12 @@ Requirements for this milestone. Each maps to roadmap phases.
 
 ### Flow Control
 
-- [ ] **FLOW-01**: State worker buffers `BlockStateUpdate` in a bounded `VecDeque` after tracing each block
+- [x] **FLOW-01**: State worker buffers `BlockStateUpdate` in a bounded `VecDeque` after tracing each block
 - [ ] **FLOW-02**: Core engine sends `CommitHeadSignal { block_number }` via mpsc channel after each `process_commit_head`
 - [ ] **FLOW-03**: State worker flushes buffered updates where `block_number <= commit_head` to MDBX on signal
 - [ ] **FLOW-04**: MDBX height never exceeds `current_commit_head.block_number`
 - [ ] **FLOW-05**: Buffer bounded at 128 blocks — state worker pauses tracing when buffer is full (backpressure)
-- [ ] **FLOW-06**: On restart, state worker resumes from last committed block in MDBX via `compute_start_block`
+- [x] **FLOW-06**: On restart, state worker resumes from last committed block in MDBX via `compute_start_block`
 
 ### Simplification
 
@@ -80,12 +80,12 @@ Which phases cover which requirements. Updated during roadmap creation.
 | THRD-05 | Phase 1 | Complete |
 | THRD-06 | Phase 1 | Complete |
 | THRD-07 | Phase 1 | Complete |
-| FLOW-01 | Phase 2 | Pending |
+| FLOW-01 | Phase 2 | Complete |
 | FLOW-02 | Phase 2 | Pending |
 | FLOW-03 | Phase 2 | Pending |
 | FLOW-04 | Phase 2 | Pending |
 | FLOW-05 | Phase 2 | Pending |
-| FLOW-06 | Phase 2 | Pending |
+| FLOW-06 | Phase 2 | Complete |
 | SIMP-01 | Phase 3 | Pending |
 | SIMP-02 | Phase 3 | Pending |
 | SIMP-03 | Phase 3 | Pending |
