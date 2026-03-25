@@ -13,7 +13,9 @@ use crate::{
     Sources,
     cache::sources::{
         Source,
+        SourceName,
         eth_rpc_source::EthRpcSource,
+        mdbx::MdbxSource,
     },
     engine::queue::{
         CommitHead,
@@ -31,6 +33,10 @@ use crate::{
     execution_ids::{
         BlockExecutionId,
         TxExecutionId,
+    },
+    state_sync::supervisor::{
+        WorkerStatusHandle,
+        WorkerStatusReader,
     },
     transaction_observer::IncidentReportSender,
     transactions_state::TransactionResultEvent,
@@ -78,11 +84,17 @@ use assertion_executor::{
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use int_test_utils::node_protocol_mock_server::DualProtocolMockServer;
+use mdbx::{
+    StateReader,
+    StateWriter,
+};
 use revm::{
+    DatabaseRef,
     database::CacheDB,
     primitives::TxKind,
 };
 use serde_json::json;
+use state_worker::WorkerStatusSnapshot;
 use std::{
     collections::HashMap,
     net::SocketAddr,
@@ -92,6 +104,7 @@ use std::{
     },
     time::Duration,
 };
+use tempfile::TempDir;
 use tokio::{
     sync::mpsc,
     time::sleep,
@@ -126,6 +139,108 @@ mod grpc_encode {
     #[inline]
     pub fn u128_be(val: u128) -> Vec<u8> {
         val.to_be_bytes().to_vec()
+    }
+}
+
+#[derive(Clone, Debug)]
+struct TestWorkerStatus {
+    snapshot: Arc<WorkerStatusSnapshot>,
+}
+
+impl TestWorkerStatus {
+    fn restarting(
+        latest_head_seen: Option<u64>,
+        highest_staged_block: Option<u64>,
+        mdbx_synced_through: Option<u64>,
+    ) -> Self {
+        Self {
+            snapshot: Arc::new(WorkerStatusSnapshot {
+                latest_head_seen,
+                highest_staged_block,
+                mdbx_synced_through,
+                healthy: true,
+                restarting: true,
+            }),
+        }
+    }
+
+    fn into_handle(self) -> WorkerStatusHandle {
+        Arc::new(self)
+    }
+}
+
+impl WorkerStatusReader for TestWorkerStatus {
+    fn snapshot(&self) -> WorkerStatusSnapshot {
+        (*self.snapshot).clone()
+    }
+}
+
+#[derive(Debug)]
+pub struct AccountFetchResult {
+    pub account: Option<AccountInfo>,
+    pub served_by: SourceName,
+}
+
+#[derive(Debug)]
+pub struct RestartingWorkerHarness {
+    sources: Arc<Sources>,
+    eth_rpc_source_http_mock: DualProtocolMockServer,
+    fallback_eth_rpc_source_http_mock: DualProtocolMockServer,
+    list_of_sources: Vec<Arc<dyn Source>>,
+}
+
+impl RestartingWorkerHarness {
+    async fn wait_for_source_synced(
+        &self,
+        source_index: usize,
+        block_number: U256,
+        min_synced_block: U256,
+    ) -> Result<(), String> {
+        let source = self
+            .list_of_sources
+            .get(source_index)
+            .cloned()
+            .ok_or_else(|| format!("source index {source_index} out of bounds"))?;
+
+        tokio::time::timeout(Duration::from_secs(10), async move {
+            loop {
+                if source.is_synced(min_synced_block, block_number) {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .map_err(|_| {
+            format!("timed out waiting for source {source_index} to sync to block {block_number}")
+        })
+    }
+
+    pub async fn fetch_account(&self, address: Address) -> Result<AccountFetchResult, String> {
+        let account = self
+            .sources
+            .basic_ref(address)
+            .map_err(|e| format!("failed to fetch account {address}: {e}"))?;
+
+        let served_by = if self
+            .eth_rpc_source_http_mock
+            .eth_balance_counter
+            .get(&address)
+            .is_some()
+        {
+            SourceName::EthRpcSource
+        } else if self
+            .fallback_eth_rpc_source_http_mock
+            .eth_balance_counter
+            .get(&address)
+            .is_some()
+        {
+            SourceName::EthRpcSource
+        } else {
+            SourceName::StateWorker
+        };
+
+        Ok(AccountFetchResult { account, served_by })
     }
 }
 
@@ -668,6 +783,63 @@ pub struct LocalInstanceGrpcDriver {
 }
 
 impl LocalInstanceGrpcDriver {
+    pub async fn with_restarting_worker() -> Result<RestartingWorkerHarness, String> {
+        let eth_rpc_source_http_mock = DualProtocolMockServer::new()
+            .await
+            .map_err(|e| format!("Failed to create eth rpc source mock: {e}"))?;
+        let fallback_eth_rpc_source_http_mock = DualProtocolMockServer::new()
+            .await
+            .map_err(|e| format!("Failed to create fallback eth rpc source mock: {e}"))?;
+
+        let eth_rpc_source_db: Arc<dyn Source> = EthRpcSource::try_build(
+            eth_rpc_source_http_mock.ws_url(),
+            eth_rpc_source_http_mock.http_url(),
+        )
+        .await
+        .map_err(|e| format!("Failed to create eth rpc source: {e}"))?;
+        let fallback_eth_rpc_source_db: Arc<dyn Source> = EthRpcSource::try_build(
+            fallback_eth_rpc_source_http_mock.ws_url(),
+            fallback_eth_rpc_source_http_mock.http_url(),
+        )
+        .await
+        .map_err(|e| format!("Failed to create fallback eth rpc source: {e}"))?;
+
+        let tmp = TempDir::new().map_err(|e| format!("Failed to create tempdir: {e}"))?;
+        let path = tmp.keep();
+        let writer = StateWriter::new(&path)
+            .map_err(|e| format!("Failed to create MDBX fixture: {e}"))?;
+        drop(writer);
+
+        let mdbx_source: Arc<dyn Source> = Arc::new(MdbxSource::new(
+            StateReader::new(&path)
+                .map_err(|e| format!("Failed to create MDBX reader fixture: {e}"))?,
+            TestWorkerStatus::restarting(Some(1), Some(1), Some(1)).into_handle(),
+        ));
+
+        let list_of_sources = vec![mdbx_source, eth_rpc_source_db, fallback_eth_rpc_source_db];
+        let sources = Arc::new(Sources::new(list_of_sources.clone(), 10));
+        sources.set_block_number(U256::from(1));
+
+        eth_rpc_source_http_mock.send_new_head();
+        fallback_eth_rpc_source_http_mock.send_new_head();
+
+        let harness = RestartingWorkerHarness {
+            sources,
+            eth_rpc_source_http_mock,
+            fallback_eth_rpc_source_http_mock,
+            list_of_sources,
+        };
+
+        harness
+            .wait_for_source_synced(1, U256::from(1), U256::from(1))
+            .await?;
+        harness
+            .wait_for_source_synced(2, U256::from(1), U256::from(1))
+            .await?;
+
+        Ok(harness)
+    }
+
     fn build_pb_block_env(block_env: &BlockEnv) -> pb::BlockEnv {
         pb::BlockEnv {
             number: block_env.number.to_be_bytes::<32>().to_vec(),

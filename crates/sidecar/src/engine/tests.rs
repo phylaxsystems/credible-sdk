@@ -4,6 +4,10 @@
 
 use super::*;
 use crate::utils::TestDbError;
+use crate::{
+    cache::sources::SourceName,
+    utils::test_drivers::LocalInstanceGrpcDriver,
+};
 use alloy::eips::{
     eip2935::{
         HISTORY_SERVE_WINDOW,
@@ -281,8 +285,47 @@ impl crate::state_sync::supervisor::CommitTargetSink for RecordingCommitTargetSi
     }
 }
 
+#[derive(Clone, Debug)]
+struct SlowCommitTargetSink {
+    values: Arc<parking_lot::Mutex<Vec<u64>>>,
+    delay: Duration,
+}
+
+impl SlowCommitTargetSink {
+    fn new(delay: Duration) -> Self {
+        Self {
+            values: Arc::new(parking_lot::Mutex::new(Vec::new())),
+            delay,
+        }
+    }
+
+    async fn wait_for_publish(&self, block_number: u64) {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if self.values.lock().contains(&block_number) {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("timed out waiting for slow commit sink");
+    }
+}
+
+impl crate::state_sync::supervisor::CommitTargetSink for SlowCommitTargetSink {
+    fn publish(&self, block_number: u64) {
+        let values = Arc::clone(&self.values);
+        let delay = self.delay;
+        std::thread::spawn(move || {
+            std::thread::sleep(delay);
+            values.lock().push(block_number);
+        });
+    }
+}
+
 async fn build_engine_with_commit_sink(
-    sink: RecordingCommitTargetSink,
+    sink: impl crate::state_sync::supervisor::CommitTargetSink + 'static,
 ) -> CoreEngine<CacheDB<EmptyDBTyped<TestDbError>>> {
     let (tx_sender, tx_receiver) = flume::unbounded();
     drop(tx_sender);
@@ -743,6 +786,35 @@ async fn test_process_commit_head_publishes_committed_block_to_state_worker() {
         .unwrap();
 
     assert_eq!(sink.values(), vec![101]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_eth_rpc_fallback_when_worker_is_restarting() {
+    let mut harness = LocalInstanceGrpcDriver::with_restarting_worker()
+        .await
+        .expect("failed to create restarting-worker harness");
+    let address = Address::from([0xAA; 20]);
+
+    let account = harness
+        .fetch_account(address)
+        .await
+        .expect("failed to fetch account");
+
+    assert_eq!(account.served_by, SourceName::EthRpcSource);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_commit_head_processing_does_not_wait_for_mdbx_flush() {
+    let sink = SlowCommitTargetSink::new(Duration::from_millis(100));
+    let mut engine = build_engine_with_commit_sink(sink.clone()).await;
+    let started = Instant::now();
+
+    engine
+        .process_commit_head(&commit_head(101), &mut 0, &mut Instant::now())
+        .expect("failed to process commit head");
+
+    assert!(started.elapsed() < Duration::from_millis(50));
+    sink.wait_for_publish(101).await;
 }
 
 #[crate::utils::engine_test(all)]
