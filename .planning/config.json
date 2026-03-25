@@ -1,0 +1,26 @@
+{
+  "model_profile": "balanced",
+  "commit_docs": true,
+  "parallelization": false,
+  "search_gitignored": false,
+  "git": {
+    "branching_strategy": "phase",
+    "phase_branch_template": "gsd/phase-{phase}-{slug}",
+    "milestone_branch_template": "gsd/{milestone}-{slug}"
+  },
+  "workflow": {
+    "research": true,
+    "plan_check": true,
+    "verifier": true,
+    "auto_advance": false,
+    "discuss_mode": "assumptions",
+    "skip_discuss": false,
+    "research_before_questions": false,
+    "text_mode": false
+  },
+  "hooks": {
+    "context_warnings": true
+  },
+  "mode": "yolo",
+  "granularity": "coarse"
+}
