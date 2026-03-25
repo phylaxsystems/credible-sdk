@@ -1,7 +1,8 @@
 # Architecture
 
-This document is aimed at agents working in this repository. It describes the current behavior of the runtime components that matter for state ingestion, state serving, transaction validation, and snapshot hydration:
+The architecture docs were moved and split for agent consumption.
 
+<<<<<<< HEAD
 - `crates/sidecar`
 - `crates/mdbx`
 - `crates/state-worker`
@@ -1247,3 +1248,6 @@ If changing PCL workflows:
 - then inspect `crates/pcl/core/src/apply.rs`
 - `crates/pcl/core/src/auth.rs`
 - and `crates/pcl/core/src/config.rs`
+=======
+Start at `docs/architecture/README.md`.
+>>>>>>> origin
