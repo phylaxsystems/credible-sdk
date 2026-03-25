@@ -3,8 +3,10 @@
 //! `StateWorkerThread` wraps the state worker in a dedicated OS thread with:
 //! - An isolated single-threaded tokio runtime (prevents starvation of sidecar main runtime)
 //! - Panic isolation via `std::panic::catch_unwind`
-//! - Graceful shutdown via shared `Arc<AtomicBool>` polled at 100ms intervals
+//! - Graceful shutdown via shared `Arc<AtomicBool>` polled between blocks
 //! - Restart backoff: fixed 1-second delay with saturating restart counter
+//! - Buffer: `VecDeque<BlockStateUpdate>` bounded at `BUFFER_CAPACITY = 128` entries
+//! - Flush gating: MDBX writes only after CoreEngine sends a `CommitHeadSignal`
 //!
 //! The thread name is `sidecar-state-worker`.
 //! Stack size is set to 8 MiB (default 2 MiB is insufficient for async RPC deserialization depth).
@@ -24,13 +26,27 @@ pub struct CommitHeadSignal {
     pub block_number: u64,
 }
 
-use crate::utils::ErrorRecoverability;
+use crate::{
+    args::EmbeddedStateWorkerConfig,
+    utils::ErrorRecoverability,
+};
+use alloy_provider::Provider;
+use metrics::{
+    counter,
+    gauge,
+};
+use mdbx::{
+    BlockStateUpdate,
+    Writer,
+};
 use std::{
+    collections::VecDeque,
     panic::AssertUnwindSafe,
     sync::{
         Arc,
         atomic::{
             AtomicBool,
+            AtomicU64,
             Ordering,
         },
     },
@@ -43,7 +59,16 @@ use tracing::{
     warn,
 };
 
-/// Timeout for shutdown flag polling inside the blocking loop.
+/// Maximum number of `BlockStateUpdate` entries held in the in-memory buffer.
+///
+/// When this limit is reached, tracing pauses until a `CommitHeadSignal` drains space.
+/// Backpressure lives here — NOT in the channel — to avoid deadlock between
+/// a full buffer (blocking tracing) and a full bounded channel (blocking the engine).
+const BUFFER_CAPACITY: usize = 128;
+
+/// Timeout used when blocking on a `CommitHeadSignal` in the backpressure branch.
+///
+/// Short enough to re-check the shutdown flag regularly without busy-spinning.
 const RECV_TIMEOUT: Duration = Duration::from_millis(100);
 
 /// Stack size for the state worker OS thread. 8 MiB prevents stack overflows
@@ -60,15 +85,38 @@ pub type StateWorkerThreadResult = Result<
 
 /// Wraps the state worker in a lifecycle-correct OS thread.
 ///
-/// Phase 1 delivers the scaffold only — `run_blocking_inner` currently returns
-/// `Ok(())` immediately. Subsequent phases wire in the actual state worker logic.
+/// Provides a buffer+flush architecture driven by `CommitHeadSignal` from the core engine:
+/// blocks are traced and accumulated in a `VecDeque`, then flushed to MDBX only after the
+/// engine signals that up to block `N` has been committed to the canonical chain.
 pub struct StateWorkerThread {
     shutdown: Arc<AtomicBool>,
+    commit_head_rx: flume::Receiver<CommitHeadSignal>,
+    config: EmbeddedStateWorkerConfig,
+    committed_head: Arc<AtomicU64>,
 }
 
 impl StateWorkerThread {
-    pub fn new(shutdown: Arc<AtomicBool>) -> Self {
-        Self { shutdown }
+    /// Construct a new `StateWorkerThread`.
+    ///
+    /// # Arguments
+    ///
+    /// * `shutdown` — shared flag; when set the thread exits after the current block completes
+    /// * `commit_head_rx` — receives `CommitHeadSignal` from `CoreEngine` after each commit
+    /// * `config` — embedded state worker configuration (WS URL, MDBX path, genesis, depth)
+    /// * `committed_head` — written with `Release` ordering after each MDBX flush; read by
+    ///   `MdbxSource` with `Acquire` ordering in Phase 3
+    pub fn new(
+        shutdown: Arc<AtomicBool>,
+        commit_head_rx: flume::Receiver<CommitHeadSignal>,
+        config: EmbeddedStateWorkerConfig,
+        committed_head: Arc<AtomicU64>,
+    ) -> Self {
+        Self {
+            shutdown,
+            commit_head_rx,
+            config,
+            committed_head,
+        }
     }
 
     /// Spawn the state worker OS thread.
@@ -82,12 +130,15 @@ impl StateWorkerThread {
     pub fn spawn(self) -> StateWorkerThreadResult {
         let (tx, rx) = oneshot::channel();
         let shutdown = self.shutdown;
+        let commit_head_rx = self.commit_head_rx;
+        let config = self.config;
+        let committed_head = self.committed_head;
 
         let handle = std::thread::Builder::new()
             .name("sidecar-state-worker".into())
             .stack_size(STACK_SIZE)
             .spawn(move || {
-                let result = run_thread_loop(&shutdown);
+                let result = run_thread_loop(&shutdown, &commit_head_rx, &config, &committed_head);
                 let _ = tx.send(result.clone());
                 result
             })
@@ -98,7 +149,12 @@ impl StateWorkerThread {
 }
 
 /// Top-level OS thread body: restart loop with panic catch and 1-second backoff.
-fn run_thread_loop(shutdown: &AtomicBool) -> Result<(), StateWorkerError> {
+fn run_thread_loop(
+    shutdown: &AtomicBool,
+    commit_head_rx: &flume::Receiver<CommitHeadSignal>,
+    config: &EmbeddedStateWorkerConfig,
+    committed_head: &Arc<AtomicU64>,
+) -> Result<(), StateWorkerError> {
     let mut restart_count: u64 = 0;
     loop {
         // Check shutdown before each iteration
@@ -108,7 +164,7 @@ fn run_thread_loop(shutdown: &AtomicBool) -> Result<(), StateWorkerError> {
         }
 
         let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
-            run_blocking_inner(shutdown)
+            run_blocking_inner(shutdown, commit_head_rx, config, committed_head)
         }));
 
         match result {
@@ -153,28 +209,208 @@ fn run_thread_loop(shutdown: &AtomicBool) -> Result<(), StateWorkerError> {
         }
 
         restart_count = restart_count.saturating_add(1);
+        counter!("state_worker_restarts_total").increment(1);
         std::thread::sleep(Duration::from_secs(1));
     }
 }
 
-/// Inner blocking run of the state worker.
+/// Drain all buffered entries where `entry.block_number <= commit_head`.
 ///
-/// Phase 1: empty loop that polls the shutdown flag and returns Ok(()) on shutdown.
-/// Phase 2+ will replace this with StateWorker::run() inside a tokio runtime.
-fn run_blocking_inner(shutdown: &AtomicBool) -> Result<(), StateWorkerError> {
+/// Writes each drained entry to MDBX via `writer.commit_block()` and then
+/// stores the block number to `committed_head` with `Release` ordering so that
+/// Phase 3's `MdbxSource` sees a consistent height after the MDBX write is durable.
+///
+/// Buffer entries are pushed in block-number order so the front is always the
+/// lowest block number — no sorting required.
+fn flush_ready_blocks(
+    buffer: &mut VecDeque<BlockStateUpdate>,
+    commit_head: u64,
+    writer: &mdbx::StateWriter,
+    committed_head: &Arc<AtomicU64>,
+) -> Result<(), StateWorkerError> {
+    while let Some(front) = buffer.front() {
+        if front.block_number > commit_head {
+            break;
+        }
+        // pop_front is O(1); we just verified front exists so the Option is always Some.
+        let Some(update) = buffer.pop_front() else {
+            break; // unreachable: avoids indexing_slicing lint
+        };
+        writer
+            .commit_block(&update)
+            .map_err(|e| StateWorkerError::MdbxWrite(e.to_string()))?;
+        // Release ordering: MdbxSource (Phase 3) loads with Acquire — establishes
+        // happens-before so MDBX data is visible before the height update is observed.
+        committed_head.store(update.block_number, Ordering::Release);
+        info!(
+            target: "state_worker_thread",
+            block_number = update.block_number,
+            "Block flushed to MDBX"
+        );
+    }
+    gauge!("state_worker_buffer_depth").set(buffer.len() as f64);
+    Ok(())
+}
+
+/// Construct a `StateWorker` and its associated `StateWriter` from the embedded config.
+///
+/// Must be called inside `rt.block_on()` because the provider connection is async.
+///
+/// The returned `StateWriter` is separate from the one stored inside the worker so that
+/// `flush_ready_blocks` can call `commit_block` without going through the worker struct.
+/// This is safe because `StateWriter` is `Clone` (backed by `Arc<StateDb>`).
+async fn build_worker(
+    config: &EmbeddedStateWorkerConfig,
+) -> Result<
+    (
+        state_worker::worker::StateWorker<mdbx::StateWriter>,
+        mdbx::StateWriter,
+    ),
+    StateWorkerError,
+> {
+    let ws_url = config
+        .ws_url
+        .as_deref()
+        .ok_or_else(|| StateWorkerError::Config("state_worker.ws_url not configured".into()))?;
+    let mdbx_path = config
+        .mdbx_path
+        .as_deref()
+        .ok_or_else(|| StateWorkerError::Config("state_worker.mdbx_path not configured".into()))?;
+    let genesis_path = config
+        .genesis_path
+        .as_deref()
+        .ok_or_else(|| {
+            StateWorkerError::Config("state_worker.genesis_path not configured".into())
+        })?;
+    let state_depth = config.state_depth.ok_or_else(|| {
+        StateWorkerError::Config("state_worker.state_depth not configured".into())
+    })?;
+
+    // Connect provider (same pattern as state-worker/src/main.rs::connect_provider)
+    let ws = alloy_provider::WsConnect::new(ws_url);
+    let provider = alloy_provider::ProviderBuilder::new()
+        .connect_ws(ws)
+        .await
+        .map_err(|e| StateWorkerError::Config(format!("Failed to connect WS provider: {e}")))?;
+    let provider = std::sync::Arc::new(provider.root().clone());
+
+    // Construct StateWriter (MDBX write handle — exclusive to state worker)
+    let circular_config = mdbx::common::CircularBufferConfig::new(state_depth)
+        .map_err(|e| StateWorkerError::Config(format!("Invalid CircularBufferConfig: {e}")))?;
+    let writer = mdbx::StateWriter::new(mdbx_path, circular_config)
+        .map_err(|e| StateWorkerError::Config(format!("Failed to open MDBX writer: {e}")))?;
+
+    // Load genesis (required for block 0 state hydration)
+    let genesis_contents = std::fs::read_to_string(genesis_path)
+        .map_err(|e| StateWorkerError::Config(format!("Failed to read genesis file: {e}")))?;
+    let genesis_state = state_worker::genesis::parse_from_str(&genesis_contents)
+        .map_err(|e| StateWorkerError::Config(format!("Failed to parse genesis: {e}")))?;
+
+    // Extract system call fork config before consuming genesis
+    let system_calls = state_worker::system_calls::SystemCalls::new(
+        genesis_state.config().cancun_time,
+        genesis_state.config().prague_time,
+    );
+
+    // Create trace provider (30s timeout matches state-worker/main.rs)
+    let trace_provider = state_worker::state::create_trace_provider(
+        provider.clone(),
+        std::time::Duration::from_secs(30),
+    );
+
+    // Clone writer so the flush loop can call commit_block independently.
+    // StateWriter is Clone (backed by Arc<StateDb>) — clone shares the same DB handle.
+    let worker = state_worker::worker::StateWorker::new(
+        provider,
+        trace_provider,
+        writer.clone(),
+        Some(genesis_state),
+        system_calls,
+    );
+
+    Ok((worker, writer))
+}
+
+/// Full buffer+flush loop for the embedded state worker.
+///
+/// Constructs a `StateWorker` from config, then runs the outer sync loop:
+/// 1. Drain any pending `CommitHeadSignal`s and flush ready buffer entries
+/// 2. Check shutdown flag; on shutdown, attempt best-effort flush and return
+/// 3. If buffer is full, pause tracing and wait for a `CommitHeadSignal`
+/// 4. Trace the next block via `rt.block_on(worker.process_block(next_block))`
+/// 5. Push the returned `BlockStateUpdate` to the buffer; increment `next_block`
+///
+/// Restarts from the last MDBX-committed block on each invocation (`FLOW-06`).
+fn run_blocking_inner(
+    shutdown: &AtomicBool,
+    commit_head_rx: &flume::Receiver<CommitHeadSignal>,
+    config: &EmbeddedStateWorkerConfig,
+    committed_head: &Arc<AtomicU64>,
+) -> Result<(), StateWorkerError> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|e| StateWorkerError::RuntimeBuild(e.to_string()))?;
 
-    rt.block_on(async {
-        loop {
-            if shutdown.load(Ordering::Acquire) {
-                info!(target: "state_worker_thread", "Shutdown flag observed in inner loop");
-                return Ok(());
-            }
-            // Poll shutdown flag at RECV_TIMEOUT intervals
-            tokio::time::sleep(RECV_TIMEOUT).await;
+    // Build StateWorker and writer inside the runtime (provider connect is async)
+    let (mut worker, writer) = rt.block_on(build_worker(config))?;
+
+    // Compute resume point from last committed MDBX block (FLOW-06)
+    let mut next_block = worker
+        .compute_start_block(None)
+        .map_err(|e| StateWorkerError::ComputeStartBlock(e.to_string()))?;
+
+    let mut buffer: VecDeque<BlockStateUpdate> = VecDeque::with_capacity(BUFFER_CAPACITY);
+
+    loop {
+        // Drain any pending CommitHead signals (non-blocking: engine may have sent multiple)
+        while let Ok(signal) = commit_head_rx.try_recv() {
+            flush_ready_blocks(&mut buffer, signal.block_number, &writer, committed_head)?;
         }
-    })
+
+        // Check shutdown before tracing next block
+        if shutdown.load(Ordering::Acquire) {
+            info!(target: "state_worker_thread", "Shutdown: attempting best-effort flush");
+            // Best-effort: use the highest CommitHead signal seen via try_iter
+            let last_signal = commit_head_rx.try_iter().last();
+            if let Some(sig) = last_signal {
+                // Ignore flush error on shutdown — restart will resume from MDBX
+                let _ = flush_ready_blocks(&mut buffer, sig.block_number, &writer, committed_head);
+            }
+            return Ok(());
+        }
+
+        // Backpressure: pause tracing when buffer is at capacity (FLOW-05, OBSV-03)
+        if buffer.len() >= BUFFER_CAPACITY {
+            counter!("state_worker_buffer_full_pauses_total").increment(1);
+            gauge!("state_worker_buffer_depth").set(buffer.len() as f64);
+            match commit_head_rx.recv_timeout(RECV_TIMEOUT) {
+                Ok(signal) => {
+                    flush_ready_blocks(&mut buffer, signal.block_number, &writer, committed_head)?;
+                }
+                Err(flume::RecvTimeoutError::Timeout) => {
+                    // No signal yet — re-check shutdown and retry
+                    continue;
+                }
+                Err(flume::RecvTimeoutError::Disconnected) => {
+                    // Engine dropped the sender (exited) — state worker exits cleanly
+                    info!(target: "state_worker_thread", "CommitHead sender disconnected; exiting");
+                    return Ok(());
+                }
+            }
+            continue; // Re-check buffer length after flush
+        }
+
+        // Trace next block (blocking: one block at a time via isolated runtime)
+        match rt.block_on(worker.process_block(next_block)) {
+            Ok(update) => {
+                buffer.push_back(update);
+                next_block += 1;
+                gauge!("state_worker_buffer_depth").set(buffer.len() as f64);
+            }
+            Err(e) => {
+                return Err(StateWorkerError::Trace(e.to_string()));
+            }
+        }
+    }
 }
