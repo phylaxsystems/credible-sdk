@@ -6,7 +6,7 @@
 //! - Graceful shutdown via shared `Arc<AtomicBool>` polled between blocks
 //! - Restart backoff: fixed 1-second delay with saturating restart counter
 //! - Buffer: `VecDeque<BlockStateUpdate>` bounded at `BUFFER_CAPACITY = 128` entries
-//! - Flush gating: MDBX writes only after CoreEngine sends a `CommitHeadSignal`
+//! - Flush gating: MDBX writes only after `CoreEngine` sends a `CommitHeadSignal`
 //!
 //! The thread name is `sidecar-state-worker`.
 //! Stack size is set to 8 MiB (default 2 MiB is insufficient for async RPC deserialization depth).
@@ -72,7 +72,7 @@ const BUFFER_CAPACITY: usize = 128;
 const RECV_TIMEOUT: Duration = Duration::from_millis(100);
 
 /// Stack size for the state worker OS thread. 8 MiB prevents stack overflows
-/// from deeply nested async futures (WebSocket + prestateTracer deserialization).
+/// from deeply nested async futures (WebSocket + `prestateTracer` deserialization).
 const STACK_SIZE: usize = 8 * 1024 * 1024;
 
 pub type StateWorkerThreadResult = Result<

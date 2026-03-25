@@ -200,7 +200,7 @@ pub struct CoreEngineConfig {
     pub source_monitoring_period: Duration,
     pub overlay_cache_invalidation_every_block: bool,
     pub incident_sender: Option<IncidentReportSender>,
-    /// Optional sender for CommitHead signals to the state worker thread.
+    /// Optional sender for `CommitHead` signals to the state worker thread.
     /// `None` when the state worker is not wired (tests, legacy configs).
     /// Must use `flume::unbounded()` channel — NEVER bounded. See PITFALLS.md Pitfall 3.
     pub commit_head_tx: Option<flume::Sender<CommitHeadSignal>>,
@@ -575,7 +575,7 @@ pub struct CoreEngine<DB> {
     /// Prevents duplicate logging/metrics on re-execution.
     assertion_failure_cache: moka::sync::Cache<TxHash, ()>,
     custom_tx_executor: Option<Arc<dyn CustomTxExecutor<DB>>>,
-    /// Optional sender for CommitHead signals to the state worker thread.
+    /// Optional sender for `CommitHead` signals to the state worker thread.
     /// `None` when the state worker is not wired.
     commit_head_tx: Option<flume::Sender<CommitHeadSignal>>,
 }
@@ -691,7 +691,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         self.custom_tx_executor = None;
     }
 
-    /// Send a CommitHead signal to the state worker thread.
+    /// Send a `CommitHead` signal to the state worker thread.
     ///
     /// Called on every return path from `process_commit_head` so the state worker
     /// always knows the engine's current committed block number, even during
