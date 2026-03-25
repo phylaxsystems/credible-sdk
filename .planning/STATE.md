@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: Ready to execute
-stopped_at: Completed 02-commithead-flow-control-01-PLAN.md
-last_updated: "2026-03-25T02:53:57.328Z"
+stopped_at: Completed 02-commithead-flow-control-02-PLAN.md
+last_updated: "2026-03-25T03:18:06.482Z"
 progress:
   total_phases: 3
   completed_phases: 1
   total_plans: 6
-  completed_plans: 3
+  completed_plans: 4
 ---
 
 # Project State
@@ -24,7 +24,7 @@ See: .planning/PROJECT.md (updated 2026-03-25)
 ## Current Position
 
 Phase: 02 (commithead-flow-control) — EXECUTING
-Plan: 2 of 4
+Plan: 3 of 4
 
 ## Performance Metrics
 
@@ -49,6 +49,7 @@ Plan: 2 of 4
 | Phase 01-thread-scaffold P01 | 3 | 2 tasks | 3 files |
 | Phase 01-thread-scaffold P02 | 2 | 1 tasks | 4 files |
 | Phase 02-commithead-flow-control P01 | 30 | 2 tasks | 4 files |
+| Phase 02-commithead-flow-control P02 | 18 | 1 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -69,6 +70,8 @@ Recent decisions affecting current work:
 - [Phase 02-commithead-flow-control]: process_block returns BlockStateUpdate; run() commits via commit_update() — separation of concerns for sidecar buffer in Plan 03
 - [Phase 02-commithead-flow-control]: CommitHeadSignal is a separate type from engine::queue::CommitHead — avoids coupling state worker to engine internals
 - [Phase 02-commithead-flow-control]: EmbeddedStateWorkerConfig uses all-Option fields — validation deferred to Plan 03/04 when fields are consumed
+- [Phase 02-commithead-flow-control]: Signal sent on all 3 process_commit_head return paths (including cache-invalidation and NothingToCommit) so state worker buffer never grows unboundedly
+- [Phase 02-commithead-flow-control]: commit_head_tx: None in main.rs as Plan 04 placeholder — real sender wired when state worker channel created
 
 ### Pending Todos
 
@@ -82,6 +85,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-25T02:53:57.325Z
-Stopped at: Completed 02-commithead-flow-control-01-PLAN.md
+Last session: 2026-03-25T03:18:06.480Z
+Stopped at: Completed 02-commithead-flow-control-02-PLAN.md
 Resume file: None

@@ -16,7 +16,9 @@
     "discuss_mode": "assumptions",
     "skip_discuss": false,
     "research_before_questions": false,
-    "text_mode": false
+    "text_mode": false,
+    "_auto_chain_active": false,
+    "nyquist_validation": false
   },
   "hooks": {
     "context_warnings": true
