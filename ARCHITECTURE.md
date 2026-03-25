@@ -1296,3 +1296,11 @@ If changing PCL workflows:
 - `crates/pcl/core/src/assertion_submission.rs`
 - `crates/pcl/core/src/apply.rs`
 - and `crates/pcl/core/src/config.rs`
+
+If changing EIP system contract behavior:
+
+- start in `crates/eip-system-calls/src/lib.rs` for the shared `SystemContract` trait and slot calculations
+- `crates/eip-system-calls/src/eip2935.rs` and `crates/eip-system-calls/src/eip4788.rs` for per-EIP constants and helpers
+- `crates/sidecar/src/engine/system_calls.rs` for sidecar-side application (revm `DatabaseCommit`)
+- `crates/state-worker/src/system_calls.rs` for state-worker-side computation (`AccountState` records with keccak256-hashed storage keys)
+- see [docs/eips.md](docs/eips.md) for full specification details
