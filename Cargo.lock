@@ -8540,9 +8540,7 @@ dependencies = [
 name = "pcl-core"
 version = "1.2.0"
 dependencies = [
- "alloy",
  "alloy-primitives",
- "anyhow",
  "chrono",
  "clap",
  "color-eyre",
@@ -8550,7 +8548,6 @@ dependencies = [
  "dirs",
  "indicatif",
  "inquire",
- "int-test-utils",
  "mockito",
  "open",
  "pcl-common",
