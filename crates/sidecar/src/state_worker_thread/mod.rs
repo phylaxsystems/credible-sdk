@@ -15,7 +15,7 @@ mod error;
 
 pub use error::StateWorkerError;
 
-/// Signal sent by CoreEngine to `StateWorkerThread` after each committed block.
+/// Signal sent by `CoreEngine` to `StateWorkerThread` after each committed block.
 ///
 /// Carries only the block number — the state worker uses this to flush all
 /// buffered `BlockStateUpdate` entries where `block_number <= signal.block_number`.
@@ -248,6 +248,7 @@ fn flush_ready_blocks(
             "Block flushed to MDBX"
         );
     }
+    #[allow(clippy::cast_precision_loss)] // buffer len is bounded by BUFFER_CAPACITY (128)
     gauge!("state_worker_buffer_depth").set(buffer.len() as f64);
     Ok(())
 }
@@ -379,7 +380,8 @@ fn run_blocking_inner(
         // Backpressure: pause tracing when buffer is at capacity (FLOW-05, OBSV-03)
         if buffer.len() >= BUFFER_CAPACITY {
             counter!("state_worker_buffer_full_pauses_total").increment(1);
-            gauge!("state_worker_buffer_depth").set(buffer.len() as f64);
+            #[allow(clippy::cast_precision_loss)] // buffer len bounded by BUFFER_CAPACITY (128)
+            { gauge!("state_worker_buffer_depth").set(buffer.len() as f64); }
             match commit_head_rx.recv_timeout(RECV_TIMEOUT) {
                 Ok(signal) => {
                     flush_ready_blocks(&mut buffer, signal.block_number, &writer, committed_head)?;
@@ -402,7 +404,8 @@ fn run_blocking_inner(
             Ok(update) => {
                 buffer.push_back(update);
                 next_block += 1;
-                gauge!("state_worker_buffer_depth").set(buffer.len() as f64);
+                #[allow(clippy::cast_precision_loss)] // buffer len bounded by BUFFER_CAPACITY (128)
+                { gauge!("state_worker_buffer_depth").set(buffer.len() as f64); }
             }
             Err(e) => {
                 return Err(StateWorkerError::Trace(e.to_string()));

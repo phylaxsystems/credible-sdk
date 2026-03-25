@@ -28,22 +28,11 @@ pub enum StateWorkerError {
 
 impl From<&StateWorkerError> for ErrorRecoverability {
     fn from(e: &StateWorkerError) -> Self {
-        match e {
-            // Panics are transient — restart and let EthRpcSource cover the window
-            StateWorkerError::Panicked(_) => ErrorRecoverability::Recoverable,
-            // Runtime build failure is transient (resource pressure) — recoverable
-            StateWorkerError::RuntimeBuild(_) => ErrorRecoverability::Recoverable,
-            // Thread spawn failure (OS resource exhaustion) — recoverable
-            StateWorkerError::ThreadSpawn(_) => ErrorRecoverability::Recoverable,
-            // Start block computation failure is recoverable — MDBX may be temporarily locked
-            StateWorkerError::ComputeStartBlock(_) => ErrorRecoverability::Recoverable,
-            // MDBX write failures are recoverable — EthRpcSource covers the window
-            StateWorkerError::MdbxWrite(_) => ErrorRecoverability::Recoverable,
-            // Trace failures are recoverable — transient RPC or network errors
-            StateWorkerError::Trace(_) => ErrorRecoverability::Recoverable,
-            // Config validation failures are recoverable — config may be fixed on restart
-            StateWorkerError::Config(_) => ErrorRecoverability::Recoverable,
-        }
+        // All variants are recoverable: panics are transient, runtime/thread spawn
+        // failures are resource pressure, MDBX/trace/config errors are transient or
+        // fixable on restart. EthRpcSource covers the window in every case.
+        let _ = e;
+        ErrorRecoverability::Recoverable
     }
 }
 
