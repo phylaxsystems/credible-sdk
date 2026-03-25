@@ -2,7 +2,8 @@
 //!
 //! The worker bootstraps from the last persisted block, catches up to head via
 //! RPC, and then tails new blocks from the `newHeads` subscription. Each block
-//! is traced with the pre-state tracer and written into the database.
+//! is traced with the pre-state tracer and the resulting `BlockStateUpdate` is
+//! committed to the database.
 use crate::{
     genesis::GenesisState,
     metrics,
@@ -98,6 +99,9 @@ where
 
     /// Drive the catch-up + streaming loop. We keep retrying the subscription
     /// because websocket connections can drop in practice.
+    ///
+    /// Each block is traced via `process_block` and then committed to the
+    /// database immediately — preserving the standalone binary semantics.
     pub async fn run(
         &mut self,
         start_override: Option<u64>,
@@ -192,8 +196,9 @@ where
             }
 
             while *next_block <= head {
-                // Process the block fully before checking shutdown
-                self.process_block(*next_block).await?;
+                // Trace the block — commit the returned update immediately.
+                let update = self.process_block(*next_block).await?;
+                self.commit_update(*next_block, &update)?;
                 *next_block += 1;
                 Self::update_sync_metrics(*next_block, head);
 
@@ -250,7 +255,9 @@ where
                             }
 
                             while *next_block <= block_number {
-                                self.process_block(*next_block).await?;
+                                // Trace the block — commit the returned update immediately.
+                                let update = self.process_block(*next_block).await?;
+                                self.commit_update(*next_block, &update)?;
                                 *next_block += 1;
                                 Self::update_sync_metrics(*next_block, block_number);
                             }
@@ -264,8 +271,49 @@ where
         }
     }
 
-    /// Pull, trace, and persist a single block.
-    async fn process_block(&mut self, block_number: u64) -> Result<()> {
+    /// Commit a `BlockStateUpdate` produced by `process_block` to MDBX.
+    ///
+    /// This is the only place `commit_block` is called in the standalone worker;
+    /// the sidecar buffer calls it separately after receiving a flush signal.
+    ///
+    /// Returns immediately (no-op) for sentinel updates returned by
+    /// `process_genesis_block` when genesis is already committed or empty.
+    fn commit_update(&self, block_number: u64, update: &BlockStateUpdate) -> Result<()> {
+        // Sentinel: genesis was skipped (block 0 already committed or no accounts to write).
+        // `process_genesis_block` returns B256::ZERO hashes when skipping — never commit that.
+        if block_number == 0
+            && update.block_hash == alloy::primitives::B256::ZERO
+            && update.accounts.is_empty()
+        {
+            return Ok(());
+        }
+
+        match self.writer_reader.commit_block(update) {
+            Ok(stats) => {
+                metrics::set_db_healthy(true);
+                metrics::record_commit(block_number, &stats);
+                info!(block_number, "block persisted to database");
+                Ok(())
+            }
+            Err(err) => {
+                critical!(error = ?err, block_number, "failed to persist block");
+                metrics::set_db_healthy(false);
+                metrics::record_block_failure();
+                Err(anyhow!("failed to persist block {block_number}"))
+            }
+        }
+    }
+
+    /// Trace a single block and return the resulting `BlockStateUpdate`.
+    ///
+    /// Does NOT write to the database. The caller (`run()` for the standalone
+    /// binary, or the sidecar buffer flush for the embedded mode) is responsible
+    /// for calling `commit_block`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if tracing or system-call application fails.
+    pub async fn process_block(&mut self, block_number: u64) -> Result<BlockStateUpdate> {
         info!(block_number, "processing block");
 
         if block_number == 0 && self.genesis_state.is_some() {
@@ -284,21 +332,7 @@ where
         // Apply system call state changes (EIP-2935 & EIP-4788)
         self.apply_system_calls(&mut update, block_number).await?;
 
-        match self.writer_reader.commit_block(&update) {
-            Ok(stats) => {
-                metrics::set_db_healthy(true);
-                metrics::record_commit(block_number, &stats);
-            }
-            Err(err) => {
-                critical!(error = ?err, block_number, "failed to persist block");
-                metrics::set_db_healthy(false);
-                metrics::record_block_failure();
-                return Err(anyhow!("failed to persist block {block_number}"));
-            }
-        }
-
-        info!(block_number, "block persisted to database");
-        Ok(())
+        Ok(update)
     }
 
     /// Apply EIP-2935 and EIP-4788 system call state changes
@@ -307,6 +341,11 @@ where
         update: &mut BlockStateUpdate,
         block_number: u64,
     ) -> Result<()> {
+        // Short-circuit: if no forks are configured, no system calls can be active.
+        if self.system_calls.cancun_time.is_none() && self.system_calls.prague_time.is_none() {
+            return Ok(());
+        }
+
         // Fetch block header for system call data
         let block = self
             .provider
@@ -355,11 +394,19 @@ where
         }
     }
 
-    /// Process block 0 using the configured genesis state
-    async fn process_genesis_block(&mut self) -> Result<()> {
+    /// Process block 0 using the configured genesis state.
+    ///
+    /// Returns the `BlockStateUpdate` for the genesis block (block 0). The caller
+    /// is responsible for committing it.
+    async fn process_genesis_block(&mut self) -> Result<BlockStateUpdate> {
         let Some(genesis) = self.genesis_state.take() else {
             warn!("no genesis state configured; skipping genesis hydration");
-            return Ok(());
+            // Return an empty update for block 0 when no genesis is configured.
+            return Ok(BlockStateUpdate::new(
+                0,
+                alloy::primitives::B256::ZERO,
+                alloy::primitives::B256::ZERO,
+            ));
         };
 
         let already_exists = match self.writer_reader.latest_block_number() {
@@ -377,14 +424,24 @@ where
 
         if already_exists {
             info!("block 0 already exists in database; skipping genesis hydration");
-            return Ok(());
+            // Return an empty update; the caller's commit_update call will be a no-op
+            // since the block is already committed.
+            return Ok(BlockStateUpdate::new(
+                0,
+                alloy::primitives::B256::ZERO,
+                alloy::primitives::B256::ZERO,
+            ));
         }
 
         let accounts = genesis.into_accounts();
 
         if accounts.is_empty() {
             warn!("genesis file contained no accounts; skipping hydration");
-            return Ok(());
+            return Ok(BlockStateUpdate::new(
+                0,
+                alloy::primitives::B256::ZERO,
+                alloy::primitives::B256::ZERO,
+            ));
         }
 
         // Fetch genesis block header to get hash and state root
@@ -403,20 +460,342 @@ where
             accounts,
         );
 
-        match self.writer_reader.commit_block(&update) {
-            Ok(stats) => {
-                metrics::set_db_healthy(true);
-                metrics::record_commit(0, &stats);
+        Ok(update)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy::primitives::B256;
+    use anyhow::Result;
+    use async_trait::async_trait;
+    use mdbx::{
+        AccountInfo,
+        AccountState,
+        AddressHash,
+        BlockMetadata,
+        CommitStats,
+        Writer,
+    };
+    use std::{
+        collections::HashMap,
+        fmt,
+        sync::atomic::{
+            AtomicBool,
+            Ordering,
+        },
+    };
+
+    /// Mock `TraceProvider` that returns a preset `BlockStateUpdate`.
+    struct MockTraceProvider {
+        block_hash: B256,
+        state_root: B256,
+    }
+
+    impl MockTraceProvider {
+        fn new() -> Self {
+            Self {
+                block_hash: B256::from([1u8; 32]),
+                state_root: B256::from([2u8; 32]),
             }
-            Err(err) => {
-                critical!(error = ?err, block_number = 0, "failed to persist genesis block");
-                metrics::set_db_healthy(false);
-                metrics::record_block_failure();
-                return Err(anyhow!("failed to persist genesis block"));
+        }
+    }
+
+    #[async_trait]
+    impl TraceProvider for MockTraceProvider {
+        async fn fetch_block_state(&self, block_number: u64) -> Result<BlockStateUpdate> {
+            Ok(BlockStateUpdate::new(
+                block_number,
+                self.block_hash,
+                self.state_root,
+            ))
+        }
+    }
+
+    /// Minimal error type for mock writer/reader.
+    #[derive(Debug)]
+    struct NoopError;
+
+    impl fmt::Display for NoopError {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("noop error")
+        }
+    }
+
+    impl std::error::Error for NoopError {}
+
+    /// No-op writer/reader that satisfies the trait bounds without touching MDBX.
+    #[derive(Clone)]
+    struct NoopWriterReader;
+
+    impl Writer for NoopWriterReader {
+        type Error = NoopError;
+
+        fn commit_block(&self, _update: &BlockStateUpdate) -> Result<CommitStats, Self::Error> {
+            Ok(CommitStats::default())
+        }
+
+        fn bootstrap_from_snapshot(
+            &self,
+            _accounts: Vec<AccountState>,
+            _block_number: u64,
+            _block_hash: B256,
+            _state_root: B256,
+        ) -> Result<CommitStats, Self::Error> {
+            Ok(CommitStats::default())
+        }
+    }
+
+    impl Reader for NoopWriterReader {
+        type Error = NoopError;
+
+        fn latest_block_number(&self) -> Result<Option<u64>, Self::Error> {
+            Ok(Some(0))
+        }
+
+        fn is_block_available(&self, _block_number: u64) -> Result<bool, Self::Error> {
+            Ok(true)
+        }
+
+        fn get_account(
+            &self,
+            _address_hash: AddressHash,
+            _block_number: u64,
+        ) -> Result<Option<AccountInfo>, Self::Error> {
+            Ok(None)
+        }
+
+        fn get_storage(
+            &self,
+            _address_hash: AddressHash,
+            _slot_hash: B256,
+            _block_number: u64,
+        ) -> Result<Option<alloy::primitives::U256>, Self::Error> {
+            Ok(None)
+        }
+
+        fn get_all_storage(
+            &self,
+            _address_hash: AddressHash,
+            _block_number: u64,
+        ) -> Result<HashMap<B256, alloy::primitives::U256>, Self::Error> {
+            Ok(HashMap::new())
+        }
+
+        fn get_code(
+            &self,
+            _code_hash: B256,
+            _block_number: u64,
+        ) -> Result<Option<alloy::primitives::Bytes>, Self::Error> {
+            Ok(None)
+        }
+
+        fn get_full_account(
+            &self,
+            _address_hash: AddressHash,
+            _block_number: u64,
+        ) -> Result<Option<AccountState>, Self::Error> {
+            Ok(None)
+        }
+
+        fn get_block_hash(&self, _block_number: u64) -> Result<Option<B256>, Self::Error> {
+            Ok(None)
+        }
+
+        fn get_state_root(&self, _block_number: u64) -> Result<Option<B256>, Self::Error> {
+            Ok(None)
+        }
+
+        fn get_block_metadata(
+            &self,
+            _block_number: u64,
+        ) -> Result<Option<BlockMetadata>, Self::Error> {
+            Ok(None)
+        }
+
+        fn get_available_block_range(&self) -> Result<Option<(u64, u64)>, Self::Error> {
+            Ok(None)
+        }
+
+        fn scan_account_hashes(
+            &self,
+            _block_number: u64,
+        ) -> Result<Vec<AddressHash>, Self::Error> {
+            Ok(vec![])
+        }
+    }
+
+    /// Build a `StateWorker` with mock provider and no-op writer/reader.
+    ///
+    /// The `Arc<RootProvider>` is not called during `process_block` for
+    /// non-genesis, non-system-call blocks. We use a dummy URL — the worker
+    /// is never `run()`.
+    fn make_worker() -> StateWorker<NoopWriterReader> {
+        use alloy_provider::RootProvider;
+        // Build a no-op HTTP provider — it is never called in unit tests
+        // because apply_system_calls() only warns on failure, it does not abort.
+        let provider = Arc::new(RootProvider::new_http(
+            "http://localhost:0".parse().expect("valid URL"),
+        ));
+        let system_calls = SystemCalls::new(None, None);
+
+        StateWorker::new(
+            provider,
+            Box::new(MockTraceProvider::new()),
+            NoopWriterReader,
+            None, // no genesis
+            system_calls,
+        )
+    }
+
+    /// `process_block` must return a `BlockStateUpdate` with the correct block number.
+    ///
+    /// Verifies that the refactored signature (`Result<BlockStateUpdate>`)
+    /// works correctly and the returned update carries the expected block_number.
+    #[tokio::test]
+    async fn process_block_returns_block_state_update_with_correct_block_number() -> Result<()> {
+        let mut worker = make_worker();
+        let block_number = 42u64;
+
+        let update = worker.process_block(block_number).await?;
+
+        assert_eq!(update.block_number, block_number, "block_number must match");
+        Ok(())
+    }
+
+    /// `process_block` must NOT call `commit_block` — the update is returned raw.
+    ///
+    /// Uses an `AtomicBool` flag to detect whether `commit_block` was invoked
+    /// inside `process_block`. If the refactoring is correct, the flag remains false.
+    #[tokio::test]
+    async fn process_block_does_not_commit_directly() -> Result<()> {
+        /// A writer that records whether `commit_block` was called.
+        struct CommitTrackingWriter {
+            committed: Arc<AtomicBool>,
+        }
+
+        impl Writer for CommitTrackingWriter {
+            type Error = NoopError;
+
+            fn commit_block(
+                &self,
+                _update: &BlockStateUpdate,
+            ) -> Result<CommitStats, Self::Error> {
+                self.committed.store(true, Ordering::SeqCst);
+                Ok(CommitStats::default())
+            }
+
+            fn bootstrap_from_snapshot(
+                &self,
+                _accounts: Vec<AccountState>,
+                _block_number: u64,
+                _block_hash: B256,
+                _state_root: B256,
+            ) -> Result<CommitStats, Self::Error> {
+                Ok(CommitStats::default())
             }
         }
 
-        info!(block_number = 0, "genesis block persisted to database");
+        impl Reader for CommitTrackingWriter {
+            type Error = NoopError;
+
+            fn latest_block_number(&self) -> Result<Option<u64>, Self::Error> {
+                Ok(None)
+            }
+
+            fn is_block_available(&self, _: u64) -> Result<bool, Self::Error> {
+                Ok(false)
+            }
+
+            fn get_account(
+                &self,
+                _: AddressHash,
+                _: u64,
+            ) -> Result<Option<AccountInfo>, Self::Error> {
+                Ok(None)
+            }
+
+            fn get_storage(
+                &self,
+                _: AddressHash,
+                _: B256,
+                _: u64,
+            ) -> Result<Option<alloy::primitives::U256>, Self::Error> {
+                Ok(None)
+            }
+
+            fn get_all_storage(
+                &self,
+                _: AddressHash,
+                _: u64,
+            ) -> Result<HashMap<B256, alloy::primitives::U256>, Self::Error> {
+                Ok(HashMap::new())
+            }
+
+            fn get_code(
+                &self,
+                _: B256,
+                _: u64,
+            ) -> Result<Option<alloy::primitives::Bytes>, Self::Error> {
+                Ok(None)
+            }
+
+            fn get_full_account(
+                &self,
+                _: AddressHash,
+                _: u64,
+            ) -> Result<Option<AccountState>, Self::Error> {
+                Ok(None)
+            }
+
+            fn get_block_hash(&self, _: u64) -> Result<Option<B256>, Self::Error> {
+                Ok(None)
+            }
+
+            fn get_state_root(&self, _: u64) -> Result<Option<B256>, Self::Error> {
+                Ok(None)
+            }
+
+            fn get_block_metadata(&self, _: u64) -> Result<Option<BlockMetadata>, Self::Error> {
+                Ok(None)
+            }
+
+            fn get_available_block_range(&self) -> Result<Option<(u64, u64)>, Self::Error> {
+                Ok(None)
+            }
+
+            fn scan_account_hashes(&self, _: u64) -> Result<Vec<AddressHash>, Self::Error> {
+                Ok(vec![])
+            }
+        }
+
+        use alloy_provider::RootProvider;
+        let provider = Arc::new(RootProvider::new_http(
+            "http://localhost:0".parse().expect("valid URL"),
+        ));
+        let system_calls = SystemCalls::new(None, None);
+        let committed_flag = Arc::new(AtomicBool::new(false));
+        let tracking_writer = CommitTrackingWriter {
+            committed: Arc::clone(&committed_flag),
+        };
+
+        let mut worker = StateWorker::new(
+            provider,
+            Box::new(MockTraceProvider::new()),
+            tracking_writer,
+            None,
+            system_calls,
+        );
+
+        let update = worker.process_block(5).await?;
+        assert_eq!(update.block_number, 5);
+        // commit_block must NOT have been called inside process_block
+        assert!(
+            !committed_flag.load(Ordering::SeqCst),
+            "process_block must not call commit_block"
+        );
+
         Ok(())
     }
 }
