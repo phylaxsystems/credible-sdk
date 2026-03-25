@@ -64,7 +64,7 @@ Plans:
 
 Plans:
 - [x] 03-01-PLAN.md — MdbxSource simplification: remove polling + range-intersection, wire Arc<AtomicU64> committed_head, hardcode StateReader depth=1 in main.rs
-- [ ] 03-02-PLAN.md — Circular buffer depth=1 for StateWriter in state_worker_thread/mod.rs
+- [x] 03-02-PLAN.md — Circular buffer depth=1 for StateWriter in state_worker_thread/mod.rs
 - [ ] 03-03-PLAN.md — Delete standalone state-worker binary (src/main.rs + [[bin]] from Cargo.toml)
 
 ## Progress
