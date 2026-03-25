@@ -141,12 +141,7 @@ Each `NewIteration` creates a `BlockIterationData` containing:
 - an ordered list of executed txs,
 - the `BlockEnv`.
 
-Before any tx executes, the engine applies system-contract writes for:
-
-- EIP-4788 if Cancun is active,
-- EIP-2935 if Prague is active.
-
-Those writes are applied into the iteration fork, not directly to canonical overlay state.
+Before any tx executes, the engine applies system-contract writes (EIP-4788 first, then EIP-2935). Those writes are applied into the iteration fork, not directly to canonical overlay state. See [eips.md](eips.md) for execution order, storage layout, and slot calculation details.
 
 ## Transaction execution behavior
 
