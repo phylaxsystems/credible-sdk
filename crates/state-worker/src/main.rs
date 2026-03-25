@@ -22,7 +22,11 @@ use crate::{
         parse_geth_version,
     },
     system_calls::SystemCalls,
-    worker::StateWorker,
+    worker::{
+        DEFAULT_MAX_BUFFER_SIZE,
+        StateWorker,
+        default_buffer_state_path,
+    },
 };
 
 use futures_util::FutureExt;
@@ -169,12 +173,18 @@ async fn run_once(args: &Args) -> Result<()> {
         }
     });
 
-    let mut worker = StateWorker::new(
+    let (flush_tx, flush_rx) = StateWorker::<StateWriter>::create_flush_coordinator();
+    let _flush_tx = flush_tx;
+
+    let mut worker = StateWorker::with_flush_coordination(
         provider,
         trace_provider,
         writer_reader,
         Some(genesis_state),
         system_calls,
+        DEFAULT_MAX_BUFFER_SIZE,
+        flush_rx,
+        default_buffer_state_path(&args.mdbx_path),
     );
 
     match worker.run(args.start_block, shutdown_rx).await {

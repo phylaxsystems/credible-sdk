@@ -4679,3 +4679,185 @@ fn test_commit_stats_default() {
     assert_eq!(stats.accounts_written, 0);
     assert_eq!(stats.total_duration, Duration::ZERO);
 }
+
+// ============================================================================
+// Atomic Height Tracking Tests
+// ============================================================================
+
+#[test]
+fn test_atomic_height_initialization() {
+    let tmp = TempDir::new().unwrap();
+    let config = CircularBufferConfig::new(3).unwrap();
+    let path = tmp.path().join("atomic_height_init");
+
+    // New database should initialize height to 0
+    let writer = StateWriter::new(&path, config).unwrap();
+    let reader = writer.reader();
+    let height = reader.get_current_height_atomic();
+
+    assert_eq!(height.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+#[test]
+fn test_atomic_height_updates_on_commit() {
+    let tmp = TempDir::new().unwrap();
+    let config = CircularBufferConfig::new(3).unwrap();
+    let path = tmp.path().join("atomic_height_commit");
+
+    let writer = StateWriter::new(&path, config).unwrap();
+    let reader = writer.reader();
+    let height = reader.get_current_height_atomic();
+
+    // Initial height should be 0
+    assert_eq!(height.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+    // Commit block 100
+    let update = BlockStateUpdate {
+        block_number: 100,
+        block_hash: B256::repeat_byte(0x11),
+        state_root: B256::repeat_byte(0x22),
+        accounts: vec![simple_account(addr(0xAA), 1000, 5)],
+    };
+
+    writer.commit_block(&update).unwrap();
+
+    // Height should now be 100
+    assert_eq!(height.load(std::sync::atomic::Ordering::SeqCst), 100);
+
+    // Commit block 101
+    let update2 = BlockStateUpdate {
+        block_number: 101,
+        block_hash: B256::repeat_byte(0x12),
+        state_root: B256::repeat_byte(0x23),
+        accounts: vec![simple_account(addr(0xBB), 2000, 10)],
+    };
+
+    writer.commit_block(&update2).unwrap();
+
+    // Height should now be 101
+    assert_eq!(height.load(std::sync::atomic::Ordering::SeqCst), 101);
+}
+
+#[test]
+fn test_atomic_height_bootstrap() {
+    let tmp = TempDir::new().unwrap();
+    let config = CircularBufferConfig::new(3).unwrap();
+    let path = tmp.path().join("atomic_height_bootstrap");
+
+    let writer = StateWriter::new(&path, config).unwrap();
+    let reader = writer.reader();
+    let height = reader.get_current_height_atomic();
+
+    // Bootstrap with block 1000
+    let accounts = vec![simple_account(addr(0xCC), 5000, 15)];
+    writer
+        .bootstrap_from_snapshot(
+            accounts,
+            1000,
+            B256::repeat_byte(0x33),
+            B256::repeat_byte(0x44),
+        )
+        .unwrap();
+
+    // Height should now be 1000
+    assert_eq!(height.load(std::sync::atomic::Ordering::SeqCst), 1000);
+}
+
+#[test]
+fn test_atomic_height_persistence() {
+    let tmp = TempDir::new().unwrap();
+    let config = CircularBufferConfig::new(3).unwrap();
+    let path = tmp.path().join("atomic_height_persistence");
+
+    // Create writer and commit a block
+    {
+        let writer = StateWriter::new(&path, config.clone()).unwrap();
+        let update = BlockStateUpdate {
+            block_number: 500,
+            block_hash: B256::repeat_byte(0x55),
+            state_root: B256::repeat_byte(0x66),
+            accounts: vec![simple_account(addr(0xDD), 3000, 20)],
+        };
+        writer.commit_block(&update).unwrap();
+    }
+
+    // Reopen database and verify height is restored from metadata
+    let reader = StateReader::new(&path, config).unwrap();
+    let height = reader.get_current_height_atomic();
+    assert_eq!(height.load(std::sync::atomic::Ordering::SeqCst), 500);
+}
+
+#[test]
+fn test_atomic_height_concurrent_access() {
+    use std::{
+        sync::atomic::Ordering,
+        thread,
+    };
+
+    let tmp = TempDir::new().unwrap();
+    let config = CircularBufferConfig::new(3).unwrap();
+    let path = tmp.path().join("atomic_height_concurrent");
+
+    let writer = StateWriter::new(&path, config).unwrap();
+    let reader = writer.reader();
+    let height = reader.get_current_height_atomic();
+
+    // Spawn multiple readers to verify concurrent access
+    let height_clone = height.clone();
+    let handle = thread::spawn(move || {
+        for _ in 0..100 {
+            let _ = height_clone.load(Ordering::SeqCst);
+            thread::sleep(Duration::from_millis(1));
+        }
+    });
+
+    // Writer updates height
+    for block_num in 1..=10 {
+        let update = BlockStateUpdate {
+            block_number: block_num,
+            block_hash: B256::repeat_byte(block_num as u8),
+            state_root: B256::repeat_byte((block_num + 100) as u8),
+            accounts: vec![simple_account(addr(0xEE), block_num * 100, block_num)],
+        };
+        writer.commit_block(&update).unwrap();
+
+        // Verify height is updated
+        assert_eq!(height.load(Ordering::SeqCst), block_num);
+        thread::sleep(Duration::from_millis(2));
+    }
+
+    handle.join().unwrap();
+
+    // Final height should be 10
+    assert_eq!(height.load(Ordering::SeqCst), 10);
+}
+
+#[test]
+fn test_atomic_height_backward_compatibility() {
+    let tmp = TempDir::new().unwrap();
+    let config = CircularBufferConfig::new(3).unwrap();
+    let path = tmp.path().join("atomic_height_compatibility");
+
+    let writer = StateWriter::new(&path, config).unwrap();
+    let reader = writer.reader();
+
+    // Commit a block
+    let update = BlockStateUpdate {
+        block_number: 42,
+        block_hash: B256::repeat_byte(0x77),
+        state_root: B256::repeat_byte(0x88),
+        accounts: vec![simple_account(addr(0xFF), 4000, 25)],
+    };
+    writer.commit_block(&update).unwrap();
+
+    // Both atomic and traditional methods should return consistent results
+    let atomic_height = reader
+        .get_current_height_atomic()
+        .load(std::sync::atomic::Ordering::SeqCst);
+    let latest_block = reader.latest_block_number().unwrap().unwrap();
+    let (_, range_latest) = reader.get_available_block_range().unwrap().unwrap();
+
+    assert_eq!(atomic_height, 42);
+    assert_eq!(latest_block, 42);
+    assert_eq!(range_latest, 42);
+}

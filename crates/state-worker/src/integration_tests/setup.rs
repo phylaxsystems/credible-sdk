@@ -117,7 +117,7 @@ impl TestInstance {
             })
             .unwrap_or_default();
 
-        let mut worker = StateWorker::new(
+        let mut worker = StateWorker::new_for_testing(
             provider,
             trace_provider,
             writer_reader,

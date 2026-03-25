@@ -345,14 +345,13 @@ async fn build_sources_from_config(config: &Config) -> anyhow::Result<Vec<Arc<dy
         if config.state.legacy.has_any() {
             warn!("Using legacy state source configuration; migrate to state.sources.");
         }
-        if let (Some(state_worker_path), Some(state_worker_depth)) = (
+        if let (Some(state_worker_path), state_worker_depth) = (
             config.state.legacy.state_worker_mdbx_path.as_ref(),
             config.state.legacy.state_worker_depth,
         ) {
-            match StateReader::new(
-                state_worker_path,
-                CircularBufferConfig::new(u8::try_from(state_worker_depth)?)?,
-            ) {
+            // For integrated deployments, default to depth=1 when no explicit depth provided
+            let depth = state_worker_depth.map(|d| u8::try_from(d)).transpose()?;
+            match StateReader::new(state_worker_path, CircularBufferConfig::new(depth)?) {
                 Ok(state_worker_client) => {
                     sources.push(Arc::new(MdbxSource::new(state_worker_client)));
                 }
@@ -380,10 +379,9 @@ async fn build_sources_from_config(config: &Config) -> anyhow::Result<Vec<Arc<dy
         for source_config in &config.state.sources {
             match source_config {
                 StateSourceConfig::Mdbx { mdbx_path, depth } => {
-                    match StateReader::new(
-                        mdbx_path,
-                        CircularBufferConfig::new(u8::try_from(*depth)?)?,
-                    ) {
+                    // Convert depth to u8 for explicit configuration, maintaining backward compatibility
+                    let depth_u8 = u8::try_from(*depth)?;
+                    match StateReader::new(mdbx_path, CircularBufferConfig::new(depth_u8)?) {
                         Ok(state_worker_client) => {
                             sources.push(Arc::new(MdbxSource::new(state_worker_client)));
                         }
@@ -719,4 +717,115 @@ async fn run_sidecar_once(
     thread_handles.join_all();
 
     Ok(should_shutdown)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_sources_from_config;
+    use alloy::primitives::B256;
+    use mdbx::{
+        StateWriter,
+        Writer as _,
+        common::CircularBufferConfig,
+    };
+    use sidecar::args::Config;
+    use std::{
+        io::Write as _,
+        path::Path,
+    };
+    use tempfile::{
+        NamedTempFile,
+        TempDir,
+    };
+
+    fn create_test_mdbx(path: &Path, buffer_size: u8) {
+        let writer = StateWriter::new(
+            path,
+            CircularBufferConfig::new(Some(buffer_size)).expect("valid buffer size"),
+        )
+        .expect("create MDBX writer");
+        writer
+            .bootstrap_from_snapshot(Vec::new(), 0, B256::ZERO, B256::ZERO)
+            .expect("bootstrap MDBX state");
+    }
+
+    fn write_config_file(state_block: &str) -> NamedTempFile {
+        let mut file = NamedTempFile::new().expect("create temp config");
+        write!(
+            file,
+            r#"{{
+  "chain": {{
+    "spec_id": "CANCUN",
+    "chain_id": 1
+  }},
+  "credible": {{
+    "assertion_gas_limit": 30000000,
+    "assertion_da_rpc_url": "http://localhost:8545",
+    "event_source_url": "http://localhost:4350/graphql",
+    "assertion_store_db_path": "/tmp/store.db",
+    "state_oracle": "0x1234567890123456789012345678901234567890",
+    "state_oracle_deployment_block": 100,
+    "transaction_results_max_capacity": 10000
+  }},
+  "transport": {{
+    "bind_addr": "127.0.0.1:3000"
+  }},
+  "state": {{
+    {state_block},
+    "minimum_state_diff": 10,
+    "sources_sync_timeout_ms": 30000,
+    "sources_monitoring_period_ms": 1000
+  }}
+}}"#
+        )
+        .expect("write temp config");
+        file.flush().expect("flush temp config");
+        file
+    }
+
+    fn load_legacy_mdbx_config(mdbx_path: &Path, depth: Option<usize>) -> Config {
+        let state_block = match depth {
+            Some(depth) => {
+                format!(
+                    "\"state_worker_mdbx_path\": \"{}\",\n    \"state_worker_depth\": {depth}",
+                    mdbx_path.display()
+                )
+            }
+            None => format!("\"state_worker_mdbx_path\": \"{}\"", mdbx_path.display()),
+        };
+        let file = write_config_file(&state_block);
+        Config::from_file(file.path()).expect("load config")
+    }
+
+    #[tokio::test]
+    async fn build_sources_defaults_legacy_mdbx_depth_to_one() {
+        let tmp = TempDir::new().expect("create temp dir");
+        let mdbx_path = tmp.path().join("state");
+        create_test_mdbx(&mdbx_path, 1);
+
+        let config = load_legacy_mdbx_config(&mdbx_path, None);
+
+        let sources = build_sources_from_config(&config)
+            .await
+            .expect("build state sources");
+
+        assert_eq!(sources.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn build_sources_rejects_legacy_mdbx_depth_zero() {
+        let tmp = TempDir::new().expect("create temp dir");
+        let mdbx_path = tmp.path().join("state");
+        let config = load_legacy_mdbx_config(&mdbx_path, Some(0));
+
+        let error = build_sources_from_config(&config)
+            .await
+            .expect_err("zero depth should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("Buffer size must be greater than 0")
+        );
+    }
 }

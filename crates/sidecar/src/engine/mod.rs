@@ -104,6 +104,7 @@ use std::{
         Arc,
         atomic::{
             AtomicBool,
+            AtomicU64,
             Ordering,
         },
     },
@@ -210,6 +211,49 @@ pub type EngineThreadResult = Result<
     ),
     std::io::Error,
 >;
+
+/// Non-blocking commit head notifier for the integrated state worker.
+///
+/// The atomic tracks the latest block number the worker may flush up to, while
+/// the bounded notifier channel only wakes the worker when new work is available.
+#[derive(Debug, Clone)]
+pub struct CommitHeadSignalSender {
+    latest_permitted_block: Arc<AtomicU64>,
+    notifier: flume::Sender<()>,
+}
+
+impl CommitHeadSignalSender {
+    pub fn new(latest_permitted_block: Arc<AtomicU64>, notifier: flume::Sender<()>) -> Self {
+        Self {
+            latest_permitted_block,
+            notifier,
+        }
+    }
+
+    fn signal(&self, block_number: U256) -> Result<(), CommitHeadSignalSendError> {
+        let target_block_number = block_number.saturating_to::<u64>();
+        let previous_target = self
+            .latest_permitted_block
+            .fetch_max(target_block_number, Ordering::AcqRel);
+
+        if previous_target >= target_block_number {
+            return Ok(());
+        }
+
+        match self.notifier.try_send(()) {
+            Ok(()) | Err(flume::TrySendError::Full(())) => Ok(()),
+            Err(flume::TrySendError::Disconnected(())) => {
+                Err(CommitHeadSignalSendError::Disconnected)
+            }
+        }
+    }
+}
+
+#[derive(thiserror::Error, Debug, Clone, PartialEq, Eq)]
+enum CommitHeadSignalSendError {
+    #[error("state worker commit head signal receiver is disconnected")]
+    Disconnected,
+}
 
 /// Branch prediction hint for unlikely conditions
 #[inline]
@@ -566,6 +610,7 @@ pub struct CoreEngine<DB> {
     #[cfg(feature = "cache_validation")]
     cache_checker: Option<AbortHandle>,
     cache_metrics_handle: Option<JoinHandle<()>>,
+    state_worker_commit_head_signal: Option<CommitHeadSignalSender>,
     /// Cache of tx hashes that triggered assertion failures.
     /// Prevents duplicate logging/metrics on re-execution.
     assertion_failure_cache: moka::sync::Cache<TxHash, ()>,
@@ -646,6 +691,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             iteration_pending_processed_transactions: HashMap::new(),
             #[cfg(feature = "cache_validation")]
             cache_checker,
+            state_worker_commit_head_signal: None,
             assertion_failure_cache,
             custom_tx_executor: None,
         }
@@ -657,6 +703,10 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         canonical_db: Arc<LocalInstanceDb<revm::database::CacheDB<Arc<Sources>>>>,
     ) {
         self.canonical_db = Some(canonical_db);
+    }
+
+    pub fn set_commit_head_signal_sender(&mut self, sender: CommitHeadSignalSender) {
+        self.state_worker_commit_head_signal = Some(sender);
     }
 
     /// Installs a custom inspector provider for subsequent transaction execution.
@@ -1637,6 +1687,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 block_processing_time,
             );
             self.first_commit_head_processed = true;
+            self.signal_state_worker_commit_head(commit_head.block_number);
             return Ok(());
         }
 
@@ -1706,6 +1757,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         );
         self.current_block_iterations.clear();
         self.first_commit_head_processed = true;
+        self.signal_state_worker_commit_head(commit_head.block_number);
 
         debug!(
             target = "engine",
@@ -1715,6 +1767,21 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         );
 
         Ok(())
+    }
+
+    fn signal_state_worker_commit_head(&self, block_number: U256) {
+        let Some(sender) = &self.state_worker_commit_head_signal else {
+            return;
+        };
+
+        if let Err(error) = sender.signal(block_number) {
+            warn!(
+                target = "engine",
+                block_number = %block_number,
+                error = %error,
+                "Failed to signal state worker commit head"
+            );
+        }
     }
 
     /// Process an incoming transaction

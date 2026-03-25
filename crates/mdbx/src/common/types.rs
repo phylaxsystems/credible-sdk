@@ -255,14 +255,17 @@ pub struct CircularBufferConfig {
 impl CircularBufferConfig {
     /// Create a new configuration.
     ///
+    /// When no buffer_size is provided (`None`), defaults to 1 for integrated deployments.
+    ///
     /// # Errors
     ///
     /// Returns `InvalidBufferSize` if `buffer_size == 0`.
-    pub fn new(buffer_size: u8) -> Result<Self, StateError> {
-        if buffer_size == 0 {
+    pub fn new(buffer_size: impl Into<Option<u8>>) -> Result<Self, StateError> {
+        let size = buffer_size.into().unwrap_or(1);
+        if size == 0 {
             return Err(StateError::InvalidBufferSize);
         }
-        Ok(Self { buffer_size })
+        Ok(Self { buffer_size: size })
     }
 
     /// Get the namespace index for a block number.
@@ -281,7 +284,7 @@ impl CircularBufferConfig {
 
 impl Default for CircularBufferConfig {
     fn default() -> Self {
-        Self { buffer_size: 3 }
+        Self { buffer_size: 1 }
     }
 }
 
@@ -516,6 +519,47 @@ mod tests {
         assert_eq!(config.namespace_for_block(3).unwrap(), 0);
         assert_eq!(config.namespace_for_block(4).unwrap(), 1);
         assert_eq!(config.namespace_for_block(1000).unwrap(), 1);
+    }
+
+    #[test]
+    fn test_circular_buffer_config_default() {
+        let config = CircularBufferConfig::default();
+        assert_eq!(config.buffer_size, 1);
+
+        // Test namespace calculation with default config
+        assert_eq!(config.namespace_for_block(0).unwrap(), 0);
+        assert_eq!(config.namespace_for_block(1).unwrap(), 0);
+        assert_eq!(config.namespace_for_block(100).unwrap(), 0);
+    }
+
+    #[test]
+    fn test_circular_buffer_config_explicit_depth() {
+        // Test backward compatibility - explicit depth configurations still work
+        let config = CircularBufferConfig::new(3).unwrap();
+        assert_eq!(config.buffer_size, 3);
+
+        let config = CircularBufferConfig::new(5).unwrap();
+        assert_eq!(config.buffer_size, 5);
+    }
+
+    #[test]
+    fn test_circular_buffer_config_validation() {
+        // Test that depth >= 1 validation works
+        assert!(CircularBufferConfig::new(0).is_err());
+        assert!(CircularBufferConfig::new(1).is_ok());
+        assert!(CircularBufferConfig::new(255).is_ok());
+    }
+
+    #[test]
+    fn test_circular_buffer_config_integrated_default() {
+        // Test that None defaults to depth=1 for integrated deployments
+        let config = CircularBufferConfig::new(None).unwrap();
+        assert_eq!(config.buffer_size, 1);
+
+        // Test namespace calculation with integrated default
+        assert_eq!(config.namespace_for_block(0).unwrap(), 0);
+        assert_eq!(config.namespace_for_block(1).unwrap(), 0);
+        assert_eq!(config.namespace_for_block(100).unwrap(), 0);
     }
 
     #[test]

@@ -967,6 +967,28 @@ mod tests {
     }
 
     #[test]
+    fn test_default_config_uses_integrated_mdbx_depth() {
+        let config = ConfigFile::from_str(DEFAULT_CONFIG)
+            .unwrap()
+            .resolve()
+            .unwrap();
+
+        assert_eq!(
+            config.state.sources,
+            vec![
+                StateSourceConfig::EthRpc {
+                    ws_url: "ws://127.0.0.1:8546".to_string(),
+                    http_url: "http://127.0.0.1:8545".to_string(),
+                },
+                StateSourceConfig::Mdbx {
+                    mdbx_path: "/data/state_worker.mdbx".to_string(),
+                    depth: 1,
+                }
+            ]
+        );
+    }
+
+    #[test]
     fn test_from_file_not_found() {
         let result = Config::from_file("/nonexistent/path/config.json");
 

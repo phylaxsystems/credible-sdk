@@ -33,6 +33,7 @@ metrics = { workspace = true }
 [dev-dependencies]
 int-test-utils = { path = "../int-test-utils" }
 serde_json = { workspace = true }
+alloy-transport = { workspace = true }
 tracing-test = "0.2.5"
 uuid = "0.8.2"
 

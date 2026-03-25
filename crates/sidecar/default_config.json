@@ -38,7 +38,7 @@
       {
         "type": "mdbx",
         "mdbx_path": "/data/state_worker.mdbx",
-        "depth": 3
+        "depth": 1
       }
     ],
     "minimum_state_diff": 100,

@@ -44,7 +44,13 @@ use reth_db_api::{
 };
 use std::{
     path::Path,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{
+            AtomicU64,
+            Ordering,
+        },
+    },
 };
 
 /// Default maximum database size (2TB).
@@ -83,6 +89,7 @@ const DEFAULT_MAX_DB_SIZE: usize = 2 * 1024 * 1024 * 1024 * 1024;
 pub struct StateDb {
     inner: Arc<DatabaseEnv>,
     pub config: CircularBufferConfig,
+    current_height: Arc<AtomicU64>,
 }
 
 impl StateDb {
@@ -171,10 +178,21 @@ impl StateDb {
                 .map_err(|e| StateError::CommitFailed(e.to_string()))?;
         }
 
-        Ok(Self {
+        let db = Self {
             inner: Arc::new(env),
             config,
-        })
+            current_height: Arc::new(AtomicU64::new(0)),
+        };
+
+        // Initialize current_height from existing metadata
+        if let Ok(tx) = db.tx()
+            && let Ok(Some(meta)) =
+                tx.get::<crate::common::tables::Metadata>(crate::common::tables::MetadataKey)
+        {
+            db.current_height.store(meta.latest_block, Ordering::SeqCst);
+        }
+
+        Ok(db)
     }
 
     /// Open database in read-only mode.
@@ -212,10 +230,21 @@ impl StateDb {
             }
         })?;
 
-        Ok(Self {
+        let db = Self {
             inner: Arc::new(env),
             config,
-        })
+            current_height: Arc::new(AtomicU64::new(0)),
+        };
+
+        // Initialize current_height from existing metadata
+        if let Ok(tx) = db.tx()
+            && let Ok(Some(meta)) =
+                tx.get::<crate::common::tables::Metadata>(crate::common::tables::MetadataKey)
+        {
+            db.current_height.store(meta.latest_block, Ordering::SeqCst);
+        }
+
+        Ok(db)
     }
 
     /// Get reference to the inner database environment.
@@ -271,6 +300,20 @@ impl StateDb {
     #[must_use]
     pub fn buffer_size(&self) -> u8 {
         self.config.buffer_size
+    }
+
+    /// Get a reference to the atomic height tracker.
+    ///
+    /// This allows real-time access to the current block height without polling.
+    pub fn current_height_atomic(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.current_height)
+    }
+
+    /// Update the atomic height tracker.
+    ///
+    /// Used by the StateWriter to update height after successful block commits.
+    pub(crate) fn update_current_height(&self, height: u64) {
+        self.current_height.store(height, Ordering::SeqCst);
     }
 }
 

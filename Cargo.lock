@@ -11721,6 +11721,7 @@ dependencies = [
  "alloy",
  "alloy-provider",
  "alloy-rpc-types-trace",
+ "alloy-transport",
  "anyhow",
  "async-trait",
  "clap",

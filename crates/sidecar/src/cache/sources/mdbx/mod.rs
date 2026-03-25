@@ -42,19 +42,12 @@ use std::{
     sync::{
         Arc,
         atomic::{
-            AtomicBool,
             AtomicU64,
             Ordering,
         },
     },
-    time::Duration,
 };
 use thiserror::Error;
-use tokio::{
-    task::JoinHandle,
-    time,
-};
-use tokio_util::sync::CancellationToken;
 use tracing::{
     debug,
     error,
@@ -62,16 +55,14 @@ use tracing::{
     trace,
 };
 
-const DEFAULT_SYNC_INTERVAL: Duration = Duration::from_millis(50);
+const UNSET_HEIGHT: u64 = u64::MAX;
+
 #[derive(Debug)]
 pub struct MdbxSource {
     backend: StateReader,
     /// Target block to request from state worker.
     target_block: Arc<RwLock<U256>>,
-    cancel_token: CancellationToken,
-    range_poller_handle: JoinHandle<()>,
-    available_oldest_block: Arc<AtomicU64>,
-    available_observed_head: Arc<AtomicU64>,
+    available_height: Arc<AtomicU64>,
     cache_status: Arc<CacheStatus>,
 }
 
@@ -85,29 +76,18 @@ impl MdbxSource {
     /// Creates a cache that stores entries under the default `state` namespace.
     pub fn new(backend: StateReader) -> Self {
         let target_block = Arc::new(RwLock::new(U256::ZERO));
-        let cancel_token = CancellationToken::new();
-        // Zero means "not yet loaded" for the MDBX available range.
-        let available_oldest_block = Arc::new(AtomicU64::new(0));
-        let available_observed_head = Arc::new(AtomicU64::new(0));
+        let available_height = Arc::new(AtomicU64::new(UNSET_HEIGHT));
         let cache_status = Arc::new(CacheStatus {
             min_synced_block: RwLock::new(U256::ZERO),
             latest_head: RwLock::new(U256::ZERO),
         });
 
-        let range_poller_handle = Self::spawn_block_range_poller(
-            backend.clone(),
-            cancel_token.clone(),
-            available_oldest_block.clone(),
-            available_observed_head.clone(),
-        );
+        Self::refresh_available_height(&backend, &available_height);
 
         Self {
             backend,
             target_block,
-            cancel_token,
-            range_poller_handle,
-            available_oldest_block,
-            available_observed_head,
+            available_height,
             cache_status,
         }
     }
@@ -120,99 +100,27 @@ impl MdbxSource {
             .map_err(|_| super::SourceError::BlockNumberOverflow(value))
     }
 
-    /// Computes the intersection of two block ranges and returns the target block.
-    ///
-    /// Given the required range `[min_synced_block, latest_head]` and the state worker
-    /// available range `[state_worker_oldest_block, state_worker_observed_head]`, this function
-    /// returns the most recent block in the intersection (upper bound), or `None`
-    /// if the ranges do not overlap.
-    #[inline]
-    fn calculate_target_block(
-        min_synced_block: U256,
-        latest_head: U256,
-        state_worker_oldest_block: U256,
-        state_worker_observed_head: U256,
-    ) -> Option<U256> {
-        let lower_bound = min_synced_block.max(state_worker_oldest_block);
-        let upper_bound = latest_head.min(state_worker_observed_head);
+    fn available_height(&self) -> Option<u64> {
+        let height = self.available_height.load(Ordering::Acquire);
 
-        if lower_bound <= upper_bound {
-            Some(upper_bound)
-        } else {
-            None
-        }
-    }
-
-    /// Checks whether two block ranges have any overlap.
-    #[cfg(test)]
-    #[inline]
-    fn ranges_overlap(
-        min_synced_block: U256,
-        latest_head: U256,
-        state_worker_oldest_block: U256,
-        state_worker_observed_head: U256,
-    ) -> bool {
-        let lower_bound = min_synced_block.max(state_worker_oldest_block);
-        let upper_bound = latest_head.min(state_worker_observed_head);
-        lower_bound <= upper_bound
-    }
-
-    fn available_block_range(&self) -> Option<(u64, u64)> {
-        let oldest = self.available_oldest_block.load(Ordering::Acquire);
-        let head = self.available_observed_head.load(Ordering::Acquire);
-
-        // Treat zero as the unset sentinel to avoid extra MDBX reads on startup.
-        if oldest == 0 || head == 0 || oldest > head {
+        if height == UNSET_HEIGHT {
             return None;
         }
 
-        Some((oldest, head))
+        Some(height)
     }
 
-    fn spawn_block_range_poller(
-        backend: StateReader,
-        cancel_token: CancellationToken,
-        available_oldest_block: Arc<AtomicU64>,
-        available_observed_head: Arc<AtomicU64>,
-    ) -> JoinHandle<()> {
-        Self::refresh_available_block_range(
-            &backend,
-            &available_oldest_block,
-            &available_observed_head,
-        );
-        tokio::spawn(async move {
-            let mut interval = time::interval(DEFAULT_SYNC_INTERVAL);
-
-            loop {
-                tokio::select! {
-                    () = cancel_token.cancelled() => {
-                        break;
-                    }
-                    _ = interval.tick() => Self::refresh_available_block_range(
-                        &backend,
-                        &available_oldest_block,
-                        &available_observed_head,
-                    ),
-                }
-            }
-        })
-    }
-
-    fn refresh_available_block_range(
-        backend: &StateReader,
-        available_oldest_block: &AtomicU64,
-        available_observed_head: &AtomicU64,
-    ) {
-        match backend.get_available_block_range() {
-            Ok(Some((oldest, head))) => {
-                available_oldest_block.store(oldest, Ordering::Release);
-                available_observed_head.store(head, Ordering::Release);
+    fn refresh_available_height(backend: &StateReader, available_height: &AtomicU64) {
+        match backend.latest_block_number() {
+            Ok(Some(height)) => {
+                available_height.store(height, Ordering::Release);
             }
             Ok(None) => {
-                debug!(target: "state_worker", "missing available block range");
+                available_height.store(UNSET_HEIGHT, Ordering::Release);
+                debug!(target: "state_worker", "missing available height");
             }
             Err(e) => {
-                error!(target: "state_worker", error = ?e, "failed to get available block range");
+                error!(target: "state_worker", error = ?e, "failed to get available height");
             }
         }
     }
@@ -334,31 +242,29 @@ impl DatabaseRef for MdbxSource {
 impl Source for MdbxSource {
     /// Reports whether the cache has synchronized past the requested block.
     fn is_synced(&self, min_synced_block: U256, latest_head: U256) -> bool {
-        let Some((state_worker_oldest_block, state_worker_observed_head)) =
-            self.available_block_range()
-        else {
-            debug!(target: "state_worker", "missing available block range");
+        Self::refresh_available_height(&self.backend, &self.available_height);
+
+        let Some(state_worker_height) = self.available_height() else {
+            debug!(target: "state_worker", "missing available height");
             return false;
         };
 
+        let state_worker_height = U256::from(state_worker_height);
+
         trace!(
             target: "state_worker",
-            state_worker_oldest_block = state_worker_oldest_block,
-            state_worker_observed_head = state_worker_observed_head,
+            state_worker_height = %state_worker_height,
             min_synced_block = %min_synced_block,
             latest_head = %latest_head,
             "is_synced"
         );
 
-        if let Some(target) = Self::calculate_target_block(
-            min_synced_block,
-            latest_head,
-            U256::from(state_worker_oldest_block),
-            U256::from(state_worker_observed_head),
-        ) {
+        if min_synced_block <= latest_head && state_worker_height >= min_synced_block {
+            let target = latest_head.min(state_worker_height);
             *self.target_block.write() = target;
             return true;
         }
+
         false
     }
 
@@ -367,20 +273,17 @@ impl Source for MdbxSource {
         *self.cache_status.min_synced_block.write() = min_synced_block;
         *self.cache_status.latest_head.write() = latest_head;
 
-        let Some((state_worker_oldest_block, state_worker_observed_head)) =
-            self.available_block_range()
-        else {
-            debug!(target: "state_worker", "missing available block range");
+        Self::refresh_available_height(&self.backend, &self.available_height);
+
+        let Some(state_worker_height) = self.available_height() else {
+            debug!(target: "state_worker", "missing available height");
             return;
         };
 
-        if let Some(target) = Self::calculate_target_block(
-            min_synced_block,
-            latest_head,
-            U256::from(state_worker_oldest_block),
-            U256::from(state_worker_observed_head),
-        ) {
-            *self.target_block.write() = target;
+        let state_worker_height = U256::from(state_worker_height);
+
+        if min_synced_block <= latest_head && state_worker_height >= min_synced_block {
+            *self.target_block.write() = latest_head.min(state_worker_height);
         }
     }
 
@@ -390,682 +293,219 @@ impl Source for MdbxSource {
     }
 }
 
-impl Drop for MdbxSource {
-    fn drop(&mut self) {
-        self.cancel_token.cancel();
-        self.range_poller_handle.abort();
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{
-        Arc,
-        atomic::{
-            AtomicBool,
-            Ordering,
+    use mdbx::{
+        AccountState,
+        AddressHash,
+        BlockStateUpdate,
+        StateReader,
+        StateWriter,
+        Writer as _,
+        common::CircularBufferConfig,
+    };
+    use std::{
+        collections::HashMap,
+        sync::{
+            Arc,
+            atomic::AtomicU64,
         },
     };
+    use tempfile::TempDir;
 
     fn u(n: u64) -> U256 {
         U256::from(n)
     }
 
-    /// Helper struct to test the cache logic without needing a real state worker backend
     struct TestStateWorkerCache {
         target_block: Arc<RwLock<U256>>,
-        observed_head: Arc<RwLock<U256>>,
-        oldest_block: Arc<RwLock<U256>>,
-        sync_status: Arc<AtomicBool>,
+        available_height: Arc<AtomicU64>,
     }
 
     impl TestStateWorkerCache {
-        fn new(oldest_block: u64, observed_head: u64, synced: bool) -> Self {
+        fn new(available_height: Option<u64>) -> Self {
             Self {
                 target_block: Arc::new(RwLock::new(U256::ZERO)),
-                observed_head: Arc::new(RwLock::new(U256::from(observed_head))),
-                oldest_block: Arc::new(RwLock::new(U256::from(oldest_block))),
-                sync_status: Arc::new(AtomicBool::new(synced)),
+                available_height: Arc::new(AtomicU64::new(
+                    available_height.unwrap_or(UNSET_HEIGHT),
+                )),
             }
+        }
+
+        fn available_height(&self) -> Option<u64> {
+            let height = self.available_height.load(Ordering::Acquire);
+            (height != UNSET_HEIGHT).then_some(height)
         }
 
         fn is_synced(&self, min_synced_block: u64, latest_head: u64) -> bool {
-            if !self.sync_status.load(Ordering::Acquire) {
+            if min_synced_block > latest_head {
                 return false;
             }
-            let state_worker_observed_head = *self.observed_head.read();
-            let state_worker_oldest_block = *self.oldest_block.read();
 
-            MdbxSource::ranges_overlap(
-                U256::from(min_synced_block),
-                U256::from(latest_head),
-                state_worker_oldest_block,
-                state_worker_observed_head,
-            )
+            let Some(available_height) = self.available_height() else {
+                return false;
+            };
+
+            let available_height = U256::from(available_height);
+            let min_synced_block = U256::from(min_synced_block);
+            let latest_head = U256::from(latest_head);
+
+            if available_height >= min_synced_block {
+                *self.target_block.write() = latest_head.min(available_height);
+                return true;
+            }
+
+            false
         }
 
         fn update_cache_status(&self, min_synced_block: u64, latest_head: u64) {
-            let state_worker_observed_head = *self.observed_head.read();
-            let state_worker_oldest_block = *self.oldest_block.read();
+            if min_synced_block > latest_head {
+                return;
+            }
 
-            if let Some(target) = MdbxSource::calculate_target_block(
-                U256::from(min_synced_block),
-                U256::from(latest_head),
-                state_worker_oldest_block,
-                state_worker_observed_head,
-            ) {
-                *self.target_block.write() = target;
+            let Some(available_height) = self.available_height() else {
+                return;
+            };
+
+            let available_height = U256::from(available_height);
+            let min_synced_block = U256::from(min_synced_block);
+            let latest_head = U256::from(latest_head);
+
+            if available_height >= min_synced_block {
+                *self.target_block.write() = latest_head.min(available_height);
             }
         }
 
         fn get_target_block(&self) -> u64 {
             let target = *self.target_block.read();
-            target.try_into().expect("target block overflow u64")
+            u64::try_from(target).unwrap()
         }
 
-        fn set_observed_head(&self, value: u64) {
-            *self.observed_head.write() = U256::from(value);
-        }
-
-        fn set_oldest_block(&self, value: u64) {
-            *self.oldest_block.write() = U256::from(value);
+        fn set_available_height(&self, value: Option<u64>) {
+            self.available_height
+                .store(value.unwrap_or(UNSET_HEIGHT), Ordering::Release);
         }
     }
 
     #[test]
-    fn calculate_perfect_overlap_identical_ranges() {
-        // state_worker: [100, 200], Required: [100, 200]
-        let result = MdbxSource::calculate_target_block(u(100), u(200), u(100), u(200));
-        assert_eq!(result, Some(u(200)));
-    }
-
-    #[test]
-    fn calculate_state_worker_contains_required_range() {
-        // state_worker: [50, 300], Required: [100, 200]
-        let result = MdbxSource::calculate_target_block(u(100), u(200), u(50), u(300));
-        assert_eq!(result, Some(u(200)));
-    }
-
-    #[test]
-    fn calculate_state_worker_contains_required_with_same_start() {
-        // state_worker: [100, 300], Required: [100, 200]
-        let result = MdbxSource::calculate_target_block(u(100), u(200), u(100), u(300));
-        assert_eq!(result, Some(u(200)));
-    }
-
-    #[test]
-    fn calculate_state_worker_contains_required_with_same_end() {
-        // state_worker: [50, 200], Required: [100, 200]
-        let result = MdbxSource::calculate_target_block(u(100), u(200), u(50), u(200));
-        assert_eq!(result, Some(u(200)));
-    }
-
-    #[test]
-    fn calculate_required_contains_state_worker_range() {
-        // state_worker: [150, 180], Required: [100, 200]
-        let result = MdbxSource::calculate_target_block(u(100), u(200), u(150), u(180));
-        assert_eq!(result, Some(u(180)));
-    }
-
-    #[test]
-    fn calculate_required_contains_state_worker_with_same_start() {
-        // state_worker: [100, 180], Required: [100, 200]
-        let result = MdbxSource::calculate_target_block(u(100), u(200), u(100), u(180));
-        assert_eq!(result, Some(u(180)));
-    }
-
-    #[test]
-    fn calculate_required_contains_state_worker_with_same_end() {
-        // state_worker: [150, 200], Required: [100, 200]
-        let result = MdbxSource::calculate_target_block(u(100), u(200), u(150), u(200));
-        assert_eq!(result, Some(u(200)));
-    }
-
-    #[test]
-    fn calculate_partial_overlap_state_worker_starts_earlier() {
-        // state_worker: [50, 150], Required: [100, 200]
-        let result = MdbxSource::calculate_target_block(u(100), u(200), u(50), u(150));
-        assert_eq!(result, Some(u(150)));
-    }
-
-    #[test]
-    fn calculate_partial_overlap_state_worker_ends_later() {
-        // state_worker: [150, 250], Required: [100, 200]
-        let result = MdbxSource::calculate_target_block(u(100), u(200), u(150), u(250));
-        assert_eq!(result, Some(u(200)));
-    }
-
-    #[test]
-    fn calculate_touching_at_single_point_state_worker_ends_at_required_start() {
-        // state_worker: [50, 100], Required: [100, 200]
-        let result = MdbxSource::calculate_target_block(u(100), u(200), u(50), u(100));
-        assert_eq!(result, Some(u(100)));
-    }
-
-    #[test]
-    fn calculate_touching_at_single_point_state_worker_starts_at_required_end() {
-        // state_worker: [200, 300], Required: [100, 200]
-        let result = MdbxSource::calculate_target_block(u(100), u(200), u(200), u(300));
-        assert_eq!(result, Some(u(200)));
-    }
-
-    #[test]
-    fn calculate_no_overlap_state_worker_before_required() {
-        // state_worker: [50, 99], Required: [100, 200]
-        let result = MdbxSource::calculate_target_block(u(100), u(200), u(50), u(99));
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn calculate_no_overlap_state_worker_after_required() {
-        // state_worker: [201, 300], Required: [100, 200]
-        let result = MdbxSource::calculate_target_block(u(100), u(200), u(201), u(300));
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn calculate_no_overlap_large_gap_state_worker_before() {
-        // state_worker: [10, 50], Required: [100, 200]
-        let result = MdbxSource::calculate_target_block(u(100), u(200), u(10), u(50));
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn calculate_no_overlap_large_gap_state_worker_after() {
-        // state_worker: [500, 600], Required: [100, 200]
-        let result = MdbxSource::calculate_target_block(u(100), u(200), u(500), u(600));
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn calculate_single_block_required_within_state_worker() {
-        // state_worker: [100, 200], Required: [150, 150]
-        let result = MdbxSource::calculate_target_block(u(150), u(150), u(100), u(200));
-        assert_eq!(result, Some(u(150)));
-    }
-
-    #[test]
-    fn calculate_single_block_state_worker_within_required() {
-        // state_worker: [150, 150], Required: [100, 200]
-        let result = MdbxSource::calculate_target_block(u(100), u(200), u(150), u(150));
-        assert_eq!(result, Some(u(150)));
-    }
-
-    #[test]
-    fn calculate_both_single_block_same() {
-        // state_worker: [150, 150], Required: [150, 150]
-        let result = MdbxSource::calculate_target_block(u(150), u(150), u(150), u(150));
-        assert_eq!(result, Some(u(150)));
-    }
-
-    #[test]
-    fn calculate_both_single_block_different() {
-        // state_worker: [150, 150], Required: [160, 160]
-        let result = MdbxSource::calculate_target_block(u(160), u(160), u(150), u(150));
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn calculate_single_block_at_state_worker_start() {
-        // state_worker: [100, 200], Required: [100, 100]
-        let result = MdbxSource::calculate_target_block(u(100), u(100), u(100), u(200));
-        assert_eq!(result, Some(u(100)));
-    }
-
-    #[test]
-    fn calculate_single_block_at_state_worker_end() {
-        // state_worker: [100, 200], Required: [200, 200]
-        let result = MdbxSource::calculate_target_block(u(200), u(200), u(100), u(200));
-        assert_eq!(result, Some(u(200)));
-    }
-
-    #[test]
-    fn calculate_all_zeros() {
-        let result = MdbxSource::calculate_target_block(u(0), u(0), u(0), u(0));
-        assert_eq!(result, Some(u(0)));
-    }
-
-    #[test]
-    fn calculate_both_start_at_zero() {
-        // state_worker: [0, 100], Required: [0, 50]
-        let result = MdbxSource::calculate_target_block(u(0), u(50), u(0), u(100));
-        assert_eq!(result, Some(u(50)));
-    }
-
-    #[test]
-    fn calculate_invalid_required_range() {
-        // Required: [200, 100] (invalid: min > max)
-        let result = MdbxSource::calculate_target_block(u(200), u(100), u(50), u(150));
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn calculate_invalid_state_worker_range() {
-        // state_worker: [200, 100] (invalid: oldest > observed)
-        let result = MdbxSource::calculate_target_block(u(50), u(150), u(200), u(100));
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn calculate_large_ethereum_block_numbers() {
-        let result = MdbxSource::calculate_target_block(
-            u(18_000_000),
-            u(18_500_000),
-            u(17_900_000),
-            u(18_600_000),
-        );
-        assert_eq!(result, Some(u(18_500_000)));
-    }
-
-    #[test]
-    fn overlap_overlapping_ranges() {
-        assert!(MdbxSource::ranges_overlap(u(100), u(200), u(150), u(250)));
-    }
-
-    #[test]
-    fn overlap_non_overlapping_ranges() {
-        assert!(!MdbxSource::ranges_overlap(u(100), u(200), u(300), u(400)));
-    }
-
-    #[test]
-    fn overlap_touching_at_boundary() {
-        assert!(MdbxSource::ranges_overlap(u(100), u(200), u(200), u(300)));
-    }
-
-    #[test]
-    fn overlap_adjacent_not_touching() {
-        assert!(!MdbxSource::ranges_overlap(u(100), u(199), u(200), u(300)));
-    }
-
-    #[test]
-    fn overlap_identical_ranges() {
-        assert!(MdbxSource::ranges_overlap(u(100), u(200), u(100), u(200)));
-    }
-
-    #[test]
-    fn overlap_one_contains_other() {
-        assert!(MdbxSource::ranges_overlap(u(50), u(250), u(100), u(200)));
-        assert!(MdbxSource::ranges_overlap(u(100), u(200), u(50), u(250)));
-    }
-
-    #[test]
-    fn test_perfect_overlap() {
-        // state_worker: [100, 200], Required: [100, 200]
-        let cache = TestStateWorkerCache::new(100, 200, true);
+    fn syncs_when_height_covers_required_block() {
+        let cache = TestStateWorkerCache::new(Some(200));
 
         assert!(cache.is_synced(100, 200));
-        cache.update_cache_status(100, 200);
         assert_eq!(cache.get_target_block(), 200);
     }
 
     #[test]
-    fn test_state_worker_contains_required_range() {
-        // state_worker: [50, 300], Required: [100, 200]
-        let cache = TestStateWorkerCache::new(50, 300, true);
+    fn caps_target_block_at_available_height() {
+        let cache = TestStateWorkerCache::new(Some(150));
 
         assert!(cache.is_synced(100, 200));
-        cache.update_cache_status(100, 200);
-        assert_eq!(cache.get_target_block(), 200); // Should pick latest_head
-    }
-
-    #[test]
-    fn test_required_contains_state_worker_range() {
-        // state_worker: [150, 180], Required: [100, 200]
-        let cache = TestStateWorkerCache::new(150, 180, true);
-
-        assert!(cache.is_synced(100, 200));
-        cache.update_cache_status(100, 200);
-        assert_eq!(cache.get_target_block(), 180); // Should pick state_worker_observed_head
-    }
-
-    #[test]
-    fn test_partial_overlap_lower() {
-        // state_worker: [50, 150], Required: [100, 200]
-        // Overlap: [100, 150]
-        let cache = TestStateWorkerCache::new(50, 150, true);
-
-        assert!(cache.is_synced(100, 200));
-        cache.update_cache_status(100, 200);
-        assert_eq!(cache.get_target_block(), 150); // Most recent in overlap
-    }
-
-    #[test]
-    fn test_partial_overlap_upper() {
-        // state_worker: [150, 250], Required: [100, 200]
-        // Overlap: [150, 200]
-        let cache = TestStateWorkerCache::new(150, 250, true);
-
-        assert!(cache.is_synced(100, 200));
-        cache.update_cache_status(100, 200);
-        assert_eq!(cache.get_target_block(), 200); // Most recent in overlap
-    }
-
-    #[test]
-    fn test_no_overlap_gap() {
-        // state_worker: [100, 150], Required: [200, 250]
-        // No overlap
-        let cache = TestStateWorkerCache::new(100, 150, true);
-
-        assert!(!cache.is_synced(200, 250));
-
-        let initial_target = cache.get_target_block();
-        cache.update_cache_status(200, 250);
-        assert_eq!(cache.get_target_block(), initial_target); // Should not update
-    }
-
-    #[test]
-    fn test_no_overlap_reversed() {
-        // state_worker: [200, 250], Required: [100, 150]
-        // No overlap
-        let cache = TestStateWorkerCache::new(200, 250, true);
-
-        assert!(!cache.is_synced(100, 150));
-
-        let initial_target = cache.get_target_block();
-        cache.update_cache_status(100, 150);
-        assert_eq!(cache.get_target_block(), initial_target); // Should not update
-    }
-
-    #[test]
-    fn test_touching_ranges_not_overlapping() {
-        // state_worker: [100, 150], Required: [151, 200]
-        // No overlap (adjacent but not overlapping)
-        let cache = TestStateWorkerCache::new(100, 150, true);
-
-        assert!(!cache.is_synced(151, 200));
-    }
-
-    #[test]
-    fn test_touching_ranges_overlapping_by_one() {
-        // state_worker: [100, 150], Required: [150, 200]
-        // Overlap at block 150
-        let cache = TestStateWorkerCache::new(100, 150, true);
-
-        assert!(cache.is_synced(150, 200));
-        cache.update_cache_status(150, 200);
         assert_eq!(cache.get_target_block(), 150);
     }
 
     #[test]
-    fn test_single_block_overlap() {
-        // state_worker: [100, 200], Required: [150, 150]
-        // Single block requirement
-        let cache = TestStateWorkerCache::new(100, 200, true);
+    fn caps_target_block_at_latest_head_when_height_is_ahead() {
+        let cache = TestStateWorkerCache::new(Some(300));
 
-        assert!(cache.is_synced(150, 150));
-        cache.update_cache_status(150, 150);
-        assert_eq!(cache.get_target_block(), 150);
+        cache.update_cache_status(100, 200);
+
+        assert_eq!(cache.get_target_block(), 200);
     }
 
     #[test]
-    fn test_sync_status_false() {
-        // state_worker: [100, 200], Required: [120, 180]
-        // Perfect overlap but sync_status is false
-        let cache = TestStateWorkerCache::new(100, 200, false);
+    fn does_not_sync_when_height_is_below_minimum() {
+        let cache = TestStateWorkerCache::new(Some(99));
 
-        assert!(!cache.is_synced(120, 180));
-        // update_cache_status should still work even if sync_status is false
-        cache.update_cache_status(120, 180);
-        assert_eq!(cache.get_target_block(), 180);
+        assert!(!cache.is_synced(100, 200));
+        cache.update_cache_status(100, 200);
+
+        assert_eq!(cache.get_target_block(), 0);
     }
 
     #[test]
-    fn test_zero_blocks() {
-        // Edge case: block 0
-        let cache = TestStateWorkerCache::new(0, 100, true);
+    fn does_not_sync_when_height_is_missing() {
+        let cache = TestStateWorkerCache::new(None);
 
-        assert!(cache.is_synced(0, 50));
-        cache.update_cache_status(0, 50);
-        assert_eq!(cache.get_target_block(), 50);
+        assert!(!cache.is_synced(100, 200));
+        cache.update_cache_status(100, 200);
+
+        assert_eq!(cache.get_target_block(), 0);
     }
 
     #[test]
-    fn test_large_block_numbers() {
-        // Test with realistic Ethereum block numbers
-        let cache = TestStateWorkerCache::new(18_000_000, 18_500_000, true);
+    fn does_not_sync_for_invalid_required_range() {
+        let cache = TestStateWorkerCache::new(Some(300));
 
-        assert!(cache.is_synced(18_200_000, 18_400_000));
-        cache.update_cache_status(18_200_000, 18_400_000);
-        assert_eq!(cache.get_target_block(), 18_400_000);
-    }
-
-    #[test]
-    fn test_update_multiple_times() {
-        // Test that target_block updates correctly on multiple calls
-        let cache = TestStateWorkerCache::new(100, 500, true);
-
-        cache.update_cache_status(200, 300);
-        assert_eq!(cache.get_target_block(), 300);
-
-        cache.update_cache_status(150, 250);
-        assert_eq!(cache.get_target_block(), 250);
-
-        cache.update_cache_status(400, 450);
-        assert_eq!(cache.get_target_block(), 450);
-    }
-
-    #[test]
-    fn test_invalid_required_range() {
-        // Edge case: min_synced_block > latest_head (invalid input)
-        // The logic should handle this gracefully
-        let cache = TestStateWorkerCache::new(100, 200, true);
-
-        assert!(!cache.is_synced(250, 200)); // min > max
-
-        let initial_target = cache.get_target_block();
+        assert!(!cache.is_synced(250, 200));
         cache.update_cache_status(250, 200);
-        assert_eq!(cache.get_target_block(), initial_target); // Should not update
+
+        assert_eq!(cache.get_target_block(), 0);
     }
 
     #[test]
-    fn test_state_worker_oldest_equals_observed() {
-        // Edge case: state_worker has only one block
-        let cache = TestStateWorkerCache::new(150, 150, true);
+    fn treats_zero_as_a_valid_height() {
+        let cache = TestStateWorkerCache::new(Some(0));
 
-        assert!(cache.is_synced(100, 200));
-        cache.update_cache_status(100, 200);
-        assert_eq!(cache.get_target_block(), 150);
+        assert!(cache.is_synced(0, 0));
+        assert_eq!(cache.get_target_block(), 0);
     }
 
     #[test]
-    fn test_required_range_is_single_block() {
-        // Required range is a single block that exists in state_worker
-        let cache = TestStateWorkerCache::new(100, 200, true);
+    fn updates_target_block_when_height_catches_up() {
+        let cache = TestStateWorkerCache::new(Some(99));
 
-        assert!(cache.is_synced(150, 150));
-        cache.update_cache_status(150, 150);
-        assert_eq!(cache.get_target_block(), 150);
-    }
-
-    #[test]
-    fn test_exactly_at_boundaries() {
-        // Test when required range exactly matches boundaries
-        let cache = TestStateWorkerCache::new(100, 200, true);
-
-        // Left boundary
-        assert!(cache.is_synced(100, 100));
         cache.update_cache_status(100, 100);
-        assert_eq!(cache.get_target_block(), 100);
-
-        // Right boundary
-        assert!(cache.is_synced(200, 200));
-        cache.update_cache_status(200, 200);
-        assert_eq!(cache.get_target_block(), 200);
-    }
-
-    #[test]
-    fn test_target_block_updates_when_state_worker_syncs_late() {
-        let cache = TestStateWorkerCache::new(97, 99, true);
-
-        // Simulate set_block_number(100) being called
-        cache.update_cache_status(100, 100);
-
-        // No overlap, target_block not updated
-        assert_eq!(
-            cache.get_target_block(),
-            0,
-            "target_block should not be set initially"
-        );
-        assert!(!cache.is_synced(100, 100), "Should not be synced yet");
-
-        // RACE CONDITION: state_worker syncs to block 100 AFTER update_cache_status was called
-        cache.set_observed_head(100);
-        cache.set_oldest_block(98);
-
-        // Now state_worker has the block, call update_cache_status again
-        // (This simulates what the background sync task does)
-        cache.update_cache_status(100, 100);
-
-        // With fix: target_block should now be 100
-        assert_eq!(
-            cache.get_target_block(),
-            100,
-            "target_block should be updated to 100 after state_worker syncs"
-        );
-        assert!(cache.is_synced(100, 100), "Should be synced now");
-    }
-
-    #[test]
-    fn test_target_block_race_with_empty_cache() {
-        // Simulate the exact scenario from the bug report:
-        // Cache is empty/invalidated, state_worker hasn't synced to new block yet
-        let cache = TestStateWorkerCache::new(97, 99, true);
-
-        // Block 100 arrives, cache is invalidated
-        cache.update_cache_status(100, 100);
-
-        // No overlap, target_block stays at 0
         assert_eq!(cache.get_target_block(), 0);
         assert!(!cache.is_synced(100, 100));
 
-        // Execution starts, first few transactions succeed...
-
-        // HALFWAY THROUGH: state_worker syncs to block 100
-        cache.set_observed_head(100);
-        cache.set_oldest_block(98);
-
-        // Background sync task (or iter_synced_sources) calls update_cache_status again
+        cache.set_available_height(Some(100));
         cache.update_cache_status(100, 100);
 
-        // Now target_block should be correct
-        assert_eq!(
-            cache.get_target_block(),
-            100,
-            "target_block should be updated when state_worker catches up"
-        );
+        assert_eq!(cache.get_target_block(), 100);
         assert!(cache.is_synced(100, 100));
     }
 
     #[test]
-    fn test_target_block_stays_in_valid_range() {
-        let cache = TestStateWorkerCache::new(95, 98, true);
+    fn updates_target_block_across_multiple_height_advances() {
+        let cache = TestStateWorkerCache::new(Some(100));
 
-        // Set initial target
-        cache.update_cache_status(96, 97);
-        assert_eq!(cache.get_target_block(), 97);
-
-        // state_worker syncs forward
-        cache.set_observed_head(100);
-
-        // Update should pick the most recent valid block
-        cache.update_cache_status(96, 97);
-        assert_eq!(
-            cache.get_target_block(),
-            97,
-            "Should pick min(latest_head, state_worker_observed_head) = 97"
-        );
-
-        // Now increase latest_head to 105
-        cache.update_cache_status(96, 105);
-        assert_eq!(
-            cache.get_target_block(),
-            100,
-            "Should pick min(105, 100) = 100"
-        );
-    }
-
-    #[test]
-    fn test_target_block_not_updated_when_no_overlap() {
-        let cache = TestStateWorkerCache::new(100, 150, true);
-
-        // Set valid target first
-        cache.update_cache_status(120, 140);
-        assert_eq!(cache.get_target_block(), 140);
-
-        // Request block range that doesn't overlap with state_worker
-        cache.update_cache_status(200, 250);
-
-        // target_block should NOT change (stays at previous valid value)
-        assert_eq!(
-            cache.get_target_block(),
-            140,
-            "target_block should not change when no overlap exists"
-        );
-        assert!(!cache.is_synced(200, 250));
-    }
-
-    #[test]
-    fn test_target_block_multiple_sync_updates() {
-        let cache = TestStateWorkerCache::new(95, 100, true);
-
-        // First update: state_worker has [95, 100], request [98, 99]
         cache.update_cache_status(98, 99);
         assert_eq!(cache.get_target_block(), 99);
 
-        // state_worker syncs forward to 105
-        cache.set_observed_head(105);
-
-        // Second update: request [100, 102]
+        cache.set_available_height(Some(105));
         cache.update_cache_status(100, 102);
-        assert_eq!(
-            cache.get_target_block(),
-            102,
-            "Should update to new valid block"
-        );
+        assert_eq!(cache.get_target_block(), 102);
 
-        // Third update: request [103, 105]
         cache.update_cache_status(103, 105);
         assert_eq!(cache.get_target_block(), 105);
     }
 
-    #[test]
-    fn test_target_block_with_moving_oldest_block() {
-        let cache = TestStateWorkerCache::new(90, 100, true);
-
-        // Initial state: state_worker buffer is [90, 100]
-        cache.update_cache_status(95, 98);
-        assert_eq!(cache.get_target_block(), 98);
-
-        // state_worker buffer advances (oldest moves forward), now [95, 105]
-        cache.set_oldest_block(95);
-        cache.set_observed_head(105);
-
-        // Request same range [95, 98] - should still work
-        cache.update_cache_status(95, 98);
-        assert_eq!(cache.get_target_block(), 98);
-
-        // But request [90, 94] should fail now (below oldest)
-        cache.update_cache_status(90, 94);
-        // target_block shouldn't change from previous valid value
-        assert_eq!(cache.get_target_block(), 98);
-        assert!(!cache.is_synced(90, 94));
+    fn create_test_account(address: Address, balance: u64) -> AccountState {
+        AccountState {
+            address_hash: AddressHash(keccak256(address)),
+            balance: u(balance),
+            nonce: 0,
+            code_hash: B256::ZERO,
+            code: None,
+            storage: HashMap::new(),
+            deleted: false,
+        }
     }
 
-    #[tokio::test]
-    async fn mdbx_source_not_synced_for_nonexistent_blocks_after_bootstrap() {
-        use mdbx::{
-            AccountState,
-            AddressHash,
-            Reader as _,
-            StateReader,
-            StateWriter,
-            Writer as _,
-            common::CircularBufferConfig,
-        };
-        use std::collections::HashMap;
-        use tempfile::TempDir;
+    fn commit_test_block(writer: &StateWriter, block_number: u64, address: Address, balance: u64) {
+        writer
+            .commit_block(&BlockStateUpdate {
+                block_number,
+                block_hash: B256::repeat_byte(0x11),
+                state_root: B256::repeat_byte(0x22),
+                accounts: vec![create_test_account(address, balance)],
+            })
+            .unwrap();
+    }
 
+    #[test]
+    fn mdbx_source_reads_latest_block_height_without_polling() {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("state");
         let config = CircularBufferConfig::new(5).unwrap();
@@ -1074,27 +514,21 @@ mod tests {
         let addr = Address::repeat_byte(0x11);
         writer
             .bootstrap_from_snapshot(
-                vec![AccountState {
-                    address_hash: AddressHash(keccak256(addr)),
-                    balance: u(1000),
-                    nonce: 0,
-                    code_hash: B256::ZERO,
-                    code: None,
-                    storage: HashMap::new(),
-                    deleted: false,
-                }],
+                vec![create_test_account(addr, 1000)],
                 100,
                 B256::ZERO,
                 B256::ZERO,
             )
             .unwrap();
-        drop(writer);
 
         let reader = StateReader::new(&path, config).unwrap();
         let source = MdbxSource::new(reader);
 
-        // Requesting blocks below the bootstrap block should not consider the MDBX source synced
         assert!(!source.is_synced(u(99), u(99)));
         assert!(source.is_synced(u(100), u(100)));
+
+        commit_test_block(&writer, 101, addr, 2000);
+
+        assert!(source.is_synced(u(101), u(101)));
     }
 }

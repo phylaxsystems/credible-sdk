@@ -318,6 +318,7 @@ impl WriteBatch {
 /// Peak memory usage is O(1) accounts instead of O(n).
 pub struct BootstrapWriter {
     tx: reth_db::mdbx::tx::Tx<reth_libmdbx::RW>,
+    db: StateDb,
     block_number: u64,
     block_hash: B256,
     state_root: B256,
@@ -525,6 +526,9 @@ impl BootstrapWriter {
             .commit()
             .map_err(|e| StateError::CommitFailed(e.to_string()))?;
         stats.commit_duration = commit_start.elapsed();
+
+        // Update atomic height after successful commit
+        self.db.update_current_height(self.block_number);
 
         stats.accounts_written = self.accounts_written * usize::from(self.buffer_size);
         stats.storage_slots_written = self.storage_slots_written * usize::from(self.buffer_size);
@@ -754,6 +758,9 @@ impl Writer for StateWriter {
             stats: &mut stats,
         })?;
 
+        // Update atomic height after successful commit
+        db.update_current_height(block_number);
+
         stats.total_duration = total_start.elapsed();
 
         // Record final metrics on span
@@ -872,6 +879,7 @@ impl StateWriter {
 
         Ok(BootstrapWriter {
             tx,
+            db: db.clone(),
             block_number,
             block_hash,
             state_root,

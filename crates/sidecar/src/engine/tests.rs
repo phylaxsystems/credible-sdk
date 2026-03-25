@@ -72,6 +72,7 @@ use std::{
         Arc,
         atomic::{
             AtomicBool,
+            AtomicU64,
             Ordering,
         },
     },
@@ -144,6 +145,7 @@ impl<DB> CoreEngine<DB> {
             current_head: U256::from(0),
             first_commit_head_processed: false,
             cache_metrics_handle: None,
+            state_worker_commit_head_signal: None,
             assertion_failure_cache: moka::sync::Cache::builder()
                 .max_capacity(super::ASSERTION_FAILURE_CACHE_SIZE)
                 .build(),
@@ -291,6 +293,19 @@ fn create_test_block_env() -> BlockEnv {
         basefee: 0, // Set basefee to 0 to avoid balance issues
         ..Default::default()
     }
+}
+
+fn create_commit_head_signal_sender(
+    capacity: usize,
+) -> (CommitHeadSignalSender, Arc<AtomicU64>, flume::Receiver<()>) {
+    let latest_permitted_block = Arc::new(AtomicU64::new(0));
+    let (signal_tx, signal_rx) = flume::bounded(capacity);
+
+    (
+        CommitHeadSignalSender::new(latest_permitted_block.clone(), signal_tx),
+        latest_permitted_block,
+        signal_rx,
+    )
 }
 
 fn record_validation_result(
@@ -629,6 +644,8 @@ async fn test_transaction_before_first_commit_head_is_ignored() {
 #[tokio::test]
 async fn test_failed_commit_head_does_not_mark_first_commit_processed() {
     let (mut engine, _) = create_test_engine().await;
+    let (signal_sender, latest_permitted_block, signal_rx) = create_commit_head_signal_sender(1);
+    engine.set_commit_head_signal_sender(signal_sender);
     assert!(!engine.first_commit_head_processed);
 
     let tx_execution_id = TxExecutionId::new(U256::from(1), 0, B256::from([0x99; 32]), 0);
@@ -667,6 +684,145 @@ async fn test_failed_commit_head_does_not_mark_first_commit_processed() {
         !engine.first_commit_head_processed,
         "first_commit_head_processed must remain false when CommitHead processing fails"
     );
+    assert_eq!(latest_permitted_block.load(Ordering::Acquire), 0);
+    assert!(
+        matches!(signal_rx.try_recv(), Err(flume::TryRecvError::Empty)),
+        "failed CommitHead processing must not signal the state worker"
+    );
+}
+
+#[tokio::test]
+async fn test_commit_head_signals_state_worker_flush_target_block() {
+    let (mut engine, _) = create_test_engine().await;
+    let (signal_sender, latest_permitted_block, signal_rx) = create_commit_head_signal_sender(1);
+    engine.set_commit_head_signal_sender(signal_sender);
+
+    let new_iteration = queue::NewIteration {
+        block_env: create_test_block_env(),
+        iteration_id: 0,
+        parent_block_hash: Some(B256::ZERO),
+        parent_beacon_block_root: Some(B256::ZERO),
+    };
+    engine.process_iteration(&new_iteration).unwrap();
+
+    let commit_head = queue::CommitHead::new(
+        U256::from(1),
+        0,
+        None,
+        0,
+        B256::ZERO,
+        Some(B256::ZERO),
+        U256::from(1),
+    );
+
+    engine
+        .process_commit_head(&commit_head, &mut 0, &mut Instant::now())
+        .unwrap();
+
+    assert_eq!(latest_permitted_block.load(Ordering::Acquire), 1);
+    assert_eq!(signal_rx.try_recv(), Ok(()));
+    assert!(
+        matches!(signal_rx.try_recv(), Err(flume::TryRecvError::Empty)),
+        "only one wake-up should be queued for a single CommitHead"
+    );
+}
+
+#[tokio::test]
+async fn test_commit_head_signal_channel_full_still_tracks_latest_block() {
+    let (mut engine, _) = create_test_engine().await;
+    let (signal_sender, latest_permitted_block, signal_rx) = create_commit_head_signal_sender(1);
+    engine.set_commit_head_signal_sender(signal_sender);
+
+    let first_iteration = queue::NewIteration {
+        block_env: create_test_block_env(),
+        iteration_id: 0,
+        parent_block_hash: Some(B256::ZERO),
+        parent_beacon_block_root: Some(B256::ZERO),
+    };
+    engine.process_iteration(&first_iteration).unwrap();
+
+    let first_commit_head = queue::CommitHead::new(
+        U256::from(1),
+        0,
+        None,
+        0,
+        B256::ZERO,
+        Some(B256::ZERO),
+        U256::from(1),
+    );
+    engine
+        .process_commit_head(&first_commit_head, &mut 0, &mut Instant::now())
+        .unwrap();
+
+    let second_iteration = queue::NewIteration {
+        block_env: BlockEnv {
+            number: U256::from(2),
+            basefee: 0,
+            ..Default::default()
+        },
+        iteration_id: 0,
+        parent_block_hash: Some(B256::ZERO),
+        parent_beacon_block_root: Some(B256::ZERO),
+    };
+    engine.process_iteration(&second_iteration).unwrap();
+
+    let second_commit_head = queue::CommitHead::new(
+        U256::from(2),
+        0,
+        None,
+        0,
+        B256::ZERO,
+        Some(B256::ZERO),
+        U256::from(2),
+    );
+    engine
+        .process_commit_head(&second_commit_head, &mut 0, &mut Instant::now())
+        .unwrap();
+
+    assert_eq!(latest_permitted_block.load(Ordering::Acquire), 2);
+    assert_eq!(signal_rx.try_recv(), Ok(()));
+    assert!(
+        matches!(signal_rx.try_recv(), Err(flume::TryRecvError::Empty)),
+        "a full wake-up channel should collapse pending notifications to one item"
+    );
+}
+
+#[tokio::test]
+async fn test_commit_head_signal_receiver_disconnect_does_not_fail_commit_processing() {
+    let (mut engine, _) = create_test_engine().await;
+    let latest_permitted_block = Arc::new(AtomicU64::new(0));
+    let (signal_tx, signal_rx) = flume::bounded(1);
+    engine.set_commit_head_signal_sender(CommitHeadSignalSender::new(
+        latest_permitted_block.clone(),
+        signal_tx,
+    ));
+    drop(signal_rx);
+
+    let new_iteration = queue::NewIteration {
+        block_env: create_test_block_env(),
+        iteration_id: 0,
+        parent_block_hash: Some(B256::ZERO),
+        parent_beacon_block_root: Some(B256::ZERO),
+    };
+    engine.process_iteration(&new_iteration).unwrap();
+
+    let commit_head = queue::CommitHead::new(
+        U256::from(1),
+        0,
+        None,
+        0,
+        B256::ZERO,
+        Some(B256::ZERO),
+        U256::from(1),
+    );
+
+    let result = engine.process_commit_head(&commit_head, &mut 0, &mut Instant::now());
+
+    assert!(
+        result.is_ok(),
+        "commit processing should not fail when the signal receiver disconnects"
+    );
+    assert_eq!(latest_permitted_block.load(Ordering::Acquire), 1);
 }
 
 #[crate::utils::engine_test(all)]

@@ -79,6 +79,10 @@ use reth_db_api::{
 use std::{
     collections::HashMap,
     path::Path,
+    sync::{
+        Arc,
+        atomic::AtomicU64,
+    },
     time::Instant,
 };
 use tracing::{
@@ -464,6 +468,17 @@ impl StateReader {
     #[must_use]
     pub fn buffer_size(&self) -> u8 {
         self.db.buffer_size()
+    }
+
+    /// Get a reference to the atomic height tracker for real-time height access.
+    ///
+    /// This enables in-process height sharing without polling, replacing the need
+    /// for periodic calls to `get_available_block_range()`.
+    ///
+    /// The atomic height is updated by the StateWriter after successful block commits.
+    #[must_use]
+    pub fn get_current_height_atomic(&self) -> Arc<AtomicU64> {
+        self.db.current_height_atomic()
     }
 
     /// Get all storage slots for an account with statistics.
