@@ -831,6 +831,20 @@ async fn test_eth_rpc_fallback_when_worker_is_restarting() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_commit_head_processing_does_not_wait_for_mdbx_flush() {
+    let sink = SlowCommitTargetSink::new(Duration::from_millis(100));
+    let mut engine = build_engine_with_commit_sink(sink.clone()).await;
+    let started = Instant::now();
+
+    engine
+        .process_commit_head(&commit_head(101), &mut 0, &mut Instant::now())
+        .expect("failed to process commit head");
+
+    assert!(started.elapsed() < Duration::from_millis(50));
+    sink.wait_for_publish(101).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_eth_rpc_fallback_when_worker_is_behind_after_commit_head() {
     let mut harness = LocalInstanceGrpcDriver::with_lagging_worker()
         .await
         .expect("failed to create lagging-worker harness");
