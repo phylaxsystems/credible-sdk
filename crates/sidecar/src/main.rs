@@ -689,6 +689,7 @@ async fn run_sidecar_once(
             .overlay_cache_invalidation_every_block
             .unwrap_or(false),
         incident_sender: incident_report_tx,
+        commit_head_tx: None, // Wired in Plan 04
         #[cfg(feature = "cache_validation")]
         provider_ws_url: Some(config.credible.cache_checker_ws_url.clone()),
     };

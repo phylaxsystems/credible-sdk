@@ -71,6 +71,7 @@ use crate::{
         BlockMetrics,
         TransactionMetrics,
     },
+    state_worker_thread::CommitHeadSignal,
     transaction_observer::{
         IncidentData,
         IncidentReport,
@@ -199,6 +200,10 @@ pub struct CoreEngineConfig {
     pub source_monitoring_period: Duration,
     pub overlay_cache_invalidation_every_block: bool,
     pub incident_sender: Option<IncidentReportSender>,
+    /// Optional sender for CommitHead signals to the state worker thread.
+    /// `None` when the state worker is not wired (tests, legacy configs).
+    /// Must use `flume::unbounded()` channel — NEVER bounded. See PITFALLS.md Pitfall 3.
+    pub commit_head_tx: Option<flume::Sender<CommitHeadSignal>>,
     #[cfg(feature = "cache_validation")]
     pub provider_ws_url: Option<String>,
 }
@@ -570,6 +575,9 @@ pub struct CoreEngine<DB> {
     /// Prevents duplicate logging/metrics on re-execution.
     assertion_failure_cache: moka::sync::Cache<TxHash, ()>,
     custom_tx_executor: Option<Arc<dyn CustomTxExecutor<DB>>>,
+    /// Optional sender for CommitHead signals to the state worker thread.
+    /// `None` when the state worker is not wired.
+    commit_head_tx: Option<flume::Sender<CommitHeadSignal>>,
 }
 
 #[cfg(feature = "cache_validation")]
@@ -648,6 +656,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             cache_checker,
             assertion_failure_cache,
             custom_tx_executor: None,
+            commit_head_tx: config.commit_head_tx,
         }
     }
 
@@ -680,6 +689,25 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
     /// Removes any previously installed custom inspector provider.
     pub fn clear_inspector_provider(&mut self) {
         self.custom_tx_executor = None;
+    }
+
+    /// Send a CommitHead signal to the state worker thread.
+    ///
+    /// Called on every return path from `process_commit_head` so the state worker
+    /// always knows the engine's current committed block number, even during
+    /// cache-invalidation events.
+    ///
+    /// A `SendError` means the state worker receiver was dropped (state worker
+    /// exited or restarting). This is non-fatal — `EthRpcSource` covers the window.
+    fn send_commit_head_signal(&self, block_number: U256) {
+        if let Some(ref tx) = self.commit_head_tx {
+            let signal = CommitHeadSignal {
+                block_number: block_number.saturating_to::<u64>(),
+            };
+            // Infallible for unbounded channel while receiver exists.
+            // Ignore SendError — state worker may be restarting.
+            let _ = tx.send(signal);
+        }
     }
 
     /// Returns the current spec ID from the executor configuration.
@@ -1637,12 +1665,14 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 block_processing_time,
             );
             self.first_commit_head_processed = true;
+            self.send_commit_head_signal(commit_head.block_number);
             return Ok(());
         }
 
         if let Some(iteration) = self.current_block_iterations.get(&block_execution_id)
             && iteration.version_db.last_commit_was_empty()
         {
+            self.send_commit_head_signal(commit_head.block_number);
             return Err(EngineError::NothingToCommit);
         }
 
@@ -1714,6 +1744,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             "CommitHead successfully applied"
         );
 
+        self.send_commit_head_signal(commit_head.block_number);
         Ok(())
     }
 
