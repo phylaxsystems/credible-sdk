@@ -497,8 +497,9 @@ fn resolve_state(state_file: &StateConfigFile) -> Result<StateConfig, ConfigErro
     let source_inputs = parse_env_json("SIDECAR_STATE_SOURCES")?
         .or_else(|| state_file.sources.clone())
         .unwrap_or_default();
-    let worker = resolve_state_worker(state_file, &source_inputs)?;
-    let sources = resolve_state_sources(source_inputs);
+    let legacy = resolve_legacy_state_config(state_file)?;
+    let worker = resolve_state_worker(state_file, &source_inputs, &legacy)?;
+    let sources = resolve_state_sources(source_inputs, &legacy);
 
     Ok(StateConfig {
         worker,
@@ -521,8 +522,11 @@ fn resolve_state(state_file: &StateConfigFile) -> Result<StateConfig, ConfigErro
     })
 }
 
-fn resolve_state_sources(source_inputs: Vec<StateSourceConfigFile>) -> Vec<StateSourceConfig> {
-    source_inputs
+fn resolve_state_sources(
+    source_inputs: Vec<StateSourceConfigFile>,
+    legacy: &LegacyStateConfig,
+) -> Vec<StateSourceConfig> {
+    let mut sources: Vec<_> = source_inputs
         .into_iter()
         .filter_map(|source| {
             match source {
@@ -532,14 +536,25 @@ fn resolve_state_sources(source_inputs: Vec<StateSourceConfigFile>) -> Vec<State
                 StateSourceConfigFile::Mdbx { .. } => None,
             }
         })
-        .collect()
+        .collect();
+
+    if sources.is_empty()
+        && let (Some(ws_url), Some(http_url)) = (
+            legacy.eth_rpc_source_ws_url.as_ref(),
+            legacy.eth_rpc_source_http_url.as_ref(),
+        )
+    {
+        sources.push(StateSourceConfig::EthRpc {
+            ws_url: ws_url.clone(),
+            http_url: http_url.clone(),
+        });
+    }
+
+    sources
 }
 
-fn resolve_state_worker(
-    state_file: &StateConfigFile,
-    source_inputs: &[StateSourceConfigFile],
-) -> Result<StateWorkerConfig, ConfigError> {
-    let legacy = LegacyStateConfig {
+fn resolve_legacy_state_config(state_file: &StateConfigFile) -> Result<LegacyStateConfig, ConfigError> {
+    Ok(LegacyStateConfig {
         eth_rpc_source_ws_url: parse_env("SIDECAR_STATE_ETH_RPC_SOURCE_WS_URL")?
             .or_else(|| state_file.legacy.eth_rpc_source_ws_url.clone()),
         eth_rpc_source_http_url: parse_env("SIDECAR_STATE_ETH_RPC_SOURCE_HTTP_URL")?
@@ -550,7 +565,14 @@ fn resolve_state_worker(
             .legacy
             .state_worker_depth
             .or(parse_env("SIDECAR_STATE_WORKER_DEPTH")?),
-    };
+    })
+}
+
+fn resolve_state_worker(
+    state_file: &StateConfigFile,
+    source_inputs: &[StateSourceConfigFile],
+    legacy: &LegacyStateConfig,
+) -> Result<StateWorkerConfig, ConfigError> {
     let worker_file = state_file.worker.as_ref();
     let legacy_worker_mdbx_path = legacy_worker_mdbx_path(source_inputs)?;
     let first_source_ws_url = source_inputs.iter().find_map(|source| {
@@ -1421,6 +1443,13 @@ mod tests {
         assert_eq!(config.state.worker.ws_url, "ws://legacy:8546");
         assert_eq!(config.state.worker.mdbx_path, "/data/legacy_state.mdbx");
         assert_eq!(config.state.worker.file_to_genesis, "/data/genesis.json");
+        assert_eq!(
+            config.state.sources,
+            vec![StateSourceConfig::EthRpc {
+                ws_url: "ws://legacy:8546".to_string(),
+                http_url: "http://legacy:8545".to_string(),
+            }]
+        );
     }
 
     #[test]
@@ -1625,7 +1654,13 @@ mod tests {
 
         let config = Config::from_file(temp_file.path()).unwrap();
 
-        assert!(config.state.sources.is_empty());
+        assert_eq!(
+            config.state.sources,
+            vec![StateSourceConfig::EthRpc {
+                ws_url: "ws://legacy.example:8546".to_string(),
+                http_url: "http://legacy.example:8545".to_string(),
+            }]
+        );
         assert_eq!(config.state.worker.ws_url, "ws://legacy.example:8546");
         assert_eq!(
             config.state.worker.mdbx_path,
