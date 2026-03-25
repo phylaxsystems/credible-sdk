@@ -28,10 +28,10 @@ Requirements for this milestone. Each maps to roadmap phases.
 
 ### Simplification
 
-- [ ] **SIMP-01**: MdbxSource reads current MDBX height in-process via shared `Arc<AtomicU64>` with Release/Acquire ordering — no 50ms polling
+- [x] **SIMP-01**: MdbxSource reads current MDBX height in-process via shared `Arc<AtomicU64>` with Release/Acquire ordering — no 50ms polling
 - [ ] **SIMP-02**: Circular buffer depth reduced to 1 — multiple state replicas no longer required
-- [ ] **SIMP-03**: `calculate_target_block` range intersection and state depth logic removed
-- [ ] **SIMP-04**: MdbxSource "went too far" handling removed
+- [x] **SIMP-03**: `calculate_target_block` range intersection and state depth logic removed
+- [x] **SIMP-04**: MdbxSource "went too far" handling removed
 - [ ] **SIMP-05**: Standalone `state-worker` binary crate removed from workspace (Cargo.toml, crates/state-worker/)
 
 ### Observability
@@ -86,10 +86,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 | FLOW-04 | Phase 2 | Complete |
 | FLOW-05 | Phase 2 | Complete |
 | FLOW-06 | Phase 2 | Complete |
-| SIMP-01 | Phase 3 | Pending |
+| SIMP-01 | Phase 3 | Complete |
 | SIMP-02 | Phase 3 | Pending |
-| SIMP-03 | Phase 3 | Pending |
-| SIMP-04 | Phase 3 | Pending |
+| SIMP-03 | Phase 3 | Complete |
+| SIMP-04 | Phase 3 | Complete |
 | SIMP-05 | Phase 3 | Pending |
 | OBSV-01 | Phase 2 | Complete |
 | OBSV-02 | Phase 2 | Complete |
