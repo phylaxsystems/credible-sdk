@@ -6,6 +6,13 @@ This document is aimed at agents working in this repository. It describes the cu
 - `crates/mdbx`
 - `crates/state-worker`
 - `crates/assertion-executor`
+- `crates/assertion-da/da-client`
+- `crates/assertion-da/da-core`
+- `crates/assertion-da/da-server`
+- `crates/pcl/cli`
+- `crates/pcl/common`
+- `crates/pcl/core`
+- `crates/pcl/phoundry`
 - `scripts/geth_snapshot` (the repo's snapshot component)
 
 It is intentionally behavior-first. It focuses on what the code does now, what invariants it relies on, and where component boundaries actually are.
@@ -19,6 +26,8 @@ At a high level:
 3. `sidecar` consumes driver events over gRPC, executes transactions against an in-memory overlay plus external state sources, and validates them with `assertion-executor`.
 4. `assertion-executor` executes the transaction, derives triggers from the resulting trace, selects matching assertions from the assertion store, and runs those assertions in parallel against forked EVM state.
 5. `sidecar` also runs an assertion indexer that keeps the assertion store synchronized from an external event source plus DA fetches.
+6. `assertion-da` is the artifact-availability service for assertions: it accepts Solidity submissions, compiles them, stores them, signs their deployment hash, and serves the resulting source plus bytecode back over JSON-RPC.
+7. `pcl` is the operator/developer CLI stack: it authenticates against the app backend, builds and tests assertions through Foundry/phoundry, stores assertion artifacts in Assertion DA, and submits or applies them to projects.
 
 The important architectural split is:
 
@@ -26,6 +35,8 @@ The important architectural split is:
 - `mdbx` stores and serves state.
 - `sidecar` is the transaction admission and orchestration process.
 - `assertion-executor` is the EVM/assertion engine used by `sidecar`.
+- `assertion-da` is the durable assertion-artifact service used by both indexing and authoring flows.
+- `pcl` is the user-facing CLI layer that packages local assertion code and pushes it into the DA/app ecosystem.
 
 ## High-level schemas
 
@@ -220,6 +231,61 @@ AssertionStore
 ## EIP system contracts
 
 See [docs/eips.md](docs/eips.md) for full EIP-2935 and EIP-4788 documentation including contract details, storage layouts, slot calculations, error handling, and the differences between sidecar and state-worker execution models.
+### Assertion DA schema
+
+```text
+pcl store / sidecar indexer
+  |
+  v
+assertion-da-client
+  |
+  v
+assertion-da-server (JSON-RPC over HTTP)
+  |
+  +--> verify JSON-RPC envelope + method + body size
+  |
+  +--> da_submit_solidity_assertion
+  |      |
+  |      +--> compile Solidity in Dockerized solc
+  |      +--> ABI-encode constructor args
+  |      +--> keccak256(deployment bytecode + args) => assertion id
+  |      +--> sign id with DA private key
+  |      +--> persist StoredAssertion
+  |
+  +--> da_get_assertion
+  |      |
+  |      +--> fetch StoredAssertion by id
+  |
+  v
+db task over mpsc
+  |
+  +--> Sled
+  |
+  +--> Redis
+```
+
+### PCL schema
+
+```text
+developer / operator
+  |
+  v
+pcl CLI
+  |
+  +--> auth   -> app auth endpoints -> store tokens in CliConfig
+  |
+  +--> build  -> pcl-phoundry -> Foundry compile
+  |
+  +--> test   -> pcl-phoundry -> phorge / Foundry tests
+  |
+  +--> store  -> build_and_flatten -> Assertion DA submit
+  |                                  |
+  |                                  +--> save AssertionForSubmission in CliConfig
+  |
+  +--> submit -> app project APIs -> submitted-assertions endpoint
+  |
+  +--> apply  -> credible.toml + build_and_flatten -> app releases endpoint
+```
 
 ## `crates/sidecar`
 
@@ -885,6 +951,285 @@ There is special detection for pruned historical state:
 
 This is used when a bootstrap was done with incomplete metadata and later needs exact block number/hash/state root alignment.
 
+## `crates/assertion-da/*`
+
+### What it is
+
+The Assertion DA stack is a JSON-RPC service plus client and shared request types:
+
+- `da-core` defines the request/response contract used by both sides.
+- `da-client` issues JSON-RPC requests and validates response envelopes.
+- `da-server` compiles, stores, signs, and serves assertion artifacts.
+
+Its role is narrow but important: it is the artifact handoff point between assertion authoring and later assertion indexing. The service does not execute assertions. It only turns a Solidity assertion submission into a durable, fetchable artifact bundle.
+
+### Shared request model
+
+`crates/assertion-da/da-core/src/lib.rs` defines three core payloads:
+
+- `DaSubmission`: Solidity source, compiler version, assertion contract name, constructor args, and constructor ABI signature.
+- `DaSubmissionResponse`: assertion `id` plus `prover_signature`.
+- `DaFetchResponse`: original source, creation bytecode without constructor args, encoded constructor args, constructor ABI signature, and the same prover signature.
+
+The important behavioral detail is that fetch returns `bytecode` and `encoded_constructor_args` separately. Consumers are expected to append the encoded constructor args to the creation bytecode when reconstructing deployment data.
+
+### Client behavior
+
+`da-client` exposes two JSON-RPC methods:
+
+- `da_submit_solidity_assertion`
+- `da_get_assertion`
+
+It is intentionally strict:
+
+- it always sends JSON-RPC 2.0 envelopes,
+- it checks that the response is JSON-RPC 2.0,
+- it verifies that the response `id` matches the request `id`,
+- it treats transport failures and malformed envelopes as client errors.
+
+`DaClientError::is_reachable_da_error()` is used by other components, especially `sidecar`'s DA reachability monitor, to distinguish "the DA answered with an application error" from "the DA is unreachable".
+
+### Server startup and process model
+
+`da-server` is configured by `crates/assertion-da/da-server/src/config.rs`.
+
+At startup it:
+
+1. binds a TCP listener from the configured address,
+2. connects to Docker,
+3. chooses a storage backend,
+4. loads the DA signing private key,
+5. constructs a `DaServer`.
+
+The storage backend selection is dynamic:
+
+- if `DA_REDIS_URL` is configured and reachable, Redis is used;
+- otherwise the server falls back to a local Sled database under the configured or XDG-derived path.
+
+Runtime execution splits into two cooperating tasks:
+
+- an API task that accepts HTTP connections and processes JSON-RPC requests,
+- a DB task that listens on an in-process channel and serializes `Get` / `Insert` operations against the chosen backend.
+
+That split keeps the API layer backend-agnostic. API handlers never talk to Sled or Redis directly; they only send `DbOperation`s over a channel and wait for the reply.
+
+### HTTP, readiness, and request validation
+
+The server exposes:
+
+- `/health`
+- `/ready`
+
+Readiness is not a trivial always-true probe. It verifies:
+
+- the cancellation token has not already been triggered,
+- Docker is reachable,
+- the DB task can round-trip a request successfully.
+
+The JSON-RPC path is served over Hyper. Before method dispatch, request processing validates:
+
+- the request body exists and parses as JSON,
+- the JSON-RPC version is correct,
+- the method shape is valid,
+- the body stays under the configured size limit,
+- the expected params are present for the selected method.
+
+Invalid envelopes are rejected before they reach any business logic.
+
+### Submission behavior
+
+The primary write path is `da_submit_solidity_assertion`.
+
+Its behavior is:
+
+1. parse `DaSubmission`,
+2. compile the Solidity source in a Dockerized `solc`,
+3. ABI-encode constructor args using the provided ABI signature,
+4. append encoded constructor args to the creation bytecode,
+5. compute `keccak256(deployment_data)` as the assertion id,
+6. sign that id with the DA private key,
+7. persist a `StoredAssertion`,
+8. return the id and signature.
+
+This means the DA identity is bound to deployable creation data, not just to source text. Changing constructor args changes the encoded deployment data and therefore changes the assertion id.
+
+### Compilation model
+
+Compilation is delegated to Docker rather than to an in-process Solidity compiler.
+
+`source_compilation.rs` is responsible for:
+
+- selecting the correct `solc` image,
+- respecting optional platform overrides,
+- ensuring the image exists locally,
+- pulling it when necessary,
+- creating and later removing the compiler container,
+- extracting compilation outputs needed by the API layer.
+
+The operational consequence is that DA readiness and submission success both depend on Docker being healthy and on the selected compiler image being runnable.
+
+### Fetch behavior
+
+The primary read path is `da_get_assertion`.
+
+Given an assertion id, the server returns:
+
+- original Solidity source,
+- creation bytecode without constructor args appended,
+- ABI-encoded constructor args,
+- constructor ABI signature,
+- DA prover signature.
+
+Consumers can therefore reproduce the exact deployable creation payload and independently verify the signed assertion id.
+
+### Storage model
+
+`da-server` treats persistence as a key-value store over assertion id.
+
+The currently supported backends are:
+
+- Redis
+- Sled
+
+Both are hidden behind the same `Database` trait. All API writes and reads pass through `listen_for_db()`, which processes:
+
+- `DbOperation::Insert`
+- `DbOperation::Get`
+
+The important system property is that API correctness should not depend on backend choice. Backend choice changes durability and operations characteristics, but not API semantics.
+
+## `crates/pcl/*`
+
+### What it is
+
+The PCL stack is the user/operator interface to the wider system.
+
+It is split into four crates:
+
+- `pcl/cli`: top-level binary and command routing,
+- `pcl/core`: app auth, DA storage, submission, apply, and config persistence,
+- `pcl/common`: shared assertion helpers and argument types,
+- `pcl/phoundry`: wrappers around Foundry/phoundry build and test flows.
+
+PCL does not replace `sidecar`. It serves a different boundary:
+
+- `sidecar` validates transactions at runtime,
+- PCL prepares and publishes assertion artifacts ahead of runtime.
+
+### CLI command model
+
+`crates/pcl/cli/src/main.rs` reads `CliConfig`, dispatches the selected subcommand, and writes config back to disk after successful command execution.
+
+The current top-level commands are:
+
+- `test`
+- `store`
+- `submit`
+- `apply`
+- `auth`
+- `config`
+- `build`
+
+The CLI supports JSON output in error paths, but command implementations are still mostly written as interactive terminal flows.
+
+### Local config model
+
+`crates/pcl/core/src/config.rs` defines `CliConfig`.
+
+The key persisted state is:
+
+- `auth: Option<UserAuth>`
+- `assertions_for_submission: HashMap<AssertionKey, AssertionForSubmission>`
+
+This makes PCL a staged workflow:
+
+1. users can authenticate once and keep tokens locally,
+2. store assertion artifacts into DA,
+3. keep those DA references in local config,
+4. later submit some or all of them to a project in the app backend.
+
+That local staging area is important. Submission to Assertion DA and submission to the app backend are intentionally separate steps.
+
+### Auth flow
+
+`pcl core::auth` implements a device-style login flow against the app backend.
+
+The login path is:
+
+1. request a CLI auth code from the app,
+2. open a browser to the verification page with the returned session id,
+3. poll the auth-status endpoint until the session is verified,
+4. persist access token, refresh token, address, expiration, and optional user metadata in `CliConfig`.
+
+`logout` and `status` operate only on local config state. They do not add separate protocol semantics beyond clearing or inspecting what is already persisted.
+
+### Build and test behavior
+
+`pcl-phoundry` wraps Foundry/phoundry operations instead of reimplementing compiler behavior.
+
+The main roles are:
+
+- `build`: compile contracts from the expected assertion source tree,
+- `build_and_flatten`: compile, find the produced artifact, collect ABI and bytecode details, and flatten Solidity source,
+- `compile`: enforce source-directory assumptions and invoke Foundry project compilation,
+- `phorge_test`: run Foundry/phorge tests in a blocking task.
+
+This means PCL's correctness for local artifact generation depends heavily on Foundry project layout conventions and on phoundry/Foundry being installed correctly.
+
+### Assertion store flow
+
+The `store` command is implemented in `pcl core::assertion_da`.
+
+Its behavior is:
+
+1. resolve the target assertion source,
+2. build and flatten it through `pcl-phoundry`,
+3. construct a `DaSubmission`,
+4. submit that payload through `DaClient`,
+5. receive assertion id plus DA signature,
+6. write an `AssertionForSubmission` entry into `CliConfig.assertions_for_submission`.
+
+The important design choice is that `store` does not submit the assertion to a project. It only makes the artifact available in Assertion DA and records enough local metadata to submit it later.
+
+### Submission flow
+
+The `submit` command is implemented in `pcl core::assertion_submission`.
+
+Its behavior is:
+
+1. require valid app auth,
+2. fetch available user projects from the app backend,
+3. choose the target project interactively or by `--project-name`,
+4. choose locally staged assertions from `CliConfig`,
+5. send them to the app's submitted-assertions endpoint,
+6. remove successfully submitted assertions from local staged config.
+
+This confirms that PCL treats local config as a queue of pending submissions. DA storage is durable and external, but project submission state is tracked locally until the app accepts it.
+
+### Apply flow
+
+The `apply` command consumes declarative project configuration, currently centered around `credible.toml`.
+
+It assembles a release payload by:
+
+- loading the declared contracts, environments, and assertions,
+- building and flattening referenced assertion contracts,
+- selecting or resolving the target project,
+- submitting the resulting release payload to the app backend.
+
+The code shows that preview-oriented behavior is still incomplete or intentionally deferred; the main implemented path is direct release submission.
+
+### Common assertion path handling
+
+`pcl/common` provides small but important normalization helpers.
+
+One example is `Assertion::get_paths()`, which resolves assertion source candidates by trying both:
+
+- `<contract>.a.sol`
+- `<contract>.sol`
+
+That fallback is part of current CLI behavior. Agents modifying assertion discovery should preserve it unless they are deliberately changing supported naming conventions.
+
 ## Key invariants and limitations
 
 ### Invariants worth preserving
@@ -906,6 +1251,8 @@ This is used when a bootstrap was done with incomplete metadata and later needs 
 - `MdbxSource` serves only the buffer window available from the state-worker DB.
 - `geth_snapshot` bootstraps all namespaces with the same block on initial hydrate; that is expected, not corruption.
 - assertion indexing currently depends on an external event source plus DA source being reachable and consistent.
+- Assertion DA submission depends on Dockerized Solidity compilation, so Docker health is part of the effective control plane.
+- PCL relies on local `CliConfig` as the staging boundary between DA storage and app submission; removing that boundary would change current workflow semantics.
 
 ## Where to start when modifying behavior
 
@@ -934,3 +1281,18 @@ If changing ingestion correctness:
 If changing snapshot hydration:
 
 - start in `scripts/geth_snapshot/src/main.rs`
+
+If changing Assertion DA behavior:
+
+- start in `crates/assertion-da/da-server/src/api/mod.rs`
+- then inspect `crates/assertion-da/da-server/src/api/assertion_submission.rs`
+- and `crates/assertion-da/da-server/src/source_compilation.rs`
+- plus `crates/assertion-da/da-client/src/lib.rs`
+
+If changing PCL workflows:
+
+- start in `crates/pcl/cli/src/main.rs`
+- then inspect `crates/pcl/core/src/assertion_da.rs`
+- `crates/pcl/core/src/assertion_submission.rs`
+- `crates/pcl/core/src/apply.rs`
+- and `crates/pcl/core/src/config.rs`
