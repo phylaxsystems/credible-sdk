@@ -86,6 +86,24 @@ impl FromStr for SecretString {
     }
 }
 
+/// Configuration for the embedded state worker thread.
+///
+/// All fields required to construct `StateWorker` from within the sidecar process.
+/// All fields are `Option` because the embedded state worker is optional — if the
+/// config section is absent, `StateWorkerThread` will not start. Validation that
+/// all fields are present happens in Plan 03/04 when the fields are consumed.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+pub struct EmbeddedStateWorkerConfig {
+    /// WebSocket URL of the execution client (e.g. ws://localhost:8546)
+    pub ws_url: Option<String>,
+    /// Path to the MDBX write database (must NOT be the same handle as the reader)
+    pub mdbx_path: Option<String>,
+    /// Path to the genesis JSON file (for block 0 state hydration)
+    pub genesis_path: Option<String>,
+    /// Circular buffer depth (number of historical blocks to retain in MDBX)
+    pub state_depth: Option<u8>,
+}
+
 /// Configuration loaded from JSON file
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
 pub struct ConfigFile {
@@ -93,6 +111,7 @@ pub struct ConfigFile {
     pub credible: Option<CredibleConfigFile>,
     pub transport: Option<TransportConfigFile>,
     pub state: Option<StateConfigFile>,
+    pub state_worker: Option<EmbeddedStateWorkerConfig>,
     pub dhat_output_path: Option<PathBuf>,
 }
 
@@ -132,6 +151,7 @@ pub struct Config {
     pub credible: CredibleConfig,
     pub transport: GrpcTransportConfig,
     pub state: StateConfig,
+    pub state_worker: EmbeddedStateWorkerConfig,
     pub dhat_output_path: Option<PathBuf>,
 }
 
@@ -391,6 +411,7 @@ fn resolve_config(file: ConfigFile) -> Result<Config, ConfigError> {
         credible,
         transport,
         state,
+        state_worker: file.state_worker.unwrap_or_default(),
         dhat_output_path: file.dhat_output_path,
     })
 }
