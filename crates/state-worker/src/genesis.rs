@@ -6,11 +6,6 @@ use alloy::primitives::{
     U256,
     keccak256,
 };
-use anyhow::{
-    Context,
-    Result,
-    anyhow,
-};
 use mdbx::AccountState;
 use revm::primitives::KECCAK_EMPTY;
 use serde::Deserialize;
@@ -18,6 +13,9 @@ use std::{
     collections::HashMap,
     str::FromStr,
 };
+use thiserror::Error;
+
+type Result<T> = std::result::Result<T, GenesisStateError>;
 
 /// Parsed representation of the genesis state. The worker consumes this when
 /// hydrating block 0 in Redis.
@@ -26,19 +24,60 @@ pub struct GenesisState {
     config: Config,
 }
 
+#[derive(Debug, Error)]
+pub enum GenesisStateError {
+    #[error("failed to deserialize genesis JSON: {0}")]
+    Deserialize(#[source] serde_json::Error),
+    #[error("failed to parse alloc entry for address {address}: {source}")]
+    AllocEntry {
+        address: String,
+        #[source]
+        source: Box<GenesisStateError>,
+    },
+    #[error("failed to parse address {value}: {message}")]
+    AddressParse { value: String, message: String },
+    #[error("failed to parse numeric value: {message}")]
+    NumericValue { message: String },
+    #[error("failed to parse u64 value {value}: {message}")]
+    U64Value { value: String, message: String },
+    #[error("failed to decode hex value {value}: {message}")]
+    HexValue { value: String, message: String },
+    #[error("failed to parse nonce for address {address}: {source}")]
+    NonceForAddress {
+        address: Address,
+        #[source]
+        source: Box<GenesisStateError>,
+    },
+    #[error("failed to parse storage slot key {slot}: {source}")]
+    StorageSlotKey {
+        slot: String,
+        #[source]
+        source: Box<GenesisStateError>,
+    },
+    #[error("failed to parse storage slot value {value}: {source}")]
+    StorageSlotValue {
+        value: String,
+        #[source]
+        source: Box<GenesisStateError>,
+    },
+}
+
 impl GenesisState {
     /// Immutable view of the parsed account commits.
     #[cfg(test)]
+    #[must_use]
     pub fn accounts(&self) -> &[AccountState] {
         &self.accounts
     }
 
     /// Consume the state and return the owned account commits.
+    #[must_use]
     pub fn into_accounts(self) -> Vec<AccountState> {
         self.accounts
     }
 
     /// Immutable view of the parsed genesis config.
+    #[must_use]
     pub fn config(&self) -> &Config {
         &self.config
     }
@@ -68,17 +107,26 @@ struct GenesisAccount {
 }
 
 /// Parse accounts from a genesis JSON blob.
+///
+/// # Errors
+///
+/// Returns an error if the JSON cannot be deserialized or any account entry
+/// contains invalid data.
 pub fn parse_from_str(data: &str) -> Result<GenesisState> {
     let genesis: GenesisFile =
-        serde_json::from_str(data).context("failed to deserialize genesis JSON")?;
+        serde_json::from_str(data).map_err(GenesisStateError::Deserialize)?;
     build_state(genesis)
 }
 
 fn build_state(genesis: GenesisFile) -> Result<GenesisState> {
     let mut accounts = Vec::with_capacity(genesis.alloc.len());
     for (address, account) in genesis.alloc {
-        let commit = convert_account(&address, account)
-            .with_context(|| format!("failed to parse alloc entry for address {address}"))?;
+        let commit = convert_account(&address, account).map_err(|source| {
+            GenesisStateError::AllocEntry {
+                address: address.clone(),
+                source: Box::new(source),
+            }
+        })?;
         accounts.push(commit);
     }
 
@@ -92,8 +140,12 @@ fn build_state(genesis: GenesisFile) -> Result<GenesisState> {
 fn convert_account(address: &str, account: GenesisAccount) -> Result<AccountState> {
     let address = parse_address(address)?;
     let balance = parse_u256(account.balance.as_deref())?;
-    let nonce = parse_u64(account.nonce.as_deref())
-        .with_context(|| format!("failed to parse nonce for address {address}"))?;
+    let nonce = parse_u64(account.nonce.as_deref()).map_err(|source| {
+        GenesisStateError::NonceForAddress {
+            address,
+            source: Box::new(source),
+        }
+    })?;
     let (code, code_hash) = parse_code(account.code.as_deref())?;
     let storage = parse_storage(account.storage)?;
 
@@ -114,12 +166,21 @@ fn parse_address(value: &str) -> Result<Address> {
     } else {
         format!("0x{value}")
     };
-    Address::from_str(&formatted).map_err(|err| anyhow!("failed to parse address {value}: {err}"))
+    Address::from_str(&formatted).map_err(|err| {
+        GenesisStateError::AddressParse {
+            value: value.to_string(),
+            message: err.to_string(),
+        }
+    })
 }
 
 fn parse_u256(value: Option<&str>) -> Result<U256> {
     let value = value.unwrap_or("0x0").trim();
-    U256::from_str(value).map_err(|err| anyhow!("failed to parse numeric value: {err}"))
+    U256::from_str(value).map_err(|err| {
+        GenesisStateError::NumericValue {
+            message: err.to_string(),
+        }
+    })
 }
 
 fn parse_u64(value: Option<&str>) -> Result<u64> {
@@ -128,10 +189,19 @@ fn parse_u64(value: Option<&str>) -> Result<u64> {
         .strip_prefix("0x")
         .or_else(|| value.strip_prefix("0X"))
     {
-        u64::from_str_radix(hex_str, 16)
-            .map_err(|err| anyhow!("failed to parse u64 value {value}: {err}"))
+        u64::from_str_radix(hex_str, 16).map_err(|err| {
+            GenesisStateError::U64Value {
+                value: value.to_string(),
+                message: err.to_string(),
+            }
+        })
     } else {
-        u64::from_str(value).map_err(|err| anyhow!("failed to parse u64 value {value}: {err}"))
+        u64::from_str(value).map_err(|err| {
+            GenesisStateError::U64Value {
+                value: value.to_string(),
+                message: err.to_string(),
+            }
+        })
     }
 }
 
@@ -152,10 +222,18 @@ fn parse_code(code: Option<&str>) -> Result<(Option<Bytes>, B256)> {
 fn parse_storage(storage: HashMap<String, String>) -> Result<HashMap<B256, U256>> {
     let mut entries = HashMap::new();
     for (slot, value) in storage {
-        let slot = parse_u256(Some(&slot))
-            .with_context(|| format!("failed to parse storage slot key {slot}"))?;
-        let value = parse_u256(Some(&value))
-            .with_context(|| format!("failed to parse storage slot value {value}"))?;
+        let slot = parse_u256(Some(&slot)).map_err(|source| {
+            GenesisStateError::StorageSlotKey {
+                slot: slot.clone(),
+                source: Box::new(source),
+            }
+        })?;
+        let value = parse_u256(Some(&value)).map_err(|source| {
+            GenesisStateError::StorageSlotValue {
+                value: value.clone(),
+                source: Box::new(source),
+            }
+        })?;
         let slot_hash = keccak256(slot.to_be_bytes::<32>());
         entries.insert(slot_hash, value);
     }
@@ -177,7 +255,12 @@ fn decode_hex_bytes(value: &str) -> Result<Bytes> {
         value.to_string()
     };
 
-    Bytes::from_str(&normalized).map_err(|err| anyhow!("failed to decode hex value {value}: {err}"))
+    Bytes::from_str(&normalized).map_err(|err| {
+        GenesisStateError::HexValue {
+            value: value.to_string(),
+            message: err.to_string(),
+        }
+    })
 }
 
 #[cfg(test)]

@@ -8,7 +8,10 @@
 //! Post-Cancun, SELFDESTRUCT on an existing account only transfers balance. Code, storage, and nonce
 //! remain intact. The tracer reports only the balance change, no deletion.
 
-use super::AccountSnapshot;
+use super::{
+    AccountSnapshot,
+    error::TraceProviderError,
+};
 use alloy::primitives::{
     U256,
     keccak256,
@@ -18,14 +21,20 @@ use alloy_rpc_types_trace::geth::{
     PreStateFrame,
     TraceResult,
 };
-use anyhow::anyhow;
 use mdbx::{
     AccountState,
     AddressHash,
 };
 use std::collections::HashMap;
 
-pub fn process_geth_traces(traces: Vec<TraceResult>) -> anyhow::Result<Vec<AccountState>> {
+/// Convert Geth prestate tracer output into account state updates.
+///
+/// # Errors
+///
+/// Returns an error if the trace payload is not the expected prestate tracer format.
+pub fn process_geth_traces(
+    traces: Vec<TraceResult>,
+) -> Result<Vec<AccountState>, TraceProviderError> {
     let mut accounts: HashMap<AddressHash, AccountSnapshot> = HashMap::new();
 
     for trace in traces {
@@ -37,9 +46,9 @@ pub fn process_geth_traces(traces: Vec<TraceResult>) -> anyhow::Result<Vec<Accou
                 process_frame(&mut accounts, frame);
             }
             TraceResult::Success { tx_hash, .. } | TraceResult::Error { tx_hash, .. } => {
-                return Err(anyhow!(
+                return Err(TraceProviderError::UnexpectedTrace(format!(
                     "trace failed or unexpected tracer type (tx: {tx_hash:?})"
-                ));
+                )));
             }
         }
     }

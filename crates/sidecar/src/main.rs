@@ -7,8 +7,12 @@ use assertion_executor::{
     db::overlay::OverlayDb,
 };
 use credible_utils::shutdown::wait_for_sigterm;
-use flume::unbounded;
+use flume::{
+    Sender,
+    unbounded,
+};
 use mdbx::{
+    Reader as _,
     StateReader,
     common::CircularBufferConfig,
 };
@@ -57,20 +61,30 @@ use sidecar::{
     },
     utils::ErrorRecoverability,
 };
+use state_worker::{
+    StateWorkerCommand,
+    StateWorkerConfig,
+    StateWorkerMode,
+    UNINITIALIZED_COMMITTED_HEIGHT,
+    run_state_worker_once,
+};
 use std::{
     net::SocketAddr,
     sync::{
         Arc,
         atomic::{
             AtomicBool,
+            AtomicU64,
             Ordering,
         },
     },
+    thread,
     thread::JoinHandle,
     time::Duration,
 };
 use tracing::{
     error,
+    info,
     warn,
 };
 
@@ -270,6 +284,7 @@ struct ThreadHandles {
         Option<JoinHandle<Result<(), sidecar::event_sequencing::EventSequencingError>>>,
     transaction_observer:
         Option<JoinHandle<Result<(), sidecar::transaction_observer::TransactionObserverError>>>,
+    state_workers: Vec<JoinHandle<Result<(), String>>>,
 }
 
 impl ThreadHandles {
@@ -278,6 +293,7 @@ impl ThreadHandles {
             engine: None,
             event_sequencing: None,
             transaction_observer: None,
+            state_workers: Vec::new(),
         }
     }
 
@@ -307,7 +323,20 @@ impl ThreadHandles {
                 Err(_) => tracing::error!("Transaction observer thread panicked"),
             }
         }
+        for handle in self.state_workers.drain(..) {
+            match handle.join() {
+                Ok(Ok(())) => tracing::info!("State worker thread exited cleanly"),
+                Ok(Err(e)) => tracing::error!(error = %e, "State worker thread exited with error"),
+                Err(_) => tracing::error!("State worker thread panicked"),
+            }
+        }
     }
+}
+
+struct BuiltSources {
+    sources: Vec<Arc<dyn Source>>,
+    state_worker_flush_senders: Vec<Sender<StateWorkerCommand>>,
+    state_worker_handles: Vec<JoinHandle<Result<(), String>>>,
 }
 
 fn transaction_observer_config_from(config: &Config) -> Option<TransactionObserverConfig> {
@@ -338,23 +367,34 @@ fn transaction_observer_config_from(config: &Config) -> Option<TransactionObserv
     }
 }
 
-async fn build_sources_from_config(config: &Config) -> anyhow::Result<Vec<Arc<dyn Source>>> {
+async fn build_sources_from_config(
+    config: &Config,
+    shutdown_flag: Arc<AtomicBool>,
+) -> anyhow::Result<BuiltSources> {
     let mut sources: Vec<Arc<dyn Source>> = Vec::new();
+    let mut state_worker_flush_senders = Vec::new();
+    let mut state_worker_handles = Vec::new();
 
     if config.state.sources.is_empty() {
         if config.state.legacy.has_any() {
             warn!("Using legacy state source configuration; migrate to state.sources.");
         }
-        if let (Some(state_worker_path), Some(state_worker_depth)) = (
-            config.state.legacy.state_worker_mdbx_path.as_ref(),
-            config.state.legacy.state_worker_depth,
-        ) {
-            match StateReader::new(
-                state_worker_path,
-                CircularBufferConfig::new(u8::try_from(state_worker_depth)?)?,
-            ) {
+        if let Some(state_worker_path) = config.state.legacy.state_worker_mdbx_path.as_ref() {
+            match StateReader::new(state_worker_path, CircularBufferConfig::new(1)?) {
                 Ok(state_worker_client) => {
-                    sources.push(Arc::new(MdbxSource::new(state_worker_client)));
+                    let committed_height = Arc::new(AtomicU64::new(
+                        state_worker_client
+                            .latest_block_number()
+                            .unwrap_or(None)
+                            .unwrap_or(UNINITIALIZED_COMMITTED_HEIGHT),
+                    ));
+                    warn!(
+                        "Legacy MDBX configuration does not embed the state worker; MDBX height will not advance in-process"
+                    );
+                    sources.push(Arc::new(MdbxSource::new(
+                        state_worker_client,
+                        committed_height,
+                    )));
                 }
                 Err(e) => {
                     error!(error = ?e, "Failed to connect MDBX");
@@ -379,13 +419,38 @@ async fn build_sources_from_config(config: &Config) -> anyhow::Result<Vec<Arc<dy
         }
         for source_config in &config.state.sources {
             match source_config {
-                StateSourceConfig::Mdbx { mdbx_path, depth } => {
-                    match StateReader::new(
-                        mdbx_path,
-                        CircularBufferConfig::new(u8::try_from(*depth)?)?,
-                    ) {
+                StateSourceConfig::Mdbx {
+                    mdbx_path,
+                    ws_url,
+                    file_to_genesis,
+                    start_block,
+                    buffered_blocks_capacity,
+                } => {
+                    match StateReader::new(mdbx_path, CircularBufferConfig::new(1)?) {
                         Ok(state_worker_client) => {
-                            sources.push(Arc::new(MdbxSource::new(state_worker_client)));
+                            let committed_height =
+                                Arc::new(AtomicU64::new(UNINITIALIZED_COMMITTED_HEIGHT));
+                            sources.push(Arc::new(MdbxSource::new(
+                                state_worker_client,
+                                committed_height.clone(),
+                            )));
+
+                            let (flush_tx, flush_rx) = unbounded();
+                            let worker_config = StateWorkerConfig {
+                                ws_url: ws_url.clone(),
+                                mdbx_path: mdbx_path.clone(),
+                                start_block: *start_block,
+                                file_to_genesis: file_to_genesis.clone(),
+                                buffered_blocks_capacity: *buffered_blocks_capacity,
+                            };
+                            let worker_handle = spawn_state_worker_thread(
+                                worker_config,
+                                flush_rx,
+                                committed_height,
+                                Arc::clone(&shutdown_flag),
+                            )?;
+                            state_worker_flush_senders.push(flush_tx);
+                            state_worker_handles.push(worker_handle);
                         }
                         Err(e) => {
                             error!(error = ?e, "Failed to connect MDBX");
@@ -403,7 +468,76 @@ async fn build_sources_from_config(config: &Config) -> anyhow::Result<Vec<Arc<dy
         }
     }
 
-    Ok(sources)
+    Ok(BuiltSources {
+        sources,
+        state_worker_flush_senders,
+        state_worker_handles,
+    })
+}
+
+fn spawn_state_worker_thread(
+    config: StateWorkerConfig,
+    command_rx: flume::Receiver<StateWorkerCommand>,
+    committed_height: Arc<AtomicU64>,
+    shutdown_flag: Arc<AtomicBool>,
+) -> Result<JoinHandle<Result<(), String>>, std::io::Error> {
+    thread::Builder::new()
+        .name(format!("sidecar-state-worker-{}", config.mdbx_path))
+        .spawn(move || {
+            let mode = StateWorkerMode::Buffered {
+                command_rx,
+                committed_height,
+            };
+            let mut restart_count = 0_u64;
+
+            loop {
+                if shutdown_flag.load(Ordering::Relaxed) {
+                    return Ok(());
+                }
+
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|err| err.to_string())?;
+                let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
+                let shutdown_flag_inner = Arc::clone(&shutdown_flag);
+                runtime.spawn(async move {
+                    while !shutdown_flag_inner.load(Ordering::Relaxed) {
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                    let _ = shutdown_tx.send(());
+                });
+
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    runtime.block_on(run_state_worker_once(&config, &mode, shutdown_rx))
+                }));
+
+                match result {
+                    Ok(Ok(())) if shutdown_flag.load(Ordering::Relaxed) => return Ok(()),
+                    Ok(Ok(())) => warn!("embedded state worker exited; restarting"),
+                    Ok(Err(err)) => warn!(error = %err, "embedded state worker failed; restarting"),
+                    Err(panic_payload) => {
+                        if let Some(message) = panic_payload.downcast_ref::<&str>() {
+                            warn!(panic = %message, "embedded state worker panicked; restarting");
+                        } else if let Some(message) = panic_payload.downcast_ref::<String>() {
+                            warn!(panic = %message, "embedded state worker panicked; restarting");
+                        } else {
+                            warn!("embedded state worker panicked; restarting");
+                        }
+                    }
+                }
+
+                restart_count = restart_count.saturating_add(1);
+                let restart_delay = Duration::from_secs(1);
+                info!(
+                    restart_count,
+                    restart_delay_secs = restart_delay.as_secs(),
+                    mdbx_path = %config.mdbx_path,
+                    "restarting embedded state worker"
+                );
+                std::thread::sleep(restart_delay);
+            }
+        })
 }
 
 fn result_ttl(config: &Config) -> Duration {
@@ -606,8 +740,12 @@ async fn run_sidecar_once(
     // Shared shutdown flag for this iteration
     let shutdown_flag = Arc::new(AtomicBool::new(false));
 
-    let sources = build_sources_from_config(config).await?;
-    let state = Arc::new(Sources::new(sources, config.state.minimum_state_diff));
+    let built_sources = build_sources_from_config(config, Arc::clone(&shutdown_flag)).await?;
+    thread_handles.state_workers = built_sources.state_worker_handles;
+    let state = Arc::new(Sources::new(
+        built_sources.sources,
+        config.state.minimum_state_diff,
+    ));
     let cache: OverlayDb<Sources> = OverlayDb::new(Some(state.clone()));
 
     let transaction_observer_config = transaction_observer_config_from(config);
@@ -652,6 +790,7 @@ async fn run_sidecar_once(
             .overlay_cache_invalidation_every_block
             .unwrap_or(false),
         incident_sender: incident_report_tx,
+        state_worker_flush_senders: built_sources.state_worker_flush_senders,
         #[cfg(feature = "cache_validation")]
         provider_ws_url: Some(config.credible.cache_checker_ws_url.clone()),
     };

@@ -24,6 +24,24 @@ pub mod geth_provider;
 #[cfg(test)]
 mod tests;
 
+pub mod error {
+    use thiserror::Error;
+
+    #[derive(Debug, Error)]
+    pub enum TraceProviderError {
+        #[error("unexpected trace payload: {0}")]
+        UnexpectedTrace(String),
+        #[error("block {block_number} not found")]
+        MissingBlock { block_number: u64 },
+        #[error("failed to fetch block {block_number}: {message}")]
+        FetchBlock { block_number: u64, message: String },
+        #[error("failed to trace block {block_number}: {message}")]
+        TraceBlock { block_number: u64, message: String },
+        #[error("failed to build block state update for block {block_number}: {message}")]
+        BuildStateUpdate { block_number: u64, message: String },
+    }
+}
+
 use alloy::primitives::{
     B256,
     Bytes,
@@ -31,10 +49,6 @@ use alloy::primitives::{
     keccak256,
 };
 use alloy_provider::RootProvider;
-use anyhow::{
-    Context,
-    Result,
-};
 use async_trait::async_trait;
 use mdbx::{
     AccountState,
@@ -51,7 +65,10 @@ use std::{
 /// Trait for fetching block state from different trace providers
 #[async_trait]
 pub trait TraceProvider: Send + Sync {
-    async fn fetch_block_state(&self, block_number: u64) -> Result<BlockStateUpdate>;
+    async fn fetch_block_state(
+        &self,
+        block_number: u64,
+    ) -> Result<BlockStateUpdate, error::TraceProviderError>;
 }
 
 #[derive(Default)]
@@ -114,14 +131,23 @@ impl AccountSnapshot {
 pub struct BlockStateUpdateBuilder;
 
 impl BlockStateUpdateBuilder {
+    /// Build a block update from Geth prestate tracer results.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if trace decoding or normalization fails.
     pub fn from_geth_traces(
         block_number: u64,
         block_hash: B256,
         state_root: B256,
         traces: Vec<alloy_rpc_types_trace::geth::TraceResult>,
-    ) -> Result<BlockStateUpdate> {
-        let accounts =
-            geth::process_geth_traces(traces).context(format!("block {block_number}"))?;
+    ) -> Result<BlockStateUpdate, error::TraceProviderError> {
+        let accounts = geth::process_geth_traces(traces).map_err(|err| {
+            error::TraceProviderError::BuildStateUpdate {
+                block_number,
+                message: err.to_string(),
+            }
+        })?;
 
         Ok(BlockStateUpdate {
             block_number,
@@ -131,6 +157,7 @@ impl BlockStateUpdateBuilder {
         })
     }
 
+    #[must_use]
     pub fn from_accounts(
         block_number: u64,
         block_hash: B256,
@@ -147,6 +174,7 @@ impl BlockStateUpdateBuilder {
 }
 
 /// Create a trace provider.
+#[must_use]
 pub fn create_trace_provider(
     provider: Arc<RootProvider>,
     trace_timeout: Duration,

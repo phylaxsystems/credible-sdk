@@ -148,6 +148,7 @@ use assertion_executor::{
     },
 };
 use dashmap::DashMap;
+use flume::Sender;
 use metrics::counter;
 #[cfg(feature = "cache_validation")]
 use monitoring::cache::CacheChecker;
@@ -167,6 +168,7 @@ use revm::{
         hardfork::SpecId,
     },
 };
+use state_worker::StateWorkerCommand;
 use std::collections::HashMap;
 #[cfg(feature = "cache_validation")]
 use tokio::task::AbortHandle;
@@ -199,6 +201,7 @@ pub struct CoreEngineConfig {
     pub source_monitoring_period: Duration,
     pub overlay_cache_invalidation_every_block: bool,
     pub incident_sender: Option<IncidentReportSender>,
+    pub state_worker_flush_senders: Vec<Sender<StateWorkerCommand>>,
     #[cfg(feature = "cache_validation")]
     pub provider_ws_url: Option<String>,
 }
@@ -570,6 +573,7 @@ pub struct CoreEngine<DB> {
     /// Prevents duplicate logging/metrics on re-execution.
     assertion_failure_cache: moka::sync::Cache<TxHash, ()>,
     custom_tx_executor: Option<Arc<dyn CustomTxExecutor<DB>>>,
+    state_worker_flush_senders: Vec<Sender<StateWorkerCommand>>,
 }
 
 #[cfg(feature = "cache_validation")]
@@ -648,6 +652,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             cache_checker,
             assertion_failure_cache,
             custom_tx_executor: None,
+            state_worker_flush_senders: config.state_worker_flush_senders,
         }
     }
 
@@ -1704,6 +1709,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             processed_blocks,
             block_processing_time,
         );
+        self.flush_state_workers(commit_head.block_number);
         self.current_block_iterations.clear();
         self.first_commit_head_processed = true;
 
@@ -1715,6 +1721,19 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         );
 
         Ok(())
+    }
+
+    fn flush_state_workers(&self, block_number: U256) {
+        let Ok(block_number) = u64::try_from(block_number) else {
+            warn!(block_number = %block_number, "Skipping state worker flush due to block number overflow");
+            return;
+        };
+
+        for sender in &self.state_worker_flush_senders {
+            if let Err(err) = sender.send(StateWorkerCommand::FlushUpTo(block_number)) {
+                warn!(error = %err, block_number, "Failed to send state worker flush command");
+            }
+        }
     }
 
     /// Process an incoming transaction

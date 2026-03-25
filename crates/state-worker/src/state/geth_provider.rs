@@ -3,6 +3,7 @@
 use super::{
     BlockStateUpdateBuilder,
     TraceProvider,
+    error::TraceProviderError,
 };
 use alloy::rpc::types::BlockNumberOrTag;
 use alloy_provider::{
@@ -15,10 +16,6 @@ use alloy_rpc_types_trace::geth::{
     GethDebugTracingOptions,
     GethDefaultTracingOptions,
     PreStateConfig,
-};
-use anyhow::{
-    Context,
-    Result,
 };
 use async_trait::async_trait;
 use mdbx::BlockStateUpdate;
@@ -33,6 +30,7 @@ pub struct GethTraceProvider {
 }
 
 impl GethTraceProvider {
+    #[must_use]
     pub fn new(provider: Arc<RootProvider>, trace_timeout: Duration) -> Self {
         Self {
             provider,
@@ -68,14 +66,23 @@ impl GethTraceProvider {
 
 #[async_trait]
 impl TraceProvider for GethTraceProvider {
-    async fn fetch_block_state(&self, block_number: u64) -> Result<BlockStateUpdate> {
+    async fn fetch_block_state(
+        &self,
+        block_number: u64,
+    ) -> Result<BlockStateUpdate, TraceProviderError> {
         let block_id = BlockNumberOrTag::Number(block_number);
 
         let block = self
             .provider
             .get_block_by_number(block_id)
-            .await?
-            .with_context(|| format!("block {block_number} not found"))?;
+            .await
+            .map_err(|err| {
+                TraceProviderError::FetchBlock {
+                    block_number,
+                    message: err.to_string(),
+                }
+            })?
+            .ok_or(TraceProviderError::MissingBlock { block_number })?;
 
         let block_hash = block.header.hash;
         let state_root = block.header.state_root;
@@ -85,7 +92,12 @@ impl TraceProvider for GethTraceProvider {
             .provider
             .debug_trace_block_by_number(block_id, trace_options)
             .await
-            .with_context(|| format!("failed to trace block {block_number}"))?;
+            .map_err(|err| {
+                TraceProviderError::TraceBlock {
+                    block_number,
+                    message: err.to_string(),
+                }
+            })?;
 
         BlockStateUpdateBuilder::from_geth_traces(block_number, block_hash, state_root, traces)
     }

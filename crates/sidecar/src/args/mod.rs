@@ -298,8 +298,14 @@ pub enum StateSourceConfig {
     Mdbx {
         /// State worker MDBX path
         mdbx_path: String,
-        /// State worker depth (how many blocks behind head state worker will have the data from)
-        depth: usize,
+        /// Ethereum websocket URL used by the embedded state worker.
+        ws_url: String,
+        /// Genesis file used to seed MDBX at block 0.
+        file_to_genesis: String,
+        /// Optional override for the first block the embedded worker traces.
+        start_block: Option<u64>,
+        /// Maximum number of traced block diffs buffered in memory while waiting for commit heads.
+        buffered_blocks_capacity: usize,
     },
     #[serde(rename = "eth-rpc")]
     EthRpc {
@@ -884,7 +890,10 @@ mod tests {
       {
         "type": "mdbx",
         "mdbx_path": "/data/state_worker.mdbx",
-        "depth": 100
+        "ws_url": "ws://localhost:8548",
+        "file_to_genesis": "/data/genesis.json",
+        "start_block": null,
+        "buffered_blocks_capacity": 100
       }
     ],
     "minimum_state_diff": 10,
@@ -957,7 +966,10 @@ mod tests {
                 },
                 StateSourceConfig::Mdbx {
                     mdbx_path: "/data/state_worker.mdbx".to_string(),
-                    depth: 100,
+                    ws_url: "ws://localhost:8548".to_string(),
+                    file_to_genesis: "/data/genesis.json".to_string(),
+                    start_block: None,
+                    buffered_blocks_capacity: 100,
                 }
             ]
         );
@@ -1181,7 +1193,7 @@ mod tests {
 
         let _sources = set_env_var(
             "SIDECAR_STATE_SOURCES",
-            r#"[{"type":"mdbx","mdbx_path":"/data/state.mdbx","depth":7}]"#,
+            r#"[{"type":"mdbx","mdbx_path":"/data/state.mdbx","ws_url":"ws://state:8546","file_to_genesis":"/data/genesis.json","start_block":null,"buffered_blocks_capacity":7}]"#,
         );
 
         let mut temp_file = NamedTempFile::new().unwrap();
@@ -1193,7 +1205,10 @@ mod tests {
             config.state.sources,
             vec![StateSourceConfig::Mdbx {
                 mdbx_path: "/data/state.mdbx".to_string(),
-                depth: 7,
+                ws_url: "ws://state:8546".to_string(),
+                file_to_genesis: "/data/genesis.json".to_string(),
+                start_block: None,
+                buffered_blocks_capacity: 7,
             }]
         );
     }
@@ -1265,7 +1280,10 @@ mod tests {
       {{
         "type": "mdbx",
         "mdbx_path": "/data/state_worker.mdbx",
-        "depth": 50
+        "ws_url": "ws://localhost:8548",
+        "file_to_genesis": "/data/genesis.json",
+        "start_block": null,
+        "buffered_blocks_capacity": 50
       }}
     ],
     "minimum_state_diff": 10,
@@ -1318,7 +1336,10 @@ mod tests {
       {{
         "type": "mdbx",
         "mdbx_path": "/data/state_worker.mdbx",
-        "depth": 3
+        "ws_url": "ws://localhost:8548",
+        "file_to_genesis": "/data/genesis.json",
+        "start_block": null,
+        "buffered_blocks_capacity": 3
       }}
     ],
     "minimum_state_diff": 10,
@@ -1479,7 +1500,10 @@ mod tests {
       {{
         "type": "mdbx",
         "mdbx_path": "/data/state_worker.mdbx",
-        "depth": 42
+        "ws_url": "ws://localhost:8548",
+        "file_to_genesis": "/data/genesis.json",
+        "start_block": null,
+        "buffered_blocks_capacity": 42
       }}
     ],
     "minimum_state_diff": 10,
@@ -1506,7 +1530,10 @@ mod tests {
                 },
                 StateSourceConfig::Mdbx {
                     mdbx_path: "/data/state_worker.mdbx".to_string(),
-                    depth: 42,
+                    ws_url: "ws://localhost:8548".to_string(),
+                    file_to_genesis: "/data/genesis.json".to_string(),
+                    start_block: None,
+                    buffered_blocks_capacity: 42,
                 }
             ]
         );
@@ -1544,12 +1571,18 @@ mod tests {
       {{
         "type": "mdbx",
         "mdbx_path": "/data/state_worker_a.mdbx",
-        "depth": 10
+        "ws_url": "ws://worker-a:8546",
+        "file_to_genesis": "/data/genesis-a.json",
+        "start_block": null,
+        "buffered_blocks_capacity": 10
       }},
       {{
         "type": "mdbx",
         "mdbx_path": "/data/state_worker_b.mdbx",
-        "depth": 20
+        "ws_url": "ws://worker-b:8546",
+        "file_to_genesis": "/data/genesis-b.json",
+        "start_block": null,
+        "buffered_blocks_capacity": 20
       }},
       {{
         "type": "eth-rpc",
@@ -1573,11 +1606,17 @@ mod tests {
             vec![
                 StateSourceConfig::Mdbx {
                     mdbx_path: "/data/state_worker_a.mdbx".to_string(),
-                    depth: 10,
+                    ws_url: "ws://worker-a:8546".to_string(),
+                    file_to_genesis: "/data/genesis-a.json".to_string(),
+                    start_block: None,
+                    buffered_blocks_capacity: 10,
                 },
                 StateSourceConfig::Mdbx {
                     mdbx_path: "/data/state_worker_b.mdbx".to_string(),
-                    depth: 20,
+                    ws_url: "ws://worker-b:8546".to_string(),
+                    file_to_genesis: "/data/genesis-b.json".to_string(),
+                    start_block: None,
+                    buffered_blocks_capacity: 20,
                 },
                 StateSourceConfig::EthRpc {
                     ws_url: "ws://rpc.example:8546".to_string(),

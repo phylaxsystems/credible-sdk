@@ -148,6 +148,7 @@ impl<DB> CoreEngine<DB> {
                 .max_capacity(super::ASSERTION_FAILURE_CACHE_SIZE)
                 .build(),
             custom_tx_executor: None,
+            state_worker_flush_senders: Vec::new(),
         }
     }
 }
@@ -254,6 +255,7 @@ async fn create_test_engine_with_timeout(
             source_monitoring_period: timeout / 2,
             overlay_cache_invalidation_every_block: false,
             incident_sender: None,
+            state_worker_flush_senders: Vec::new(),
             #[cfg(feature = "cache_validation")]
             provider_ws_url: None,
         },
@@ -1942,6 +1944,7 @@ async fn build_canonical_setup(caller: Address) -> CanonicalSetup {
             source_monitoring_period: Duration::from_millis(20),
             overlay_cache_invalidation_every_block: false,
             incident_sender: None,
+            state_worker_flush_senders: Vec::new(),
             #[cfg(feature = "cache_validation")]
             provider_ws_url: None,
         },
