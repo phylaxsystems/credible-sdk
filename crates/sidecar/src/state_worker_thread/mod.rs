@@ -248,7 +248,12 @@ fn flush_ready_blocks(
             "Block flushed to MDBX"
         );
     }
-    gauge!("state_worker_buffer_depth").set(f64::from(buffer.len() as u32));
+    gauge!("state_worker_buffer_depth").set({
+        // BUFFER_CAPACITY is 128, so buffer.len() always fits in u16.
+        // u16 -> f64 is lossless, avoiding cast_precision_loss.
+        let len = u16::try_from(buffer.len()).unwrap_or(u16::MAX);
+        f64::from(len)
+    });
     Ok(())
 }
 
@@ -379,7 +384,12 @@ fn run_blocking_inner(
         // Backpressure: pause tracing when buffer is at capacity (FLOW-05, OBSV-03)
         if buffer.len() >= BUFFER_CAPACITY {
             counter!("state_worker_buffer_full_pauses_total").increment(1);
-            gauge!("state_worker_buffer_depth").set(f64::from(buffer.len() as u32));
+            gauge!("state_worker_buffer_depth").set({
+        // BUFFER_CAPACITY is 128, so buffer.len() always fits in u16.
+        // u16 -> f64 is lossless, avoiding cast_precision_loss.
+        let len = u16::try_from(buffer.len()).unwrap_or(u16::MAX);
+        f64::from(len)
+    });
             match commit_head_rx.recv_timeout(RECV_TIMEOUT) {
                 Ok(signal) => {
                     flush_ready_blocks(&mut buffer, signal.block_number, &writer, committed_head)?;
@@ -402,7 +412,12 @@ fn run_blocking_inner(
             Ok(update) => {
                 buffer.push_back(update);
                 next_block += 1;
-                gauge!("state_worker_buffer_depth").set(f64::from(buffer.len() as u32));
+                gauge!("state_worker_buffer_depth").set({
+        // BUFFER_CAPACITY is 128, so buffer.len() always fits in u16.
+        // u16 -> f64 is lossless, avoiding cast_precision_loss.
+        let len = u16::try_from(buffer.len()).unwrap_or(u16::MAX);
+        f64::from(len)
+    });
             }
             Err(e) => {
                 return Err(StateWorkerError::Trace(e.to_string()));
