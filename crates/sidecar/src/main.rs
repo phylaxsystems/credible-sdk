@@ -653,7 +653,13 @@ fn spawn_state_worker_if_configured(
     commit_head_rx: flume::Receiver<sidecar::state_worker_thread::CommitHeadSignal>,
     committed_head: &Arc<AtomicU64>,
     thread_handles: &mut ThreadHandles,
-) -> anyhow::Result<Option<tokio::sync::oneshot::Receiver<Result<(), sidecar::state_worker_thread::error::StateWorkerError>>>> {
+) -> anyhow::Result<
+    Option<
+        tokio::sync::oneshot::Receiver<
+            Result<(), sidecar::state_worker_thread::StateWorkerError>,
+        >,
+    >,
+> {
     if config.state_worker.ws_url.is_some()
         && config.state_worker.mdbx_path.is_some()
         && config.state_worker.genesis_path.is_some()
@@ -680,6 +686,7 @@ fn spawn_state_worker_if_configured(
     }
 }
 
+#[allow(clippy::too_many_lines)]
 async fn run_sidecar_once(
     config: &Config,
     executor_config: &assertion_executor::ExecutorConfig,

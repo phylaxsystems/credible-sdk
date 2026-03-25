@@ -102,6 +102,9 @@ where
     ///
     /// Each block is traced via `process_block` and then committed to the
     /// database immediately — preserving the standalone binary semantics.
+    ///
+    /// # Errors
+    /// Returns an error if the start block cannot be computed or tracing fails.
     pub async fn run(
         &mut self,
         start_override: Option<u64>,
@@ -162,6 +165,9 @@ where
 
     /// Determine the next block to ingest. We respect manual overrides so
     /// operators can force a resync of historical ranges when needed.
+    ///
+    /// # Errors
+    /// Returns an error if the MDBX head block cannot be read.
     pub fn compute_start_block(&self, override_start: Option<u64>) -> Result<u64> {
         if let Some(block) = override_start {
             return Ok(block);
