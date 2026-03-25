@@ -45,16 +45,16 @@ use tracing::{
 pub struct MdbxSource {
     backend: StateReader,
     /// Shared committed head written by state worker with Release ordering after each flush.
-    /// MdbxSource reads with Acquire ordering to establish happens-before: MDBX data is durable
+    /// `MdbxSource` reads with Acquire ordering to establish happens-before: MDBX data is durable
     /// before the height is observable.
     committed_head: Arc<AtomicU64>,
 }
 
 impl MdbxSource {
-    /// Creates a new MdbxSource backed by the given StateReader.
+    /// Creates a new `MdbxSource` backed by the given `StateReader`.
     ///
-    /// `committed_head` is the Arc<AtomicU64> that the state worker thread writes after each
-    /// MDBX flush (with Release ordering). MdbxSource reads it with Acquire ordering in
+    /// `committed_head` is the `Arc<AtomicU64>` that the state worker thread writes after each
+    /// MDBX flush (with Release ordering). `MdbxSource` reads it with Acquire ordering in
     /// `is_synced`, eliminating the 50ms polling loop.
     pub fn new(backend: StateReader, committed_head: Arc<AtomicU64>) -> Self {
         Self {
@@ -189,8 +189,8 @@ impl DatabaseRef for MdbxSource {
 impl Source for MdbxSource {
     /// Reports whether the MDBX-committed height covers the minimum block needed.
     ///
-    /// Reads committed_head with Acquire ordering — pairs with the Release store in
-    /// flush_ready_blocks (state_worker_thread/mod.rs). This establishes a happens-before:
+    /// Reads `committed_head` with Acquire ordering — pairs with the Release store in
+    /// `flush_ready_blocks` (`state_worker_thread/mod.rs`). This establishes a happens-before:
     /// MDBX data is durable before the height is observable here.
     fn is_synced(&self, min_synced_block: U256, _latest_head: U256) -> bool {
         // Acquire load pairs with Release store in flush_ready_blocks (state_worker_thread/mod.rs).
@@ -216,7 +216,7 @@ impl Source for MdbxSource {
         committed >= min_block
     }
 
-    /// No-op: sync state is now read directly from committed_head AtomicU64.
+    /// No-op: sync state is now read directly from `committed_head` `AtomicU64`.
     ///
     /// The polling loop and range intersection have been removed (SIMP-01, SIMP-03).
     fn update_cache_status(&self, _min_synced_block: U256, _latest_head: U256) {
@@ -234,8 +234,8 @@ impl Source for MdbxSource {
 mod tests {
     use super::*;
 
-    /// Tests the `is_synced` logic directly by exercising the committed_head check.
-    /// MdbxSource cannot be constructed in unit tests (StateReader requires a live MDBX env),
+    /// Tests the `is_synced` logic directly by exercising the `committed_head` check.
+    /// `MdbxSource` cannot be constructed in unit tests (`StateReader` requires a live MDBX env),
     /// so we verify the core decision logic that `is_synced` implements:
     ///   committed_head == 0 → false
     ///   committed_head >= min_synced_block → true

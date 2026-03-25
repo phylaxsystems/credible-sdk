@@ -94,7 +94,7 @@ impl FromStr for SecretString {
 /// all fields are present happens in Plan 03/04 when the fields are consumed.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
 pub struct EmbeddedStateWorkerConfig {
-    /// WebSocket URL of the execution client (e.g. ws://localhost:8546)
+    /// WebSocket URL of the execution client (e.g. `<ws://localhost:8546>`)
     pub ws_url: Option<String>,
     /// Path to the MDBX write database (must NOT be the same handle as the reader)
     pub mdbx_path: Option<String>,
