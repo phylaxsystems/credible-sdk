@@ -12,6 +12,18 @@
 mod error;
 
 pub use error::StateWorkerError;
+
+/// Signal sent by CoreEngine to `StateWorkerThread` after each committed block.
+///
+/// Carries only the block number — the state worker uses this to flush all
+/// buffered `BlockStateUpdate` entries where `block_number <= signal.block_number`.
+/// The signal type is separate from `engine::queue::CommitHead` which has
+/// `pub(crate)` fields and carries engine-specific iteration data.
+#[derive(Debug, Clone, Copy)]
+pub struct CommitHeadSignal {
+    pub block_number: u64,
+}
+
 use crate::utils::ErrorRecoverability;
 use std::{
     panic::AssertUnwindSafe,
