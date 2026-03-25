@@ -48,7 +48,7 @@ Plans:
 Plans:
 - [x] 02-01-PLAN.md — Foundation: refactor process_block to return BlockStateUpdate, define CommitHeadSignal type, add EmbeddedStateWorkerConfig to sidecar args, extend StateWorkerError
 - [x] 02-02-PLAN.md — CoreEngine CommitHead sender: add commit_head_tx field to CoreEngineConfig + CoreEngine, send signal on all process_commit_head return paths
-- [ ] 02-03-PLAN.md — State worker buffer+flush loop: replace no-op run_blocking_inner with full outer-sync-loop, flush_ready_blocks, backpressure at 128, best-effort shutdown flush, all 3 metrics
+- [x] 02-03-PLAN.md — State worker buffer+flush loop: replace no-op run_blocking_inner with full outer-sync-loop, flush_ready_blocks, backpressure at 128, best-effort shutdown flush, all 3 metrics
 - [ ] 02-04-PLAN.md — Wire run_sidecar_once: create flume::unbounded channel, Arc<AtomicU64> committed_head, conditional state worker spawn with config
 
 ### Phase 3: MdbxSource Simplification and Cleanup
@@ -70,5 +70,5 @@ Phases execute in numeric order: 1 → 2 → 3
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Thread Scaffold | 2/2 | Complete   | 2026-03-25 |
-| 2. CommitHead Flow Control | 0/4 | Not started | - |
+| 2. CommitHead Flow Control | 3/4 | In Progress|  |
 | 3. MdbxSource Simplification and Cleanup | 0/? | Not started | - |

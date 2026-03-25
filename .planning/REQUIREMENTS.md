@@ -21,9 +21,9 @@ Requirements for this milestone. Each maps to roadmap phases.
 
 - [x] **FLOW-01**: State worker buffers `BlockStateUpdate` in a bounded `VecDeque` after tracing each block
 - [x] **FLOW-02**: Core engine sends `CommitHeadSignal { block_number }` via mpsc channel after each `process_commit_head`
-- [ ] **FLOW-03**: State worker flushes buffered updates where `block_number <= commit_head` to MDBX on signal
+- [x] **FLOW-03**: State worker flushes buffered updates where `block_number <= commit_head` to MDBX on signal
 - [x] **FLOW-04**: MDBX height never exceeds `current_commit_head.block_number`
-- [ ] **FLOW-05**: Buffer bounded at 128 blocks — state worker pauses tracing when buffer is full (backpressure)
+- [x] **FLOW-05**: Buffer bounded at 128 blocks — state worker pauses tracing when buffer is full (backpressure)
 - [x] **FLOW-06**: On restart, state worker resumes from last committed block in MDBX via `compute_start_block`
 
 ### Simplification
@@ -36,9 +36,9 @@ Requirements for this milestone. Each maps to roadmap phases.
 
 ### Observability
 
-- [ ] **OBSV-01**: Buffer utilization gauge (`state_worker_buffer_depth`) updated after each trace/flush
-- [ ] **OBSV-02**: Restart counter (`state_worker_restarts_total`) incremented on each thread restart
-- [ ] **OBSV-03**: Buffer-full pause counter (`state_worker_buffer_full_pauses_total`) incremented when tracing pauses due to full buffer
+- [x] **OBSV-01**: Buffer utilization gauge (`state_worker_buffer_depth`) updated after each trace/flush
+- [x] **OBSV-02**: Restart counter (`state_worker_restarts_total`) incremented on each thread restart
+- [x] **OBSV-03**: Buffer-full pause counter (`state_worker_buffer_full_pauses_total`) incremented when tracing pauses due to full buffer
 
 ## v2 Requirements
 
@@ -82,18 +82,18 @@ Which phases cover which requirements. Updated during roadmap creation.
 | THRD-07 | Phase 1 | Complete |
 | FLOW-01 | Phase 2 | Complete |
 | FLOW-02 | Phase 2 | Complete |
-| FLOW-03 | Phase 2 | Pending |
+| FLOW-03 | Phase 2 | Complete |
 | FLOW-04 | Phase 2 | Complete |
-| FLOW-05 | Phase 2 | Pending |
+| FLOW-05 | Phase 2 | Complete |
 | FLOW-06 | Phase 2 | Complete |
 | SIMP-01 | Phase 3 | Pending |
 | SIMP-02 | Phase 3 | Pending |
 | SIMP-03 | Phase 3 | Pending |
 | SIMP-04 | Phase 3 | Pending |
 | SIMP-05 | Phase 3 | Pending |
-| OBSV-01 | Phase 2 | Pending |
-| OBSV-02 | Phase 2 | Pending |
-| OBSV-03 | Phase 2 | Pending |
+| OBSV-01 | Phase 2 | Complete |
+| OBSV-02 | Phase 2 | Complete |
+| OBSV-03 | Phase 2 | Complete |
 
 **Coverage:**
 - v1 requirements: 21 total
