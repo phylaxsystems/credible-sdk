@@ -46,3 +46,46 @@ impl From<&StateWorkerError> for ErrorRecoverability {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn all_error_variants_are_recoverable() {
+        let variants: Vec<StateWorkerError> = vec![
+            StateWorkerError::RuntimeBuild("test".into()),
+            StateWorkerError::Panicked("test".into()),
+            StateWorkerError::ThreadSpawn("test".into()),
+            StateWorkerError::ComputeStartBlock("test".into()),
+            StateWorkerError::MdbxWrite("test".into()),
+            StateWorkerError::Trace("test".into()),
+            StateWorkerError::Config("test".into()),
+        ];
+
+        for variant in &variants {
+            let recoverability = ErrorRecoverability::from(variant);
+            assert!(
+                recoverability.is_recoverable(),
+                "Expected Recoverable for {variant}",
+            );
+        }
+    }
+
+    #[test]
+    fn error_display_includes_message() {
+        let err = StateWorkerError::RuntimeBuild("out of memory".into());
+        let display = format!("{err}");
+        assert!(
+            display.contains("out of memory"),
+            "Expected display to contain 'out of memory', got: {display}",
+        );
+    }
+
+    #[test]
+    fn error_clone_produces_equal_message() {
+        let err = StateWorkerError::Panicked("segfault".into());
+        let cloned = err.clone();
+        assert_eq!(format!("{err}"), format!("{cloned}"));
+    }
+}

@@ -413,3 +413,88 @@ fn run_blocking_inner(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn commit_head_signal_carries_block_number() {
+        let signal = CommitHeadSignal { block_number: 42 };
+        assert_eq!(signal.block_number, 42);
+    }
+
+    #[test]
+    fn commit_head_signal_is_copy() {
+        let signal = CommitHeadSignal { block_number: 100 };
+        let copied = signal;
+        // Both are usable — proves Copy
+        assert_eq!(signal.block_number, copied.block_number);
+    }
+
+    #[test]
+    fn buffer_capacity_is_128() {
+        assert_eq!(BUFFER_CAPACITY, 128);
+    }
+
+    #[test]
+    fn stack_size_is_8mib() {
+        assert_eq!(STACK_SIZE, 8 * 1024 * 1024);
+    }
+
+    #[test]
+    fn recv_timeout_is_100ms() {
+        assert_eq!(RECV_TIMEOUT, Duration::from_millis(100));
+    }
+
+    #[test]
+    fn state_worker_thread_new_stores_fields() {
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let (tx, rx) = flume::unbounded();
+        let config = EmbeddedStateWorkerConfig {
+            ws_url: Some("ws://localhost:8546".into()),
+            mdbx_path: Some("/tmp/test".into()),
+            genesis_path: Some("/tmp/genesis.json".into()),
+            state_depth: Some(1),
+        };
+        let committed_head = Arc::new(AtomicU64::new(0));
+
+        let thread = StateWorkerThread::new(
+            Arc::clone(&shutdown),
+            rx,
+            config,
+            Arc::clone(&committed_head),
+        );
+
+        // Verify the shutdown flag is shared
+        assert!(!thread.shutdown.load(Ordering::Relaxed));
+        shutdown.store(true, Ordering::Relaxed);
+        assert!(thread.shutdown.load(Ordering::Relaxed));
+
+        // Verify committed_head is shared
+        assert_eq!(thread.committed_head.load(Ordering::Relaxed), 0);
+        committed_head.store(99, Ordering::Relaxed);
+        assert_eq!(thread.committed_head.load(Ordering::Relaxed), 99);
+
+        // Verify channel is connected
+        tx.send(CommitHeadSignal { block_number: 7 }).unwrap();
+        let received = thread.commit_head_rx.try_recv().unwrap();
+        assert_eq!(received.block_number, 7);
+    }
+
+    #[test]
+    fn run_thread_loop_exits_on_shutdown() {
+        let shutdown = AtomicBool::new(true); // pre-set shutdown
+        let (_tx, rx) = flume::unbounded();
+        let config = EmbeddedStateWorkerConfig {
+            ws_url: None,
+            mdbx_path: None,
+            genesis_path: None,
+            state_depth: None,
+        };
+        let committed_head = Arc::new(AtomicU64::new(0));
+
+        let result = run_thread_loop(&shutdown, &rx, &config, &committed_head);
+        assert!(result.is_ok(), "Expected Ok on shutdown, got: {result:?}");
+    }
+}
