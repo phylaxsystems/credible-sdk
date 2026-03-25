@@ -10,19 +10,14 @@ repository.workspace = true
 name = "state_worker"
 path = "src/lib.rs"
 
-[[bin]]
-name = "state-worker"
-path = "src/main.rs"
-
 [dependencies]
 
-# internal 
+# internal
 eip-system-calls.workspace = true
 credible-utils.workspace = true
 
 anyhow = { workspace = true }
 async-trait.workspace = true
-clap = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 alloy = { workspace = true }
@@ -31,8 +26,6 @@ alloy-rpc-types-trace = { workspace = true }
 futures-util = { workspace = true }
 revm = { workspace = true }
 hex = { workspace = true }
-rust-tracing = { workspace = true }
-rustls = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 mdbx = { workspace = true, features = ["writer"] }
