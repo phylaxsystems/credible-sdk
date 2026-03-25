@@ -341,10 +341,10 @@ pub struct UserAuth {
 impl UserAuth {
     /// Returns the best available display name for this user.
     pub fn display_name(&self) -> String {
-        if let Some(addr) = &self.wallet_address {
-            if *addr != Address::ZERO {
-                return addr.to_string();
-            }
+        if let Some(addr) = &self.wallet_address
+            && *addr != Address::ZERO
+        {
+            return addr.to_string();
         }
         if let Some(email) = &self.email {
             return email.clone();
