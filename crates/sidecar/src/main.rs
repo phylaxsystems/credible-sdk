@@ -441,6 +441,26 @@ async fn observer_exit_future(
     }
 }
 
+async fn sw_exit_future(
+    sw_exited_rx: Option<
+        tokio::sync::oneshot::Receiver<
+            Result<(), sidecar::state_worker_thread::StateWorkerError>,
+        >,
+    >,
+) -> Result<(), sidecar::state_worker_thread::StateWorkerError> {
+    if let Some(sw_exited) = sw_exited_rx {
+        sw_exited
+            .await
+            .map_err(|_| sidecar::state_worker_thread::StateWorkerError::ThreadSpawn(
+                "state worker notification channel closed".to_string(),
+            ))?
+    } else {
+        // State worker not configured: this arm never resolves, which is correct —
+        // the sidecar keeps running without it (EthRpcSource fallback is active).
+        std::future::pending().await
+    }
+}
+
 fn record_error_recoverability(recoverable: bool) {
     if recoverable {
         counter!("sidecar_recoverable_errors_total").increment(1);
@@ -483,14 +503,11 @@ fn handle_engine_exit(
 }
 
 fn handle_state_worker_exit(
-    result: Result<
-        Result<(), sidecar::state_worker_thread::StateWorkerError>,
-        tokio::sync::oneshot::error::RecvError,
-    >,
+    result: Result<(), sidecar::state_worker_thread::StateWorkerError>,
 ) {
     match result {
-        Ok(Ok(())) => tracing::warn!("State worker exited unexpectedly"),
-        Ok(Err(e)) => {
+        Ok(()) => tracing::warn!("State worker exited unexpectedly"),
+        Err(e) => {
             let recoverable = ErrorRecoverability::from(&e).is_recoverable();
             record_error_recoverability(recoverable);
             if recoverable {
@@ -499,7 +516,6 @@ fn handle_state_worker_exit(
                 critical!(error = ?e, "State worker exited with unrecoverable error");
             }
         }
-        Err(_) => tracing::error!("State worker notification channel dropped"),
     }
 }
 
@@ -566,12 +582,15 @@ async fn run_async_components(
             Result<(), sidecar::transaction_observer::TransactionObserverError>,
         >,
     >,
-    sw_exited: tokio::sync::oneshot::Receiver<
-        Result<(), sidecar::state_worker_thread::StateWorkerError>,
+    sw_exited_rx: Option<
+        tokio::sync::oneshot::Receiver<
+            Result<(), sidecar::state_worker_thread::StateWorkerError>,
+        >,
     >,
 ) -> bool {
     let mut should_shutdown = false;
     let observer_exited = observer_exit_future(observer_exited_rx);
+    let sw_exited = sw_exit_future(sw_exited_rx);
 
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {
@@ -680,6 +699,17 @@ async fn run_sidecar_once(
     let (seq_handle, seq_exited) = event_sequencing.spawn(Arc::clone(&shutdown_flag))?;
     thread_handles.event_sequencing = Some(seq_handle);
 
+    // Phase 3 will wire committed_head to MdbxSource.
+    // Constructed here (not inside the thread) so both consumers share the same Arc.
+    // Arc<AtomicU64>: state worker writes with Release ordering after each flush.
+    // Initial value 0 — MdbxSource will fall back to EthRpcSource until first flush.
+    let committed_head = Arc::new(AtomicU64::new(0));
+
+    // CommitHead channel: CoreEngine -> StateWorkerThread
+    // MUST be unbounded — a bounded channel with a full buffer causes circular deadlock.
+    let (commit_head_tx, commit_head_rx) =
+        flume::unbounded::<sidecar::state_worker_thread::CommitHeadSignal>();
+
     // Spawn CoreEngine on a dedicated OS thread
     let engine_config = CoreEngineConfig {
         transaction_results_max_capacity: config.credible.transaction_results_max_capacity,
@@ -690,7 +720,7 @@ async fn run_sidecar_once(
             .overlay_cache_invalidation_every_block
             .unwrap_or(false),
         incident_sender: incident_report_tx,
-        commit_head_tx: None, // Wired in Plan 04
+        commit_head_tx: Some(commit_head_tx),
         #[cfg(feature = "cache_validation")]
         provider_ws_url: Some(config.credible.cache_checker_ws_url.clone()),
     };
@@ -720,22 +750,34 @@ async fn run_sidecar_once(
         None
     };
 
-    // Spawn StateWorkerThread on a dedicated OS thread.
-    // Plan 04 will wire the real commit_head_rx from CoreEngine; for now we create a
-    // disconnected channel so the state worker exits cleanly on sender drop.
-    let (_commit_head_tx_placeholder, commit_head_rx_placeholder) =
-        flume::unbounded::<sidecar::state_worker_thread::CommitHeadSignal>();
-    let committed_head = Arc::new(AtomicU64::new(0));
-    let state_worker = StateWorkerThread::new(
-        Arc::clone(&shutdown_flag),
-        commit_head_rx_placeholder,
-        config.state_worker.clone(),
-        Arc::clone(&committed_head),
-    );
-    let (sw_handle, sw_exited) = state_worker
-        .spawn()
-        .map_err(|e| anyhow::anyhow!("Failed to spawn state worker thread: {e}"))?;
-    thread_handles.state_worker = Some(sw_handle);
+    // Spawn StateWorkerThread only when all required config fields are present.
+    // If any field is missing, the state worker is skipped; EthRpcSource remains the fallback.
+    // sw_exited_rx is Option<...>: None causes sw_exit_future to return pending() — the select!
+    // arm never fires, which is correct when the state worker never starts.
+    let sw_exited_rx = if config.state_worker.ws_url.is_some()
+        && config.state_worker.mdbx_path.is_some()
+        && config.state_worker.genesis_path.is_some()
+        && config.state_worker.state_depth.is_some()
+    {
+        let state_worker = StateWorkerThread::new(
+            Arc::clone(&shutdown_flag),
+            commit_head_rx,
+            config.state_worker.clone(),
+            Arc::clone(&committed_head),
+        );
+        let (sw_handle, sw_rx) = state_worker
+            .spawn()
+            .map_err(|e| anyhow::anyhow!("Failed to spawn state worker thread: {e}"))?;
+        thread_handles.state_worker = Some(sw_handle);
+        Some(sw_rx)
+    } else {
+        tracing::warn!(
+            "Embedded state worker not configured \
+             (missing ws_url, mdbx_path, genesis_path, or state_depth); \
+             relying on EthRpcSource for state"
+        );
+        None
+    };
 
     let mut health_server = HealthServer::new(health_bind_addr);
 
@@ -756,7 +798,7 @@ async fn run_sidecar_once(
         engine_exited,
         seq_exited,
         observer_exited_rx,
-        sw_exited,
+        sw_exited_rx,
     ))
     .await;
 
