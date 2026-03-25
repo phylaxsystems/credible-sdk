@@ -74,9 +74,9 @@ pub struct AuthCommand {
 #[derive(clap::Subcommand)]
 #[command(about = "Authentication operations")]
 pub enum AuthSubcommands {
-    /// Login to PCL using your wallet
+    /// Login to PCL
     #[command(
-        long_about = "Initiates the login process. Opens a browser window for wallet authentication.",
+        long_about = "Initiates the login process. Opens a browser window for authentication.",
         after_help = "Example: pcl auth login"
     )]
     Login,
@@ -90,7 +90,7 @@ pub enum AuthSubcommands {
 
     /// Check current authentication status
     #[command(
-        long_about = "Displays whether you're currently logged in and shows the connected wallet address if authenticated.",
+        long_about = "Displays whether you're currently logged in and shows the connected identity if authenticated.",
         after_help = "Example: pcl auth status"
     )]
     Status,
@@ -232,10 +232,9 @@ impl AuthCommand {
         status: AuthStatusResponse,
         auth_response: &AuthResponse,
     ) -> Result<(), AuthError> {
-        let user_address = status
+        let wallet_address = status
             .address
-            .and_then(|a| a.parse::<Address>().ok())
-            .unwrap_or(Address::ZERO);
+            .and_then(|a| a.parse::<Address>().ok());
 
         config.auth = Some(UserAuth {
             access_token: status
@@ -244,9 +243,9 @@ impl AuthCommand {
             refresh_token: status.refresh_token.ok_or(AuthError::InvalidAuthData(
                 "Missing refresh token".to_string(),
             ))?,
-            user_address,
             expires_at: auth_response.expires_at,
             user_id: status.user_id,
+            wallet_address,
             email: status.email,
         });
         Ok(())
@@ -294,11 +293,9 @@ mod tests {
             auth: Some(UserAuth {
                 access_token: "test_token".to_string(),
                 refresh_token: "test_refresh".to_string(),
-                user_address: "0x1234567890123456789012345678901234567890"
-                    .parse()
-                    .unwrap(),
                 expires_at: Utc.with_ymd_and_hms(2024, 12, 31, 0, 0, 0).unwrap(),
                 user_id: Some(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap()),
+                wallet_address: Some("0x1234567890123456789012345678901234567890".parse().unwrap()),
                 email: None,
             }),
             ..Default::default()
@@ -352,10 +349,10 @@ mod tests {
         assert!(config.auth.is_some());
         let auth = config.auth.as_ref().unwrap();
         assert_eq!(
-            auth.user_address,
-            "0x1234567890123456789012345678901234567890"
+            auth.wallet_address,
+            Some("0x1234567890123456789012345678901234567890"
                 .parse::<Address>()
-                .unwrap()
+                .unwrap())
         );
         assert_eq!(auth.access_token, "test_token");
         assert_eq!(auth.refresh_token, "test_refresh");
@@ -451,7 +448,7 @@ mod tests {
     }
 
     #[test]
-    fn test_update_config_with_invalid_address_falls_back_to_zero() {
+    fn test_update_config_with_invalid_address_falls_back_to_none() {
         let mut config = CliConfig::default();
         let auth_response = create_test_auth_response();
         let mut status = create_test_status_response();
@@ -459,7 +456,7 @@ mod tests {
 
         let result = AuthCommand::update_config(&mut config, status, &auth_response);
         assert!(result.is_ok());
-        assert_eq!(config.auth.as_ref().unwrap().user_address, Address::ZERO);
+        assert!(config.auth.as_ref().unwrap().wallet_address.is_none());
     }
 
     #[test]
@@ -487,7 +484,7 @@ mod tests {
     }
 
     #[test]
-    fn test_update_config_with_missing_address_uses_zero() {
+    fn test_update_config_with_missing_address_uses_none() {
         let mut config = CliConfig::default();
         let auth_response = create_test_auth_response();
         let mut status = create_test_status_response();
@@ -495,7 +492,7 @@ mod tests {
 
         let result = AuthCommand::update_config(&mut config, status, &auth_response);
         assert!(result.is_ok());
-        assert_eq!(config.auth.as_ref().unwrap().user_address, Address::ZERO);
+        assert!(config.auth.as_ref().unwrap().wallet_address.is_none());
     }
 
     #[tokio::test]
@@ -512,10 +509,10 @@ mod tests {
         let result = cmd.login(&mut config).await;
         assert!(result.is_ok());
         assert_eq!(
-            config.auth.as_ref().unwrap().user_address,
-            "0x1234567890123456789012345678901234567890"
+            config.auth.as_ref().unwrap().wallet_address,
+            Some("0x1234567890123456789012345678901234567890"
                 .parse::<Address>()
-                .unwrap()
+                .unwrap())
         );
     }
 }

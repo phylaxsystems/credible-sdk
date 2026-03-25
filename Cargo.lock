@@ -8543,7 +8543,6 @@ dependencies = [
  "alloy",
  "alloy-primitives",
  "anyhow",
- "assertion-da-client 1.2.0",
  "chrono",
  "clap",
  "color-eyre",

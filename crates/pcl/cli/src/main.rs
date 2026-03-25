@@ -33,12 +33,6 @@ async fn main() -> Result<()> {
             Commands::Test(phorge) => {
                 phorge.run().await?;
             }
-            Commands::Store(store) => {
-                store.run(&cli.args, &mut config).await?;
-            }
-            Commands::Submit(submit) => {
-                submit.run(&cli.args, &mut config).await?;
-            }
             Commands::Apply(apply) => {
                 apply.run(&cli.args, &config).await?;
             }
