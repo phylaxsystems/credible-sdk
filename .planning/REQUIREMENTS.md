@@ -32,7 +32,7 @@ Requirements for this milestone. Each maps to roadmap phases.
 - [x] **SIMP-02**: Circular buffer depth reduced to 1 — multiple state replicas no longer required
 - [x] **SIMP-03**: `calculate_target_block` range intersection and state depth logic removed
 - [x] **SIMP-04**: MdbxSource "went too far" handling removed
-- [ ] **SIMP-05**: Standalone `state-worker` binary crate removed from workspace (Cargo.toml, crates/state-worker/)
+- [x] **SIMP-05**: Standalone `state-worker` binary crate removed from workspace (Cargo.toml, crates/state-worker/)
 
 ### Observability
 
@@ -90,7 +90,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | SIMP-02 | Phase 3 | Complete |
 | SIMP-03 | Phase 3 | Complete |
 | SIMP-04 | Phase 3 | Complete |
-| SIMP-05 | Phase 3 | Pending |
+| SIMP-05 | Phase 3 | Complete |
 | OBSV-01 | Phase 2 | Complete |
 | OBSV-02 | Phase 2 | Complete |
 | OBSV-03 | Phase 2 | Complete |

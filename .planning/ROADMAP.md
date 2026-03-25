@@ -14,7 +14,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Thread Scaffold** - Embed state worker as a named OS thread with isolated tokio runtime, panic isolation, restart backoff, and graceful shutdown (completed 2026-03-25)
 - [ ] **Phase 2: CommitHead Flow Control** - Wire CommitHead mpsc channel from CoreEngine to state worker, add bounded 128-block buffer, and gate all MDBX writes behind commit_head
-- [ ] **Phase 3: MdbxSource Simplification and Cleanup** - Replace 50ms polling with Arc<AtomicU64>, remove range-intersection logic, reduce circular buffer depth to 1, and delete standalone state-worker binary
+- [x] **Phase 3: MdbxSource Simplification and Cleanup** - Replace 50ms polling with Arc<AtomicU64>, remove range-intersection logic, reduce circular buffer depth to 1, and delete standalone state-worker binary (completed 2026-03-25)
 
 ## Phase Details
 
@@ -65,7 +65,7 @@ Plans:
 Plans:
 - [x] 03-01-PLAN.md — MdbxSource simplification: remove polling + range-intersection, wire Arc<AtomicU64> committed_head, hardcode StateReader depth=1 in main.rs
 - [x] 03-02-PLAN.md — Circular buffer depth=1 for StateWriter in state_worker_thread/mod.rs
-- [ ] 03-03-PLAN.md — Delete standalone state-worker binary (src/main.rs + [[bin]] from Cargo.toml)
+- [x] 03-03-PLAN.md — Delete standalone state-worker binary (src/main.rs + [[bin]] from Cargo.toml)
 
 ## Progress
 
@@ -76,4 +76,4 @@ Phases execute in numeric order: 1 → 2 → 3
 |-------|----------------|--------|-----------|
 | 1. Thread Scaffold | 2/2 | Complete   | 2026-03-25 |
 | 2. CommitHead Flow Control | 3/4 | In Progress|  |
-| 3. MdbxSource Simplification and Cleanup | 0/3 | Not started | - |
+| 3. MdbxSource Simplification and Cleanup | 3/3 | Complete   | 2026-03-25 |
