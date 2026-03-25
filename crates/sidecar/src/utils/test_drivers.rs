@@ -148,6 +148,22 @@ struct TestWorkerStatus {
 }
 
 impl TestWorkerStatus {
+    fn lagging(
+        latest_head_seen: Option<u64>,
+        highest_staged_block: Option<u64>,
+        mdbx_synced_through: Option<u64>,
+    ) -> Self {
+        Self {
+            snapshot: Arc::new(WorkerStatusSnapshot {
+                latest_head_seen,
+                highest_staged_block,
+                mdbx_synced_through,
+                healthy: true,
+                restarting: false,
+            }),
+        }
+    }
+
     fn restarting(
         latest_head_seen: Option<u64>,
         highest_staged_block: Option<u64>,
@@ -172,75 +188,6 @@ impl TestWorkerStatus {
 impl WorkerStatusReader for TestWorkerStatus {
     fn snapshot(&self) -> WorkerStatusSnapshot {
         (*self.snapshot).clone()
-    }
-}
-
-#[derive(Debug)]
-pub struct AccountFetchResult {
-    pub account: Option<AccountInfo>,
-    pub served_by: SourceName,
-}
-
-#[derive(Debug)]
-pub struct RestartingWorkerHarness {
-    sources: Arc<Sources>,
-    eth_rpc_source_http_mock: DualProtocolMockServer,
-    fallback_eth_rpc_source_http_mock: DualProtocolMockServer,
-    list_of_sources: Vec<Arc<dyn Source>>,
-}
-
-impl RestartingWorkerHarness {
-    async fn wait_for_source_synced(
-        &self,
-        source_index: usize,
-        block_number: U256,
-        min_synced_block: U256,
-    ) -> Result<(), String> {
-        let source = self
-            .list_of_sources
-            .get(source_index)
-            .cloned()
-            .ok_or_else(|| format!("source index {source_index} out of bounds"))?;
-
-        tokio::time::timeout(Duration::from_secs(10), async move {
-            loop {
-                if source.is_synced(min_synced_block, block_number) {
-                    return;
-                }
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-        })
-        .await
-        .map_err(|_| {
-            format!("timed out waiting for source {source_index} to sync to block {block_number}")
-        })
-    }
-
-    pub async fn fetch_account(&self, address: Address) -> Result<AccountFetchResult, String> {
-        let account = self
-            .sources
-            .basic_ref(address)
-            .map_err(|e| format!("failed to fetch account {address}: {e}"))?;
-
-        let served_by = if self
-            .eth_rpc_source_http_mock
-            .eth_balance_counter
-            .get(&address)
-            .is_some()
-        {
-            SourceName::EthRpcSource
-        } else if self
-            .fallback_eth_rpc_source_http_mock
-            .eth_balance_counter
-            .get(&address)
-            .is_some()
-        {
-            SourceName::EthRpcSource
-        } else {
-            SourceName::StateWorker
-        };
-
-        Ok(AccountFetchResult { account, served_by })
     }
 }
 
@@ -310,6 +257,42 @@ struct CommonSetup {
 }
 
 impl CommonSetup {
+    fn with_sources(
+        assertion_store: Option<AssertionStore>,
+        result_event_sender: Option<flume::Sender<TransactionResultEvent>>,
+        eth_rpc_source_http_mock: DualProtocolMockServer,
+        fallback_eth_rpc_source_http_mock: DualProtocolMockServer,
+        list_of_sources: Vec<Arc<dyn Source>>,
+    ) -> Result<Self, String> {
+        let cache = Arc::new(Sources::new(list_of_sources.clone(), 10));
+        let mut underlying_db = revm::database::CacheDB::new(cache.clone());
+        let default_account = populate_test_database(&mut underlying_db);
+
+        let underlying_db = Arc::new(LocalInstanceDb::new(underlying_db));
+
+        let assertion_store = match assertion_store {
+            Some(store) => Arc::new(store),
+            None => setup_assertion_store(),
+        };
+
+        let state_results = match result_event_sender {
+            Some(sender) => crate::TransactionsState::with_result_sender(sender),
+            None => crate::TransactionsState::new(),
+        };
+
+        Ok(CommonSetup {
+            underlying_db,
+            sources: cache,
+            eth_rpc_source_http_mock,
+            fallback_eth_rpc_source_http_mock,
+            assertion_store,
+            state_results,
+            default_account,
+            list_of_sources,
+            event_id_buffer_capacity: 100,
+        })
+    }
+
     /// Initialize common database, cache, and mocks for test drivers.
     ///
     /// If `result_event_sender` is provided, the `TransactionsState` will broadcast
@@ -337,34 +320,13 @@ impl CommonSetup {
         .await
         .expect("Failed to create eth rpc source mock");
         let sources = vec![eth_rpc_source_db, fallback_eth_rpc_source_db];
-        let cache = Arc::new(Sources::new(sources.clone(), 10));
-        let mut underlying_db = revm::database::CacheDB::new(cache.clone());
-        let default_account = populate_test_database(&mut underlying_db);
-
-        let underlying_db = Arc::new(LocalInstanceDb::new(underlying_db));
-
-        let assertion_store = match assertion_store {
-            Some(store) => Arc::new(store),
-            None => setup_assertion_store(),
-        };
-
-        // Create state with or without result sender
-        let state_results = match result_event_sender {
-            Some(sender) => crate::TransactionsState::with_result_sender(sender),
-            None => crate::TransactionsState::new(),
-        };
-
-        Ok(CommonSetup {
-            underlying_db,
-            sources: cache,
+        Self::with_sources(
+            assertion_store,
+            result_event_sender,
             eth_rpc_source_http_mock,
             fallback_eth_rpc_source_http_mock,
-            assertion_store,
-            state_results,
-            default_account,
-            list_of_sources: sources,
-            event_id_buffer_capacity: 100,
-        })
+            sources,
+        )
     }
 
     /// Spawn the engine task and event sequencing with the provided receivers
@@ -783,7 +745,25 @@ pub struct LocalInstanceGrpcDriver {
 }
 
 impl LocalInstanceGrpcDriver {
-    pub async fn with_restarting_worker() -> Result<RestartingWorkerHarness, String> {
+    fn build_test_worker_source(status: TestWorkerStatus) -> Result<Arc<dyn Source>, String> {
+        let tmp = TempDir::new().map_err(|e| format!("Failed to create tempdir: {e}"))?;
+        let path = tmp.keep();
+        let writer = StateWriter::new(&path)
+            .map_err(|e| format!("Failed to create MDBX fixture: {e}"))?;
+        drop(writer);
+
+        Ok(Arc::new(MdbxSource::new(
+            StateReader::new(&path)
+                .map_err(|e| format!("Failed to create MDBX reader fixture: {e}"))?,
+            status.into_handle(),
+        )))
+    }
+
+    async fn create_with_worker_source(
+        assertion_store: Option<AssertionStore>,
+        incident_sender: Option<IncidentReportSender>,
+        worker_source: Arc<dyn Source>,
+    ) -> Result<LocalInstance<Self>, String> {
         let eth_rpc_source_http_mock = DualProtocolMockServer::new()
             .await
             .map_err(|e| format!("Failed to create eth rpc source mock: {e}"))?;
@@ -797,47 +777,76 @@ impl LocalInstanceGrpcDriver {
         )
         .await
         .map_err(|e| format!("Failed to create eth rpc source: {e}"))?;
-        let fallback_eth_rpc_source_db: Arc<dyn Source> = EthRpcSource::try_build(
-            fallback_eth_rpc_source_http_mock.ws_url(),
-            fallback_eth_rpc_source_http_mock.http_url(),
-        )
-        .await
-        .map_err(|e| format!("Failed to create fallback eth rpc source: {e}"))?;
 
-        let tmp = TempDir::new().map_err(|e| format!("Failed to create tempdir: {e}"))?;
-        let path = tmp.keep();
-        let writer = StateWriter::new(&path)
-            .map_err(|e| format!("Failed to create MDBX fixture: {e}"))?;
-        drop(writer);
-
-        let mdbx_source: Arc<dyn Source> = Arc::new(MdbxSource::new(
-            StateReader::new(&path)
-                .map_err(|e| format!("Failed to create MDBX reader fixture: {e}"))?,
-            TestWorkerStatus::restarting(Some(1), Some(1), Some(1)).into_handle(),
-        ));
-
-        let list_of_sources = vec![mdbx_source, eth_rpc_source_db, fallback_eth_rpc_source_db];
-        let sources = Arc::new(Sources::new(list_of_sources.clone(), 10));
-        sources.set_block_number(U256::from(1));
-
-        eth_rpc_source_http_mock.send_new_head();
-        fallback_eth_rpc_source_http_mock.send_new_head();
-
-        let harness = RestartingWorkerHarness {
-            sources,
+        let setup = CommonSetup::with_sources(
+            assertion_store,
+            None,
             eth_rpc_source_http_mock,
             fallback_eth_rpc_source_http_mock,
-            list_of_sources,
-        };
+            vec![worker_source, eth_rpc_source_db],
+        )?;
 
-        harness
-            .wait_for_source_synced(1, U256::from(1), U256::from(1))
-            .await?;
-        harness
-            .wait_for_source_synced(2, U256::from(1), U256::from(1))
-            .await?;
+        let (transport_tx_sender, event_sequencing_tx_receiver) = flume::unbounded();
+        let (engine_handle, _sequencing_handle) = setup
+            .spawn_engine_with_sequencing(event_sequencing_tx_receiver, incident_sender)
+            .await;
 
-        Ok(harness)
+        let address = Self::bind_local_address().await?;
+        let config = Self::build_grpc_config(address, setup.event_id_buffer_capacity);
+        let transport = GrpcTransport::new(
+            config,
+            transport_tx_sender,
+            setup.state_results.clone(),
+        )
+        .map_err(|e| format!("Failed to create gRPC transport: {e}"))?;
+        let transport_handle = Self::spawn_transport_task(transport);
+
+        let client = Self::connect_client_with_retry(address).await?;
+        let event_tx = Self::spawn_event_stream(client.clone()).await?;
+
+        Ok(LocalInstance::new_internal(LocalInstanceInit {
+            db: setup.underlying_db,
+            sources: setup.sources.clone(),
+            eth_rpc_source_http_mock: setup.eth_rpc_source_http_mock,
+            fallback_eth_rpc_source_http_mock: setup.fallback_eth_rpc_source_http_mock,
+            assertion_store: setup.assertion_store,
+            transport_handle: Some(transport_handle),
+            engine_handle: Some(engine_handle),
+            block_number: U256::from(1),
+            transaction_results: setup.state_results,
+            default_account: setup.default_account,
+            local_address: Some(address),
+            list_of_sources: setup.list_of_sources,
+            transport: LocalInstanceGrpcDriver {
+                event_sender: event_tx,
+                client,
+                block_tx_hashes: HashMap::new(),
+                current_block_by_iteration: HashMap::new(),
+                override_n_transactions: None,
+                override_last_tx_hash: OptionalOverride::default(),
+                override_prev_tx_hash: OptionalOverride::default(),
+                last_committed_block_hash: None,
+                last_committed_beacon_root: None,
+            },
+        }))
+    }
+
+    pub async fn with_restarting_worker() -> Result<LocalInstance<Self>, String> {
+        Self::create_with_worker_source(
+            None,
+            None,
+            Self::build_test_worker_source(TestWorkerStatus::restarting(Some(1), Some(1), Some(1)))?,
+        )
+        .await
+    }
+
+    pub async fn with_lagging_worker() -> Result<LocalInstance<Self>, String> {
+        Self::create_with_worker_source(
+            None,
+            None,
+            Self::build_test_worker_source(TestWorkerStatus::lagging(Some(1), Some(1), Some(0)))?,
+        )
+        .await
     }
 
     fn build_pb_block_env(block_env: &BlockEnv) -> pb::BlockEnv {
@@ -1149,6 +1158,12 @@ impl LocalInstanceGrpcDriver {
         incident_sender: IncidentReportSender,
     ) -> Result<LocalInstance<Self>, String> {
         Self::create(Some(assertion_store), Some(incident_sender)).await
+    }
+}
+
+impl LocalInstance<LocalInstanceGrpcDriver> {
+    pub async fn send_commit_head(&mut self, commit_head: CommitHead) -> Result<(), String> {
+        self.transport.send_commit_head(commit_head).await
     }
 }
 

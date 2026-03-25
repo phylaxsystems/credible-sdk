@@ -4,10 +4,7 @@
 
 use super::*;
 use crate::utils::TestDbError;
-use crate::{
-    cache::sources::SourceName,
-    utils::test_drivers::LocalInstanceGrpcDriver,
-};
+use crate::utils::test_drivers::LocalInstanceGrpcDriver;
 use alloy::eips::{
     eip2935::{
         HISTORY_SERVE_WINDOW,
@@ -793,28 +790,92 @@ async fn test_eth_rpc_fallback_when_worker_is_restarting() {
     let mut harness = LocalInstanceGrpcDriver::with_restarting_worker()
         .await
         .expect("failed to create restarting-worker harness");
-    let address = Address::from([0xAA; 20]);
-
-    let account = harness
-        .fetch_account(address)
+    harness.new_block().await.expect("failed to advance block");
+    harness
+        .wait_for_source_synced(1, U256::from(1), U256::from(1))
         .await
-        .expect("failed to fetch account");
+        .expect("EthRpc fallback source should sync to block 1");
 
-    assert_eq!(account.served_by, SourceName::EthRpcSource);
+    let (address, tx_execution_id) = harness
+        .send_create_tx_with_cache_miss()
+        .await
+        .expect("failed to send cache-miss transaction");
+
+    let result = harness
+        .wait_for_transaction_processed(&tx_execution_id)
+        .await
+        .expect("failed to await transaction result");
+
+    assert!(
+        matches!(
+            result,
+            TransactionResult::ValidationCompleted { .. }
+        ),
+        "expected transaction to complete via EthRpc fallback, got {result:?}"
+    );
+    assert_eq!(harness.list_of_sources[0].name(), crate::cache::sources::SourceName::StateWorker);
+    assert!(
+        !harness.list_of_sources[0].is_synced(U256::from(1), U256::from(1)),
+        "restarting worker source should be unsynced"
+    );
+    assert_eq!(
+        harness
+            .eth_rpc_source_http_mock
+            .eth_balance_counter
+            .get(&address)
+            .map(|count| *count),
+        Some(1),
+        "EthRpc fallback should have served the cache-miss account lookup"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_commit_head_processing_does_not_wait_for_mdbx_flush() {
-    let sink = SlowCommitTargetSink::new(Duration::from_millis(100));
-    let mut engine = build_engine_with_commit_sink(sink.clone()).await;
+    let mut harness = LocalInstanceGrpcDriver::with_lagging_worker()
+        .await
+        .expect("failed to create lagging-worker harness");
     let started = Instant::now();
 
-    engine
-        .process_commit_head(&commit_head(101), &mut 0, &mut Instant::now())
-        .expect("failed to process commit head");
+    harness
+        .new_block()
+        .await
+        .expect("failed to process commit head through transport");
 
     assert!(started.elapsed() < Duration::from_millis(50));
-    sink.wait_for_publish(101).await;
+    assert!(
+        !harness.list_of_sources[0].is_synced(U256::from(1), U256::from(1)),
+        "lagging worker source should still be unsynced after commit head processing"
+    );
+    harness
+        .wait_for_source_synced(1, U256::from(1), U256::from(1))
+        .await
+        .expect("EthRpc fallback source should sync to block 1");
+
+    let (address, tx_execution_id) = harness
+        .send_create_tx_with_cache_miss()
+        .await
+        .expect("failed to send cache-miss transaction");
+    let result = harness
+        .wait_for_transaction_processed(&tx_execution_id)
+        .await
+        .expect("failed to await transaction result");
+
+    assert!(
+        matches!(
+            result,
+            TransactionResult::ValidationCompleted { .. }
+        ),
+        "expected fallback query to succeed while worker MDBX is behind, got {result:?}"
+    );
+    assert_eq!(
+        harness
+            .eth_rpc_source_http_mock
+            .eth_balance_counter
+            .get(&address)
+            .map(|count| *count),
+        Some(1),
+        "commit head processing should not wait for MDBX flush before EthRpc fallback is usable"
+    );
 }
 
 #[crate::utils::engine_test(all)]
