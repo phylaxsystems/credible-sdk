@@ -288,10 +288,10 @@ impl StateWorkerSupervisor {
                 move || {
                     run_supervisor_loop(
                         &mut factory,
-                        control,
-                        status,
-                        restart_count,
-                        shutdown,
+                        &control,
+                        &status,
+                        &restart_count,
+                        &shutdown,
                         restart_backoff,
                     );
                 }
@@ -404,7 +404,7 @@ impl SupervisedWorker for EmbeddedWorkerTask {
             .context("failed to create embedded worker tokio runtime")?;
 
         runtime.block_on(async move {
-            let startup = run_until_shutdown(Arc::clone(&shutdown), async {
+            let startup = Box::pin(run_until_shutdown(Arc::clone(&shutdown), async {
                 let provider = connect_provider(&self.config.ws_url)
                     .await
                     .with_context(|| {
@@ -429,7 +429,7 @@ impl SupervisedWorker for EmbeddedWorkerTask {
                 );
 
                 Ok::<_, anyhow::Error>(EmbeddedStateWorkerRuntime::new(worker))
-            })
+            }))
             .await?;
             let Some(mut runtime) = startup else {
                 clear_control(&self.control);
@@ -472,7 +472,7 @@ where
 {
     tokio::select! {
         result = future => result.map(Some),
-        _ = wait_for_shutdown(shutdown) => Ok(None),
+        () = wait_for_shutdown(shutdown) => Ok(None),
     }
 }
 
@@ -484,10 +484,10 @@ async fn wait_for_shutdown(shutdown: Arc<AtomicBool>) {
 
 fn run_supervisor_loop<F>(
     worker_factory: &mut F,
-    control: Arc<Mutex<Option<EmbeddedStateWorkerHandle>>>,
-    status: Arc<SupervisorStatus>,
-    restart_count: Arc<AtomicU64>,
-    shutdown: Arc<AtomicBool>,
+    control: &Arc<Mutex<Option<EmbeddedStateWorkerHandle>>>,
+    status: &Arc<SupervisorStatus>,
+    restart_count: &Arc<AtomicU64>,
+    shutdown: &Arc<AtomicBool>,
     restart_backoff: Duration,
 ) where
     F: FnMut() -> Result<Box<dyn SupervisedWorker>>,
@@ -496,12 +496,12 @@ fn run_supervisor_loop<F>(
         let worker = match worker_factory() {
             Ok(worker) => worker,
             Err(error) => {
-                clear_control(&control);
+                clear_control(control);
                 status.set_healthy(false);
                 status.set_restarting(true);
                 restart_count.fetch_add(1, Ordering::AcqRel);
                 warn!(error = %error, "failed to construct embedded worker");
-                sleep_with_shutdown(&shutdown, restart_backoff);
+                sleep_with_shutdown(shutdown, restart_backoff);
                 continue;
             }
         };
@@ -509,8 +509,8 @@ fn run_supervisor_loop<F>(
         status.set_healthy(true);
         status.set_restarting(false);
 
-        let result = catch_unwind(AssertUnwindSafe(|| worker.run(Arc::clone(&shutdown))));
-        clear_control(&control);
+        let result = catch_unwind(AssertUnwindSafe(|| worker.run(Arc::clone(shutdown))));
+        clear_control(control);
         if shutdown.load(Ordering::Acquire) {
             break;
         }
@@ -518,7 +518,7 @@ fn run_supervisor_loop<F>(
         match result {
             Ok(Ok(())) => warn!("embedded worker exited; supervisor restarting"),
             Ok(Err(error)) => {
-                warn!(error = %error, "embedded worker failed; supervisor restarting")
+                warn!(error = %error, "embedded worker failed; supervisor restarting");
             }
             Err(payload) => {
                 if let Some(message) = payload.downcast_ref::<&str>() {
@@ -534,11 +534,11 @@ fn run_supervisor_loop<F>(
         status.set_healthy(false);
         status.set_restarting(true);
         restart_count.fetch_add(1, Ordering::AcqRel);
-        sleep_with_shutdown(&shutdown, restart_backoff);
+        sleep_with_shutdown(shutdown, restart_backoff);
     }
 
     status.set_restarting(false);
-    clear_control(&control);
+    clear_control(control);
 }
 
 fn clear_control(control: &Arc<Mutex<Option<EmbeddedStateWorkerHandle>>>) {
@@ -557,16 +557,20 @@ fn sleep_with_shutdown(shutdown: &Arc<AtomicBool>, duration: Duration) {
     }
 }
 
+#[cfg(test)]
 struct PanickingTestWorker;
 
+#[cfg(test)]
 impl SupervisedWorker for PanickingTestWorker {
     fn run(self: Box<Self>, _shutdown: Arc<AtomicBool>) -> Result<()> {
         panic!("expected supervisor test panic");
     }
 }
 
+#[cfg(test)]
 struct HealthyTestWorker;
 
+#[cfg(test)]
 impl SupervisedWorker for HealthyTestWorker {
     fn run(self: Box<Self>, shutdown: Arc<AtomicBool>) -> Result<()> {
         while !shutdown.load(Ordering::Acquire) {

@@ -141,12 +141,6 @@ impl StateDb {
     pub fn namespace_for_block(&self, _block_number: u64) -> Result<u8, StateError> {
         Ok(0)
     }
-
-    /// Compatibility shim for older callers until sidecar/state-worker finish migrating.
-    #[must_use]
-    pub fn buffer_size(&self) -> u8 {
-        1
-    }
 }
 
 #[cfg(test)]
@@ -161,7 +155,7 @@ mod tests {
         drop(db);
 
         let db2 = StateDb::open(tmp.path().join("state")).unwrap();
-        assert_eq!(db2.buffer_size(), 1);
+        assert_eq!(db2.namespace_for_block(123).unwrap(), 0);
     }
 
     #[test]

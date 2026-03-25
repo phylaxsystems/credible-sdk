@@ -122,7 +122,7 @@ impl CommitTargetHandle {
 
     pub fn publish(&self, block_number: u64) {
         let _ = self.tx.send_if_modified(|current| {
-            if current.map_or(true, |existing| block_number > existing) {
+            if current.is_none_or(|existing| block_number > existing) {
                 *current = Some(block_number);
                 true
             } else {
@@ -275,13 +275,13 @@ where
             self.observe_head(head);
 
             if *next_block > head {
-                self.flush_ready_blocks().await?;
+                self.flush_ready_blocks()?;
                 return Ok(false);
             }
 
             while *next_block <= head {
                 self.prepare_and_stage_block(*next_block).await?;
-                self.flush_ready_blocks().await?;
+                self.flush_ready_blocks()?;
                 *next_block += 1;
                 self.observe_head(head);
 
@@ -314,7 +314,7 @@ where
                 }
                 commit_target_changed = self.commit_target_rx.changed() => {
                     match commit_target_changed {
-                        Ok(()) => self.flush_ready_blocks().await?,
+                        Ok(()) => self.flush_ready_blocks()?,
                         Err(_) => return Err(anyhow!("commit target channel closed")),
                     }
                 }
@@ -340,7 +340,7 @@ where
 
                             while *next_block <= block_number {
                                 self.prepare_and_stage_block(*next_block).await?;
-                                self.flush_ready_blocks().await?;
+                                self.flush_ready_blocks()?;
                                 *next_block += 1;
                                 self.observe_head(block_number);
                             }
@@ -368,7 +368,7 @@ where
         Ok(())
     }
 
-    async fn flush_ready_blocks(&mut self) -> Result<()> {
+    fn flush_ready_blocks(&mut self) -> Result<()> {
         let Some(commit_target) = self.handle.control.current_target() else {
             self.handle.status.set_highest_staged_block(
                 self.staged_updates
@@ -387,8 +387,8 @@ where
                 .staged_updates
                 .get(&block_number)
                 .cloned()
-                .expect("staged block should exist");
-            self.worker.commit_prepared_update(update).await?;
+                .ok_or_else(|| anyhow!("staged block {block_number} disappeared before flush"))?;
+            self.worker.commit_prepared_update(&update)?;
             self.staged_updates.remove(&block_number);
             self.handle
                 .status
@@ -468,12 +468,12 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_flush_failure_keeps_staged_block() -> Result<()> {
-        let _mdbx_dir = MdbxTestDir::new().map_err(anyhow::Error::msg)?;
+        let mdbx_dir = MdbxTestDir::new().map_err(anyhow::Error::msg)?;
         let http_server_mock = DualProtocolMockServer::new()
             .await
             .map_err(|err| anyhow::anyhow!(err.to_string()))?;
         let provider = connect_provider(&http_server_mock.ws_url()).await?;
-        let writer_reader = StateWriter::new(_mdbx_dir.path_str().map_err(anyhow::Error::msg)?)?;
+        let writer_reader = StateWriter::new(mdbx_dir.path_str().map_err(anyhow::Error::msg)?)?;
         let trace_provider =
             state::create_trace_provider(provider.clone(), Duration::from_secs(30));
         let worker = StateWorker::new(
@@ -506,7 +506,8 @@ mod tests {
         );
         runtime.handle.control.publish(1);
 
-        let _err = runtime.flush_ready_blocks().await.unwrap_err();
+        let flush_result = runtime.flush_ready_blocks();
+        assert!(flush_result.is_err());
         assert!(runtime.staged_updates.contains_key(&1));
         assert_eq!(runtime.handle.status.snapshot().mdbx_synced_through, None);
         Ok(())

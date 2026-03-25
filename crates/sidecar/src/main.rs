@@ -1,5 +1,6 @@
 //! # The credible layer sidecar
 #![doc = include_str!("../README.md")]
+#![allow(clippy::items_after_test_module)]
 
 use assertion_da_client::DaClient;
 use assertion_executor::{
@@ -646,6 +647,7 @@ async fn stop_da_reachability_monitor(da_reachability_handle: tokio::task::JoinH
     }
 }
 
+#[allow(clippy::too_many_lines)]
 async fn run_sidecar_once(
     config: &Config,
     executor_config: &assertion_executor::ExecutorConfig,
@@ -659,14 +661,9 @@ async fn run_sidecar_once(
     let shutdown_flag = Arc::new(AtomicBool::new(false));
     let embedded_worker_config = embedded_worker_config_from(config);
 
-    let mut state_worker_supervisor = Some(StateWorkerSupervisor::spawn(embedded_worker_config)?);
-    let worker_status_handle = state_worker_supervisor
-        .as_ref()
-        .map(StateWorkerSupervisor::worker_status_handle)
-        .expect("state worker supervisor is always configured");
-    let commit_target_sink = state_worker_supervisor
-        .as_ref()
-        .map(StateWorkerSupervisor::commit_target_sink);
+    let state_worker_supervisor = StateWorkerSupervisor::spawn(embedded_worker_config)?;
+    let worker_status_handle = state_worker_supervisor.worker_status_handle();
+    let commit_target_sink = Some(state_worker_supervisor.commit_target_sink());
 
     let sources = build_sources_from_config(config, worker_status_handle).await?;
     let state = Arc::new(Sources::new(sources, config.state.minimum_state_diff));
@@ -704,7 +701,7 @@ async fn run_sidecar_once(
     let (seq_handle, seq_exited) = event_sequencing.spawn(Arc::clone(&shutdown_flag))?;
     thread_handles.event_sequencing = Some(seq_handle);
 
-    thread_handles.state_worker_supervisor = state_worker_supervisor.take();
+    thread_handles.state_worker_supervisor = Some(state_worker_supervisor);
 
     // Spawn CoreEngine on a dedicated OS thread
     let engine_config = CoreEngineConfig {

@@ -263,7 +263,7 @@ impl CommonSetup {
         eth_rpc_source_http_mock: DualProtocolMockServer,
         fallback_eth_rpc_source_http_mock: DualProtocolMockServer,
         list_of_sources: Vec<Arc<dyn Source>>,
-    ) -> Result<Self, String> {
+    ) -> Self {
         let cache = Arc::new(Sources::new(list_of_sources.clone(), 10));
         let mut underlying_db = revm::database::CacheDB::new(cache.clone());
         let default_account = populate_test_database(&mut underlying_db);
@@ -280,7 +280,7 @@ impl CommonSetup {
             None => crate::TransactionsState::new(),
         };
 
-        Ok(CommonSetup {
+        CommonSetup {
             underlying_db,
             sources: cache,
             eth_rpc_source_http_mock,
@@ -290,7 +290,7 @@ impl CommonSetup {
             default_account,
             list_of_sources,
             event_id_buffer_capacity: 100,
-        })
+        }
     }
 
     /// Initialize common database, cache, and mocks for test drivers.
@@ -320,13 +320,13 @@ impl CommonSetup {
         .await
         .expect("Failed to create eth rpc source mock");
         let sources = vec![eth_rpc_source_db, fallback_eth_rpc_source_db];
-        Self::with_sources(
+        Ok(Self::with_sources(
             assertion_store,
             result_event_sender,
             eth_rpc_source_http_mock,
             fallback_eth_rpc_source_http_mock,
             sources,
-        )
+        ))
     }
 
     /// Spawn the engine task and event sequencing with the provided receivers
@@ -748,8 +748,8 @@ impl LocalInstanceGrpcDriver {
     fn build_test_worker_source(status: TestWorkerStatus) -> Result<Arc<dyn Source>, String> {
         let tmp = TempDir::new().map_err(|e| format!("Failed to create tempdir: {e}"))?;
         let path = tmp.keep();
-        let writer = StateWriter::new(&path)
-            .map_err(|e| format!("Failed to create MDBX fixture: {e}"))?;
+        let writer =
+            StateWriter::new(&path).map_err(|e| format!("Failed to create MDBX fixture: {e}"))?;
         drop(writer);
 
         Ok(Arc::new(MdbxSource::new(
@@ -784,7 +784,7 @@ impl LocalInstanceGrpcDriver {
             eth_rpc_source_http_mock,
             fallback_eth_rpc_source_http_mock,
             vec![worker_source, eth_rpc_source_db],
-        )?;
+        );
 
         let (transport_tx_sender, event_sequencing_tx_receiver) = flume::unbounded();
         let (engine_handle, _sequencing_handle) = setup
@@ -793,12 +793,9 @@ impl LocalInstanceGrpcDriver {
 
         let address = Self::bind_local_address().await?;
         let config = Self::build_grpc_config(address, setup.event_id_buffer_capacity);
-        let transport = GrpcTransport::new(
-            config,
-            transport_tx_sender,
-            setup.state_results.clone(),
-        )
-        .map_err(|e| format!("Failed to create gRPC transport: {e}"))?;
+        let transport =
+            GrpcTransport::new(config, transport_tx_sender, setup.state_results.clone())
+                .map_err(|e| format!("Failed to create gRPC transport: {e}"))?;
         let transport_handle = Self::spawn_transport_task(transport);
 
         let client = Self::connect_client_with_retry(address).await?;
@@ -835,7 +832,11 @@ impl LocalInstanceGrpcDriver {
         Self::create_with_worker_source(
             None,
             None,
-            Self::build_test_worker_source(TestWorkerStatus::restarting(Some(1), Some(1), Some(1)))?,
+            Self::build_test_worker_source(TestWorkerStatus::restarting(
+                Some(1),
+                Some(1),
+                Some(1),
+            ))?,
         )
         .await
     }

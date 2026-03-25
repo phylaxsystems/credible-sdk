@@ -134,10 +134,10 @@ where
         Ok(Some(update))
     }
 
-    pub async fn commit_prepared_update(&mut self, update: BlockStateUpdate) -> Result<()> {
+    pub fn commit_prepared_update(&mut self, update: &BlockStateUpdate) -> Result<()> {
         let block_number = update.block_number;
 
-        match self.writer_reader.commit_block(&update) {
+        match self.writer_reader.commit_block(update) {
             Ok(stats) => {
                 metrics::set_db_healthy(true);
                 metrics::record_commit(block_number, &stats);

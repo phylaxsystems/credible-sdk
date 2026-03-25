@@ -410,7 +410,7 @@ impl StateWriter {
 
             (
                 current_meta.latest_block,
-                old_meta.map(|meta| meta.state_root).unwrap_or(B256::ZERO),
+                old_meta.map_or(B256::ZERO, |meta| meta.state_root),
             )
         };
 
@@ -425,7 +425,7 @@ impl StateWriter {
             MetadataKey,
             GlobalMetadata {
                 latest_block: block_number,
-                    buffer_size: LATEST_STATE_BUFFER_SIZE,
+                buffer_size: LATEST_STATE_BUFFER_SIZE,
             },
         )
         .map_err(StateError::Database)?;
@@ -454,8 +454,7 @@ impl StateWriter {
         let buffer_size = tx
             .get::<Metadata>(MetadataKey)
             .map_err(StateError::Database)?
-            .map(|metadata| metadata.buffer_size)
-            .unwrap_or(LATEST_STATE_BUFFER_SIZE);
+            .map_or(LATEST_STATE_BUFFER_SIZE, |metadata| metadata.buffer_size);
         if buffer_size <= LATEST_STATE_BUFFER_SIZE {
             return Ok(());
         }
@@ -476,10 +475,10 @@ impl StateWriter {
             .map_err(StateError::Database)?;
 
         if let Some((key, account)) = cursor.first().map_err(StateError::Database)? {
-            Self::migrate_account_if_matching(&tx, &mut bootstrap, namespace, key, account)?;
+            Self::migrate_account_if_matching(&tx, &mut bootstrap, namespace, key, &account)?;
 
             while let Some((key, account)) = cursor.next().map_err(StateError::Database)? {
-                Self::migrate_account_if_matching(&tx, &mut bootstrap, namespace, key, account)?;
+                Self::migrate_account_if_matching(&tx, &mut bootstrap, namespace, key, &account)?;
             }
         }
 
@@ -495,7 +494,7 @@ impl StateWriter {
         bootstrap: &mut BootstrapWriter,
         namespace: u8,
         key: NamespacedAccountKey,
-        account: AccountInfo,
+        account: &AccountInfo,
     ) -> StateResult<()> {
         if key.namespace_idx != namespace {
             return Ok(());
@@ -525,7 +524,8 @@ impl StateWriter {
         if buffer_size <= LATEST_STATE_BUFFER_SIZE {
             ACTIVE_NAMESPACE
         } else {
-            (latest_block % u64::from(buffer_size)) as u8
+            u8::try_from(latest_block % u64::from(buffer_size))
+                .expect("buffer size modulo must fit in u8")
         }
     }
 

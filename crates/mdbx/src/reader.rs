@@ -306,13 +306,13 @@ impl StateReader {
         let buffer_size = tx
             .get::<Metadata>(MetadataKey)
             .map_err(StateError::Database)?
-            .map(|metadata| metadata.buffer_size)
-            .unwrap_or(LATEST_STATE_BUFFER_SIZE);
+            .map_or(LATEST_STATE_BUFFER_SIZE, |metadata| metadata.buffer_size);
 
         if buffer_size <= LATEST_STATE_BUFFER_SIZE {
             return Ok(ACTIVE_NAMESPACE);
         }
 
-        Ok((block_number % u64::from(buffer_size)) as u8)
+        Ok(u8::try_from(block_number % u64::from(buffer_size))
+            .expect("buffer size modulo must fit in u8"))
     }
 }

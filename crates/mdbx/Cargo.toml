@@ -18,7 +18,6 @@ reth-db = { workspace = true }
 reth-db-api = { workspace = true }
 reth-codecs = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
 reth-libmdbx = { workspace = true }
-rayon = { workspace = true }
 tracing = { workspace = true }
 
 [package.metadata.cargo-shear]

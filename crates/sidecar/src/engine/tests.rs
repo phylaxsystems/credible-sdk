@@ -3,8 +3,10 @@
 #![allow(clippy::cast_sign_loss)]
 
 use super::*;
-use crate::utils::TestDbError;
-use crate::utils::test_drivers::LocalInstanceGrpcDriver;
+use crate::utils::{
+    TestDbError,
+    test_drivers::LocalInstanceGrpcDriver,
+};
 use alloy::eips::{
     eip2935::{
         HISTORY_SERVE_WINDOW,
@@ -807,13 +809,13 @@ async fn test_eth_rpc_fallback_when_worker_is_restarting() {
         .expect("failed to await transaction result");
 
     assert!(
-        matches!(
-            result,
-            TransactionResult::ValidationCompleted { .. }
-        ),
+        matches!(result, TransactionResult::ValidationCompleted { .. }),
         "expected transaction to complete via EthRpc fallback, got {result:?}"
     );
-    assert_eq!(harness.list_of_sources[0].name(), crate::cache::sources::SourceName::StateWorker);
+    assert_eq!(
+        harness.list_of_sources[0].name(),
+        crate::cache::sources::SourceName::StateWorker
+    );
     assert!(
         !harness.list_of_sources[0].is_synced(U256::from(1), U256::from(1)),
         "restarting worker source should be unsynced"
@@ -875,10 +877,7 @@ async fn test_eth_rpc_fallback_when_worker_is_behind_after_commit_head() {
         .expect("failed to await transaction result");
 
     assert!(
-        matches!(
-            result,
-            TransactionResult::ValidationCompleted { .. }
-        ),
+        matches!(result, TransactionResult::ValidationCompleted { .. }),
         "expected fallback query to succeed while worker MDBX is behind, got {result:?}"
     );
     assert_eq!(

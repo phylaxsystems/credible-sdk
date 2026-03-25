@@ -1,5 +1,10 @@
 #![recursion_limit = "1024"]
 #![doc = include_str!("../README.md")]
+#![allow(
+    clippy::missing_errors_doc,
+    clippy::must_use_candidate,
+    clippy::return_self_not_must_use
+)]
 
 #[macro_use]
 extern crate credible_utils;

@@ -7421,7 +7421,6 @@ dependencies = [
  "bytes",
  "hex",
  "modular-bitfield",
- "rayon",
  "reth-codecs",
  "reth-db",
  "reth-db-api",

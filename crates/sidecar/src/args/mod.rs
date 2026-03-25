@@ -496,9 +496,7 @@ fn resolve_state(state_file: &StateConfigFile) -> Result<StateConfig, ConfigErro
     })
 }
 
-fn resolve_state_sources(
-    source_inputs: Vec<StateSourceConfigFile>,
-) -> Vec<StateSourceConfig> {
+fn resolve_state_sources(source_inputs: Vec<StateSourceConfigFile>) -> Vec<StateSourceConfig> {
     source_inputs
         .into_iter()
         .map(|source| {
