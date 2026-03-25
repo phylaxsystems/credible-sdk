@@ -29,6 +29,7 @@ pub struct GenesisState {
 impl GenesisState {
     /// Immutable view of the parsed account commits.
     #[cfg(test)]
+    #[must_use]
     pub fn accounts(&self) -> &[AccountState] {
         &self.accounts
     }

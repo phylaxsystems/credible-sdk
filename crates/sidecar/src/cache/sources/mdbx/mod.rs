@@ -237,10 +237,10 @@ mod tests {
     /// Tests the `is_synced` logic directly by exercising the `committed_head` check.
     /// `MdbxSource` cannot be constructed in unit tests (`StateReader` requires a live MDBX env),
     /// so we verify the core decision logic that `is_synced` implements:
-    ///   committed_head == 0 → false
-    ///   committed_head >= min_synced_block → true
-    ///   committed_head < min_synced_block → false
-    ///   min_synced_block > u64::MAX → false
+    ///   `committed_head` == 0 → false
+    ///   `committed_head` >= `min_synced_block` → true
+    ///   `committed_head` < `min_synced_block` → false
+    ///   `min_synced_block` > `u64::MAX` → false
 
     #[test]
     fn is_synced_logic_returns_false_when_committed_head_is_zero() {

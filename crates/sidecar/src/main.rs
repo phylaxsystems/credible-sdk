@@ -655,9 +655,7 @@ fn spawn_state_worker_if_configured(
     thread_handles: &mut ThreadHandles,
 ) -> anyhow::Result<
     Option<
-        tokio::sync::oneshot::Receiver<
-            Result<(), sidecar::state_worker_thread::StateWorkerError>,
-        >,
+        tokio::sync::oneshot::Receiver<Result<(), sidecar::state_worker_thread::StateWorkerError>>,
     >,
 > {
     if config.state_worker.ws_url.is_some()

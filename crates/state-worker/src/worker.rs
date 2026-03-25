@@ -634,31 +634,29 @@ mod tests {
     /// The `Arc<RootProvider>` is not called during `process_block` for
     /// non-genesis, non-system-call blocks. We use a dummy URL — the worker
     /// is never `run()`.
-    fn make_worker() -> StateWorker<NoopWriterReader> {
+    fn make_worker() -> Result<StateWorker<NoopWriterReader>> {
         use alloy_provider::RootProvider;
         // Build a no-op HTTP provider — it is never called in unit tests
         // because apply_system_calls() only warns on failure, it does not abort.
-        let provider = Arc::new(RootProvider::new_http(
-            "http://localhost:0".parse().expect("valid URL"),
-        ));
+        let provider = Arc::new(RootProvider::new_http("http://localhost:0".parse()?));
         let system_calls = SystemCalls::new(None, None);
 
-        StateWorker::new(
+        Ok(StateWorker::new(
             provider,
             Box::new(MockTraceProvider::new()),
             NoopWriterReader,
             None, // no genesis
             system_calls,
-        )
+        ))
     }
 
     /// `process_block` must return a `BlockStateUpdate` with the correct block number.
     ///
     /// Verifies that the refactored signature (`Result<BlockStateUpdate>`)
-    /// works correctly and the returned update carries the expected block_number.
+    /// works correctly and the returned update carries the expected `block_number`.
     #[tokio::test]
     async fn process_block_returns_block_state_update_with_correct_block_number() -> Result<()> {
-        let mut worker = make_worker();
+        let mut worker = make_worker()?;
         let block_number = 42u64;
 
         let update = worker.process_block(block_number).await?;
@@ -672,6 +670,7 @@ mod tests {
     /// Uses an `AtomicBool` flag to detect whether `commit_block` was invoked
     /// inside `process_block`. If the refactoring is correct, the flag remains false.
     #[tokio::test]
+    #[allow(clippy::too_many_lines)]
     async fn process_block_does_not_commit_directly() -> Result<()> {
         /// A writer that records whether `commit_block` was called.
         struct CommitTrackingWriter {
@@ -771,9 +770,7 @@ mod tests {
         }
 
         use alloy_provider::RootProvider;
-        let provider = Arc::new(RootProvider::new_http(
-            "http://localhost:0".parse().expect("valid URL"),
-        ));
+        let provider = Arc::new(RootProvider::new_http("http://localhost:0".parse()?));
         let system_calls = SystemCalls::new(None, None);
         let committed_flag = Arc::new(AtomicBool::new(false));
         let tracking_writer = CommitTrackingWriter {
