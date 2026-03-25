@@ -217,6 +217,10 @@ AssertionStore
   +--> expiry index for later pruning
 ```
 
+## EIP system contracts
+
+See [docs/eips.md](docs/eips.md) for full EIP-2935 and EIP-4788 documentation including contract details, storage layouts, slot calculations, error handling, and the differences between sidecar and state-worker execution models.
+
 ## `crates/sidecar`
 
 ### What the sidecar is
