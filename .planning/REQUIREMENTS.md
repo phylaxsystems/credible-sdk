@@ -13,7 +13,7 @@ Requirements for this milestone. Each maps to roadmap phases.
 - [x] **THRD-02**: State worker has own single-threaded tokio runtime, isolated from sidecar main runtime
 - [x] **THRD-03**: Panics in state worker thread are caught and do not crash the sidecar
 - [x] **THRD-04**: State worker auto-restarts on failure with backoff matching existing EventSequencing/CoreEngine pattern
-- [ ] **THRD-05**: EthRpcSource remains as active fallback when state worker is down or behind
+- [x] **THRD-05**: EthRpcSource remains as active fallback when state worker is down or behind
 - [x] **THRD-06**: `StateWorkerError` enum with `From<&StateWorkerError> for ErrorRecoverability` classification
 - [x] **THRD-07**: State worker checks shared `Arc<AtomicBool>` shutdown flag and exits cleanly on sidecar shutdown
 
@@ -77,7 +77,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | THRD-02 | Phase 1 | Complete |
 | THRD-03 | Phase 1 | Complete |
 | THRD-04 | Phase 1 | Complete |
-| THRD-05 | Phase 1 | Pending |
+| THRD-05 | Phase 1 | Complete |
 | THRD-06 | Phase 1 | Complete |
 | THRD-07 | Phase 1 | Complete |
 | FLOW-01 | Phase 2 | Pending |

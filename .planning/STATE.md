@@ -2,14 +2,14 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: Ready to execute
-stopped_at: Completed 01-thread-scaffold-01-PLAN.md
-last_updated: "2026-03-25T01:44:08.980Z"
+status: Phase complete — ready for verification
+stopped_at: "Checkpoint: 01-thread-scaffold-02 — awaiting human verification"
+last_updated: "2026-03-25T01:49:58.900Z"
 progress:
   total_phases: 3
-  completed_phases: 0
+  completed_phases: 1
   total_plans: 2
-  completed_plans: 1
+  completed_plans: 2
 ---
 
 # Project State
@@ -47,6 +47,7 @@ Plan: 2 of 2
 
 *Updated after each plan completion*
 | Phase 01-thread-scaffold P01 | 3 | 2 tasks | 3 files |
+| Phase 01-thread-scaffold P02 | 2 | 1 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -62,6 +63,8 @@ Recent decisions affecting current work:
 - [Phase 01-thread-scaffold]: Error variants use String (not Arc<io::Error>) for Clone compatibility with oneshot send pattern
 - [Phase 01-thread-scaffold]: All StateWorkerError variants are Recoverable — EthRpcSource covers downtime while thread restarts
 - [Phase 01-thread-scaffold]: Phase 1 run_blocking_inner is a no-op poll loop; Phase 2+ replaces with StateWorker::run()
+- [Phase 01-thread-scaffold]: StateWorkerError used via full path in function signatures to avoid unused import lint error
+- [Phase 01-thread-scaffold]: state_worker joined AFTER engine in join_all() per PITFALLS.md — engine must send final CommitHead before state worker stops
 
 ### Pending Todos
 
@@ -75,6 +78,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-25T01:44:08.977Z
-Stopped at: Completed 01-thread-scaffold-01-PLAN.md
+Last session: 2026-03-25T01:49:58.898Z
+Stopped at: Checkpoint: 01-thread-scaffold-02 — awaiting human verification
 Resume file: None

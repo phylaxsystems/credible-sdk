@@ -12,7 +12,7 @@ This milestone replaces the two-process sidecar/state-worker architecture with a
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-- [ ] **Phase 1: Thread Scaffold** - Embed state worker as a named OS thread with isolated tokio runtime, panic isolation, restart backoff, and graceful shutdown
+- [x] **Phase 1: Thread Scaffold** - Embed state worker as a named OS thread with isolated tokio runtime, panic isolation, restart backoff, and graceful shutdown (completed 2026-03-25)
 - [ ] **Phase 2: CommitHead Flow Control** - Wire CommitHead mpsc channel from CoreEngine to state worker, add bounded 128-block buffer, and gate all MDBX writes behind commit_head
 - [ ] **Phase 3: MdbxSource Simplification and Cleanup** - Replace 50ms polling with Arc<AtomicU64>, remove range-intersection logic, reduce circular buffer depth to 1, and delete standalone state-worker binary
 
@@ -32,7 +32,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 Plans:
 - [x] 01-01-PLAN.md — StateWorkerError enum + StateWorkerThread scaffold (error types, spawn, isolated runtime, panic catch, shutdown polling, restart backoff)
-- [ ] 01-02-PLAN.md — Wire StateWorkerThread into sidecar main.rs (ThreadHandles, run_sidecar_once, run_async_components select!, EthRpcSource fallback preserved)
+- [x] 01-02-PLAN.md — Wire StateWorkerThread into sidecar main.rs (ThreadHandles, run_sidecar_once, run_async_components select!, EthRpcSource fallback preserved)
 
 ### Phase 2: CommitHead Flow Control
 **Goal**: MDBX writes are gated by CommitHead signals from the engine — the state worker buffers traced blocks in memory and only flushes to MDBX when authorized, so MDBX height never exceeds commit_head.block_number
@@ -63,6 +63,6 @@ Phases execute in numeric order: 1 → 2 → 3
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Thread Scaffold | 1/2 | In Progress|  |
+| 1. Thread Scaffold | 2/2 | Complete   | 2026-03-25 |
 | 2. CommitHead Flow Control | 0/? | Not started | - |
 | 3. MdbxSource Simplification and Cleanup | 0/? | Not started | - |
