@@ -4812,13 +4812,13 @@ fn test_atomic_height_concurrent_access() {
     });
 
     // Writer updates height
-    for block_num in 1..=10 {
-        let update = BlockStateUpdate {
-            block_number: block_num,
-            block_hash: B256::repeat_byte(block_num as u8),
-            state_root: B256::repeat_byte((block_num + 100) as u8),
-            accounts: vec![simple_account(addr(0xEE), block_num * 100, block_num)],
-        };
+        for block_num in 1..=10 {
+            let update = BlockStateUpdate {
+                block_number: block_num,
+                block_hash: B256::repeat_byte(u8::try_from(block_num).unwrap()),
+                state_root: B256::repeat_byte(u8::try_from(block_num + 100).unwrap()),
+                accounts: vec![simple_account(addr(0xEE), block_num * 100, block_num)],
+            };
         writer.commit_block(&update).unwrap();
 
         // Verify height is updated

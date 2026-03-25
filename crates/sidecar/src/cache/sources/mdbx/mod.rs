@@ -521,7 +521,7 @@ mod tests {
             )
             .unwrap();
 
-        let reader = StateReader::new(&path, config).unwrap();
+        let reader = writer.reader().clone();
         let source = MdbxSource::new(reader);
 
         assert!(!source.is_synced(u(99), u(99)));
