@@ -29,21 +29,20 @@
     "health_bind_addr": "0.0.0.0:9547"
   },
   "state": {
+    "worker": {
+      "ws_url": "ws://127.0.0.1:8546",
+      "mdbx_path": "/data/state_worker.mdbx",
+      "file_to_genesis": "/data/genesis.json"
+    },
     "sources": [
       {
         "type": "eth-rpc",
         "ws_url": "ws://127.0.0.1:8546",
         "http_url": "http://127.0.0.1:8545"
-      },
-      {
-        "type": "mdbx",
-        "mdbx_path": "/data/state_worker.mdbx",
-        "depth": 3
       }
     ],
     "minimum_state_diff": 100,
     "sources_sync_timeout_ms": 1000,
-    "sources_monitoring_period_ms": 500,
-    "enable_parallel_sources": false
+    "sources_monitoring_period_ms": 500
   }
 }

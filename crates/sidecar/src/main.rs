@@ -73,10 +73,7 @@ use std::{
     thread::JoinHandle,
     time::Duration,
 };
-use tracing::{
-    error,
-    warn,
-};
+use tracing::error;
 
 struct SidecarInfo {
     version: &'static str,
@@ -357,152 +354,36 @@ fn open_mdbx_source(path: &str, worker_status: WorkerStatusHandle) -> Option<Arc
     }
 }
 
-fn require_embedded_worker_for_mdbx(
-    path: Option<&str>,
-    has_worker_status: bool,
-) -> anyhow::Result<()> {
-    if let Some(path) = path
-        && !has_worker_status
-    {
-        anyhow::bail!(
-            "MDBX source configured at {path}, but embedded worker supervisor is required"
-        );
-    }
-    Ok(())
-}
-
-fn resolve_single_mdbx_path<I>(paths: I) -> anyhow::Result<Option<String>>
-where
-    I: IntoIterator<Item = String>,
-{
-    let distinct_paths = paths.into_iter().fold(Vec::new(), |mut acc, path| {
-        if !acc.contains(&path) {
-            acc.push(path);
-        }
-        acc
-    });
-
-    match distinct_paths.as_slice() {
-        [] => Ok(None),
-        [path] => Ok(Some(path.clone())),
-        _ => {
-            Err(anyhow::anyhow!(
-                "multiple distinct MDBX source paths are not supported in sidecar Task 3: {}",
-                distinct_paths.join(", ")
-            ))
-        }
-    }
-}
-
-fn embedded_worker_config_from(config: &Config) -> Option<EmbeddedWorkerConfig> {
-    let mut mdbx_paths = Vec::new();
-    let mut ws_url = None;
-
-    if config.state.sources.is_empty() {
-        if let Some(path) = config.state.legacy.state_worker_mdbx_path.clone() {
-            mdbx_paths.push(path);
-        }
-        ws_url = config.state.legacy.eth_rpc_source_ws_url.clone();
-    } else {
-        for source_config in &config.state.sources {
-            match source_config {
-                StateSourceConfig::Mdbx {
-                    mdbx_path: configured_path,
-                    depth: _,
-                } => {
-                    mdbx_paths.push(configured_path.clone());
-                }
-                StateSourceConfig::EthRpc {
-                    ws_url: configured_ws_url,
-                    http_url: _,
-                } if ws_url.is_none() => {
-                    ws_url = Some(configured_ws_url.clone());
-                }
-                _ => {}
-            }
-        }
-    }
-
-    let mdbx_path = match resolve_single_mdbx_path(mdbx_paths) {
-        Ok(path) => path,
-        Err(error) => {
-            error!(error = ?error, "Invalid MDBX source configuration");
-            return None;
-        }
-    };
-
-    match (mdbx_path, ws_url) {
-        (Some(mdbx_path), Some(ws_url)) => {
-            Some(EmbeddedWorkerConfig {
-                ws_url,
-                mdbx_path,
-                start_block: None,
-            })
-        }
-        _ => None,
+fn embedded_worker_config_from(config: &Config) -> EmbeddedWorkerConfig {
+    EmbeddedWorkerConfig {
+        ws_url: config.state.worker.ws_url.clone(),
+        mdbx_path: config.state.worker.mdbx_path.clone(),
+        file_to_genesis: config.state.worker.file_to_genesis.clone(),
+        start_block: None,
     }
 }
 
 async fn build_sources_from_config(
     config: &Config,
-    worker_status: Option<WorkerStatusHandle>,
+    worker_status: WorkerStatusHandle,
 ) -> anyhow::Result<Vec<Arc<dyn Source>>> {
     let mut sources: Vec<Arc<dyn Source>> = Vec::new();
-    let mut mdbx_paths = Vec::new();
-
-    if config.state.sources.is_empty() {
-        if config.state.legacy.has_any() {
-            warn!("Using legacy state source configuration; migrate to state.sources.");
-        }
-        if let (Some(state_worker_path), Some(_state_worker_depth)) = (
-            config.state.legacy.state_worker_mdbx_path.as_ref(),
-            config.state.legacy.state_worker_depth,
-        ) {
-            mdbx_paths.push(state_worker_path.clone());
-        }
-
-        if let (Some(eth_rpc_source_ws_url), Some(eth_rpc_source_http_url)) = (
-            &config.state.legacy.eth_rpc_source_ws_url,
-            &config.state.legacy.eth_rpc_source_http_url,
-        ) && let Ok(eth_rpc_source) = EthRpcSource::try_build(
-            eth_rpc_source_ws_url.as_str(),
-            eth_rpc_source_http_url.as_str(),
-        )
-        .await
-        {
-            sources.push(eth_rpc_source);
-        }
-    } else {
-        if config.state.legacy.has_any() {
-            warn!("Ignoring legacy state source configuration; state.sources is set.");
-        }
-        for source_config in &config.state.sources {
-            match source_config {
-                StateSourceConfig::Mdbx {
-                    mdbx_path,
-                    depth: _,
-                } => {
-                    mdbx_paths.push(mdbx_path.clone());
-                }
-                StateSourceConfig::EthRpc { ws_url, http_url } => {
-                    if let Ok(eth_rpc_source) =
-                        EthRpcSource::try_build(ws_url.as_str(), http_url.as_str()).await
-                    {
-                        sources.push(eth_rpc_source);
-                    }
+    for source_config in &config.state.sources {
+        match source_config {
+            StateSourceConfig::EthRpc { ws_url, http_url } => {
+                if let Ok(eth_rpc_source) =
+                    EthRpcSource::try_build(ws_url.as_str(), http_url.as_str()).await
+                {
+                    sources.push(eth_rpc_source);
                 }
             }
         }
     }
 
-    if let Some(path) = resolve_single_mdbx_path(mdbx_paths)? {
-        require_embedded_worker_for_mdbx(Some(path.as_str()), worker_status.is_some())?;
-        let worker_status = worker_status.expect("worker status required for configured mdbx");
-        let source = open_mdbx_source(&path, worker_status).ok_or_else(|| {
-            anyhow::anyhow!("failed to initialize configured MDBX source at {path}")
-        })?;
-        sources.push(source);
-    }
+    let path = &config.state.worker.mdbx_path;
+    let source = open_mdbx_source(path, worker_status)
+        .ok_or_else(|| anyhow::anyhow!("failed to initialize configured MDBX source at {path}"))?;
+    sources.push(source);
 
     Ok(sources)
 }
@@ -517,18 +398,71 @@ fn result_ttl(config: &Config) -> Duration {
 
 #[cfg(test)]
 mod tests {
-    use super::require_embedded_worker_for_mdbx;
+    use super::embedded_worker_config_from;
+    use sidecar::args::{
+        Config,
+        StateConfig,
+        StateSourceConfig,
+        StateWorkerConfig,
+    };
+    use std::time::Duration;
 
     #[test]
-    fn test_require_embedded_worker_for_mdbx_errors_when_mdbx_configured_without_supervisor() {
-        let error = require_embedded_worker_for_mdbx(Some("/tmp/state.mdbx"), false).unwrap_err();
+    fn test_embedded_worker_config_uses_resolved_state_worker_settings() {
+        let config = Config {
+            chain: sidecar::args::ChainConfig {
+                spec_id: assertion_executor::primitives::SpecId::CANCUN,
+                chain_id: 1337,
+            },
+            credible: sidecar::args::CredibleConfig {
+                assertion_gas_limit: 1,
+                overlay_cache_invalidation_every_block: None,
+                cache_capacity_bytes: None,
+                flush_every_ms: None,
+                assertion_da_rpc_url: "http://localhost:8545".to_string(),
+                event_source_url: "http://localhost:4350/graphql".to_string(),
+                poll_interval: Duration::from_secs(1),
+                assertion_store_db_path: "/tmp/store.db".to_string(),
+                transaction_observer_db_path: None,
+                transaction_observer_endpoint: None,
+                transaction_observer_auth_token: None,
+                transaction_observer_endpoint_rps_max: None,
+                transaction_observer_poll_interval_ms: None,
+                aeges_url: None,
+                state_oracle: assertion_executor::primitives::Address::ZERO,
+                state_oracle_deployment_block: 0,
+                transaction_results_max_capacity: 1,
+                accepted_txs_ttl_ms: Duration::from_secs(1),
+                #[cfg(feature = "cache_validation")]
+                cache_checker_ws_url: "ws://localhost:8546".to_string(),
+                assertion_store_prune_config_interval_ms: None,
+                assertion_store_prune_config_retention_blocks: None,
+                onchain_da_verifier: None,
+            },
+            transport: sidecar::transport::grpc::config::GrpcTransportConfig::default(),
+            state: StateConfig {
+                worker: StateWorkerConfig {
+                    ws_url: "ws://worker.example:8546".to_string(),
+                    mdbx_path: "/data/state_worker.mdbx".to_string(),
+                    file_to_genesis: "/data/genesis.json".to_string(),
+                },
+                sources: vec![StateSourceConfig::EthRpc {
+                    ws_url: "ws://rpc.example:8546".to_string(),
+                    http_url: "http://rpc.example:8545".to_string(),
+                }],
+                minimum_state_diff: 10,
+                sources_sync_timeout_ms: 1000,
+                sources_monitoring_period_ms: 500,
+            },
+            dhat_output_path: None,
+        };
 
-        assert!(
-            error
-                .to_string()
-                .contains("embedded worker supervisor is required"),
-            "unexpected error: {error}"
-        );
+        let embedded = embedded_worker_config_from(&config);
+
+        assert_eq!(embedded.ws_url, "ws://worker.example:8546");
+        assert_eq!(embedded.mdbx_path, "/data/state_worker.mdbx");
+        assert_eq!(embedded.file_to_genesis, "/data/genesis.json");
+        assert_eq!(embedded.start_block, None);
     }
 }
 
@@ -725,15 +659,11 @@ async fn run_sidecar_once(
     let shutdown_flag = Arc::new(AtomicBool::new(false));
     let embedded_worker_config = embedded_worker_config_from(config);
 
-    let mut state_worker_supervisor = if let Some(embedded_worker_config) = embedded_worker_config {
-        Some(StateWorkerSupervisor::spawn(embedded_worker_config)?)
-    } else {
-        tracing::info!("Embedded state worker supervisor disabled: missing MDBX or Eth RPC config");
-        None
-    };
+    let mut state_worker_supervisor = Some(StateWorkerSupervisor::spawn(embedded_worker_config)?);
     let worker_status_handle = state_worker_supervisor
         .as_ref()
-        .map(StateWorkerSupervisor::worker_status_handle);
+        .map(StateWorkerSupervisor::worker_status_handle)
+        .expect("state worker supervisor is always configured");
     let commit_target_sink = state_worker_supervisor
         .as_ref()
         .map(StateWorkerSupervisor::commit_target_sink);
@@ -857,18 +787,4 @@ async fn run_sidecar_once(
     thread_handles.join_all();
 
     Ok(should_shutdown)
-}
-
-#[cfg(test)]
-#[test]
-fn test_rejects_multiple_distinct_mdbx_paths() {
-    let error =
-        resolve_single_mdbx_path(["/tmp/one.mdbx".to_string(), "/tmp/two.mdbx".to_string()])
-            .unwrap_err();
-
-    assert!(
-        error
-            .to_string()
-            .contains("multiple distinct MDBX source paths are not supported")
-    );
 }

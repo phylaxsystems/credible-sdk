@@ -9,6 +9,7 @@ use state_worker::{
     StateWorker,
     WorkerStatusSnapshot,
     connect_provider,
+    genesis,
     state,
     system_calls::SystemCalls,
     validate_geth_version,
@@ -167,6 +168,7 @@ type WorkerFactory = Box<dyn FnMut() -> Result<Box<dyn SupervisedWorker>> + Send
 pub struct EmbeddedWorkerConfig {
     pub ws_url: String,
     pub mdbx_path: String,
+    pub file_to_genesis: String,
     pub start_block: Option<u64>,
 }
 
@@ -360,6 +362,23 @@ struct EmbeddedWorkerTask {
     stable_commit_target: Arc<StableCommitTarget>,
 }
 
+fn load_embedded_worker_genesis(file_path: &str) -> Result<(genesis::GenesisState, SystemCalls)> {
+    let contents = std::fs::read_to_string(file_path)
+        .inspect_err(|e| warn!(error = ?e, file_path = file_path, "Failed to read genesis file"))
+        .with_context(|| format!("failed to read genesis file: {file_path}"))?;
+    let genesis_state = genesis::parse_from_str(&contents)
+        .inspect_err(
+            |e| warn!(error = ?e, file_path = file_path, "Failed to parse genesis from file"),
+        )
+        .with_context(|| format!("failed to parse genesis from file: {file_path}"))?;
+    let system_calls = SystemCalls::new(
+        genesis_state.config().cancun_time,
+        genesis_state.config().prague_time,
+    );
+
+    Ok((genesis_state, system_calls))
+}
+
 impl SupervisedWorker for EmbeddedWorkerTask {
     fn run(self: Box<Self>, shutdown: Arc<AtomicBool>) -> Result<()> {
         let runtime = RuntimeBuilder::new_current_thread()
@@ -382,12 +401,14 @@ impl SupervisedWorker for EmbeddedWorkerTask {
                 let mdbx_runtime = mdbx_runtime::init(&self.config.mdbx_path)?;
                 let writer_reader = mdbx_runtime.writer();
                 let trace_provider = state::create_trace_provider(provider.clone(), TRACE_TIMEOUT);
+                let (genesis_state, system_calls) =
+                    load_embedded_worker_genesis(&self.config.file_to_genesis)?;
                 let worker = StateWorker::new(
                     provider,
                     trace_provider,
                     writer_reader,
-                    None,
-                    SystemCalls::default(),
+                    Some(genesis_state),
+                    system_calls,
                 );
 
                 Ok::<_, anyhow::Error>(EmbeddedStateWorkerRuntime::new(worker))
@@ -573,7 +594,11 @@ pub(crate) fn wait_for_restart_count(supervisor: &StateWorkerSupervisor, expecte
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::AtomicBool;
+    use std::{
+        io::Write,
+        sync::atomic::AtomicBool,
+    };
+    use tempfile::NamedTempFile;
 
     #[derive(Debug, Default)]
     struct RecordingPublisher {
@@ -644,5 +669,33 @@ mod tests {
             publisher.saw_handle_stored.load(Ordering::Acquire),
             "handle should be installed before replay"
         );
+    }
+
+    #[test]
+    fn test_load_embedded_worker_genesis_reads_genesis_and_system_call_timestamps() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        write!(
+            temp_file,
+            r#"{{
+  "config": {{
+    "cancunTime": 12,
+    "pragueTime": 34
+  }},
+  "alloc": {{
+    "0x00000000000000000000000000000000000000aa": {{
+      "balance": "0x1"
+    }}
+  }}
+}}"#
+        )
+        .unwrap();
+        temp_file.flush().unwrap();
+
+        let (genesis_state, system_calls) =
+            load_embedded_worker_genesis(temp_file.path().to_str().unwrap()).unwrap();
+
+        assert_eq!(genesis_state.into_accounts().len(), 1);
+        assert_eq!(system_calls.cancun_time, Some(12));
+        assert_eq!(system_calls.prague_time, Some(34));
     }
 }

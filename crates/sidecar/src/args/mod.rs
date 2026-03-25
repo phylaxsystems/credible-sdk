@@ -293,7 +293,7 @@ pub struct TransportConfigFile {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(tag = "type")]
-pub enum StateSourceConfig {
+pub enum StateSourceConfigFile {
     #[serde(rename = "mdbx")]
     Mdbx {
         /// State worker MDBX path
@@ -308,6 +308,36 @@ pub enum StateSourceConfig {
         /// Eth RPC source HTTP bind address and port
         http_url: String,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub enum StateSourceConfig {
+    EthRpc {
+        /// Eth RPC source websocket bind address and port
+        ws_url: String,
+        /// Eth RPC source HTTP bind address and port
+        http_url: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+pub struct StateWorkerConfigFile {
+    /// Embedded state worker websocket url
+    pub ws_url: Option<String>,
+    /// Embedded state worker MDBX path
+    pub mdbx_path: Option<String>,
+    /// File to read genesis state from for the embedded state worker
+    pub file_to_genesis: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct StateWorkerConfig {
+    /// Embedded state worker websocket url
+    pub ws_url: String,
+    /// Embedded state worker MDBX path
+    pub mdbx_path: String,
+    /// File to read genesis state from for the embedded state worker
+    pub file_to_genesis: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
@@ -334,8 +364,10 @@ impl LegacyStateConfig {
 /// State configuration from file
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
 pub struct StateConfigFile {
+    /// Embedded state worker configuration
+    pub worker: Option<StateWorkerConfigFile>,
     /// State sources
-    pub sources: Option<Vec<StateSourceConfig>>,
+    pub sources: Option<Vec<StateSourceConfigFile>>,
     /// Legacy state source fields (deprecated).
     #[serde(flatten)]
     pub legacy: LegacyStateConfig,
@@ -350,12 +382,11 @@ pub struct StateConfigFile {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct StateConfig {
+    /// Embedded state worker configuration
+    pub worker: StateWorkerConfig,
     /// State sources
     #[serde(default)]
     pub sources: Vec<StateSourceConfig>,
-    /// Legacy state source fields (deprecated).
-    #[serde(flatten)]
-    pub legacy: LegacyStateConfig,
     /// Minimum state diff to consider a cache synced
     pub minimum_state_diff: u64,
     /// Maximum time (ms) the engine will wait for a state source to report as  synced before
@@ -463,24 +494,15 @@ fn resolve_transport(
 }
 
 fn resolve_state(state_file: &StateConfigFile) -> Result<StateConfig, ConfigError> {
-    let sources = parse_env_json("SIDECAR_STATE_SOURCES")?
+    let source_inputs = parse_env_json("SIDECAR_STATE_SOURCES")?
         .or_else(|| state_file.sources.clone())
         .unwrap_or_default();
+    let worker = resolve_state_worker(state_file, &source_inputs)?;
+    let sources = resolve_state_sources(source_inputs);
 
     Ok(StateConfig {
+        worker,
         sources,
-        legacy: LegacyStateConfig {
-            eth_rpc_source_ws_url: parse_env("SIDECAR_STATE_ETH_RPC_SOURCE_WS_URL")?
-                .or_else(|| state_file.legacy.eth_rpc_source_ws_url.clone()),
-            eth_rpc_source_http_url: parse_env("SIDECAR_STATE_ETH_RPC_SOURCE_HTTP_URL")?
-                .or_else(|| state_file.legacy.eth_rpc_source_http_url.clone()),
-            state_worker_mdbx_path: parse_env("SIDECAR_STATE_WORKER_MDBX_PATH")?
-                .or_else(|| state_file.legacy.state_worker_mdbx_path.clone()),
-            state_worker_depth: state_file
-                .legacy
-                .state_worker_depth
-                .or(parse_env("SIDECAR_STATE_WORKER_DEPTH")?),
-        },
         minimum_state_diff: required_or_env(
             state_file.minimum_state_diff,
             "SIDECAR_STATE_MINIMUM_STATE_DIFF",
@@ -497,6 +519,101 @@ fn resolve_state(state_file: &StateConfigFile) -> Result<StateConfig, ConfigErro
             "state.sources_monitoring_period_ms",
         )?,
     })
+}
+
+fn resolve_state_sources(source_inputs: Vec<StateSourceConfigFile>) -> Vec<StateSourceConfig> {
+    source_inputs
+        .into_iter()
+        .filter_map(|source| {
+            match source {
+                StateSourceConfigFile::EthRpc { ws_url, http_url } => {
+                    Some(StateSourceConfig::EthRpc { ws_url, http_url })
+                }
+                StateSourceConfigFile::Mdbx { .. } => None,
+            }
+        })
+        .collect()
+}
+
+fn resolve_state_worker(
+    state_file: &StateConfigFile,
+    source_inputs: &[StateSourceConfigFile],
+) -> Result<StateWorkerConfig, ConfigError> {
+    let legacy = LegacyStateConfig {
+        eth_rpc_source_ws_url: parse_env("SIDECAR_STATE_ETH_RPC_SOURCE_WS_URL")?
+            .or_else(|| state_file.legacy.eth_rpc_source_ws_url.clone()),
+        eth_rpc_source_http_url: parse_env("SIDECAR_STATE_ETH_RPC_SOURCE_HTTP_URL")?
+            .or_else(|| state_file.legacy.eth_rpc_source_http_url.clone()),
+        state_worker_mdbx_path: parse_env("SIDECAR_STATE_WORKER_MDBX_PATH")?
+            .or_else(|| state_file.legacy.state_worker_mdbx_path.clone()),
+        state_worker_depth: state_file
+            .legacy
+            .state_worker_depth
+            .or(parse_env("SIDECAR_STATE_WORKER_DEPTH")?),
+    };
+    let worker_file = state_file.worker.as_ref();
+    let legacy_worker_mdbx_path = legacy_worker_mdbx_path(source_inputs)?;
+    let first_source_ws_url = source_inputs.iter().find_map(|source| {
+        match source {
+            StateSourceConfigFile::EthRpc { ws_url, .. } => Some(ws_url.clone()),
+            StateSourceConfigFile::Mdbx { .. } => None,
+        }
+    });
+
+    Ok(StateWorkerConfig {
+        ws_url: required_value(
+            parse_env("SIDECAR_STATE_WORKER_WS_URL")?
+                .or_else(|| worker_file.and_then(|worker| worker.ws_url.clone()))
+                .or_else(|| legacy.eth_rpc_source_ws_url.clone())
+                .or(first_source_ws_url),
+            "SIDECAR_STATE_WORKER_WS_URL",
+            "state.worker.ws_url",
+        )?,
+        mdbx_path: required_value(
+            parse_env("SIDECAR_STATE_WORKER_MDBX_PATH")?
+                .or_else(|| worker_file.and_then(|worker| worker.mdbx_path.clone()))
+                .or_else(|| legacy.state_worker_mdbx_path.clone())
+                .or(legacy_worker_mdbx_path),
+            "SIDECAR_STATE_WORKER_MDBX_PATH",
+            "state.worker.mdbx_path",
+        )?,
+        file_to_genesis: required_value(
+            parse_env("SIDECAR_STATE_WORKER_FILE_TO_GENESIS")?
+                .or_else(|| worker_file.and_then(|worker| worker.file_to_genesis.clone())),
+            "SIDECAR_STATE_WORKER_FILE_TO_GENESIS",
+            "state.worker.file_to_genesis",
+        )?,
+    })
+}
+
+fn legacy_worker_mdbx_path(
+    source_inputs: &[StateSourceConfigFile],
+) -> Result<Option<String>, ConfigError> {
+    let distinct_paths = source_inputs
+        .iter()
+        .filter_map(|source| {
+            match source {
+                StateSourceConfigFile::Mdbx { mdbx_path, .. } => Some(mdbx_path.clone()),
+                StateSourceConfigFile::EthRpc { .. } => None,
+            }
+        })
+        .fold(Vec::new(), |mut acc, path| {
+            if !acc.contains(&path) {
+                acc.push(path);
+            }
+            acc
+        });
+
+    match distinct_paths.as_slice() {
+        [] => Ok(None),
+        [path] => Ok(Some(path.clone())),
+        _ => {
+            Err(ConfigError::ParseError(format!(
+                "Failed to parse state.sources: multiple embedded worker MDBX sources are not supported: {}",
+                distinct_paths.join(", ")
+            )))
+        }
+    }
 }
 
 struct CredibleRequired {
@@ -715,6 +832,18 @@ where
     Ok(env_value.or(file_value))
 }
 
+fn required_value<T>(
+    value: Option<T>,
+    env_key: &'static str,
+    field_name: &'static str,
+) -> Result<T, ConfigError> {
+    value.ok_or_else(|| {
+        ConfigError::MissingRequired(format!(
+            "Missing required config value: {field_name} (env {env_key})"
+        ))
+    })
+}
+
 fn required_or_env_with<T>(
     file_value: Option<T>,
     env_key: &'static str,
@@ -794,7 +923,7 @@ mod tests {
         EnvGuard { key, prev }
     }
 
-    const REQUIRED_ENV_KEYS: [&str; 11] = [
+    const REQUIRED_ENV_KEYS: [&str; 14] = [
         "SIDECAR_CHAIN_SPEC_ID",
         "SIDECAR_CHAIN_ID",
         "SIDECAR_ASSERTION_GAS_LIMIT",
@@ -806,6 +935,9 @@ mod tests {
         "SIDECAR_TRANSACTION_RESULTS_MAX_CAPACITY",
         "SIDECAR_TRANSPORT_BIND_ADDR",
         "SIDECAR_STATE_MINIMUM_STATE_DIFF",
+        "SIDECAR_STATE_WORKER_WS_URL",
+        "SIDECAR_STATE_WORKER_MDBX_PATH",
+        "SIDECAR_STATE_WORKER_FILE_TO_GENESIS",
     ];
 
     const REQUIRED_ENV_KEYS_STATE: [&str; 2] = [
@@ -840,6 +972,9 @@ mod tests {
             set_env_var("SIDECAR_TRANSACTION_RESULTS_MAX_CAPACITY", "10000"),
             set_env_var("SIDECAR_TRANSPORT_BIND_ADDR", "127.0.0.1:3000"),
             set_env_var("SIDECAR_STATE_MINIMUM_STATE_DIFF", "10"),
+            set_env_var("SIDECAR_STATE_WORKER_WS_URL", "ws://localhost:8548"),
+            set_env_var("SIDECAR_STATE_WORKER_MDBX_PATH", "/data/state_worker.mdbx"),
+            set_env_var("SIDECAR_STATE_WORKER_FILE_TO_GENESIS", "/data/genesis.json"),
             set_env_var("SIDECAR_STATE_SOURCES_SYNC_TIMEOUT_MS", "30000"),
             set_env_var("SIDECAR_STATE_SOURCES_MONITORING_PERIOD_MS", "1000"),
         ]
@@ -875,16 +1010,16 @@ mod tests {
     "health_bind_addr": "127.0.0.1:3001"
   },
   "state": {
+    "worker": {
+      "ws_url": "ws://localhost:8548",
+      "mdbx_path": "/data/state_worker.mdbx",
+      "file_to_genesis": "/data/genesis.json"
+    },
     "sources": [
       {
         "type": "eth-rpc",
         "ws_url": "ws://localhost:8548",
         "http_url": "http://localhost:8545"
-      },
-      {
-        "type": "mdbx",
-        "mdbx_path": "/data/state_worker.mdbx",
-        "depth": 100
       }
     ],
     "minimum_state_diff": 10,
@@ -897,6 +1032,9 @@ mod tests {
 
     #[test]
     fn test_from_file_success() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _guards = clear_required_envs();
+
         // Create a temporary file with valid config
         let mut temp_file = NamedTempFile::new().unwrap();
         write!(temp_file, "{}", valid_config_json()).unwrap();
@@ -948,18 +1086,15 @@ mod tests {
         assert_eq!(config.transport.bind_addr, "127.0.0.1:3000");
 
         // Verify state config
+        assert_eq!(config.state.worker.ws_url, "ws://localhost:8548");
+        assert_eq!(config.state.worker.mdbx_path, "/data/state_worker.mdbx");
+        assert_eq!(config.state.worker.file_to_genesis, "/data/genesis.json");
         assert_eq!(
             config.state.sources,
-            vec![
-                StateSourceConfig::EthRpc {
-                    ws_url: "ws://localhost:8548".to_string(),
-                    http_url: "http://localhost:8545".to_string(),
-                },
-                StateSourceConfig::Mdbx {
-                    mdbx_path: "/data/state_worker.mdbx".to_string(),
-                    depth: 100,
-                }
-            ]
+            vec![StateSourceConfig::EthRpc {
+                ws_url: "ws://localhost:8548".to_string(),
+                http_url: "http://localhost:8545".to_string(),
+            }]
         );
         assert_eq!(config.state.minimum_state_diff, 10);
         assert_eq!(config.state.sources_sync_timeout_ms, 30000);
@@ -1047,6 +1182,10 @@ mod tests {
         let _tx_results = set_env_var("SIDECAR_TRANSACTION_RESULTS_MAX_CAPACITY", "10000");
         let _bind_addr = set_env_var("SIDECAR_TRANSPORT_BIND_ADDR", "127.0.0.1:3000");
         let _min_state_diff = set_env_var("SIDECAR_STATE_MINIMUM_STATE_DIFF", "10");
+        let _worker_ws = set_env_var("SIDECAR_STATE_WORKER_WS_URL", "ws://localhost:8548");
+        let _worker_mdbx = set_env_var("SIDECAR_STATE_WORKER_MDBX_PATH", "/data/state_worker.mdbx");
+        let _worker_genesis =
+            set_env_var("SIDECAR_STATE_WORKER_FILE_TO_GENESIS", "/data/genesis.json");
         let _sync_timeout = set_env_var("SIDECAR_STATE_SOURCES_SYNC_TIMEOUT_MS", "30000");
         let _monitoring_period = set_env_var("SIDECAR_STATE_SOURCES_MONITORING_PERIOD_MS", "1000");
 
@@ -1181,7 +1320,7 @@ mod tests {
 
         let _sources = set_env_var(
             "SIDECAR_STATE_SOURCES",
-            r#"[{"type":"mdbx","mdbx_path":"/data/state.mdbx","depth":7}]"#,
+            r#"[{"type":"eth-rpc","ws_url":"ws://env:8546","http_url":"http://env:8545"}]"#,
         );
 
         let mut temp_file = NamedTempFile::new().unwrap();
@@ -1191,10 +1330,71 @@ mod tests {
         let config = Config::from_file(temp_file.path()).unwrap();
         assert_eq!(
             config.state.sources,
-            vec![StateSourceConfig::Mdbx {
-                mdbx_path: "/data/state.mdbx".to_string(),
-                depth: 7,
+            vec![StateSourceConfig::EthRpc {
+                ws_url: "ws://env:8546".to_string(),
+                http_url: "http://env:8545".to_string(),
             }]
+        );
+    }
+
+    #[test]
+    fn test_state_config_resolves_embedded_worker_settings() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _guards = clear_required_envs();
+
+        let mut temp_file = NamedTempFile::new().unwrap();
+        write!(
+            temp_file,
+            r#"{{
+  "chain": {{
+    "spec_id": "CANCUN",
+    "chain_id": 1337
+  }},
+  "credible": {{
+    "assertion_gas_limit": 3000000,
+    "assertion_da_rpc_url": "http://127.0.0.1:5001",
+    "event_source_url": "http://127.0.0.1:4350/graphql",
+    "assertion_store_db_path": ".local/sidecar-host/assertion_store_database",
+    "state_oracle": "0x6dD3f12ce435f69DCeDA7e31605C02Bb5422597b",
+    "state_oracle_deployment_block": 0,
+    "transaction_results_max_capacity": 1000
+  }},
+  "transport": {{
+    "bind_addr": "0.0.0.0:50051"
+  }},
+  "state": {{
+    "worker": {{
+      "ws_url": "ws://127.0.0.1:8546",
+      "mdbx_path": "/data/state_worker.mdbx",
+      "file_to_genesis": "/data/genesis.json"
+    }},
+    "sources": [
+      {{
+        "type": "eth-rpc",
+        "ws_url": "ws://127.0.0.1:8546",
+        "http_url": "http://127.0.0.1:8545"
+      }}
+    ],
+    "minimum_state_diff": 100,
+    "sources_sync_timeout_ms": 1000,
+    "sources_monitoring_period_ms": 500
+  }}
+}}"#
+        )
+        .unwrap();
+        temp_file.flush().unwrap();
+
+        let config = Config::from_file(temp_file.path()).unwrap();
+
+        assert_eq!(config.state.worker.ws_url, "ws://127.0.0.1:8546");
+        assert_eq!(config.state.worker.mdbx_path, "/data/state_worker.mdbx");
+        assert_eq!(config.state.worker.file_to_genesis, "/data/genesis.json");
+        assert!(
+            config
+                .state
+                .sources
+                .iter()
+                .any(|source| matches!(source, StateSourceConfig::EthRpc { .. }))
         );
     }
 
@@ -1203,6 +1403,7 @@ mod tests {
         let _lock = ENV_LOCK.lock().unwrap();
         let _guards = clear_required_envs();
         let _envs = set_required_envs_defaults();
+        let _worker_ws = unset_env_var("SIDECAR_STATE_WORKER_WS_URL");
 
         let _legacy_ws = set_env_var("SIDECAR_STATE_ETH_RPC_SOURCE_WS_URL", "ws://legacy:8546");
         let _legacy_http = set_env_var(
@@ -1217,24 +1418,16 @@ mod tests {
         temp_file.flush().unwrap();
 
         let config = Config::from_file(temp_file.path()).unwrap();
-        assert_eq!(
-            config.state.legacy.eth_rpc_source_ws_url,
-            Some("ws://legacy:8546".to_string())
-        );
-        assert_eq!(
-            config.state.legacy.eth_rpc_source_http_url,
-            Some("http://legacy:8545".to_string())
-        );
-        assert_eq!(
-            config.state.legacy.state_worker_mdbx_path,
-            Some("/data/legacy_state.mdbx".to_string())
-        );
-        assert_eq!(config.state.legacy.state_worker_depth, Some(5));
-        assert!(config.state.legacy.has_any());
+        assert_eq!(config.state.worker.ws_url, "ws://legacy:8546");
+        assert_eq!(config.state.worker.mdbx_path, "/data/legacy_state.mdbx");
+        assert_eq!(config.state.worker.file_to_genesis, "/data/genesis.json");
     }
 
     #[test]
     fn test_chain_config_different_spec_ids() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _guards = clear_required_envs();
+
         let mut temp_file = NamedTempFile::new().unwrap();
         write!(
             temp_file,
@@ -1261,13 +1454,11 @@ mod tests {
     "bind_addr": "127.0.0.1:3000"
   }},
   "state": {{
-    "sources": [
-      {{
-        "type": "mdbx",
-        "mdbx_path": "/data/state_worker.mdbx",
-        "depth": 50
-      }}
-    ],
+    "worker": {{
+      "ws_url": "ws://chain.example:8546",
+      "mdbx_path": "/data/state_worker.mdbx",
+      "file_to_genesis": "/data/genesis.json"
+    }},
     "minimum_state_diff": 10,
     "sources_sync_timeout_ms": 30000,
     "sources_monitoring_period_ms": 1000
@@ -1285,6 +1476,9 @@ mod tests {
 
     #[test]
     fn test_invalid_type_values() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _guards = clear_required_envs();
+
         let mut temp_file = NamedTempFile::new().unwrap();
         write!(
             temp_file,
@@ -1314,13 +1508,11 @@ mod tests {
     "bind_addr": "127.0.0.1:3000"
   }},
   "state": {{
-    "sources": [
-      {{
-        "type": "mdbx",
-        "mdbx_path": "/data/state_worker.mdbx",
-        "depth": 3
-      }}
-    ],
+    "worker": {{
+      "ws_url": "ws://invalid.example:8546",
+      "mdbx_path": "/data/state_worker.mdbx",
+      "file_to_genesis": "/data/genesis.json"
+    }},
     "minimum_state_diff": 10,
     "sources_sync_timeout_ms": 30000,
     "sources_monitoring_period_ms": 1000
@@ -1337,6 +1529,9 @@ mod tests {
 
     #[test]
     fn test_from_file_with_optional_none_values() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _guards = clear_required_envs();
+
         let mut temp_file = NamedTempFile::new().unwrap();
         write!(
             temp_file,
@@ -1363,6 +1558,11 @@ mod tests {
     "bind_addr": "127.0.0.1:3000"
   }},
   "state": {{
+    "worker": {{
+      "ws_url": "ws://optional.example:8546",
+      "mdbx_path": "/data/state_worker.mdbx",
+      "file_to_genesis": "/data/genesis.json"
+    }},
     "minimum_state_diff": 10,
     "sources_sync_timeout_ms": 30000,
     "sources_monitoring_period_ms": 1000
@@ -1375,11 +1575,15 @@ mod tests {
         let config = Config::from_file(temp_file.path()).unwrap();
 
         assert!(config.state.sources.is_empty());
-        assert!(!config.state.legacy.has_any());
+        assert_eq!(config.state.worker.ws_url, "ws://optional.example:8546");
     }
 
     #[test]
     fn test_from_file_with_legacy_state_fields() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _guards = clear_required_envs();
+        let _genesis = set_env_var("SIDECAR_STATE_WORKER_FILE_TO_GENESIS", "/data/genesis.json");
+
         let mut temp_file = NamedTempFile::new().unwrap();
         write!(
             temp_file,
@@ -1422,23 +1626,19 @@ mod tests {
         let config = Config::from_file(temp_file.path()).unwrap();
 
         assert!(config.state.sources.is_empty());
+        assert_eq!(config.state.worker.ws_url, "ws://legacy.example:8546");
         assert_eq!(
-            config.state.legacy.eth_rpc_source_ws_url,
-            Some("ws://legacy.example:8546".to_string())
+            config.state.worker.mdbx_path,
+            "/data/legacy_state_worker.mdbx"
         );
-        assert_eq!(
-            config.state.legacy.eth_rpc_source_http_url,
-            Some("http://legacy.example:8545".to_string())
-        );
-        assert_eq!(
-            config.state.legacy.state_worker_mdbx_path,
-            Some("/data/legacy_state_worker.mdbx".to_string())
-        );
-        assert_eq!(config.state.legacy.state_worker_depth, Some(7));
+        assert_eq!(config.state.worker.file_to_genesis, "/data/genesis.json");
     }
 
     #[test]
     fn test_from_file_with_multiple_sources_preserves_order() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _guards = clear_required_envs();
+
         let mut temp_file = NamedTempFile::new().unwrap();
         write!(
             temp_file,
@@ -1465,6 +1665,11 @@ mod tests {
     "bind_addr": "127.0.0.1:3000"
   }},
   "state": {{
+    "worker": {{
+      "ws_url": "ws://embedded.example:8546",
+      "mdbx_path": "/data/state_worker.mdbx",
+      "file_to_genesis": "/data/genesis.json"
+    }},
     "sources": [
       {{
         "type": "eth-rpc",
@@ -1475,11 +1680,6 @@ mod tests {
         "type": "eth-rpc",
         "ws_url": "ws://second.example:8546",
         "http_url": "http://second.example:8545"
-      }},
-      {{
-        "type": "mdbx",
-        "mdbx_path": "/data/state_worker.mdbx",
-        "depth": 42
       }}
     ],
     "minimum_state_diff": 10,
@@ -1503,10 +1703,6 @@ mod tests {
                 StateSourceConfig::EthRpc {
                     ws_url: "ws://second.example:8546".to_string(),
                     http_url: "http://second.example:8545".to_string(),
-                },
-                StateSourceConfig::Mdbx {
-                    mdbx_path: "/data/state_worker.mdbx".to_string(),
-                    depth: 42,
                 }
             ]
         );
@@ -1514,6 +1710,10 @@ mod tests {
 
     #[test]
     fn test_from_file_with_mixed_sources_including_duplicates() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _guards = clear_required_envs();
+        let _genesis = set_env_var("SIDECAR_STATE_WORKER_FILE_TO_GENESIS", "/data/genesis.json");
+
         let mut temp_file = NamedTempFile::new().unwrap();
         write!(
             temp_file,
@@ -1566,24 +1766,8 @@ mod tests {
         .unwrap();
         temp_file.flush().unwrap();
 
-        let config = Config::from_file(temp_file.path()).unwrap();
+        let result = Config::from_file(temp_file.path());
 
-        assert_eq!(
-            config.state.sources,
-            vec![
-                StateSourceConfig::Mdbx {
-                    mdbx_path: "/data/state_worker_a.mdbx".to_string(),
-                    depth: 10,
-                },
-                StateSourceConfig::Mdbx {
-                    mdbx_path: "/data/state_worker_b.mdbx".to_string(),
-                    depth: 20,
-                },
-                StateSourceConfig::EthRpc {
-                    ws_url: "ws://rpc.example:8546".to_string(),
-                    http_url: "http://rpc.example:8545".to_string(),
-                }
-            ]
-        );
+        assert!(matches!(result, Err(ConfigError::ParseError(_))));
     }
 }

@@ -124,14 +124,16 @@ Transport:
 - `transport.event_id_buffer_capacity` -> `SIDECAR_EVENT_ID_BUFFER_CAPACITY`
 
 State:
+- `state.worker.ws_url` -> `SIDECAR_STATE_WORKER_WS_URL`
+- `state.worker.mdbx_path` -> `SIDECAR_STATE_WORKER_MDBX_PATH`
+- `state.worker.file_to_genesis` -> `SIDECAR_STATE_WORKER_FILE_TO_GENESIS`
 - `state.sources` -> `SIDECAR_STATE_SOURCES` (JSON array)
 - `state.minimum_state_diff` -> `SIDECAR_STATE_MINIMUM_STATE_DIFF`
 - `state.sources_sync_timeout_ms` -> `SIDECAR_STATE_SOURCES_SYNC_TIMEOUT_MS`
 - `state.sources_monitoring_period_ms` -> `SIDECAR_STATE_SOURCES_MONITORING_PERIOD_MS`
-- `state.eth_rpc_source_ws_url` -> `SIDECAR_STATE_ETH_RPC_SOURCE_WS_URL`
-- `state.eth_rpc_source_http_url` -> `SIDECAR_STATE_ETH_RPC_SOURCE_HTTP_URL`
-- `state.state_worker_mdbx_path` -> `SIDECAR_STATE_WORKER_MDBX_PATH`
-- `state.state_worker_depth` -> `SIDECAR_STATE_WORKER_DEPTH`
+
+Temporary rollout compatibility:
+- Legacy `SIDECAR_STATE_ETH_RPC_SOURCE_WS_URL`, `SIDECAR_STATE_ETH_RPC_SOURCE_HTTP_URL`, and `mdbx` entries inside `state.sources` are still accepted internally and mapped into the new `state.worker` or `state.sources` shape during config resolution. They are deprecated and not part of the documented config schema below.
 
 The configuration file is a JSON file with the following schema:
 
@@ -439,50 +441,55 @@ The configuration file is a JSON file with the following schema:
       "type": "object",
       "description": "State source configuration",
       "required": [
+        "worker",
         "sources",
         "minimum_state_diff",
         "sources_sync_timeout_ms",
         "sources_monitoring_period_ms"
       ],
       "properties": {
+        "worker": {
+          "type": "object",
+          "description": "Embedded state worker configuration",
+          "required": [
+            "ws_url",
+            "mdbx_path",
+            "file_to_genesis"
+          ],
+          "properties": {
+            "ws_url": {
+              "type": "string",
+              "description": "Embedded state worker WebSocket RPC endpoint",
+              "format": "uri",
+              "pattern": "^wss?://",
+              "examples": [
+                "ws://localhost:8546"
+              ]
+            },
+            "mdbx_path": {
+              "type": "string",
+              "description": "Embedded state worker MDBX path",
+              "format": "path",
+              "examples": [
+                "/data/state_worker.mdbx"
+              ]
+            },
+            "file_to_genesis": {
+              "type": "string",
+              "description": "Genesis JSON file used to hydrate block 0 for the embedded state worker",
+              "format": "path",
+              "examples": [
+                "/data/genesis.json"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
         "sources": {
           "type": "array",
-          "description": "State sources to enable (ordered by priority: first = highest)",
+          "description": "External state sources to enable alongside the embedded worker (ordered by priority: first = highest)",
           "items": {
             "oneOf": [
-              {
-                "type": "object",
-                "required": [
-                  "type",
-                  "mdbx_path",
-                  "depth"
-                ],
-                "properties": {
-                  "type": {
-                    "const": "mdbx"
-                  },
-                  "mdbx_path": {
-                    "type": "string",
-                    "description": "State worker MDBX path",
-                    "format": "path",
-                    "examples": [
-                      "/tmp"
-                    ]
-                  },
-                  "depth": {
-                    "type": "integer",
-                    "description": "State worker state depth - how many blocks behind head state worker will have the data from",
-                    "minimum": 0,
-                    "maximum": 9007199254740991,
-                    "examples": [
-                      100,
-                      250,
-                      500
-                    ]
-                  }
-                },
-                "additionalProperties": false
-              },
               {
                 "type": "object",
                 "required": [
@@ -546,15 +553,6 @@ The configuration file is a JSON file with the following schema:
           "examples": [
             1000
           ]
-        },
-        "enable_parallel_sources": {
-          "type": "boolean",
-          "description": "When enabled, queries all synced state sources simultaneously and returns the first successful response. Useful when sources have variable latency. Spawns a thread per source per query.",
-          "default": false,
-          "examples": [
-            false,
-            true
-          ]
         }
       },
       "additionalProperties": false
@@ -596,22 +594,21 @@ The default configuration can be found in [default_config.json](default_config.j
     "health_bind_addr": "0.0.0.0:9547",
   },
   "state": {
+    "worker": {
+      "ws_url": "ws://127.0.0.1:8546",
+      "mdbx_path": "/data/state_worker.mdbx",
+      "file_to_genesis": "/data/genesis.json"
+    },
     "sources": [
       {
         "type": "eth-rpc",
         "ws_url": "ws://127.0.0.1:8546",
         "http_url": "http://127.0.0.1:8545"
-      },
-      {
-        "type": "mdbx",
-        "mdbx_path": "/data/state_worker.mdbx",
-        "depth": 3
       }
     ],
     "minimum_state_diff": 100,
     "sources_sync_timeout_ms": 1000,
-    "sources_monitoring_period_ms": 500,
-    "enable_parallel_sources": false
+    "sources_monitoring_period_ms": 500
   }
 }
 ```
@@ -640,6 +637,11 @@ docker compose -f docker/maru-besu-sidecar/docker-compose.yml down -v
 Alternatively, you can run a sidecar locally with all services needed to get it running + an observability stack via:
 
 ```make run-sidecar-host```
+
+The host helper exports embedded-worker defaults automatically:
+- `SIDECAR_STATE_WORKER_WS_URL=ws://127.0.0.1:8546`
+- `SIDECAR_STATE_WORKER_MDBX_PATH=.local/sidecar-host/state_worker.mdbx`
+- `SIDECAR_STATE_WORKER_FILE_TO_GENESIS=docker/maru-besu-sidecar/config/l2-genesis-initialization/genesis-besu.json`
 
 #### Linux
 
