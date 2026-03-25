@@ -646,7 +646,7 @@ async fn stop_da_reachability_monitor(da_reachability_handle: tokio::task::JoinH
 }
 
 /// Spawns the embedded state worker thread when all required config fields are present.
-/// Returns `Some(exit_rx)` if spawned, `None` if config is incomplete (EthRpcSource fallback).
+/// Returns `Some(exit_rx)` if spawned, `None` if config is incomplete (`EthRpcSource` fallback).
 fn spawn_state_worker_if_configured(
     config: &Config,
     shutdown_flag: &Arc<AtomicBool>,
