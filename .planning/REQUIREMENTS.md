@@ -73,33 +73,33 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| THRD-01 | — | Pending |
-| THRD-02 | — | Pending |
-| THRD-03 | — | Pending |
-| THRD-04 | — | Pending |
-| THRD-05 | — | Pending |
-| THRD-06 | — | Pending |
-| THRD-07 | — | Pending |
-| FLOW-01 | — | Pending |
-| FLOW-02 | — | Pending |
-| FLOW-03 | — | Pending |
-| FLOW-04 | — | Pending |
-| FLOW-05 | — | Pending |
-| FLOW-06 | — | Pending |
-| SIMP-01 | — | Pending |
-| SIMP-02 | — | Pending |
-| SIMP-03 | — | Pending |
-| SIMP-04 | — | Pending |
-| SIMP-05 | — | Pending |
-| OBSV-01 | — | Pending |
-| OBSV-02 | — | Pending |
-| OBSV-03 | — | Pending |
+| THRD-01 | Phase 1 | Pending |
+| THRD-02 | Phase 1 | Pending |
+| THRD-03 | Phase 1 | Pending |
+| THRD-04 | Phase 1 | Pending |
+| THRD-05 | Phase 1 | Pending |
+| THRD-06 | Phase 1 | Pending |
+| THRD-07 | Phase 1 | Pending |
+| FLOW-01 | Phase 2 | Pending |
+| FLOW-02 | Phase 2 | Pending |
+| FLOW-03 | Phase 2 | Pending |
+| FLOW-04 | Phase 2 | Pending |
+| FLOW-05 | Phase 2 | Pending |
+| FLOW-06 | Phase 2 | Pending |
+| SIMP-01 | Phase 3 | Pending |
+| SIMP-02 | Phase 3 | Pending |
+| SIMP-03 | Phase 3 | Pending |
+| SIMP-04 | Phase 3 | Pending |
+| SIMP-05 | Phase 3 | Pending |
+| OBSV-01 | Phase 2 | Pending |
+| OBSV-02 | Phase 2 | Pending |
+| OBSV-03 | Phase 2 | Pending |
 
 **Coverage:**
 - v1 requirements: 21 total
-- Mapped to phases: 0
-- Unmapped: 21
+- Mapped to phases: 21
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-03-25*
-*Last updated: 2026-03-25 after initial definition*
+*Last updated: 2026-03-25 after roadmap creation*
