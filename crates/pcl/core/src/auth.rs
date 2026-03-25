@@ -300,7 +300,6 @@ mod tests {
                 ),
                 email: None,
             }),
-            ..Default::default()
         }
     }
 
