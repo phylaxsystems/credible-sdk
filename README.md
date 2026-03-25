@@ -1,12 +1,12 @@
 # `credible-sdk` monorepo
 
-The Credible SDK contains building blocks for running transactions against Phylax assertions. Inside, you'll find crates for running assertion EVM code inside our revm extension, types used within said extension, cheatcodes for assertion-specific functionality, the DA server for storing assertion code, and our CLI utility for testing assertions and submitting them to Credible Layer networks.
+The Credible SDK contains building blocks for running transactions against Phylax assertions. Inside, you'll find crates for running assertion EVM code inside our revm extension, types used within said extension, cheatcodes for assertion-specific functionality, the DA server for storing assertion code, and our CLI utility for testing assertions and deploying them to Credible Layer networks.
 
 ## Directory structure
 
 1. **Core PCL Crates**
 
-   - `pcl-core`: Core functionality including assertion DA, submission logic, auth, and project management
+   - `pcl-core`: Core functionality including auth, apply workflow, and project management
    - `pcl-cli`: Main CLI binary that provides the `pcl` command
    - `pcl-common`: Shared utilities and types used across PCL crates
    - `pcl-phoundry`: Foundry integration for building and testing Solidity assertions
