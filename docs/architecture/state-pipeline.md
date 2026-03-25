@@ -213,6 +213,8 @@ This is intentionally defensive:
 
 If system-call computation fails, the worker logs a warning and continues instead of failing the block. The assumption in code is that traces may already contain the writes.
 
+See [eips.md](eips.md) for full EIP-2935 and EIP-4788 storage layout, slot calculations, and the differences between sidecar and state-worker execution models.
+
 ## `scripts/geth_snapshot`
 
 ### What it is

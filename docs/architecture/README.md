@@ -48,6 +48,14 @@ Read `pcl.md` if you need:
 - `crates/pcl/phoundry`,
 - auth, build, test, or apply workflows.
 
+Read `eips.md` if you need:
+
+- `crates/eip-system-calls`,
+- EIP-2935 (historical block hashes) or EIP-4788 (beacon block root) behavior,
+- system call execution order,
+- sidecar vs state-worker system call differences,
+- ring buffer storage layout for system contracts.
+
 ## Global system shape
 
 At a high level:
@@ -108,3 +116,9 @@ If changing Assertion DA behavior:
 If changing PCL workflows:
 
 - start in `docs/architecture/pcl.md`
+
+If changing EIP system call behavior or adding new system contracts:
+
+- start in `docs/architecture/eips.md`
+- then read `docs/architecture/state-pipeline.md` (for state-worker integration)
+- then read `docs/architecture/sidecar.md` (for sidecar integration)
