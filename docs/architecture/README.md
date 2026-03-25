@@ -46,7 +46,7 @@ Read `pcl.md` if you need:
 - `crates/pcl/common`,
 - `crates/pcl/core`,
 - `crates/pcl/phoundry`,
-- auth, build, test, store, submit, or apply workflows.
+- auth, build, test, or apply workflows.
 
 ## Global system shape
 
@@ -58,7 +58,7 @@ At a high level:
 4. `assertion-executor` is the EVM/assertion engine used by `sidecar`.
 5. `sidecar` also indexes assertions from external events plus Assertion DA fetches.
 6. `assertion-da` is the artifact-availability service for assertion source and bytecode.
-7. `pcl` is the user/operator CLI stack for auth, build/test, DA storage, and app submission flows.
+7. `pcl` is the user/operator CLI stack for auth, build/test, and declarative release flows.
 
 ## Invariants worth preserving
 
@@ -80,7 +80,6 @@ At a high level:
 - `geth_snapshot` bootstraps all namespaces with the same block on initial hydrate; that is expected, not corruption.
 - assertion indexing currently depends on an external event source plus DA source being reachable and consistent.
 - Assertion DA submission depends on Dockerized Solidity compilation, so Docker health is part of the effective control plane.
-- PCL relies on local `CliConfig` as the staging boundary between DA storage and app submission; removing that boundary would change current workflow semantics.
 
 ## Where to start when modifying behavior
 
