@@ -231,7 +231,7 @@ AssertionStore
 ### Assertion DA schema
 
 ```text
-pcl store / sidecar indexer
+sidecar indexer
   |
   v
 assertion-da-client
@@ -274,12 +274,6 @@ pcl CLI
   +--> build  -> pcl-phoundry -> Foundry compile
   |
   +--> test   -> pcl-phoundry -> phorge / Foundry tests
-  |
-  +--> store  -> build_and_flatten -> Assertion DA submit
-  |                                  |
-  |                                  +--> save AssertionForSubmission in CliConfig
-  |
-  +--> submit -> app project APIs -> submitted-assertions endpoint
   |
   +--> apply  -> credible.toml + build_and_flatten -> app releases endpoint
 ```
@@ -1135,17 +1129,9 @@ The CLI supports JSON output in error paths, but command implementations are sti
 
 The key persisted state is:
 
-- `auth: Option<UserAuth>`
-- `assertions_for_submission: HashMap<AssertionKey, AssertionForSubmission>`
+- `auth: Option<UserAuth>` — tokens, user ID, optional wallet address, optional email
 
-This makes PCL a staged workflow:
-
-1. users can authenticate once and keep tokens locally,
-2. store assertion artifacts into DA,
-3. keep those DA references in local config,
-4. later submit some or all of them to a project in the app backend.
-
-That local staging area is important. Submission to Assertion DA and submission to the app backend are intentionally separate steps.
+Users authenticate once and keep tokens locally. The `apply` command then uses these tokens when submitting releases to the app backend.
 
 ### Auth flow
 
@@ -1172,36 +1158,6 @@ The main roles are:
 - `phorge_test`: run Foundry/phorge tests in a blocking task.
 
 This means PCL's correctness for local artifact generation depends heavily on Foundry project layout conventions and on phoundry/Foundry being installed correctly.
-
-### Assertion store flow
-
-The `store` command is implemented in `pcl core::assertion_da`.
-
-Its behavior is:
-
-1. resolve the target assertion source,
-2. build and flatten it through `pcl-phoundry`,
-3. construct a `DaSubmission`,
-4. submit that payload through `DaClient`,
-5. receive assertion id plus DA signature,
-6. write an `AssertionForSubmission` entry into `CliConfig.assertions_for_submission`.
-
-The important design choice is that `store` does not submit the assertion to a project. It only makes the artifact available in Assertion DA and records enough local metadata to submit it later.
-
-### Submission flow
-
-The `submit` command is implemented in `pcl core::assertion_submission`.
-
-Its behavior is:
-
-1. require valid app auth,
-2. fetch available user projects from the app backend,
-3. choose the target project interactively or by `--project-name`,
-4. choose locally staged assertions from `CliConfig`,
-5. send them to the app's submitted-assertions endpoint,
-6. remove successfully submitted assertions from local staged config.
-
-This confirms that PCL treats local config as a queue of pending submissions. DA storage is durable and external, but project submission state is tracked locally until the app accepts it.
 
 ### Apply flow
 
@@ -1249,7 +1205,6 @@ That fallback is part of current CLI behavior. Agents modifying assertion discov
 - `geth_snapshot` bootstraps all namespaces with the same block on initial hydrate; that is expected, not corruption.
 - assertion indexing currently depends on an external event source plus DA source being reachable and consistent.
 - Assertion DA submission depends on Dockerized Solidity compilation, so Docker health is part of the effective control plane.
-- PCL relies on local `CliConfig` as the staging boundary between DA storage and app submission; removing that boundary would change current workflow semantics.
 
 ## Where to start when modifying behavior
 
@@ -1289,7 +1244,6 @@ If changing Assertion DA behavior:
 If changing PCL workflows:
 
 - start in `crates/pcl/cli/src/main.rs`
-- then inspect `crates/pcl/core/src/assertion_da.rs`
-- `crates/pcl/core/src/assertion_submission.rs`
-- `crates/pcl/core/src/apply.rs`
+- then inspect `crates/pcl/core/src/apply.rs`
+- `crates/pcl/core/src/auth.rs`
 - and `crates/pcl/core/src/config.rs`

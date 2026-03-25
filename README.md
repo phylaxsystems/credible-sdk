@@ -48,7 +48,7 @@ To build from source, use `make docker-build` for the production image or `cargo
 
 ## Running and building PCL
 
-PCL (Phylax Command Line) is the main CLI tool for working with assertions - it handles building, testing, storing, and submitting assertions to the Credible Layer network. Before submitting assertions, authenticate using `pcl auth login` which opens a browser for wallet-based authentication.
+PCL (Phylax Command Line) is the main CLI tool for working with assertions - it handles building, testing, and deploying assertions to the Credible Layer network. Before deploying assertions, authenticate using `pcl auth login` which opens a browser for authentication.
 
 ```bash
 # Install PCL
@@ -64,14 +64,10 @@ cargo build --release --bin pcl
 Common workflows include:
 
 ```bash
-pcl auth login                                     # Authenticate with wallet
+pcl auth login                                     # Authenticate
 pcl build                                          # Compile Solidity assertions
 pcl test                                           # Run assertion tests
-pcl store AssertionName                            # Upload to DA layer (no constructor args)
-pcl store AssertionName 0x123... 100              # Upload to DA layer (with constructor args)
-pcl submit AssertionName                          # Submit single assertion (no args)
-pcl submit AssertionName 0x123... 100             # Submit single assertion (with args)
-pcl submit -a "AssertionName1(0x123...,100)" -a "AssertionName2(arg1,arg2)"  # Submit multiple assertions
+pcl apply --root ./my-project                      # Deploy assertions via credible.toml
 ```
 
 The CLI automatically detects assertion projects by looking for an `assertions/` directory or `foundry.toml` file.
