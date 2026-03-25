@@ -199,6 +199,8 @@ pub struct CoreEngineConfig {
     pub state_sources_sync_timeout: Duration,
     pub source_monitoring_period: Duration,
     pub overlay_cache_invalidation_every_block: bool,
+    /// Production always wires the embedded worker sink; tests and some bench
+    /// harnesses leave this unset so the engine can run without a supervisor.
     pub commit_target_sink: Option<CommitTargetHandle>,
     pub incident_sender: Option<IncidentReportSender>,
     #[cfg(feature = "cache_validation")]
@@ -545,7 +547,8 @@ pub struct CoreEngine<DB> {
     tx_receiver: TransactionQueueReceiver,
     /// Channel on which the core engine sends invalidation reports.
     incident_sender: Option<IncidentReportSender>,
-    /// Optional sink for publishing accepted commit targets to the embedded state worker.
+    /// Production always installs this sink; `None` is reserved for tests and
+    /// harnesses that exercise the engine without an embedded worker thread.
     commit_target_sink: Option<CommitTargetHandle>,
     /// Core engines instance of the assertion executor, executes transactions and assertions
     assertion_executor: AssertionExecutor,

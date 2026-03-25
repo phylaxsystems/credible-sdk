@@ -52,18 +52,22 @@ const TRACE_TIMEOUT: Duration = Duration::from_secs(30);
 const TEST_WAIT_TIMEOUT: Duration = Duration::from_secs(3);
 const NONE_BLOCK_SENTINEL: u64 = u64::MAX;
 
+/// Test seam for components that publish accepted commit heads into the worker.
 pub trait CommitTargetSink: std::fmt::Debug + Send + Sync {
     fn publish(&self, block_number: u64);
 }
 
 pub type CommitTargetHandle = Arc<dyn CommitTargetSink>;
 
+/// Test seam for consumers that need a synthesized worker health snapshot.
 pub trait WorkerStatusReader: std::fmt::Debug + Send + Sync {
     fn snapshot(&self) -> WorkerStatusSnapshot;
 }
 
 pub type WorkerStatusHandle = Arc<dyn WorkerStatusReader>;
 
+/// Internal helper so replay logic can work with either the real worker handle
+/// or test publishers without exposing more of the worker implementation.
 trait CommitTargetPublisher {
     fn publish(&self, block_number: u64);
 }
@@ -158,6 +162,8 @@ impl SupervisorStatus {
     }
 }
 
+/// Internal worker seam used by supervisor tests to inject panicking and
+/// shutdown-aware workers without spinning the real embedded runtime.
 pub(crate) trait SupervisedWorker: Send {
     fn run(self: Box<Self>, shutdown: Arc<AtomicBool>) -> Result<()>;
 }
@@ -166,9 +172,13 @@ type WorkerFactory = Box<dyn FnMut() -> Result<Box<dyn SupervisedWorker>> + Send
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EmbeddedWorkerConfig {
+    /// Execution-node websocket used for new-head subscriptions and block fetches.
     pub ws_url: String,
+    /// Shared MDBX path opened through the sidecar-local runtime singleton.
     pub mdbx_path: String,
+    /// Genesis file used to rebuild the worker's system-call and initial-state context.
     pub file_to_genesis: String,
+    /// Optional test-only override for where the embedded runtime should begin.
     pub start_block: Option<u64>,
 }
 
@@ -245,6 +255,13 @@ impl StateWorkerSupervisor {
         )
     }
 
+    /// Shared constructor used by production and supervisor tests.
+    ///
+    /// `factory` builds a fresh worker instance for each supervisor attempt.
+    /// `control` stores the latest live worker handle for the rest of the sidecar.
+    /// `stable_commit_target` preserves the highest accepted commit head across restarts.
+    /// `thread_name` names the supervisor OS thread.
+    /// `restart_backoff` throttles restart loops after failures or panics.
     fn spawn_with_factory(
         factory: WorkerFactory,
         control: Option<Arc<Mutex<Option<EmbeddedStateWorkerHandle>>>>,

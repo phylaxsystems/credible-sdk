@@ -1,4 +1,8 @@
-//! State reader implementation for latest-state MDBX storage.
+//! State reader for the latest-state MDBX layout.
+//!
+//! The runtime only serves the most recently committed canonical block. Legacy
+//! multi-namespace layouts are migrated on open by the writer, so normal reads
+//! can treat namespace `0` as the only live keyspace.
 
 use crate::{
     AccountInfo,
@@ -46,6 +50,8 @@ use std::{
 };
 use tracing::instrument;
 
+// The persisted key format is still namespace-prefixed, but latest-state reads
+// only ever serve namespace `0`.
 const ACTIVE_NAMESPACE: u8 = 0;
 const LATEST_STATE_BUFFER_SIZE: u8 = 1;
 
@@ -173,18 +179,21 @@ impl Reader for StateReader {
         }))
     }
 
+    /// Returns the canonical block hash, but only for the latest committed block.
     fn get_block_hash(&self, block_number: u64) -> StateResult<Option<B256>> {
         Ok(self
             .get_block_metadata(block_number)?
             .map(|metadata| metadata.block_hash))
     }
 
+    /// Returns the canonical state root, but only for the latest committed block.
     fn get_state_root(&self, block_number: u64) -> StateResult<Option<B256>> {
         Ok(self
             .get_block_metadata(block_number)?
             .map(|metadata| metadata.state_root))
     }
 
+    /// Latest-state MDBX keeps metadata for exactly one canonical block.
     fn get_block_metadata(&self, block_number: u64) -> StateResult<Option<BlockMetadata>> {
         let tx = self.db.tx()?;
         if Self::latest_block_from_tx(&tx)? != Some(block_number) {
@@ -204,10 +213,12 @@ impl Reader for StateReader {
         }))
     }
 
+    /// The readable range collapses to a single block in latest-state mode.
     fn get_available_block_range(&self) -> StateResult<Option<(u64, u64)>> {
         Ok(self.latest_block_number()?.map(|latest| (latest, latest)))
     }
 
+    /// Scans the latest-state account table for the requested committed block.
     fn scan_account_hashes(&self, block_number: u64) -> StateResult<Vec<AddressHash>> {
         let tx = self.db.tx()?;
         let namespace = Self::verify_block_available(&tx, block_number)?;
@@ -248,12 +259,6 @@ impl StateReader {
         &self.db
     }
 
-    /// Compatibility shim for callers that still surface a "depth" concept.
-    #[must_use]
-    pub fn buffer_size(&self) -> u8 {
-        self.db.buffer_size()
-    }
-
     #[instrument(skip(self), level = "debug")]
     pub fn get_all_storage_with_stats(
         &self,
@@ -284,7 +289,7 @@ impl StateReader {
         block_number: u64,
     ) -> StateResult<u8> {
         if Self::latest_block_from_tx(tx)? == Some(block_number) {
-            return Ok(Self::namespace_for_latest_block(tx, block_number)?);
+            return Self::stored_namespace_for_block(tx, block_number);
         }
 
         Err(StateError::BlockNotFound {
@@ -297,7 +302,7 @@ impl StateReader {
         Self::active_namespace_for_block(tx, block_number)
     }
 
-    fn namespace_for_latest_block<TX: DbTx>(tx: &TX, block_number: u64) -> StateResult<u8> {
+    fn stored_namespace_for_block<TX: DbTx>(tx: &TX, block_number: u64) -> StateResult<u8> {
         let buffer_size = tx
             .get::<Metadata>(MetadataKey)
             .map_err(StateError::Database)?

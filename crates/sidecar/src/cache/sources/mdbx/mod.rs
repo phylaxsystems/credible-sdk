@@ -1,6 +1,10 @@
 #![cfg_attr(not(test), allow(dead_code))]
 
 //! # State-worker backed cache source
+//!
+//! `MdbxSource` never polls the database in the background. Instead it reads a
+//! status snapshot published by the embedded worker supervisor and only serves
+//! data when MDBX has caught up to the requested commit head.
 
 pub(crate) mod error;
 
@@ -52,9 +56,11 @@ use tracing::{
 #[derive(Debug)]
 pub struct MdbxSource {
     backend: StateReader,
-    /// Target block to request from MDBX for reads.
+    /// Latest commit head the cache has decided MDBX is allowed to serve.
     target_block: Arc<RwLock<U256>>,
+    /// Shared worker health/sync snapshot exposed by the sidecar supervisor.
     worker_status: WorkerStatusHandle,
+    /// Last status published into the cache monitoring path.
     cache_status: Arc<CacheStatus>,
 }
 
@@ -65,7 +71,7 @@ pub(crate) struct CacheStatus {
 }
 
 impl MdbxSource {
-    /// Creates a cache that stores entries under the default `state` namespace.
+    /// Creates a latest-state cache backed by the embedded worker's MDBX runtime.
     pub fn new(backend: StateReader, worker_status: WorkerStatusHandle) -> Self {
         Self {
             backend,
@@ -100,6 +106,8 @@ impl MdbxSource {
             "checking mdbx source sync status"
         );
 
+        // Reads are only allowed when the worker is both healthy and not in the
+        // middle of a supervisor restart.
         if !snapshot.healthy || snapshot.restarting {
             debug!(target: "state_worker", "worker is unhealthy or restarting");
             return None;
@@ -110,6 +118,8 @@ impl MdbxSource {
             return None;
         };
 
+        // Latest-state MDBX only stores the most recently committed canonical
+        // block, so being behind the requested head means we must fall back.
         if U256::from(synced_through) < latest_head {
             debug!(
                 target: "state_worker",

@@ -1,4 +1,8 @@
-//! State writer implementation for latest-state MDBX storage.
+//! State writer for the latest-state MDBX layout.
+//!
+//! New writes always target namespace `0` and replace the previous canonical
+//! metadata. The only remaining non-zero namespace handling is the one-time
+//! migration path for older buffered databases.
 
 use crate::{
     AccountInfo,
@@ -58,8 +62,10 @@ use std::{
 };
 use tracing::debug;
 
+// The persisted key format is still namespace-prefixed, but the live runtime
+// only writes namespace `0`.
 const ACTIVE_NAMESPACE: u8 = 0;
-const COMPAT_BUFFER_SIZE: u8 = 1;
+const LATEST_STATE_BUFFER_SIZE: u8 = 1;
 
 /// Session for streaming bootstrap writes without loading all accounts into memory.
 pub struct BootstrapWriter {
@@ -163,7 +169,7 @@ impl BootstrapWriter {
                 MetadataKey,
                 GlobalMetadata {
                     latest_block: self.block_number,
-                    buffer_size: COMPAT_BUFFER_SIZE,
+                    buffer_size: LATEST_STATE_BUFFER_SIZE,
                 },
             )
             .map_err(StateError::Database)?;
@@ -296,7 +302,7 @@ impl Writer for StateWriter {
             MetadataKey,
             GlobalMetadata {
                 latest_block: update.block_number,
-                buffer_size: COMPAT_BUFFER_SIZE,
+                buffer_size: LATEST_STATE_BUFFER_SIZE,
             },
         )
         .map_err(StateError::Database)?;
@@ -341,12 +347,6 @@ impl StateWriter {
     #[must_use]
     pub fn reader(&self) -> &StateReader {
         &self.reader
-    }
-
-    /// Compatibility shim for older callers until the sidecar config is simplified.
-    #[must_use]
-    pub fn buffer_size(&self) -> u8 {
-        self.reader.buffer_size()
     }
 
     pub fn begin_bootstrap(
@@ -425,7 +425,7 @@ impl StateWriter {
             MetadataKey,
             GlobalMetadata {
                 latest_block: block_number,
-                buffer_size: COMPAT_BUFFER_SIZE,
+                    buffer_size: LATEST_STATE_BUFFER_SIZE,
             },
         )
         .map_err(StateError::Database)?;
@@ -443,6 +443,8 @@ impl StateWriter {
         Ok(true)
     }
 
+    /// Rewrites the latest canonical block from the legacy rotating layout into
+    /// the single-namespace latest-state layout on first open.
     fn migrate_legacy_layout_if_needed(&self) -> StateResult<()> {
         let Some(latest_block) = self.latest_block_number()? else {
             return Ok(());
@@ -453,12 +455,12 @@ impl StateWriter {
             .get::<Metadata>(MetadataKey)
             .map_err(StateError::Database)?
             .map(|metadata| metadata.buffer_size)
-            .unwrap_or(COMPAT_BUFFER_SIZE);
-        if buffer_size <= COMPAT_BUFFER_SIZE {
+            .unwrap_or(LATEST_STATE_BUFFER_SIZE);
+        if buffer_size <= LATEST_STATE_BUFFER_SIZE {
             return Ok(());
         }
 
-        let namespace = StateReader::active_namespace_for_block(&tx, latest_block)?;
+        let namespace = Self::legacy_active_namespace(buffer_size, latest_block);
         let block_metadata = tx
             .get::<BlockMetadataTable>(BlockNumber(latest_block))
             .map_err(StateError::Database)?
@@ -517,6 +519,14 @@ impl StateWriter {
             storage,
             deleted: false,
         })
+    }
+
+    fn legacy_active_namespace(buffer_size: u8, latest_block: u64) -> u8 {
+        if buffer_size <= LATEST_STATE_BUFFER_SIZE {
+            ACTIVE_NAMESPACE
+        } else {
+            (latest_block % u64::from(buffer_size)) as u8
+        }
     }
 
     fn validate_unique_accounts(update: &BlockStateUpdate) -> StateResult<()> {

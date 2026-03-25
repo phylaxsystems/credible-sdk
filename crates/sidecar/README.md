@@ -132,9 +132,6 @@ State:
 - `state.sources_sync_timeout_ms` -> `SIDECAR_STATE_SOURCES_SYNC_TIMEOUT_MS`
 - `state.sources_monitoring_period_ms` -> `SIDECAR_STATE_SOURCES_MONITORING_PERIOD_MS`
 
-Temporary rollout compatibility:
-- Legacy `SIDECAR_STATE_ETH_RPC_SOURCE_WS_URL`, `SIDECAR_STATE_ETH_RPC_SOURCE_HTTP_URL`, and `mdbx` entries inside `state.sources` are still accepted internally and mapped into the new `state.worker` or `state.sources` shape during config resolution. They are deprecated and not part of the documented config schema below.
-
 The configuration file is a JSON file with the following schema:
 
 ```json

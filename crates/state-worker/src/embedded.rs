@@ -58,6 +58,7 @@ pub struct WorkerStatus {
     highest_staged_block: AtomicU64,
     mdbx_synced_through: AtomicU64,
     healthy: AtomicBool,
+    /// Set when the block subscription dies and the runtime enters retry sleep.
     restarting: AtomicBool,
 }
 
@@ -145,6 +146,8 @@ pub struct EmbeddedStateWorkerRuntime<WR>
 where
     WR: Writer + Reader,
 {
+    // Keep the runtime generic so production can use MDBX while tests reuse the
+    // same staging/flush logic with lightweight reader/writer doubles.
     worker: StateWorker<WR>,
     staged_updates: BTreeMap<u64, BlockStateUpdate>,
     handle: EmbeddedStateWorkerHandle,
@@ -201,6 +204,7 @@ where
             .status
             .set_mdbx_synced_through(self.worker.current_synced_block()?);
         self.handle.status.set_healthy(true);
+        // A fresh startup or successful catch-up clears the restart marker.
         self.handle.status.set_restarting(false);
 
         let mut next_block = self.worker.compute_start_block(start_override)?;
@@ -244,6 +248,9 @@ where
                     }
 
                     self.handle.status.set_healthy(false);
+                    // This is the only place the embedded runtime marks itself as
+                    // restarting: the subscription failed and we are about to back off
+                    // before reconnecting.
                     self.handle.status.set_restarting(true);
                     warn!(error = %err, "block subscription ended, retrying");
                     tokio::select! {
