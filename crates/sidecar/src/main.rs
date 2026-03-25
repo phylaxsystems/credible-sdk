@@ -9,6 +9,7 @@ use assertion_executor::{
 use credible_utils::shutdown::wait_for_sigterm;
 use flume::unbounded;
 use mdbx::{
+    Reader,
     StateReader,
     common::CircularBufferConfig,
 };
@@ -57,12 +58,21 @@ use sidecar::{
     },
     utils::ErrorRecoverability,
 };
+use state_worker::{
+    embedded::{
+        CommitHeadHandle,
+        EmbeddedStateWorkerConfig,
+        spawn_embedded_state_worker,
+    },
+    service::WorkerRuntimeConfig,
+};
 use std::{
     net::SocketAddr,
     sync::{
         Arc,
         atomic::{
             AtomicBool,
+            AtomicU64,
             Ordering,
         },
     },
@@ -270,6 +280,7 @@ struct ThreadHandles {
         Option<JoinHandle<Result<(), sidecar::event_sequencing::EventSequencingError>>>,
     transaction_observer:
         Option<JoinHandle<Result<(), sidecar::transaction_observer::TransactionObserverError>>>,
+    state_workers: Vec<JoinHandle<()>>,
 }
 
 impl ThreadHandles {
@@ -278,6 +289,7 @@ impl ThreadHandles {
             engine: None,
             event_sequencing: None,
             transaction_observer: None,
+            state_workers: Vec::new(),
         }
     }
 
@@ -307,6 +319,33 @@ impl ThreadHandles {
                 Err(_) => tracing::error!("Transaction observer thread panicked"),
             }
         }
+        for handle in self.state_workers.drain(..) {
+            if handle.join().is_err() {
+                tracing::error!("State worker supervisor thread panicked");
+            }
+        }
+    }
+}
+
+struct BuiltSources {
+    sources: Vec<Arc<dyn Source>>,
+    commit_head_handles: Vec<CommitHeadHandle>,
+    state_worker_threads: Vec<JoinHandle<()>>,
+}
+
+impl BuiltSources {
+    fn push_source(&mut self, source: Arc<dyn Source>) {
+        self.sources.push(source);
+    }
+
+    fn push_state_worker(
+        &mut self,
+        source: Arc<dyn Source>,
+        handle: state_worker::embedded::EmbeddedStateWorkerHandle,
+    ) {
+        self.sources.push(source);
+        self.commit_head_handles.push(handle.commit_head);
+        self.state_worker_threads.push(handle.thread);
     }
 }
 
@@ -338,72 +377,176 @@ fn transaction_observer_config_from(config: &Config) -> Option<TransactionObserv
     }
 }
 
-async fn build_sources_from_config(config: &Config) -> anyhow::Result<Vec<Arc<dyn Source>>> {
-    let mut sources: Vec<Arc<dyn Source>> = Vec::new();
+async fn build_sources_from_config(
+    config: &Config,
+    shutdown_flag: Arc<AtomicBool>,
+) -> anyhow::Result<BuiltSources> {
+    let mut built_sources = BuiltSources {
+        sources: Vec::new(),
+        commit_head_handles: Vec::new(),
+        state_worker_threads: Vec::new(),
+    };
 
     if config.state.sources.is_empty() {
-        if config.state.legacy.has_any() {
-            warn!("Using legacy state source configuration; migrate to state.sources.");
-        }
-        if let (Some(state_worker_path), Some(state_worker_depth)) = (
-            config.state.legacy.state_worker_mdbx_path.as_ref(),
-            config.state.legacy.state_worker_depth,
-        ) {
-            match StateReader::new(
-                state_worker_path,
-                CircularBufferConfig::new(u8::try_from(state_worker_depth)?)?,
-            ) {
-                Ok(state_worker_client) => {
-                    sources.push(Arc::new(MdbxSource::new(state_worker_client)));
-                }
-                Err(e) => {
-                    error!(error = ?e, "Failed to connect MDBX");
-                }
-            }
-        }
-
-        if let (Some(eth_rpc_source_ws_url), Some(eth_rpc_source_http_url)) = (
-            &config.state.legacy.eth_rpc_source_ws_url,
-            &config.state.legacy.eth_rpc_source_http_url,
-        ) && let Ok(eth_rpc_source) = EthRpcSource::try_build(
-            eth_rpc_source_ws_url.as_str(),
-            eth_rpc_source_http_url.as_str(),
-        )
-        .await
-        {
-            sources.push(eth_rpc_source);
-        }
+        build_legacy_sources(config, &mut built_sources).await?;
     } else {
         if config.state.legacy.has_any() {
             warn!("Ignoring legacy state source configuration; state.sources is set.");
         }
         for source_config in &config.state.sources {
-            match source_config {
-                StateSourceConfig::Mdbx { mdbx_path, depth } => {
-                    match StateReader::new(
-                        mdbx_path,
-                        CircularBufferConfig::new(u8::try_from(*depth)?)?,
-                    ) {
-                        Ok(state_worker_client) => {
-                            sources.push(Arc::new(MdbxSource::new(state_worker_client)));
-                        }
-                        Err(e) => {
-                            error!(error = ?e, "Failed to connect MDBX");
-                        }
-                    }
-                }
-                StateSourceConfig::EthRpc { ws_url, http_url } => {
-                    if let Ok(eth_rpc_source) =
-                        EthRpcSource::try_build(ws_url.as_str(), http_url.as_str()).await
-                    {
-                        sources.push(eth_rpc_source);
-                    }
-                }
-            }
+            build_configured_source(
+                source_config,
+                Arc::clone(&shutdown_flag),
+                &mut built_sources,
+            )
+            .await?;
         }
     }
 
-    Ok(sources)
+    Ok(built_sources)
+}
+
+async fn build_legacy_sources(
+    config: &Config,
+    built_sources: &mut BuiltSources,
+) -> anyhow::Result<()> {
+    if config.state.legacy.has_any() {
+        warn!("Using legacy state source configuration; migrate to state.sources.");
+    }
+
+    if let (Some(state_worker_path), Some(state_worker_depth)) = (
+        config.state.legacy.state_worker_mdbx_path.as_ref(),
+        config.state.legacy.state_worker_depth,
+    ) {
+        connect_legacy_mdbx_source(state_worker_path, state_worker_depth, built_sources)?;
+    }
+
+    if let (Some(ws_url), Some(http_url)) = (
+        &config.state.legacy.eth_rpc_source_ws_url,
+        &config.state.legacy.eth_rpc_source_http_url,
+    ) {
+        maybe_add_eth_rpc_source(ws_url, http_url, built_sources).await;
+    }
+
+    Ok(())
+}
+
+fn connect_legacy_mdbx_source(
+    state_worker_path: &str,
+    state_worker_depth: usize,
+    built_sources: &mut BuiltSources,
+) -> anyhow::Result<()> {
+    match StateReader::new(
+        state_worker_path,
+        CircularBufferConfig::new(u8::try_from(state_worker_depth)?)?,
+    ) {
+        Ok(state_worker_client) => {
+            let committed_head = Arc::new(AtomicU64::new(
+                state_worker_client
+                    .latest_block_number()
+                    .ok()
+                    .flatten()
+                    .unwrap_or(0),
+            ));
+            built_sources.push_source(Arc::new(MdbxSource::new(
+                state_worker_client,
+                committed_head,
+            )));
+        }
+        Err(error) => {
+            error!(error = ?error, "Failed to connect MDBX");
+        }
+    }
+
+    Ok(())
+}
+
+async fn build_configured_source(
+    source_config: &StateSourceConfig,
+    shutdown_flag: Arc<AtomicBool>,
+    built_sources: &mut BuiltSources,
+) -> anyhow::Result<()> {
+    match source_config {
+        StateSourceConfig::Mdbx {
+            mdbx_path,
+            depth,
+            ws_url,
+            genesis_file_path,
+            max_buffered_blocks,
+        } => {
+            build_embedded_mdbx_source(
+                mdbx_path,
+                *depth,
+                ws_url,
+                genesis_file_path,
+                *max_buffered_blocks,
+                shutdown_flag,
+                built_sources,
+            )?;
+        }
+        StateSourceConfig::EthRpc { ws_url, http_url } => {
+            maybe_add_eth_rpc_source(ws_url, http_url, built_sources).await;
+        }
+    }
+
+    Ok(())
+}
+
+fn build_embedded_mdbx_source(
+    mdbx_path: &str,
+    depth: usize,
+    ws_url: &str,
+    genesis_file_path: &str,
+    max_buffered_blocks: usize,
+    shutdown_flag: Arc<AtomicBool>,
+    built_sources: &mut BuiltSources,
+) -> anyhow::Result<()> {
+    match StateReader::new(mdbx_path, CircularBufferConfig::new(u8::try_from(depth)?)?) {
+        Ok(state_worker_client) => {
+            let committed_head = Arc::new(AtomicU64::new(
+                state_worker_client
+                    .latest_block_number()
+                    .ok()
+                    .flatten()
+                    .unwrap_or(0),
+            ));
+            let source = Arc::new(MdbxSource::new(
+                state_worker_client,
+                Arc::clone(&committed_head),
+            ));
+
+            let embedded_config = EmbeddedStateWorkerConfig {
+                runtime: WorkerRuntimeConfig {
+                    ws_url: ws_url.to_string(),
+                    mdbx_path: mdbx_path.to_string(),
+                    start_block: None,
+                    state_depth: u8::try_from(depth)?,
+                    genesis_file_path: genesis_file_path.to_string(),
+                    max_buffered_blocks,
+                },
+                restart_backoff: Duration::from_secs(1),
+            };
+
+            match spawn_embedded_state_worker(embedded_config, shutdown_flag, committed_head) {
+                Ok(handle) => built_sources.push_state_worker(source, handle),
+                Err(error) => {
+                    error!(error = ?error, mdbx_path, "Failed to spawn embedded state worker");
+                    built_sources.push_source(source);
+                }
+            }
+        }
+        Err(error) => {
+            error!(error = ?error, "Failed to connect MDBX");
+        }
+    }
+
+    Ok(())
+}
+
+async fn maybe_add_eth_rpc_source(ws_url: &str, http_url: &str, built_sources: &mut BuiltSources) {
+    if let Ok(eth_rpc_source) = EthRpcSource::try_build(ws_url, http_url).await {
+        built_sources.push_source(eth_rpc_source);
+    }
 }
 
 fn result_ttl(config: &Config) -> Duration {
@@ -606,9 +749,13 @@ async fn run_sidecar_once(
     // Shared shutdown flag for this iteration
     let shutdown_flag = Arc::new(AtomicBool::new(false));
 
-    let sources = build_sources_from_config(config).await?;
-    let state = Arc::new(Sources::new(sources, config.state.minimum_state_diff));
+    let built_sources = build_sources_from_config(config, Arc::clone(&shutdown_flag)).await?;
+    let state = Arc::new(Sources::new(
+        built_sources.sources,
+        config.state.minimum_state_diff,
+    ));
     let cache: OverlayDb<Sources> = OverlayDb::new(Some(state.clone()));
+    thread_handles.state_workers = built_sources.state_worker_threads;
 
     let transaction_observer_config = transaction_observer_config_from(config);
 
@@ -651,6 +798,7 @@ async fn run_sidecar_once(
             .credible
             .overlay_cache_invalidation_every_block
             .unwrap_or(false),
+        state_worker_commit_heads: built_sources.commit_head_handles,
         incident_sender: incident_report_tx,
         #[cfg(feature = "cache_validation")]
         provider_ws_url: Some(config.credible.cache_checker_ws_url.clone()),

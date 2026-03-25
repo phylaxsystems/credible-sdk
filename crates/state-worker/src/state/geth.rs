@@ -9,6 +9,10 @@
 //! remain intact. The tracer reports only the balance change, no deletion.
 
 use super::AccountSnapshot;
+use crate::error::{
+    Result,
+    StateWorkerError,
+};
 use alloy::primitives::{
     U256,
     keccak256,
@@ -18,14 +22,18 @@ use alloy_rpc_types_trace::geth::{
     PreStateFrame,
     TraceResult,
 };
-use anyhow::anyhow;
 use mdbx::{
     AccountState,
     AddressHash,
 };
 use std::collections::HashMap;
 
-pub fn process_geth_traces(traces: Vec<TraceResult>) -> anyhow::Result<Vec<AccountState>> {
+/// Convert Geth prestate tracer results into MDBX account updates.
+///
+/// # Errors
+///
+/// Returns an error if any trace result is not a successful prestate tracer payload.
+pub fn process_geth_traces(traces: Vec<TraceResult>) -> Result<Vec<AccountState>> {
     let mut accounts: HashMap<AddressHash, AccountSnapshot> = HashMap::new();
 
     for trace in traces {
@@ -37,9 +45,9 @@ pub fn process_geth_traces(traces: Vec<TraceResult>) -> anyhow::Result<Vec<Accou
                 process_frame(&mut accounts, frame);
             }
             TraceResult::Success { tx_hash, .. } | TraceResult::Error { tx_hash, .. } => {
-                return Err(anyhow!(
-                    "trace failed or unexpected tracer type (tx: {tx_hash:?})"
-                ));
+                return Err(StateWorkerError::UnexpectedTraceResult {
+                    tx_hash: format!("{tx_hash:?}"),
+                });
             }
         }
     }

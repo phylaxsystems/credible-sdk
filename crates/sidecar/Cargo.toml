@@ -18,6 +18,7 @@ eip-system-calls.workspace = true
 sidecar-test-macros = { path = "src/utils/test-macros", optional = true }
 mdbx = { workspace = true, features = ["reader"] }
 int-test-utils = { workspace = true, optional = true }
+state-worker.workspace = true
 
 clap = { workspace = true }
 dashmap = { workspace = true }

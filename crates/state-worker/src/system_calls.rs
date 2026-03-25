@@ -14,15 +14,15 @@
 //! - Contract: `0x000F3df6D732807Ef1319fB7B8bB8522d0Beac02`
 //! - Dual ring buffer: timestamps + roots, 8191 slots each
 
+use crate::error::{
+    Result,
+    StateWorkerError,
+};
 use alloy::primitives::{
     B256,
     Bytes,
     U256,
     keccak256,
-};
-use anyhow::{
-    Result,
-    bail,
 };
 use eip_system_calls::{
     SystemContract,
@@ -60,6 +60,7 @@ pub struct SystemCalls {
 
 impl SystemCalls {
     /// Create a new `SystemCalls` instance with fork activation timestamps.
+    #[must_use]
     pub fn new(cancun_time: Option<u64>, prague_time: Option<u64>) -> Self {
         Self {
             cancun_time,
@@ -68,11 +69,13 @@ impl SystemCalls {
     }
 
     /// Check if Cancun fork is active at the given timestamp.
+    #[must_use]
     pub fn is_cancun_active(&self, timestamp: u64) -> bool {
         self.cancun_time.is_some_and(|t| timestamp >= t)
     }
 
     /// Check if Prague fork is active at the given timestamp.
+    #[must_use]
     pub fn is_prague_active(&self, timestamp: u64) -> bool {
         self.prague_time.is_some_and(|t| timestamp >= t)
     }
@@ -81,6 +84,10 @@ impl SystemCalls {
     ///
     /// Returns a list of `AccountState` records representing the state
     /// modifications from EIP-2935 and EIP-4788 system calls.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if active system calls are missing required parent block data.
     pub fn compute_system_call_states<R: Reader>(
         &self,
         config: &SystemCallConfig,
@@ -116,10 +123,9 @@ impl SystemCalls {
         }
 
         let Some(parent_hash) = config.parent_block_hash else {
-            bail!(
-                "missing parent block hash for EIP-2935 at block {}",
-                config.block_number
-            )
+            return Err(StateWorkerError::MissingParentBlockHash {
+                block_number: config.block_number,
+            });
         };
 
         let address_hash = Eip2935::ADDRESS.into();
@@ -163,16 +169,15 @@ impl SystemCalls {
             if let Some(root) = config.parent_beacon_block_root
                 && !root.is_zero()
             {
-                bail!("genesis block cannot have non-zero parent beacon root");
+                return Err(StateWorkerError::GenesisParentBeaconRootNonZero);
             }
             return Ok(None);
         }
 
         let Some(beacon_root) = config.parent_beacon_block_root else {
-            bail!(
-                "missing parent beacon block root for EIP-4788 at block {}",
-                config.block_number
-            )
+            return Err(StateWorkerError::MissingParentBeaconBlockRoot {
+                block_number: config.block_number,
+            });
         };
 
         let address_hash = Eip4788::ADDRESS.into();
@@ -249,7 +254,10 @@ impl SystemCalls {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anyhow::Context;
+    use anyhow::{
+        Context,
+        Result,
+    };
     use mdbx::StateReader;
 
     fn system_calls_always_active() -> SystemCalls {

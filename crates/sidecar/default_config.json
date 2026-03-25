@@ -38,7 +38,10 @@
       {
         "type": "mdbx",
         "mdbx_path": "/data/state_worker.mdbx",
-        "depth": 3
+        "depth": 1,
+        "ws_url": "ws://127.0.0.1:8546",
+        "genesis_file_path": "/data/genesis.json",
+        "max_buffered_blocks": 32
       }
     ],
     "minimum_state_diff": 100,

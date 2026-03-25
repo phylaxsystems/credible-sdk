@@ -167,6 +167,7 @@ use revm::{
         hardfork::SpecId,
     },
 };
+use state_worker::embedded::CommitHeadHandle;
 use std::collections::HashMap;
 #[cfg(feature = "cache_validation")]
 use tokio::task::AbortHandle;
@@ -198,6 +199,7 @@ pub struct CoreEngineConfig {
     pub state_sources_sync_timeout: Duration,
     pub source_monitoring_period: Duration,
     pub overlay_cache_invalidation_every_block: bool,
+    pub state_worker_commit_heads: Vec<CommitHeadHandle>,
     pub incident_sender: Option<IncidentReportSender>,
     #[cfg(feature = "cache_validation")]
     pub provider_ws_url: Option<String>,
@@ -558,6 +560,7 @@ pub struct CoreEngine<DB> {
     overlay_cache_invalidation_every_block: bool,
     /// System calls handler for EIP-2935 and EIP-4788.
     system_calls: SystemCalls,
+    state_worker_commit_heads: Vec<CommitHeadHandle>,
     #[cfg(feature = "cache_validation")]
     processed_transactions: ProcessedBlocksCache,
     #[cfg(feature = "cache_validation")]
@@ -640,6 +643,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             ),
             overlay_cache_invalidation_every_block: config.overlay_cache_invalidation_every_block,
             system_calls: SystemCalls::new(),
+            state_worker_commit_heads: config.state_worker_commit_heads,
             #[cfg(feature = "cache_validation")]
             processed_transactions,
             #[cfg(feature = "cache_validation")]
@@ -1636,6 +1640,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 processed_blocks,
                 block_processing_time,
             );
+            self.flush_state_workers(commit_head.block_number);
             self.first_commit_head_processed = true;
             return Ok(());
         }
@@ -1704,6 +1709,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             processed_blocks,
             block_processing_time,
         );
+        self.flush_state_workers(commit_head.block_number);
         self.current_block_iterations.clear();
         self.first_commit_head_processed = true;
 
@@ -1850,6 +1856,13 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
 
         *block_processing_time = Instant::now();
         *processed_blocks += 1;
+    }
+
+    fn flush_state_workers(&self, block_number: U256) {
+        let block_number = block_number.saturating_to::<u64>();
+        for handle in &self.state_worker_commit_heads {
+            handle.flush_up_to(block_number);
+        }
     }
 
     /// Processes a reorg event by validating the tail of executed transactions.

@@ -2,8 +2,14 @@
 //!
 //! The worker bootstraps from the last persisted block, catches up to head via
 //! RPC, and then tails new blocks from the `newHeads` subscription. Each block
-//! is traced with the pre-state tracer and written into the database.
+//! is traced with the pre-state tracer and buffered in memory. Writes to MDBX
+//! are then gated by the latest commit head that the sidecar has finalized.
 use crate::{
+    error::{
+        Result,
+        StateWorkerError,
+        boxed_error,
+    },
     genesis::GenesisState,
     metrics,
     state::{
@@ -20,11 +26,6 @@ use alloy_provider::{
     Provider,
     RootProvider,
 };
-use anyhow::{
-    Context,
-    Result,
-    anyhow,
-};
 use futures_util::StreamExt;
 use mdbx::{
     BlockStateUpdate,
@@ -32,11 +33,21 @@ use mdbx::{
     Writer,
 };
 use std::{
-    sync::Arc,
+    collections::VecDeque,
+    sync::{
+        Arc,
+        atomic::{
+            AtomicU64,
+            Ordering,
+        },
+    },
     time::Duration,
 };
 use tokio::{
-    sync::broadcast,
+    sync::{
+        broadcast,
+        watch,
+    },
     time,
 };
 use tracing::{
@@ -48,6 +59,19 @@ use tracing::{
 const SUBSCRIPTION_RETRY_DELAY_SECS: u64 = 5;
 const MAX_MISSING_BLOCK_RETRIES: u32 = 3;
 
+enum FlushMode {
+    Immediate,
+    CommitHead {
+        rx: watch::Receiver<u64>,
+        latest_allowed_block: u64,
+    },
+}
+
+enum ProcessOutcome {
+    Continue,
+    Shutdown,
+}
+
 /// Coordinates block ingestion, tracing, and persistence.
 pub struct StateWorker<WR>
 where
@@ -58,6 +82,10 @@ where
     writer_reader: WR,
     genesis_state: Option<GenesisState>,
     system_calls: SystemCalls,
+    buffered_updates: VecDeque<BlockStateUpdate>,
+    max_buffered_blocks: usize,
+    committed_head: Arc<AtomicU64>,
+    flush_mode: FlushMode,
 }
 
 impl<WR> StateWorker<WR>
@@ -66,6 +94,7 @@ where
     <WR as Writer>::Error: std::error::Error + Send + Sync + 'static,
     <WR as Reader>::Error: std::error::Error + Send + Sync + 'static,
 {
+    #[must_use]
     pub fn new(
         provider: Arc<RootProvider>,
         trace_provider: Box<dyn TraceProvider>,
@@ -79,7 +108,33 @@ where
             writer_reader,
             genesis_state,
             system_calls,
+            buffered_updates: VecDeque::new(),
+            max_buffered_blocks: 1,
+            committed_head: Arc::new(AtomicU64::new(0)),
+            flush_mode: FlushMode::Immediate,
         }
+    }
+
+    #[must_use]
+    pub fn with_commit_head_control(
+        mut self,
+        flush_rx: watch::Receiver<u64>,
+        max_buffered_blocks: usize,
+        committed_head: Arc<AtomicU64>,
+    ) -> Self {
+        let latest_allowed_block = *flush_rx.borrow();
+        self.max_buffered_blocks = max_buffered_blocks.max(1);
+        self.committed_head = committed_head;
+        self.flush_mode = FlushMode::CommitHead {
+            latest_allowed_block,
+            rx: flush_rx,
+        };
+        self
+    }
+
+    #[must_use]
+    pub fn committed_head(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.committed_head)
     }
 
     fn update_sync_metrics(next_block: u64, head_block: u64) {
@@ -98,6 +153,10 @@ where
 
     /// Drive the catch-up + streaming loop. We keep retrying the subscription
     /// because websocket connections can drop in practice.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if tracing, provider access, or MDBX writes fail.
     pub async fn run(
         &mut self,
         start_override: Option<u64>,
@@ -107,13 +166,11 @@ where
         let mut missing_block_retries: u32 = 0;
 
         loop {
-            // Check for shutdown before starting catch-up
             if shutdown_rx.try_recv().is_ok() {
                 info!("Shutdown signal received");
                 return Ok(());
             }
 
-            // Catch up block-by-block, checking shutdown between each
             if self.catch_up(&mut next_block, &mut shutdown_rx).await? {
                 info!("Shutdown signal received during catch-up");
                 return Ok(());
@@ -125,10 +182,7 @@ where
                     return Ok(());
                 }
                 Err(err) => {
-                    let err_str = err.to_string();
-                    let is_missing_block = err_str.contains("Missing block");
-
-                    if is_missing_block {
+                    if matches!(err, StateWorkerError::MissingBlock { .. }) {
                         missing_block_retries += 1;
 
                         if missing_block_retries >= MAX_MISSING_BLOCK_RETRIES {
@@ -139,7 +193,6 @@ where
                             );
                         }
                     } else {
-                        // Reset retry counter for non-missing-block errors
                         missing_block_retries = 0;
                     }
 
@@ -156,35 +209,36 @@ where
         }
     }
 
-    /// Determine the next block to ingest. We respect manual overrides so
-    /// operators can force a resync of historical ranges when needed.
     fn compute_start_block(&self, override_start: Option<u64>) -> Result<u64> {
         if let Some(block) = override_start {
+            self.committed_head
+                .store(block.saturating_sub(1), Ordering::Release);
             return Ok(block);
         }
 
-        let current = match self.writer_reader.latest_block_number() {
-            Ok(current) => {
-                metrics::set_db_healthy(true);
-                current
+        let current = self.writer_reader.latest_block_number().map_err(|source| {
+            StateWorkerError::DatabaseReadCurrentBlock {
+                source: boxed_error(source),
             }
-            Err(err) => {
-                metrics::set_db_healthy(false);
-                return Err(anyhow!(err)).context("failed to read current block from the database");
-            }
-        };
+        })?;
 
+        metrics::set_db_healthy(true);
+        let latest = current.unwrap_or(0);
+        self.committed_head.store(latest, Ordering::Release);
         Ok(current.map_or(0, |b| b + 1))
     }
 
-    /// Sequentially replay blocks until we reach the node's current head.
     async fn catch_up(
         &mut self,
         next_block: &mut u64,
         shutdown_rx: &mut broadcast::Receiver<()>,
     ) -> Result<bool> {
         loop {
-            let head = self.provider.get_block_number().await?;
+            let head = self.provider.get_block_number().await.map_err(|source| {
+                StateWorkerError::GetBlockNumber {
+                    source: boxed_error(source),
+                }
+            })?;
             Self::update_sync_metrics(*next_block, head);
 
             if *next_block > head {
@@ -192,12 +246,15 @@ where
             }
 
             while *next_block <= head {
-                // Process the block fully before checking shutdown
-                self.process_block(*next_block).await?;
+                if matches!(
+                    self.process_block(*next_block, shutdown_rx).await?,
+                    ProcessOutcome::Shutdown
+                ) {
+                    return Ok(true);
+                }
                 *next_block += 1;
                 Self::update_sync_metrics(*next_block, head);
 
-                // Check for shutdown after the block is complete
                 if shutdown_rx.try_recv().is_ok() {
                     return Ok(true);
                 }
@@ -205,14 +262,16 @@ where
         }
     }
 
-    /// Follow the `newHeads` stream and process new blocks in order, tolerating
-    /// duplicate/stale headers after reconnects.
     async fn stream_blocks(
         &mut self,
         next_block: &mut u64,
         shutdown_rx: &mut broadcast::Receiver<()>,
     ) -> Result<()> {
-        let subscription = self.provider.subscribe_blocks().await?;
+        let subscription = self.provider.subscribe_blocks().await.map_err(|source| {
+            StateWorkerError::SubscribeBlocks {
+                source: boxed_error(source),
+            }
+        })?;
         let mut stream = subscription.into_stream();
         metrics::set_syncing(false);
         metrics::set_following_head(true);
@@ -229,9 +288,6 @@ where
                             let Header { hash: _, inner, .. } = header;
                             let block_number = inner.number;
 
-                            // We may receive a header we already processed if the stream
-                            // briefly disconnects; skip without rewinding because we do not
-                            // currently handle reorgs.
                             if block_number + 1 < *next_block {
                                 debug!(block_number, next_block, "skipping stale header");
                                 continue;
@@ -239,24 +295,27 @@ where
 
                             Self::update_sync_metrics(*next_block, block_number);
 
-                            // If we are missing a block, log a warning and return error.
-                            // The run() loop tracks consecutive failures and escalates to
-                            // critical if we cannot recover after MAX_MISSING_BLOCK_RETRIES.
                             if block_number > *next_block {
                                 warn!("Missing block {block_number} (next block: {next_block})");
-                                return Err(anyhow!(
-                                    "Missing block {block_number} (next block: {next_block})"
-                                ));
+                                return Err(StateWorkerError::MissingBlock {
+                                    block_number,
+                                    next_block: *next_block,
+                                });
                             }
 
                             while *next_block <= block_number {
-                                self.process_block(*next_block).await?;
+                                if matches!(
+                                    self.process_block(*next_block, shutdown_rx).await?,
+                                    ProcessOutcome::Shutdown
+                                ) {
+                                    return Ok(());
+                                }
                                 *next_block += 1;
                                 Self::update_sync_metrics(*next_block, block_number);
                             }
                         }
                         None => {
-                            return Err(anyhow!("block subscription completed"));
+                            return Err(StateWorkerError::BlockSubscriptionCompleted);
                         }
                     }
                 }
@@ -264,64 +323,151 @@ where
         }
     }
 
-    /// Pull, trace, and persist a single block.
-    async fn process_block(&mut self, block_number: u64) -> Result<()> {
+    async fn process_block(
+        &mut self,
+        block_number: u64,
+        shutdown_rx: &mut broadcast::Receiver<()>,
+    ) -> Result<ProcessOutcome> {
         info!(block_number, "processing block");
 
-        if block_number == 0 && self.genesis_state.is_some() {
-            return self.process_genesis_block().await;
-        }
-
-        let mut update = match self.trace_provider.fetch_block_state(block_number).await {
-            Ok(update) => update,
-            Err(err) => {
-                critical!(error = ?err, block_number, "failed to trace block");
-                metrics::record_block_failure();
-                return Err(anyhow!("failed to trace block {block_number}"));
+        let update = if block_number == 0 && self.genesis_state.is_some() {
+            match self.build_genesis_update().await? {
+                Some(update) => update,
+                None => return Ok(ProcessOutcome::Continue),
             }
+        } else {
+            let mut update = self.trace_provider.fetch_block_state(block_number).await?;
+            self.apply_system_calls(&mut update, block_number).await?;
+            update
         };
 
-        // Apply system call state changes (EIP-2935 & EIP-4788)
-        self.apply_system_calls(&mut update, block_number).await?;
+        self.push_buffered_update(update, shutdown_rx).await
+    }
 
-        match self.writer_reader.commit_block(&update) {
-            Ok(stats) => {
-                metrics::set_db_healthy(true);
-                metrics::record_commit(block_number, &stats);
+    async fn push_buffered_update(
+        &mut self,
+        update: BlockStateUpdate,
+        shutdown_rx: &mut broadcast::Receiver<()>,
+    ) -> Result<ProcessOutcome> {
+        while self.buffered_updates.len() >= self.max_buffered_blocks {
+            self.flush_buffered_updates()?;
+
+            if self.buffered_updates.len() < self.max_buffered_blocks {
+                break;
             }
-            Err(err) => {
-                critical!(error = ?err, block_number, "failed to persist block");
-                metrics::set_db_healthy(false);
-                metrics::record_block_failure();
-                return Err(anyhow!("failed to persist block {block_number}"));
+
+            if self.wait_for_flush_progress(shutdown_rx).await? {
+                return Ok(ProcessOutcome::Shutdown);
             }
         }
 
-        info!(block_number, "block persisted to database");
+        self.buffered_updates.push_back(update);
+        self.flush_buffered_updates()?;
+        Ok(ProcessOutcome::Continue)
+    }
+
+    fn flush_buffered_updates(&mut self) -> Result<()> {
+        let flush_limit = self.current_flush_limit();
+
+        while self
+            .buffered_updates
+            .front()
+            .is_some_and(|update| update.block_number <= flush_limit)
+        {
+            let Some(update) = self.buffered_updates.pop_front() else {
+                break;
+            };
+            self.commit_update(&update)?;
+        }
+
         Ok(())
     }
 
-    /// Apply EIP-2935 and EIP-4788 system call state changes
+    fn current_flush_limit(&mut self) -> u64 {
+        match &mut self.flush_mode {
+            FlushMode::Immediate => u64::MAX,
+            FlushMode::CommitHead {
+                latest_allowed_block,
+                rx,
+            } => {
+                *latest_allowed_block = *rx.borrow_and_update();
+                *latest_allowed_block
+            }
+        }
+    }
+
+    async fn wait_for_flush_progress(
+        &mut self,
+        shutdown_rx: &mut broadcast::Receiver<()>,
+    ) -> Result<bool> {
+        match &mut self.flush_mode {
+            FlushMode::Immediate => Ok(false),
+            FlushMode::CommitHead {
+                latest_allowed_block,
+                rx,
+            } => {
+                tokio::select! {
+                    _ = shutdown_rx.recv() => Ok(true),
+                    changed = rx.changed() => {
+                        if changed.is_ok() {
+                            *latest_allowed_block = *rx.borrow_and_update();
+                            self.flush_buffered_updates()?;
+                        }
+                        Ok(false)
+                    }
+                }
+            }
+        }
+    }
+
+    fn commit_update(&mut self, update: &BlockStateUpdate) -> Result<()> {
+        match self.writer_reader.commit_block(update) {
+            Ok(stats) => {
+                metrics::set_db_healthy(true);
+                metrics::record_commit(update.block_number, &stats);
+                self.committed_head
+                    .store(update.block_number, Ordering::Release);
+                info!(
+                    block_number = update.block_number,
+                    "block persisted to database"
+                );
+                Ok(())
+            }
+            Err(source) => {
+                critical!(error = ?source, block_number = update.block_number, "failed to persist block");
+                metrics::set_db_healthy(false);
+                metrics::record_block_failure();
+                Err(StateWorkerError::PersistBlock {
+                    block_number: update.block_number,
+                    source: boxed_error(source),
+                })
+            }
+        }
+    }
+
     async fn apply_system_calls(
         &self,
         update: &mut BlockStateUpdate,
         block_number: u64,
     ) -> Result<()> {
-        // Fetch block header for system call data
         let block = self
             .provider
             .get_block_by_number(block_number.into())
-            .await?
-            .context(format!("block {block_number} not found"))?;
+            .await
+            .map_err(|source| {
+                StateWorkerError::GetBlockByNumber {
+                    block_number,
+                    source: boxed_error(source),
+                }
+            })?
+            .ok_or(StateWorkerError::BlockNotFound { block_number })?;
 
-        // Get parent block hash (current block's parent_hash field)
         let parent_block_hash = if block_number > 0 {
             Some(block.header.parent_hash)
         } else {
             None
         };
 
-        // Get parent beacon block root from block header (EIP-4788)
         let parent_beacon_block_root = block.header.parent_beacon_block_root;
 
         let config = SystemCallConfig {
@@ -331,7 +477,6 @@ where
             parent_beacon_block_root,
         };
 
-        // Pass the reader to fetch existing account state
         match self
             .system_calls
             .compute_system_call_states(&config, Some(&self.writer_reader))
@@ -344,7 +489,6 @@ where
                 Ok(())
             }
             Err(err) => {
-                // Log but don't fail
                 warn!(
                     block_number,
                     error = %err,
@@ -355,68 +499,55 @@ where
         }
     }
 
-    /// Process block 0 using the configured genesis state
-    async fn process_genesis_block(&mut self) -> Result<()> {
+    async fn build_genesis_update(&mut self) -> Result<Option<BlockStateUpdate>> {
         let Some(genesis) = self.genesis_state.take() else {
             warn!("no genesis state configured; skipping genesis hydration");
-            return Ok(());
+            return Ok(None);
         };
 
-        let already_exists = match self.writer_reader.latest_block_number() {
-            Ok(current) => {
-                metrics::set_db_healthy(true);
-                current.is_some()
-            }
-            Err(err) => {
-                metrics::set_db_healthy(false);
-                return Err(anyhow!(err)).context(
-                    "failed to read current block from database during genesis hydration",
-                );
-            }
-        };
+        let already_exists = self
+            .writer_reader
+            .latest_block_number()
+            .map_err(|source| {
+                StateWorkerError::DatabaseReadGenesisStatus {
+                    source: boxed_error(source),
+                }
+            })?
+            .is_some();
+
+        metrics::set_db_healthy(true);
 
         if already_exists {
             info!("block 0 already exists in database; skipping genesis hydration");
-            return Ok(());
+            return Ok(None);
         }
 
         let accounts = genesis.into_accounts();
 
         if accounts.is_empty() {
             warn!("genesis file contained no accounts; skipping hydration");
-            return Ok(());
+            return Ok(None);
         }
 
-        // Fetch genesis block header to get hash and state root
         let block = self
             .provider
             .get_block_by_number(0.into())
-            .await?
-            .context("genesis block not found on chain")?;
+            .await
+            .map_err(|source| {
+                StateWorkerError::GetBlockByNumber {
+                    block_number: 0,
+                    source: boxed_error(source),
+                }
+            })?
+            .ok_or(StateWorkerError::BlockNotFound { block_number: 0 })?;
 
         info!("hydrating genesis state from genesis file");
 
-        let update = BlockStateUpdateBuilder::from_accounts(
+        Ok(Some(BlockStateUpdateBuilder::from_accounts(
             0,
             block.header.hash,
             block.header.state_root,
             accounts,
-        );
-
-        match self.writer_reader.commit_block(&update) {
-            Ok(stats) => {
-                metrics::set_db_healthy(true);
-                metrics::record_commit(0, &stats);
-            }
-            Err(err) => {
-                critical!(error = ?err, block_number = 0, "failed to persist genesis block");
-                metrics::set_db_healthy(false);
-                metrics::record_block_failure();
-                return Err(anyhow!("failed to persist genesis block"));
-            }
-        }
-
-        info!(block_number = 0, "genesis block persisted to database");
-        Ok(())
+        )))
     }
 }

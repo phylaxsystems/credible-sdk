@@ -129,6 +129,7 @@ impl<DB> CoreEngine<DB> {
             check_sources_available: true,
             overlay_cache_invalidation_every_block: false,
             system_calls: SystemCalls,
+            state_worker_commit_heads: Vec::new(),
             #[cfg(feature = "cache_validation")]
             processed_transactions: Arc::new(
                 moka::sync::Cache::builder().max_capacity(128).build(),
@@ -253,6 +254,7 @@ async fn create_test_engine_with_timeout(
             state_sources_sync_timeout: timeout,
             source_monitoring_period: timeout / 2,
             overlay_cache_invalidation_every_block: false,
+            state_worker_commit_heads: Vec::new(),
             incident_sender: None,
             #[cfg(feature = "cache_validation")]
             provider_ws_url: None,
@@ -1941,6 +1943,7 @@ async fn build_canonical_setup(caller: Address) -> CanonicalSetup {
             state_sources_sync_timeout: Duration::from_millis(100),
             source_monitoring_period: Duration::from_millis(20),
             overlay_cache_invalidation_every_block: false,
+            state_worker_commit_heads: Vec::new(),
             incident_sender: None,
             #[cfg(feature = "cache_validation")]
             provider_ws_url: None,

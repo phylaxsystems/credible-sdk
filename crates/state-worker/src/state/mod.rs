@@ -24,6 +24,7 @@ pub mod geth_provider;
 #[cfg(test)]
 mod tests;
 
+use crate::error::Result;
 use alloy::primitives::{
     B256,
     Bytes,
@@ -31,10 +32,6 @@ use alloy::primitives::{
     keccak256,
 };
 use alloy_provider::RootProvider;
-use anyhow::{
-    Context,
-    Result,
-};
 use async_trait::async_trait;
 use mdbx::{
     AccountState,
@@ -114,14 +111,18 @@ impl AccountSnapshot {
 pub struct BlockStateUpdateBuilder;
 
 impl BlockStateUpdateBuilder {
+    /// Build a block update from Geth trace output.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the trace payload cannot be converted into account updates.
     pub fn from_geth_traces(
         block_number: u64,
         block_hash: B256,
         state_root: B256,
         traces: Vec<alloy_rpc_types_trace::geth::TraceResult>,
     ) -> Result<BlockStateUpdate> {
-        let accounts =
-            geth::process_geth_traces(traces).context(format!("block {block_number}"))?;
+        let accounts = geth::process_geth_traces(traces)?;
 
         Ok(BlockStateUpdate {
             block_number,
@@ -131,6 +132,7 @@ impl BlockStateUpdateBuilder {
         })
     }
 
+    #[must_use]
     pub fn from_accounts(
         block_number: u64,
         block_hash: B256,
@@ -147,6 +149,7 @@ impl BlockStateUpdateBuilder {
 }
 
 /// Create a trace provider.
+#[must_use]
 pub fn create_trace_provider(
     provider: Arc<RootProvider>,
     trace_timeout: Duration,
@@ -160,10 +163,7 @@ pub fn create_trace_provider(
 #[cfg(test)]
 mod account_deletion_tests {
     use super::*;
-    use anyhow::{
-        Context,
-        Result,
-    };
+    use crate::error::StateWorkerError;
 
     fn test_address() -> AddressHash {
         AddressHash::new([0u8; 20])
@@ -182,7 +182,7 @@ mod account_deletion_tests {
 
         let state = snapshot
             .finalize(test_address())
-            .context("expected account state")?;
+            .ok_or(StateWorkerError::BlockSubscriptionCompleted)?;
 
         // Per EIP-1052: existing account without code has code_hash = keccak256("")
         assert_eq!(state.code_hash, KECCAK_EMPTY);
@@ -206,7 +206,7 @@ mod account_deletion_tests {
 
         let state = snapshot
             .finalize(test_address())
-            .context("expected account state")?;
+            .ok_or(StateWorkerError::BlockSubscriptionCompleted)?;
 
         assert_eq!(state.code_hash, expected_hash);
         assert!(!state.deleted);

@@ -4,6 +4,11 @@ use super::{
     BlockStateUpdateBuilder,
     TraceProvider,
 };
+use crate::error::{
+    Result,
+    StateWorkerError,
+    boxed_error,
+};
 use alloy::rpc::types::BlockNumberOrTag;
 use alloy_provider::{
     Provider,
@@ -15,10 +20,6 @@ use alloy_rpc_types_trace::geth::{
     GethDebugTracingOptions,
     GethDefaultTracingOptions,
     PreStateConfig,
-};
-use anyhow::{
-    Context,
-    Result,
 };
 use async_trait::async_trait;
 use mdbx::BlockStateUpdate;
@@ -33,6 +34,7 @@ pub struct GethTraceProvider {
 }
 
 impl GethTraceProvider {
+    #[must_use]
     pub fn new(provider: Arc<RootProvider>, trace_timeout: Duration) -> Self {
         Self {
             provider,
@@ -74,8 +76,14 @@ impl TraceProvider for GethTraceProvider {
         let block = self
             .provider
             .get_block_by_number(block_id)
-            .await?
-            .with_context(|| format!("block {block_number} not found"))?;
+            .await
+            .map_err(|source| {
+                StateWorkerError::GetBlockByNumber {
+                    block_number,
+                    source: boxed_error(source),
+                }
+            })?
+            .ok_or(StateWorkerError::BlockNotFound { block_number })?;
 
         let block_hash = block.header.hash;
         let state_root = block.header.state_root;
@@ -85,7 +93,12 @@ impl TraceProvider for GethTraceProvider {
             .provider
             .debug_trace_block_by_number(block_id, trace_options)
             .await
-            .with_context(|| format!("failed to trace block {block_number}"))?;
+            .map_err(|source| {
+                StateWorkerError::TraceBlock {
+                    block_number,
+                    source: boxed_error(source),
+                }
+            })?;
 
         BlockStateUpdateBuilder::from_geth_traces(block_number, block_hash, state_root, traces)
     }

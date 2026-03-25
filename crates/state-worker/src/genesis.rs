@@ -1,15 +1,15 @@
 //! Helpers for hydrating the worker's view of block 0 from a genesis JSON file.
+use crate::error::{
+    Result,
+    StateWorkerError,
+    boxed_error,
+};
 use alloy::primitives::{
     Address,
     B256,
     Bytes,
     U256,
     keccak256,
-};
-use anyhow::{
-    Context,
-    Result,
-    anyhow,
 };
 use mdbx::AccountState;
 use revm::primitives::KECCAK_EMPTY;
@@ -29,16 +29,19 @@ pub struct GenesisState {
 impl GenesisState {
     /// Immutable view of the parsed account commits.
     #[cfg(test)]
+    #[must_use]
     pub fn accounts(&self) -> &[AccountState] {
         &self.accounts
     }
 
     /// Consume the state and return the owned account commits.
+    #[must_use]
     pub fn into_accounts(self) -> Vec<AccountState> {
         self.accounts
     }
 
     /// Immutable view of the parsed genesis config.
+    #[must_use]
     pub fn config(&self) -> &Config {
         &self.config
     }
@@ -68,17 +71,25 @@ struct GenesisAccount {
 }
 
 /// Parse accounts from a genesis JSON blob.
+///
+/// # Errors
+///
+/// Returns an error if the JSON is invalid or any genesis account cannot be parsed.
 pub fn parse_from_str(data: &str) -> Result<GenesisState> {
     let genesis: GenesisFile =
-        serde_json::from_str(data).context("failed to deserialize genesis JSON")?;
+        serde_json::from_str(data).map_err(|source| StateWorkerError::GenesisJson { source })?;
     build_state(genesis)
 }
 
 fn build_state(genesis: GenesisFile) -> Result<GenesisState> {
     let mut accounts = Vec::with_capacity(genesis.alloc.len());
     for (address, account) in genesis.alloc {
-        let commit = convert_account(&address, account)
-            .with_context(|| format!("failed to parse alloc entry for address {address}"))?;
+        let commit = convert_account(&address, account).map_err(|source| {
+            StateWorkerError::GenesisAllocEntry {
+                address: address.clone(),
+                source: boxed_error(source),
+            }
+        })?;
         accounts.push(commit);
     }
 
@@ -92,8 +103,12 @@ fn build_state(genesis: GenesisFile) -> Result<GenesisState> {
 fn convert_account(address: &str, account: GenesisAccount) -> Result<AccountState> {
     let address = parse_address(address)?;
     let balance = parse_u256(account.balance.as_deref())?;
-    let nonce = parse_u64(account.nonce.as_deref())
-        .with_context(|| format!("failed to parse nonce for address {address}"))?;
+    let nonce = parse_u64(account.nonce.as_deref()).map_err(|source| {
+        StateWorkerError::ParseNonce {
+            address,
+            source: boxed_error(source),
+        }
+    })?;
     let (code, code_hash) = parse_code(account.code.as_deref())?;
     let storage = parse_storage(account.storage)?;
 
@@ -114,12 +129,22 @@ fn parse_address(value: &str) -> Result<Address> {
     } else {
         format!("0x{value}")
     };
-    Address::from_str(&formatted).map_err(|err| anyhow!("failed to parse address {value}: {err}"))
+    Address::from_str(&formatted).map_err(|source| {
+        StateWorkerError::ParseAddress {
+            value: value.to_string(),
+            source: boxed_error(source),
+        }
+    })
 }
 
 fn parse_u256(value: Option<&str>) -> Result<U256> {
     let value = value.unwrap_or("0x0").trim();
-    U256::from_str(value).map_err(|err| anyhow!("failed to parse numeric value: {err}"))
+    U256::from_str(value).map_err(|source| {
+        StateWorkerError::ParseNumericValue {
+            value: value.to_string(),
+            source: boxed_error(source),
+        }
+    })
 }
 
 fn parse_u64(value: Option<&str>) -> Result<u64> {
@@ -128,10 +153,19 @@ fn parse_u64(value: Option<&str>) -> Result<u64> {
         .strip_prefix("0x")
         .or_else(|| value.strip_prefix("0X"))
     {
-        u64::from_str_radix(hex_str, 16)
-            .map_err(|err| anyhow!("failed to parse u64 value {value}: {err}"))
+        u64::from_str_radix(hex_str, 16).map_err(|source| {
+            StateWorkerError::ParseU64Value {
+                value: value.to_string(),
+                source: boxed_error(source),
+            }
+        })
     } else {
-        u64::from_str(value).map_err(|err| anyhow!("failed to parse u64 value {value}: {err}"))
+        u64::from_str(value).map_err(|source| {
+            StateWorkerError::ParseU64Value {
+                value: value.to_string(),
+                source: boxed_error(source),
+            }
+        })
     }
 }
 
@@ -152,10 +186,18 @@ fn parse_code(code: Option<&str>) -> Result<(Option<Bytes>, B256)> {
 fn parse_storage(storage: HashMap<String, String>) -> Result<HashMap<B256, U256>> {
     let mut entries = HashMap::new();
     for (slot, value) in storage {
-        let slot = parse_u256(Some(&slot))
-            .with_context(|| format!("failed to parse storage slot key {slot}"))?;
-        let value = parse_u256(Some(&value))
-            .with_context(|| format!("failed to parse storage slot value {value}"))?;
+        let slot = parse_u256(Some(&slot)).map_err(|source| {
+            StateWorkerError::ParseStorageSlotKey {
+                slot: slot.clone(),
+                source: boxed_error(source),
+            }
+        })?;
+        let value = parse_u256(Some(&value)).map_err(|source| {
+            StateWorkerError::ParseStorageSlotValue {
+                value: value.clone(),
+                source: boxed_error(source),
+            }
+        })?;
         let slot_hash = keccak256(slot.to_be_bytes::<32>());
         entries.insert(slot_hash, value);
     }
@@ -177,7 +219,12 @@ fn decode_hex_bytes(value: &str) -> Result<Bytes> {
         value.to_string()
     };
 
-    Bytes::from_str(&normalized).map_err(|err| anyhow!("failed to decode hex value {value}: {err}"))
+    Bytes::from_str(&normalized).map_err(|source| {
+        StateWorkerError::DecodeHexValue {
+            value: value.to_string(),
+            source: boxed_error(source),
+        }
+    })
 }
 
 #[cfg(test)]
@@ -211,7 +258,12 @@ mod tests {
         assert_eq!(
             account.address_hash,
             Address::from_str("00000000000000000000000000000000000000f0")
-                .context("failed to parse account address")?
+                .map_err(|source| {
+                    StateWorkerError::ParseAddress {
+                        value: "00000000000000000000000000000000000000f0".to_string(),
+                        source: boxed_error(source),
+                    }
+                })?
                 .into()
         );
         assert_eq!(account.balance, U256::from(0x100));
