@@ -36,9 +36,9 @@ impl From<Box<DaSubmitError>> for DaSubmitError {
     }
 }
 
-/// Errors that can occur during assertion submission to the Credible Layer dApp
+/// Errors that can occur during assertion submission to the Credible Layer Platform
 #[derive(Error, Debug)]
-pub enum DappSubmitError {
+pub enum PlatformSubmitError {
     /// Error when no authentication token is found in the config
     #[error("No auth token found, please run `pcl auth` first")]
     NoAuthToken,
@@ -49,27 +49,27 @@ pub enum DappSubmitError {
 
     /// Error when no projects are found for the authenticated user
     #[error(
-        "No projects found for the authenticated user.\nVisit https://dapp.phylax.systems to create one, then rerun `pcl submit`."
+        "No projects found for the authenticated user.\nVisit https://app.phylax.systems to create one, then rerun `pcl submit`."
     )]
     NoProjectsFound,
 
-    /// Error when sending a submission to the dApp API fails
-    #[error("Failed to send submission to the dApp API")]
+    /// Error when sending a submission to the Platform API fails
+    #[error("Failed to send submission to the Platform API")]
     SendSubmissionApi(#[source] ReqwestError),
 
-    /// Error while getting a submission response from the dApp API
-    #[error("Failed to read a submission response from the dApp API")]
+    /// Error while getting a submission response from the Platform API
+    #[error("Failed to read a submission response from the Platform API")]
     SendSubmissionApiResponse(#[source] ReqwestError),
 
-    /// Error when sending a get user project to the dApp API fails
-    #[error("Failed to send a get user projects to the dApp API")]
+    /// Error when sending a get user project to the Platform API fails
+    #[error("Failed to send a get user projects to the Platform API")]
     GetUserProjectsApi(#[source] ReqwestError),
 
-    /// Error while getting a user project response from the dApp API
-    #[error("Failed to read a user project response from the dApp API")]
+    /// Error while getting a user project response from the Platform API
+    #[error("Failed to read a user project response from the Platform API")]
     GetUserProjectsApiResponse(#[source] ReqwestError),
 
-    /// Error when the submission is rejected by the dApp
+    /// Error when the submission is rejected by the Platform
     #[error("Submission failed: {0}")]
     SubmissionFailed(String),
 

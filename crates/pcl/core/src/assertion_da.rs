@@ -52,7 +52,7 @@ Learn more about the workflow: https://docs.phylax.systems/credible/store-submit
     name = "store",
     arg_required_else_help = true,
     about = "Store assertion bytecode and source on the Credible Assertion DA.",
-    long_about = "Store assertion bytecode and source on the Credible Assertion Data Availability (DA) service. Run this before `pcl submit` so the dApp can reference the assertion in a project.",
+    long_about = "Store assertion bytecode and source on the Credible Assertion Data Availability (DA) service. Run this before `pcl submit` so the Platform can reference the assertion in a project.",
     after_help = STORE_AFTER_HELP
 )]
 pub struct DaStoreArgs {
@@ -441,7 +441,7 @@ impl DaStoreArgs {
     /// This method:
     /// 1. Sets up dependencies
     /// 2. Stores the assertions
-    /// 3. Submits the selected assertions to the Dapp from the CLI
+    /// 3. Submits the selected assertions to the Platform from the CLI
     ///
     /// # Arguments
     /// * `cli_args` - General CLI arguments
