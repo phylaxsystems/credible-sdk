@@ -16,7 +16,7 @@ use mdbx::{
     AddressHash,
     Reader,
 };
-use state_worker::{
+use crate::{
     genesis::GenesisState,
     state,
     system_calls::SystemCalls,
@@ -111,7 +111,7 @@ impl TestInstance {
         // Extract fork timestamps from genesis if available, otherwise use defaults.
         let system_calls = genesis_state
             .as_ref()
-            .map(|g| {
+            .map(|g: &GenesisState| {
                 SystemCalls::new(
                     Some(g.config().cancun_time.unwrap_or_default()),
                     Some(g.config().prague_time.unwrap_or_default()),

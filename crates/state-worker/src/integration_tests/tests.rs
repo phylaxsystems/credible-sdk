@@ -16,7 +16,7 @@ use mdbx::{
     Reader,
 };
 use serde_json::json;
-use state_worker::genesis;
+use crate::genesis;
 use std::{
     collections::HashMap,
     time::Duration,
