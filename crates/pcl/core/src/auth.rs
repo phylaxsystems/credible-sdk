@@ -180,7 +180,7 @@ impl AuthCommand {
             ProgressStyle::default_spinner()
                 .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
                 .template("{spinner} {msg}")
-                .expect("Failed to set spinner style"),
+                .map_err(|e| AuthError::InvalidAuthData(format!("Failed to set spinner style: {e}")))?,
         );
         spinner.enable_steady_tick(Duration::from_millis(80));
         spinner.set_message("Waiting for authentication...");
@@ -193,7 +193,7 @@ impl AuthCommand {
             if status.verified {
                 spinner.finish_with_message("✅ Authentication successful!");
                 Self::update_config(config, status, auth_response)?;
-                Self::display_success_message(config);
+                Self::display_success_message(config)?;
                 return Ok(());
             }
 
@@ -250,13 +250,17 @@ impl AuthCommand {
     }
 
     /// Display success message after authentication
-    fn display_success_message(config: &CliConfig) {
-        let auth = config.auth.as_ref().unwrap();
+    fn display_success_message(config: &CliConfig) -> Result<(), AuthError> {
+        let auth = config
+            .auth
+            .as_ref()
+            .ok_or_else(|| AuthError::InvalidAuthData("Missing auth after update".to_string()))?;
         println!(
             "{}\n🔗 {}\n",
             "Authentication successful! 🎉".green().bold(),
             format!("Connected as: {}", auth.display_name()).white()
         );
+        Ok(())
     }
 
     /// Remove authentication data from configuration
@@ -374,7 +378,7 @@ mod tests {
         let config = create_test_config();
 
         // Can't easily test stdout, but we can verify it doesn't panic
-        AuthCommand::display_success_message(&config);
+        AuthCommand::display_success_message(&config).unwrap();
     }
 
     #[tokio::test]
