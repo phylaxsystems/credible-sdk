@@ -817,6 +817,7 @@ fn find_embedded_state_worker_config(config: &Config) -> Option<EmbeddedStateWor
             depth,
             ws_url: Some(ws_url),
             genesis_file,
+            ..
         } = source
         {
             return Some(EmbeddedStateWorkerConfig {
