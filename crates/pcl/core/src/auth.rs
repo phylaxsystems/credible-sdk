@@ -1,5 +1,5 @@
 use crate::{
-    DEFAULT_DAPP_URL,
+    DEFAULT_PLATFORM_URL,
     config::{
         CliConfig,
         UserAuth,
@@ -55,7 +55,7 @@ struct AuthStatusResponse {
 
 /// Authentication commands for the PCL CLI
 #[derive(clap::Parser)]
-#[command(about = "Authenticate the CLI with your Credible Layer dApp account")]
+#[command(about = "Authenticate the CLI with your Credible Layer Platform account")]
 pub struct AuthCommand {
     #[command(subcommand)]
     pub command: AuthSubcommands,
@@ -64,7 +64,7 @@ pub struct AuthCommand {
         short = 'u',
         long = "auth-url",
         env = "PCL_AUTH_URL",
-        default_value = DEFAULT_DAPP_URL,
+        default_value = DEFAULT_PLATFORM_URL,
         help = "Base URL for authentication service"
     )]
     pub auth_url: String,
@@ -327,7 +327,7 @@ mod tests {
     fn test_display_login_instructions() {
         let cmd = AuthCommand {
             command: AuthSubcommands::Login,
-            auth_url: "https://dapp.phylax.systems".to_string(),
+            auth_url: "https://app.phylax.systems".to_string(),
         };
         let auth_response = create_test_auth_response();
 
@@ -504,7 +504,7 @@ mod tests {
         let cmd = AuthCommand::try_parse_from(vec![
             "auth",
             "--auth-url",
-            "https://dapp.phylax.systems",
+            "https://app.phylax.systems",
             "login",
         ])
         .unwrap();

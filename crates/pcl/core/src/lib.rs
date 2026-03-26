@@ -8,5 +8,5 @@ pub mod auth;
 pub mod config;
 pub mod error;
 
-/// Default dapp url. URL suffixes added on demand.
-pub const DEFAULT_DAPP_URL: &str = "https://app.phylax.systems";
+/// Default platform url. URL suffixes added on demand.
+pub const DEFAULT_PLATFORM_URL: &str = "https://app.phylax.systems";

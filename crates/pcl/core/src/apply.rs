@@ -1,5 +1,5 @@
 use crate::{
-    DEFAULT_DAPP_URL,
+    DEFAULT_PLATFORM_URL,
     config::CliConfig,
     error::ApplyError,
 };
@@ -72,7 +72,7 @@ pub struct ApplyArgs {
         long = "api-url",
         env = "PCL_API_URL",
         value_hint = ValueHint::Url,
-        default_value = DEFAULT_DAPP_URL,
+        default_value = DEFAULT_PLATFORM_URL,
         help = "Base URL for the platform API"
     )]
     pub api_url: String,
