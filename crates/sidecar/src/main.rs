@@ -818,6 +818,9 @@ struct EmbeddedStateWorkerConfig {
     mdbx_path: String,
     depth: usize,
     genesis_file: Option<String>,
+    /// Capacity of the in-memory `BlockStateUpdate` bounded buffer between the
+    /// tracer and the MDBX flusher. `None` falls back to the worker's default.
+    buffer_capacity: Option<usize>,
     /// Base delay for exponential backoff when the state worker restarts after a panic.
     restart_backoff_base: Duration,
     /// Maximum delay cap for exponential backoff restarts.
@@ -832,9 +835,9 @@ fn find_embedded_state_worker_config(config: &Config) -> Option<EmbeddedStateWor
             depth,
             ws_url: Some(ws_url),
             genesis_file,
+            buffer_capacity,
             restart_backoff_base_ms,
             restart_backoff_max_ms,
-            ..
         } = source
         {
             return Some(EmbeddedStateWorkerConfig {
@@ -842,6 +845,7 @@ fn find_embedded_state_worker_config(config: &Config) -> Option<EmbeddedStateWor
                 mdbx_path: mdbx_path.clone(),
                 depth: *depth,
                 genesis_file: genesis_file.clone(),
+                buffer_capacity: *buffer_capacity,
                 restart_backoff_base: Duration::from_millis(
                     restart_backoff_base_ms
                         .unwrap_or(sidecar::args::DEFAULT_RESTART_BACKOFF_BASE_MS),
@@ -1012,7 +1016,7 @@ fn run_state_worker_once(
             system_calls,
             Some(flush_rx),
             Some(mdbx_height),
-            None,
+            sw_config.buffer_capacity,
         );
 
         worker.run(None, Arc::clone(shutdown)).await
