@@ -300,13 +300,27 @@ pub enum StateSourceConfig {
         mdbx_path: String,
         /// State worker depth (how many blocks behind head state worker will have the data from)
         depth: usize,
-        /// Execution client WebSocket URL for the embedded state worker.
-        /// When set, the sidecar spawns a dedicated state worker thread.
+        /// Geth WebSocket URL for embedded state worker tracing.
+        /// When `Some`, the sidecar runs an embedded state worker thread instead of
+        /// reading from an externally-managed MDBX database. When `None`, the existing
+        /// external MDBX reader behavior is preserved.
         #[serde(default)]
         ws_url: Option<String>,
-        /// Path to genesis file for the embedded state worker.
+        /// Path to the genesis file used by the embedded state worker.
         #[serde(default)]
         genesis_file: Option<String>,
+        /// Capacity of the in-memory `BlockStateUpdate` bounded buffer between the
+        /// tracer and the MDBX flusher in embedded mode. Default: 128.
+        #[serde(default)]
+        buffer_capacity: Option<usize>,
+        /// Base delay in milliseconds for exponential backoff when the embedded state
+        /// worker thread panics and is restarted. Default: 1000.
+        #[serde(default)]
+        restart_backoff_base_ms: Option<u64>,
+        /// Maximum delay in milliseconds for exponential backoff when the embedded
+        /// state worker thread panics and is restarted. Default: 30000.
+        #[serde(default)]
+        restart_backoff_max_ms: Option<u64>,
     },
     #[serde(rename = "eth-rpc")]
     EthRpc {
@@ -315,6 +329,60 @@ pub enum StateSourceConfig {
         /// Eth RPC source HTTP bind address and port
         http_url: String,
     },
+}
+
+/// Default buffer capacity for the embedded state worker's in-memory
+/// `BlockStateUpdate` bounded buffer.
+pub const DEFAULT_EMBEDDED_BUFFER_CAPACITY: usize = 128;
+
+/// Default base delay (ms) for exponential backoff on embedded state worker
+/// thread panic restarts.
+pub const DEFAULT_RESTART_BACKOFF_BASE_MS: u64 = 1000;
+
+/// Default maximum delay (ms) for exponential backoff on embedded state worker
+/// thread panic restarts.
+pub const DEFAULT_RESTART_BACKOFF_MAX_MS: u64 = 30_000;
+
+impl StateSourceConfig {
+    /// Returns `true` when this MDBX source is configured to run an embedded
+    /// state worker (i.e. `ws_url` is `Some`).
+    pub fn is_embedded(&self) -> bool {
+        matches!(self, Self::Mdbx { ws_url: Some(_), .. })
+    }
+
+    /// Returns the buffer capacity, falling back to [`DEFAULT_EMBEDDED_BUFFER_CAPACITY`].
+    pub fn buffer_capacity_or_default(&self) -> usize {
+        match self {
+            Self::Mdbx {
+                buffer_capacity, ..
+            } => buffer_capacity.unwrap_or(DEFAULT_EMBEDDED_BUFFER_CAPACITY),
+            Self::EthRpc { .. } => DEFAULT_EMBEDDED_BUFFER_CAPACITY,
+        }
+    }
+
+    /// Returns the restart backoff base (ms), falling back to
+    /// [`DEFAULT_RESTART_BACKOFF_BASE_MS`].
+    pub fn restart_backoff_base_ms_or_default(&self) -> u64 {
+        match self {
+            Self::Mdbx {
+                restart_backoff_base_ms,
+                ..
+            } => restart_backoff_base_ms.unwrap_or(DEFAULT_RESTART_BACKOFF_BASE_MS),
+            Self::EthRpc { .. } => DEFAULT_RESTART_BACKOFF_BASE_MS,
+        }
+    }
+
+    /// Returns the restart backoff max (ms), falling back to
+    /// [`DEFAULT_RESTART_BACKOFF_MAX_MS`].
+    pub fn restart_backoff_max_ms_or_default(&self) -> u64 {
+        match self {
+            Self::Mdbx {
+                restart_backoff_max_ms,
+                ..
+            } => restart_backoff_max_ms.unwrap_or(DEFAULT_RESTART_BACKOFF_MAX_MS),
+            Self::EthRpc { .. } => DEFAULT_RESTART_BACKOFF_MAX_MS,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
@@ -967,6 +1035,9 @@ mod tests {
                     depth: 100,
                     ws_url: None,
                     genesis_file: None,
+                    buffer_capacity: None,
+                    restart_backoff_base_ms: None,
+                    restart_backoff_max_ms: None,
                 }
             ]
         );
@@ -1205,6 +1276,9 @@ mod tests {
                 depth: 7,
                 ws_url: None,
                 genesis_file: None,
+                buffer_capacity: None,
+                restart_backoff_base_ms: None,
+                restart_backoff_max_ms: None,
             }]
         );
     }
@@ -1520,6 +1594,9 @@ mod tests {
                     depth: 42,
                     ws_url: None,
                     genesis_file: None,
+                    buffer_capacity: None,
+                    restart_backoff_base_ms: None,
+                    restart_backoff_max_ms: None,
                 }
             ]
         );
@@ -1589,12 +1666,18 @@ mod tests {
                     depth: 10,
                     ws_url: None,
                     genesis_file: None,
+                    buffer_capacity: None,
+                    restart_backoff_base_ms: None,
+                    restart_backoff_max_ms: None,
                 },
                 StateSourceConfig::Mdbx {
                     mdbx_path: "/data/state_worker_b.mdbx".to_string(),
                     depth: 20,
                     ws_url: None,
                     genesis_file: None,
+                    buffer_capacity: None,
+                    restart_backoff_base_ms: None,
+                    restart_backoff_max_ms: None,
                 },
                 StateSourceConfig::EthRpc {
                     ws_url: "ws://rpc.example:8546".to_string(),
@@ -1602,5 +1685,151 @@ mod tests {
                 }
             ]
         );
+    }
+
+    #[test]
+    fn test_mdbx_source_without_embedded_fields_deserializes() {
+        let json = r#"{"type":"mdbx","mdbx_path":"/data/state.mdbx","depth":5}"#;
+        let config: StateSourceConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            config,
+            StateSourceConfig::Mdbx {
+                mdbx_path: "/data/state.mdbx".to_string(),
+                depth: 5,
+                ws_url: None,
+                genesis_file: None,
+                buffer_capacity: None,
+                restart_backoff_base_ms: None,
+                restart_backoff_max_ms: None,
+            }
+        );
+        assert!(!config.is_embedded());
+    }
+
+    #[test]
+    fn test_mdbx_source_with_all_embedded_fields_deserializes() {
+        let json = r#"{
+            "type": "mdbx",
+            "mdbx_path": "/data/state.mdbx",
+            "depth": 3,
+            "ws_url": "ws://geth:8546",
+            "genesis_file": "/data/genesis.json",
+            "buffer_capacity": 256,
+            "restart_backoff_base_ms": 2000,
+            "restart_backoff_max_ms": 60000
+        }"#;
+        let config: StateSourceConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            config,
+            StateSourceConfig::Mdbx {
+                mdbx_path: "/data/state.mdbx".to_string(),
+                depth: 3,
+                ws_url: Some("ws://geth:8546".to_string()),
+                genesis_file: Some("/data/genesis.json".to_string()),
+                buffer_capacity: Some(256),
+                restart_backoff_base_ms: Some(2000),
+                restart_backoff_max_ms: Some(60000),
+            }
+        );
+        assert!(config.is_embedded());
+    }
+
+    #[test]
+    fn test_mdbx_source_with_partial_embedded_fields_deserializes() {
+        let json = r#"{
+            "type": "mdbx",
+            "mdbx_path": "/data/state.mdbx",
+            "depth": 3,
+            "ws_url": "ws://geth:8546"
+        }"#;
+        let config: StateSourceConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            config,
+            StateSourceConfig::Mdbx {
+                mdbx_path: "/data/state.mdbx".to_string(),
+                depth: 3,
+                ws_url: Some("ws://geth:8546".to_string()),
+                genesis_file: None,
+                buffer_capacity: None,
+                restart_backoff_base_ms: None,
+                restart_backoff_max_ms: None,
+            }
+        );
+        assert!(config.is_embedded());
+        assert_eq!(
+            config.buffer_capacity_or_default(),
+            DEFAULT_EMBEDDED_BUFFER_CAPACITY
+        );
+        assert_eq!(
+            config.restart_backoff_base_ms_or_default(),
+            DEFAULT_RESTART_BACKOFF_BASE_MS
+        );
+        assert_eq!(
+            config.restart_backoff_max_ms_or_default(),
+            DEFAULT_RESTART_BACKOFF_MAX_MS
+        );
+    }
+
+    #[test]
+    fn test_embedded_config_default_values() {
+        let config = StateSourceConfig::Mdbx {
+            mdbx_path: "/data/state.mdbx".to_string(),
+            depth: 1,
+            ws_url: Some("ws://geth:8546".to_string()),
+            genesis_file: None,
+            buffer_capacity: None,
+            restart_backoff_base_ms: None,
+            restart_backoff_max_ms: None,
+        };
+        assert_eq!(config.buffer_capacity_or_default(), 128);
+        assert_eq!(config.restart_backoff_base_ms_or_default(), 1000);
+        assert_eq!(config.restart_backoff_max_ms_or_default(), 30_000);
+    }
+
+    #[test]
+    fn test_embedded_config_custom_values() {
+        let config = StateSourceConfig::Mdbx {
+            mdbx_path: "/data/state.mdbx".to_string(),
+            depth: 1,
+            ws_url: Some("ws://geth:8546".to_string()),
+            genesis_file: Some("/data/genesis.json".to_string()),
+            buffer_capacity: Some(64),
+            restart_backoff_base_ms: Some(500),
+            restart_backoff_max_ms: Some(10_000),
+        };
+        assert_eq!(config.buffer_capacity_or_default(), 64);
+        assert_eq!(config.restart_backoff_base_ms_or_default(), 500);
+        assert_eq!(config.restart_backoff_max_ms_or_default(), 10_000);
+    }
+
+    #[test]
+    fn test_eth_rpc_source_is_not_embedded() {
+        let config = StateSourceConfig::EthRpc {
+            ws_url: "ws://localhost:8546".to_string(),
+            http_url: "http://localhost:8545".to_string(),
+        };
+        assert!(!config.is_embedded());
+    }
+
+    #[test]
+    fn test_mdbx_without_ws_url_is_not_embedded() {
+        let config = StateSourceConfig::Mdbx {
+            mdbx_path: "/data/state.mdbx".to_string(),
+            depth: 3,
+            ws_url: None,
+            genesis_file: None,
+            buffer_capacity: None,
+            restart_backoff_base_ms: None,
+            restart_backoff_max_ms: None,
+        };
+        assert!(!config.is_embedded());
+    }
+
+    #[test]
+    fn test_env_sources_mdbx_without_embedded_fields_backward_compat() {
+        let json = r#"[{"type":"mdbx","mdbx_path":"/data/state.mdbx","depth":7}]"#;
+        let sources: Vec<StateSourceConfig> = serde_json::from_str(json).unwrap();
+        assert_eq!(sources.len(), 1);
+        assert!(!sources[0].is_embedded());
     }
 }
