@@ -2,7 +2,9 @@
 //!
 //! The worker bootstraps from the last persisted block, catches up to head via
 //! RPC, and then tails new blocks from the `newHeads` subscription. Each block
-//! is traced with the pre-state tracer and written into the database.
+//! is traced with the pre-state tracer and buffered in memory. Blocks are only
+//! flushed to MDBX when a "flush up to block N" command arrives on the flush
+//! channel, ensuring the sidecar only reads committed state.
 use crate::{
     genesis::GenesisState,
     metrics,
@@ -32,7 +34,14 @@ use mdbx::{
     Writer,
 };
 use std::{
-    sync::Arc,
+    collections::VecDeque,
+    sync::{
+        Arc,
+        atomic::{
+            AtomicU64,
+            Ordering,
+        },
+    },
     time::Duration,
 };
 use tokio::{
@@ -48,7 +57,15 @@ use tracing::{
 const SUBSCRIPTION_RETRY_DELAY_SECS: u64 = 5;
 const MAX_MISSING_BLOCK_RETRIES: u32 = 3;
 
+/// Default number of `BlockStateUpdate` entries the in-memory buffer can hold
+/// before backpressure kicks in and tracing pauses.
+pub const DEFAULT_BUFFER_CAPACITY: usize = 64;
+
 /// Coordinates block ingestion, tracing, and persistence.
+///
+/// In embedded mode the worker buffers traced blocks in a bounded
+/// [`VecDeque`] and only flushes them to MDBX when the engine signals
+/// a committed head via the `flush_rx` channel.
 pub struct StateWorker<WR>
 where
     WR: Writer + Reader,
@@ -58,6 +75,14 @@ where
     writer_reader: WR,
     genesis_state: Option<GenesisState>,
     system_calls: SystemCalls,
+    /// In-memory buffer of traced but not-yet-flushed block updates.
+    buffer: VecDeque<BlockStateUpdate>,
+    /// Maximum number of entries the buffer may hold before backpressure.
+    buffer_capacity: usize,
+    /// Receives "flush up to block N" commands from the engine.
+    flush_rx: flume::Receiver<u64>,
+    /// Atomically publishes the latest block number flushed to MDBX.
+    mdbx_height: Arc<AtomicU64>,
 }
 
 impl<WR> StateWorker<WR>
@@ -66,12 +91,24 @@ where
     <WR as Writer>::Error: std::error::Error + Send + Sync + 'static,
     <WR as Reader>::Error: std::error::Error + Send + Sync + 'static,
 {
+    /// Create a new `StateWorker`.
+    ///
+    /// * `flush_rx` – channel that carries "flush up to block N" commands.
+    /// * `mdbx_height` – shared atomic updated with [`Ordering::Release`]
+    ///   after each successful MDBX write.
+    /// * `buffer_capacity` – optional override for the in-memory buffer size
+    ///   (defaults to [`DEFAULT_BUFFER_CAPACITY`]).
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         provider: Arc<RootProvider>,
         trace_provider: Box<dyn TraceProvider>,
         writer_reader: WR,
         genesis_state: Option<GenesisState>,
         system_calls: SystemCalls,
+        flush_rx: flume::Receiver<u64>,
+        mdbx_height: Arc<AtomicU64>,
+        buffer_capacity: Option<usize>,
     ) -> Self {
         Self {
             provider,
@@ -79,6 +116,10 @@ where
             writer_reader,
             genesis_state,
             system_calls,
+            buffer: VecDeque::new(),
+            buffer_capacity: buffer_capacity.unwrap_or(DEFAULT_BUFFER_CAPACITY),
+            flush_rx,
+            mdbx_height,
         }
     }
 
@@ -98,6 +139,10 @@ where
 
     /// Drive the catch-up + streaming loop. We keep retrying the subscription
     /// because websocket connections can drop in practice.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the worker encounters an unrecoverable failure.
     pub async fn run(
         &mut self,
         start_override: Option<u64>,
@@ -112,6 +157,9 @@ where
                 info!("Shutdown signal received");
                 return Ok(());
             }
+
+            // Drain any pending flush commands between iterations
+            self.drain_flush_commands()?;
 
             // Catch up block-by-block, checking shutdown between each
             if self.catch_up(&mut next_block, &mut shutdown_rx).await? {
@@ -192,10 +240,16 @@ where
             }
 
             while *next_block <= head {
+                // Backpressure: wait for buffer space before tracing next block
+                self.wait_for_buffer_space().await?;
+
                 // Process the block fully before checking shutdown
                 self.process_block(*next_block).await?;
                 *next_block += 1;
                 Self::update_sync_metrics(*next_block, head);
+
+                // Drain pending flush commands between blocks
+                self.drain_flush_commands()?;
 
                 // Check for shutdown after the block is complete
                 if shutdown_rx.try_recv().is_ok() {
@@ -250,9 +304,15 @@ where
                             }
 
                             while *next_block <= block_number {
+                                // Backpressure: wait for buffer space
+                                self.wait_for_buffer_space().await?;
+
                                 self.process_block(*next_block).await?;
                                 *next_block += 1;
                                 Self::update_sync_metrics(*next_block, block_number);
+
+                                // Drain pending flush commands between blocks
+                                self.drain_flush_commands()?;
                             }
                         }
                         None => {
@@ -264,7 +324,11 @@ where
         }
     }
 
-    /// Pull, trace, and persist a single block.
+    /// Pull, trace, and buffer a single block.
+    ///
+    /// The block update is appended to the in-memory buffer rather than
+    /// written directly to MDBX. Use [`Self::flush_to_mdbx`] to persist
+    /// buffered updates.
     async fn process_block(&mut self, block_number: u64) -> Result<()> {
         info!(block_number, "processing block");
 
@@ -284,20 +348,112 @@ where
         // Apply system call state changes (EIP-2935 & EIP-4788)
         self.apply_system_calls(&mut update, block_number).await?;
 
-        match self.writer_reader.commit_block(&update) {
-            Ok(stats) => {
-                metrics::set_db_healthy(true);
-                metrics::record_commit(block_number, &stats);
+        self.buffer.push_back(update);
+        info!(
+            block_number,
+            buffer_len = self.buffer.len(),
+            "block buffered"
+        );
+
+        Ok(())
+    }
+
+    /// Flush all buffered block updates with `block_number <= up_to_block`
+    /// to MDBX and update the shared atomic height.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any MDBX commit fails.
+    pub fn flush_to_mdbx(&mut self, up_to_block: u64) -> Result<()> {
+        let mut latest_flushed: Option<u64> = None;
+
+        while let Some(front) = self.buffer.front() {
+            if front.block_number > up_to_block {
+                break;
             }
-            Err(err) => {
-                critical!(error = ?err, block_number, "failed to persist block");
-                metrics::set_db_healthy(false);
-                metrics::record_block_failure();
-                return Err(anyhow!("failed to persist block {block_number}"));
+
+            // Safe to remove: we just verified the front exists and its
+            // block_number is within range.
+            let Some(update) = self.buffer.pop_front() else {
+                break;
+            };
+
+            let block_number = update.block_number;
+            match self.writer_reader.commit_block(&update) {
+                Ok(stats) => {
+                    metrics::set_db_healthy(true);
+                    metrics::record_commit(block_number, &stats);
+                    latest_flushed = Some(block_number);
+                    info!(block_number, "block flushed to MDBX");
+                }
+                Err(err) => {
+                    critical!(error = ?err, block_number, "failed to persist block");
+                    metrics::set_db_healthy(false);
+                    metrics::record_block_failure();
+                    return Err(anyhow!("failed to persist block {block_number}"));
+                }
             }
         }
 
-        info!(block_number, "block persisted to database");
+        if let Some(block_number) = latest_flushed {
+            self.mdbx_height.store(block_number, Ordering::Release);
+            debug!(block_number, "mdbx_height updated");
+        }
+
+        Ok(())
+    }
+
+    /// Drain all pending flush commands from the channel without blocking.
+    ///
+    /// When the sender side has been dropped (standalone mode) this flushes
+    /// every buffered block so the worker behaves like the pre-refactor
+    /// write-immediately mode.
+    fn drain_flush_commands(&mut self) -> Result<()> {
+        loop {
+            match self.flush_rx.try_recv() {
+                Ok(up_to_block) => self.flush_to_mdbx(up_to_block)?,
+                Err(flume::TryRecvError::Empty) => break,
+                Err(flume::TryRecvError::Disconnected) => {
+                    // Sender dropped — auto-flush everything (standalone mode).
+                    self.flush_all_buffered()?;
+                    break;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Flush every entry currently in the buffer to MDBX.
+    fn flush_all_buffered(&mut self) -> Result<()> {
+        if let Some(back) = self.buffer.back() {
+            let up_to = back.block_number;
+            self.flush_to_mdbx(up_to)?;
+        }
+        Ok(())
+    }
+
+    /// Block until the buffer has room for at least one more entry.
+    ///
+    /// When the buffer is full, this waits asynchronously on the flush channel
+    /// for commands that free space, providing natural backpressure on tracing.
+    ///
+    /// If the flush channel sender has been dropped (standalone mode), all
+    /// buffered blocks are flushed immediately to free space.
+    async fn wait_for_buffer_space(&mut self) -> Result<()> {
+        while self.buffer.len() >= self.buffer_capacity {
+            info!(
+                buffer_len = self.buffer.len(),
+                buffer_capacity = self.buffer_capacity,
+                "buffer full, waiting for flush command (backpressure)"
+            );
+            if let Ok(up_to_block) = self.flush_rx.recv_async().await {
+                self.flush_to_mdbx(up_to_block)?;
+            } else {
+                // Sender dropped — auto-flush everything (standalone mode).
+                self.flush_all_buffered()?;
+                break;
+            }
+        }
         Ok(())
     }
 
@@ -418,5 +574,349 @@ where
 
         info!(block_number = 0, "genesis block persisted to database");
         Ok(())
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use alloy::primitives::B256;
+    use mdbx::{
+        AccountInfo,
+        AccountState,
+        AddressHash,
+        CommitStats,
+    };
+    use std::sync::Mutex;
+
+    // ---------------------------------------------------------------------------
+    // Mock Writer + Reader that records commits for assertions.
+    // ---------------------------------------------------------------------------
+
+    #[derive(Debug, Default)]
+    struct MockWriterReader {
+        /// Block numbers that were committed (in order).
+        committed_blocks: Mutex<Vec<u64>>,
+    }
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("mock error")]
+    struct MockError;
+
+    impl Writer for MockWriterReader {
+        type Error = MockError;
+
+        fn commit_block(
+            &self,
+            update: &BlockStateUpdate,
+        ) -> std::result::Result<CommitStats, MockError> {
+            if let Ok(mut blocks) = self.committed_blocks.lock() {
+                blocks.push(update.block_number);
+            }
+            Ok(CommitStats::default())
+        }
+
+        fn bootstrap_from_snapshot(
+            &self,
+            _accounts: Vec<AccountState>,
+            _block_number: u64,
+            _block_hash: B256,
+            _state_root: B256,
+        ) -> std::result::Result<CommitStats, MockError> {
+            Ok(CommitStats::default())
+        }
+    }
+
+    impl Reader for MockWriterReader {
+        type Error = MockError;
+
+        fn latest_block_number(&self) -> std::result::Result<Option<u64>, MockError> {
+            Ok(None)
+        }
+
+        fn is_block_available(&self, _block_number: u64) -> std::result::Result<bool, MockError> {
+            Ok(false)
+        }
+
+        fn get_account(
+            &self,
+            _address_hash: AddressHash,
+            _block_number: u64,
+        ) -> std::result::Result<Option<AccountInfo>, MockError> {
+            Ok(None)
+        }
+
+        fn get_storage(
+            &self,
+            _address_hash: AddressHash,
+            _slot_hash: B256,
+            _block_number: u64,
+        ) -> std::result::Result<Option<alloy::primitives::U256>, MockError> {
+            Ok(None)
+        }
+
+        fn get_all_storage(
+            &self,
+            _address_hash: AddressHash,
+            _block_number: u64,
+        ) -> std::result::Result<std::collections::HashMap<B256, alloy::primitives::U256>, MockError>
+        {
+            Ok(std::collections::HashMap::new())
+        }
+
+        fn get_code(
+            &self,
+            _code_hash: B256,
+            _block_number: u64,
+        ) -> std::result::Result<Option<alloy::primitives::Bytes>, MockError> {
+            Ok(None)
+        }
+
+        fn get_full_account(
+            &self,
+            _address_hash: AddressHash,
+            _block_number: u64,
+        ) -> std::result::Result<Option<AccountState>, MockError> {
+            Ok(None)
+        }
+
+        fn get_block_hash(
+            &self,
+            _block_number: u64,
+        ) -> std::result::Result<Option<B256>, MockError> {
+            Ok(None)
+        }
+
+        fn get_state_root(
+            &self,
+            _block_number: u64,
+        ) -> std::result::Result<Option<B256>, MockError> {
+            Ok(None)
+        }
+
+        fn get_block_metadata(
+            &self,
+            _block_number: u64,
+        ) -> std::result::Result<Option<mdbx::BlockMetadata>, MockError> {
+            Ok(None)
+        }
+
+        fn get_available_block_range(&self) -> std::result::Result<Option<(u64, u64)>, MockError> {
+            Ok(None)
+        }
+
+        fn scan_account_hashes(
+            &self,
+            _block_number: u64,
+        ) -> std::result::Result<Vec<AddressHash>, MockError> {
+            Ok(Vec::new())
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Helpers
+    // ---------------------------------------------------------------------------
+
+    /// Create a dummy provider that will never be used for real I/O.
+    fn dummy_provider() -> Arc<RootProvider> {
+        let provider = alloy_provider::ProviderBuilder::new()
+            .connect_http("http://localhost:1".parse().expect("valid url"));
+        Arc::new(provider.root().clone())
+    }
+
+    fn make_update(block_number: u64) -> BlockStateUpdate {
+        BlockStateUpdate::new(block_number, B256::ZERO, B256::ZERO)
+    }
+
+    fn committed_blocks(wr: &MockWriterReader) -> Vec<u64> {
+        wr.committed_blocks
+            .lock()
+            .map_or_else(|_| Vec::new(), |b| b.clone())
+    }
+
+    // ---------------------------------------------------------------------------
+    // Tests
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn buffering_without_flush_does_not_write_to_mdbx() {
+        let wr = MockWriterReader::default();
+        let (_flush_tx, flush_rx) = flume::bounded::<u64>(16);
+        let mdbx_height = Arc::new(AtomicU64::new(0));
+
+        // We cannot call `new()` without a real provider/trace_provider, but we
+        // can construct the struct directly inside this test module since we have
+        // access to private fields.
+        let mut worker = StateWorker {
+            provider: dummy_provider(),
+            trace_provider: Box::new(NoopTraceProvider),
+            writer_reader: wr,
+            genesis_state: None,
+            system_calls: SystemCalls::new(None, None),
+            buffer: VecDeque::new(),
+            buffer_capacity: DEFAULT_BUFFER_CAPACITY,
+            flush_rx,
+            mdbx_height: mdbx_height.clone(),
+        };
+
+        // Push blocks directly into the buffer (simulating what process_block does
+        // after tracing).
+        worker.buffer.push_back(make_update(1));
+        worker.buffer.push_back(make_update(2));
+        worker.buffer.push_back(make_update(3));
+
+        // Nothing should have been written yet.
+        assert_eq!(committed_blocks(&worker.writer_reader), Vec::<u64>::new());
+        assert_eq!(mdbx_height.load(Ordering::Acquire), 0);
+        assert_eq!(worker.buffer.len(), 3);
+    }
+
+    #[test]
+    fn flush_signal_writes_buffered_blocks_to_mdbx() {
+        let wr = MockWriterReader::default();
+        let (flush_tx, flush_rx) = flume::bounded::<u64>(16);
+        let mdbx_height = Arc::new(AtomicU64::new(0));
+
+        let mut worker = StateWorker {
+            provider: dummy_provider(),
+            trace_provider: Box::new(NoopTraceProvider),
+            writer_reader: wr,
+            genesis_state: None,
+            system_calls: SystemCalls::new(None, None),
+            buffer: VecDeque::new(),
+            buffer_capacity: DEFAULT_BUFFER_CAPACITY,
+            flush_rx,
+            mdbx_height: mdbx_height.clone(),
+        };
+
+        // Buffer several blocks.
+        worker.buffer.push_back(make_update(1));
+        worker.buffer.push_back(make_update(2));
+        worker.buffer.push_back(make_update(3));
+        worker.buffer.push_back(make_update(4));
+
+        // Nothing written yet.
+        assert!(committed_blocks(&worker.writer_reader).is_empty());
+
+        // Flush up to block 2.
+        flush_tx.send(2).expect("send should succeed");
+        worker.drain_flush_commands().expect("drain should succeed");
+
+        assert_eq!(committed_blocks(&worker.writer_reader), vec![1, 2]);
+        assert_eq!(mdbx_height.load(Ordering::Acquire), 2);
+        // Blocks 3 and 4 remain in the buffer.
+        assert_eq!(worker.buffer.len(), 2);
+
+        // Flush up to block 4.
+        flush_tx.send(4).expect("send should succeed");
+        worker.drain_flush_commands().expect("drain should succeed");
+
+        assert_eq!(committed_blocks(&worker.writer_reader), vec![1, 2, 3, 4]);
+        assert_eq!(mdbx_height.load(Ordering::Acquire), 4);
+        assert!(worker.buffer.is_empty());
+    }
+
+    #[test]
+    fn flush_with_no_matching_blocks_is_noop() {
+        let wr = MockWriterReader::default();
+        let (_flush_tx, flush_rx) = flume::bounded::<u64>(16);
+        let mdbx_height = Arc::new(AtomicU64::new(0));
+
+        let mut worker = StateWorker {
+            provider: dummy_provider(),
+            trace_provider: Box::new(NoopTraceProvider),
+            writer_reader: wr,
+            genesis_state: None,
+            system_calls: SystemCalls::new(None, None),
+            buffer: VecDeque::new(),
+            buffer_capacity: DEFAULT_BUFFER_CAPACITY,
+            flush_rx,
+            mdbx_height: mdbx_height.clone(),
+        };
+
+        // Buffer block 5 only.
+        worker.buffer.push_back(make_update(5));
+
+        // Flush up to block 3 – nothing should be drained because 5 > 3.
+        worker.flush_to_mdbx(3).expect("flush should succeed");
+
+        assert!(committed_blocks(&worker.writer_reader).is_empty());
+        assert_eq!(mdbx_height.load(Ordering::Acquire), 0);
+        assert_eq!(worker.buffer.len(), 1);
+    }
+
+    #[test]
+    fn backpressure_blocks_when_buffer_full() {
+        let wr = MockWriterReader::default();
+        let (flush_tx, flush_rx) = flume::bounded::<u64>(16);
+        let mdbx_height = Arc::new(AtomicU64::new(0));
+
+        let mut worker = StateWorker {
+            provider: dummy_provider(),
+            trace_provider: Box::new(NoopTraceProvider),
+            writer_reader: wr,
+            genesis_state: None,
+            system_calls: SystemCalls::new(None, None),
+            buffer: VecDeque::new(),
+            buffer_capacity: 2, // tiny capacity for testing
+            flush_rx,
+            mdbx_height: mdbx_height.clone(),
+        };
+
+        // Fill the buffer to capacity.
+        worker.buffer.push_back(make_update(1));
+        worker.buffer.push_back(make_update(2));
+        assert_eq!(worker.buffer.len(), worker.buffer_capacity);
+
+        // Send a flush command that will free space.
+        flush_tx.send(1).expect("send should succeed");
+
+        // wait_for_buffer_space should drain the flush and make room.
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        rt.block_on(async {
+            worker
+                .wait_for_buffer_space()
+                .await
+                .expect("should free space");
+        });
+
+        // Block 1 was flushed, block 2 remains.
+        assert_eq!(worker.buffer.len(), 1);
+        assert_eq!(committed_blocks(&worker.writer_reader), vec![1]);
+        assert_eq!(mdbx_height.load(Ordering::Acquire), 1);
+    }
+
+    #[test]
+    fn buffer_capacity_defaults_to_64() {
+        let (_flush_tx, flush_rx) = flume::bounded::<u64>(1);
+        let mdbx_height = Arc::new(AtomicU64::new(0));
+
+        let worker = StateWorker {
+            provider: dummy_provider(),
+            trace_provider: Box::new(NoopTraceProvider),
+            writer_reader: MockWriterReader::default(),
+            genesis_state: None,
+            system_calls: SystemCalls::new(None, None),
+            buffer: VecDeque::new(),
+            buffer_capacity: DEFAULT_BUFFER_CAPACITY,
+            flush_rx,
+            mdbx_height,
+        };
+
+        assert_eq!(worker.buffer_capacity, 64);
+    }
+
+    // A no-op trace provider used only for constructing the struct in tests.
+    struct NoopTraceProvider;
+
+    #[async_trait::async_trait]
+    impl TraceProvider for NoopTraceProvider {
+        async fn fetch_block_state(&self, block_number: u64) -> Result<BlockStateUpdate> {
+            Ok(make_update(block_number))
+        }
     }
 }

@@ -49,7 +49,10 @@ use mdbx::{
 };
 use std::{
     panic::AssertUnwindSafe,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::AtomicU64,
+    },
     time::Duration,
 };
 use tokio::sync::broadcast;
@@ -169,12 +172,22 @@ async fn run_once(args: &Args) -> Result<()> {
         }
     });
 
+    // In standalone mode we drop the sender immediately so the worker detects
+    // a disconnected channel and auto-flushes every buffered block to MDBX,
+    // preserving the original write-immediately behaviour.
+    let (flush_tx, flush_rx) = flume::bounded::<u64>(64);
+    drop(flush_tx);
+    let mdbx_height = Arc::new(AtomicU64::new(0));
+
     let mut worker = StateWorker::new(
         provider,
         trace_provider,
         writer_reader,
         Some(genesis_state),
         system_calls,
+        flush_rx,
+        mdbx_height,
+        None,
     );
 
     match worker.run(args.start_block, shutdown_rx).await {

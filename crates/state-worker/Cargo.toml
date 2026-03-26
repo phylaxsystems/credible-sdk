@@ -13,6 +13,7 @@ eip-system-calls.workspace = true
 credible-utils.workspace = true
 
 anyhow = { workspace = true }
+flume = { workspace = true }
 async-trait.workspace = true
 clap = { workspace = true }
 tokio = { workspace = true }
@@ -31,8 +32,10 @@ mdbx = { workspace = true, features = ["writer"] }
 metrics = { workspace = true }
 
 [dev-dependencies]
+async-trait = { workspace = true }
 int-test-utils = { path = "../int-test-utils" }
 serde_json = { workspace = true }
+thiserror = { workspace = true }
 tracing-test = "0.2.5"
 uuid = "0.8.2"
 

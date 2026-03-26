@@ -117,12 +117,20 @@ impl TestInstance {
             })
             .unwrap_or_default();
 
+        // In integration tests, drop the sender so the worker auto-flushes.
+        let (flush_tx, flush_rx) = flume::bounded::<u64>(64);
+        drop(flush_tx);
+        let mdbx_height = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+
         let mut worker = StateWorker::new(
             provider,
             trace_provider,
             writer_reader,
             genesis_state,
             system_calls,
+            flush_rx,
+            mdbx_height,
+            None,
         );
         let (shutdown_tx, _) = broadcast::channel(1);
         let handle_worker = tokio::spawn(async move {
