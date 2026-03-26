@@ -397,17 +397,28 @@ async fn build_sources_from_config(
         for source_config in &config.state.sources {
             match source_config {
                 StateSourceConfig::Mdbx {
-                    mdbx_path, depth, ..
+                    mdbx_path,
+                    depth,
+                    ws_url,
+                    ..
                 } => {
                     match StateReader::new(
                         mdbx_path,
                         CircularBufferConfig::new(u8::try_from(*depth)?)?,
                     ) {
                         Ok(state_worker_client) => {
-                            sources.push(Arc::new(MdbxSource::new(
-                                state_worker_client,
-                                Arc::clone(&mdbx_height),
-                            )));
+                            let source = if ws_url.is_some() {
+                                // Embedded mode: the in-process state worker
+                                // updates the committed_head Arc after each
+                                // MDBX flush.
+                                MdbxSource::new_with_committed_head(
+                                    state_worker_client,
+                                    Arc::clone(&mdbx_height),
+                                )
+                            } else {
+                                MdbxSource::new(state_worker_client, Arc::clone(&mdbx_height))
+                            };
+                            sources.push(Arc::new(source));
                         }
                         Err(e) => {
                             error!(error = ?e, "Failed to connect MDBX");
@@ -807,6 +818,10 @@ struct EmbeddedStateWorkerConfig {
     mdbx_path: String,
     depth: usize,
     genesis_file: Option<String>,
+    /// Base delay for exponential backoff when the state worker restarts after a panic.
+    restart_backoff_base: Duration,
+    /// Maximum delay cap for exponential backoff restarts.
+    restart_backoff_max: Duration,
 }
 
 /// Returns the first Mdbx source config that has `ws_url` set, if any.
@@ -817,6 +832,8 @@ fn find_embedded_state_worker_config(config: &Config) -> Option<EmbeddedStateWor
             depth,
             ws_url: Some(ws_url),
             genesis_file,
+            restart_backoff_base_ms,
+            restart_backoff_max_ms,
             ..
         } = source
         {
@@ -825,20 +842,26 @@ fn find_embedded_state_worker_config(config: &Config) -> Option<EmbeddedStateWor
                 mdbx_path: mdbx_path.clone(),
                 depth: *depth,
                 genesis_file: genesis_file.clone(),
+                restart_backoff_base: Duration::from_millis(
+                    restart_backoff_base_ms
+                        .unwrap_or(sidecar::args::DEFAULT_RESTART_BACKOFF_BASE_MS),
+                ),
+                restart_backoff_max: Duration::from_millis(
+                    restart_backoff_max_ms.unwrap_or(sidecar::args::DEFAULT_RESTART_BACKOFF_MAX_MS),
+                ),
             });
         }
     }
     None
 }
 
-/// Exponential backoff constants for state worker restart.
-const STATE_WORKER_BACKOFF_INITIAL: Duration = Duration::from_secs(1);
+/// Multiplier for exponential backoff between state worker restart attempts.
 const STATE_WORKER_BACKOFF_MULTIPLIER: u32 = 2;
-const STATE_WORKER_BACKOFF_CAP: Duration = Duration::from_secs(30);
 
 /// Spawns the state worker on a dedicated OS thread with its own single-threaded
 /// tokio runtime. The thread entry point is wrapped in `catch_unwind` with
-/// exponential backoff restart (1s → 2s → 4s → ... → 30s cap).
+/// exponential backoff restart (base from config, max from config, doubles each
+/// restart).
 ///
 /// Returns the thread's `JoinHandle` and a oneshot receiver that fires when the
 /// thread exits (either due to shutdown or permanent failure).
@@ -872,7 +895,9 @@ fn run_state_worker_loop(
     mdbx_height: Arc<AtomicU64>,
     shutdown: Arc<AtomicBool>,
 ) {
-    let mut backoff = STATE_WORKER_BACKOFF_INITIAL;
+    let backoff_base = sw_config.restart_backoff_base;
+    let backoff_cap = sw_config.restart_backoff_max;
+    let mut backoff = backoff_base;
 
     loop {
         if shutdown.load(Ordering::Acquire) {
@@ -918,10 +943,10 @@ fn run_state_worker_loop(
         );
         std::thread::sleep(backoff);
 
-        // Exponential backoff: 1s → 2s → 4s → 8s → 16s → 30s (cap)
+        // Exponential backoff: doubles each restart up to the configured cap.
         backoff = backoff
             .saturating_mul(STATE_WORKER_BACKOFF_MULTIPLIER)
-            .min(STATE_WORKER_BACKOFF_CAP);
+            .min(backoff_cap);
     }
 }
 

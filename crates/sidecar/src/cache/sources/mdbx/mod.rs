@@ -79,6 +79,19 @@ impl MdbxSource {
     ///   [`Ordering::Release`] after each successful MDBX write. `MdbxSource`
     ///   reads it with [`Ordering::Acquire`] instead of polling.
     pub fn new(backend: StateReader, mdbx_height: Arc<AtomicU64>) -> Self {
+        Self::new_inner(backend, mdbx_height)
+    }
+
+    /// Creates a cache backed by an in-process (embedded) state worker.
+    ///
+    /// Semantically identical to [`Self::new`] but signals that the
+    /// `committed_head` [`Arc<AtomicU64>`] is written by the embedded state
+    /// worker thread after each MDBX flush, replacing the need for polling.
+    pub fn new_with_committed_head(backend: StateReader, committed_head: Arc<AtomicU64>) -> Self {
+        Self::new_inner(backend, committed_head)
+    }
+
+    fn new_inner(backend: StateReader, mdbx_height: Arc<AtomicU64>) -> Self {
         let target_block = Arc::new(RwLock::new(U256::ZERO));
         // Zero means "not yet loaded" for the MDBX available range.
         let available_oldest_block = Arc::new(AtomicU64::new(0));
