@@ -180,7 +180,9 @@ impl AuthCommand {
             ProgressStyle::default_spinner()
                 .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
                 .template("{spinner} {msg}")
-                .map_err(|e| AuthError::InvalidAuthData(format!("Failed to set spinner style: {e}")))?,
+                .map_err(|e| {
+                    AuthError::InvalidAuthData(format!("Failed to set spinner style: {e}"))
+                })?,
         );
         spinner.enable_steady_tick(Duration::from_millis(80));
         spinner.set_message("Waiting for authentication...");
