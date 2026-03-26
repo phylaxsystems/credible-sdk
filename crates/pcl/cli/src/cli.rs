@@ -2,10 +2,10 @@ use clap::Parser;
 use pcl_common::args::CliArgs;
 use pcl_core::{
     DEFAULT_DA_URL,
-    DEFAULT_DAPP_URL,
+    DEFAULT_PLATFORM_URL,
     apply::ApplyArgs,
     assertion_da::DaStoreArgs,
-    assertion_submission::DappSubmitArgs,
+    assertion_submission::PlatformSubmitArgs,
     auth::AuthCommand,
     config::ConfigArgs,
 };
@@ -20,12 +20,12 @@ fn version_message() -> &'static str {
     VERSION
         .get_or_init(|| {
             format!(
-                "{}\nCommit: {}\nBuild Timestamp: {}\nDefault DA URL: {}\nDefault Dapp URL: {}",
+                "{}\nCommit: {}\nBuild Timestamp: {}\nDefault DA URL: {}\nDefault Platform URL: {}",
                 env!("CARGO_PKG_VERSION"),
                 env!("VERGEN_GIT_SHA"),
                 env!("VERGEN_BUILD_TIMESTAMP"),
                 DEFAULT_DA_URL,
-                DEFAULT_DAPP_URL,
+                DEFAULT_PLATFORM_URL,
             )
         })
         .as_str()
@@ -53,7 +53,7 @@ pub enum Commands {
     #[command(name = "store")]
     Store(DaStoreArgs),
     #[command(name = "submit")]
-    Submit(DappSubmitArgs),
+    Submit(PlatformSubmitArgs),
     #[command(name = "apply")]
     Apply(ApplyArgs),
     Auth(AuthCommand),

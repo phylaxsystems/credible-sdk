@@ -1,11 +1,11 @@
 use crate::{
-    DEFAULT_DAPP_URL,
+    DEFAULT_PLATFORM_URL,
     config::{
         AssertionForSubmission,
         AssertionKey,
         CliConfig,
     },
-    error::DappSubmitError,
+    error::PlatformSubmitError,
 };
 use clap::ValueHint;
 use inquire::{
@@ -18,36 +18,36 @@ use serde_json::json;
 
 /// Trait for interactive prompting, allowing for mocking in tests
 trait Prompter {
-    fn select(&self, message: &str, values: Vec<String>) -> Result<String, DappSubmitError>;
+    fn select(&self, message: &str, values: Vec<String>) -> Result<String, PlatformSubmitError>;
     fn multi_select(
         &self,
         message: &str,
         values: Vec<String>,
-    ) -> Result<Vec<String>, DappSubmitError>;
+    ) -> Result<Vec<String>, PlatformSubmitError>;
 }
 
 /// Real implementation using inquire crate
 struct InquirePrompter;
 
 impl Prompter for InquirePrompter {
-    fn select(&self, message: &str, values: Vec<String>) -> Result<String, DappSubmitError> {
+    fn select(&self, message: &str, values: Vec<String>) -> Result<String, PlatformSubmitError> {
         Select::new(message, values)
             .prompt()
-            .map_err(DappSubmitError::ProjectSelectionFailed)
+            .map_err(PlatformSubmitError::ProjectSelectionFailed)
     }
 
     fn multi_select(
         &self,
         message: &str,
         values: Vec<String>,
-    ) -> Result<Vec<String>, DappSubmitError> {
+    ) -> Result<Vec<String>, PlatformSubmitError> {
         MultiSelect::new(message, values)
             .prompt()
-            .map_err(DappSubmitError::ProjectSelectionFailed)
+            .map_err(PlatformSubmitError::ProjectSelectionFailed)
     }
 }
 
-// TODO(Odysseas) Add tests for the Dapp submission + Rust bindings from the Dapp API
+// TODO(Odysseas) Add tests for the Platform submission + Rust bindings from the Platform API
 
 #[derive(Deserialize, Debug)]
 #[allow(dead_code)]
@@ -64,14 +64,14 @@ struct Project {
     updated_at: String,
 }
 
-/// Arguments for submitting assertions to the Credible Layer dApp
+/// Arguments for submitting assertions to the Credible Layer Platform
 ///
 /// This struct handles CLI arguments for the assertion submission process,
-/// including the dApp URL, project name, and assertion names.
+/// including the Platform URL, project name, and assertion names.
 #[derive(clap::Parser)]
 #[clap(
     name = "submit",
-    about = "Submit assertions to the Credible Layer dApp",
+    about = "Submit assertions to the Credible Layer Platform",
     after_help = "EXAMPLES:\n    \
                   Submit a single assertion (positional args):\n        \
                   pcl submit AssertionName arg1 arg2 arg3\n\n    \
@@ -82,15 +82,15 @@ struct Project {
                   Note: Positional arguments are for single assertions only.\n    \
                   The -a flag with parentheses format is for specifying assertions with arguments."
 )]
-pub struct DappSubmitArgs {
-    /// Base URL for the Credible Layer dApp API (e.g., <https://dapp.phylax.systems>)
+pub struct PlatformSubmitArgs {
+    /// Base URL for the Credible Layer Platform API (e.g., <https://app.phylax.systems>)
     #[clap(
         short = 'u',
         long = "api-url",
         env = "PCL_API_URL",
         value_hint = ValueHint::Url,
         value_name = "API Endpoint",
-        default_value = DEFAULT_DAPP_URL
+        default_value = DEFAULT_PLATFORM_URL
     )]
     pub api_url: String,
 
@@ -136,7 +136,7 @@ pub struct DappSubmitArgs {
     pub constructor_args: Vec<String>,
 }
 
-impl DappSubmitArgs {
+impl PlatformSubmitArgs {
     /// Executes the assertion submission workflow
     ///
     /// # Arguments
@@ -144,12 +144,12 @@ impl DappSubmitArgs {
     /// * `config` - Configuration containing assertions and auth details
     ///
     /// # Returns
-    /// * `Result<(), DappSubmitError>` - Success or specific error
+    /// * `Result<(), PlatformSubmitError>` - Success or specific error
     pub async fn run(
         &self,
         _cli_args: &CliArgs,
         config: &mut CliConfig,
-    ) -> Result<(), DappSubmitError> {
+    ) -> Result<(), PlatformSubmitError> {
         let projects = self.get_projects(config).await?;
         let project = self.select_project(&projects)?;
 
@@ -186,7 +186,7 @@ impl DappSubmitArgs {
         let mut assertions = vec![];
         for key in assertion_keys {
             let assertion = config.assertions_for_submission.remove(&key).ok_or(
-                DappSubmitError::CouldNotFindStoredAssertion(key.to_string()),
+                PlatformSubmitError::CouldNotFindStoredAssertion(key.to_string()),
             )?;
 
             assertions.push(assertion);
@@ -205,9 +205,12 @@ impl DappSubmitArgs {
     }
 
     /// Abstracted function for selecting a project
-    fn select_project<'a>(&self, projects: &'a [Project]) -> Result<&'a Project, DappSubmitError> {
+    fn select_project<'a>(
+        &self,
+        projects: &'a [Project],
+    ) -> Result<&'a Project, PlatformSubmitError> {
         if projects.is_empty() {
-            return Err(DappSubmitError::NoProjectsFound);
+            return Err(PlatformSubmitError::NoProjectsFound);
         }
 
         let display_name = |project: &Project| {
@@ -254,7 +257,7 @@ impl DappSubmitArgs {
         let project = projects
             .iter()
             .find(|p| display_name(p) == project_name)
-            .ok_or(DappSubmitError::NoProjectsFound)?;
+            .ok_or(PlatformSubmitError::NoProjectsFound)?;
         Ok(project)
     }
 
@@ -262,9 +265,9 @@ impl DappSubmitArgs {
     fn select_assertions(
         &self,
         assertion_keys_for_submission: &[AssertionKey],
-    ) -> Result<Vec<String>, DappSubmitError> {
+    ) -> Result<Vec<String>, PlatformSubmitError> {
         if assertion_keys_for_submission.is_empty() {
-            return Err(DappSubmitError::NoStoredAssertions);
+            return Err(PlatformSubmitError::NoStoredAssertions);
         }
 
         let assertion_keys_for_selection = assertion_keys_for_submission
@@ -289,13 +292,13 @@ impl DappSubmitArgs {
     /// * `assertions` - List of assertions to submit
     ///
     /// # Returns
-    /// * `Result<(), DappSubmitError>` - Success or API error
+    /// * `Result<(), PlatformSubmitError>` - Success or API error
     async fn submit_assertion(
         &self,
         project: &Project,
         assertions: &[AssertionForSubmission],
         config: &CliConfig,
-    ) -> Result<(), DappSubmitError> {
+    ) -> Result<(), PlatformSubmitError> {
         let client = reqwest::Client::new();
         let body = json!({
             "assertions": assertions.iter().map(|a| json!({
@@ -319,20 +322,20 @@ impl DappSubmitArgs {
             .json(&body)
             .send()
             .await
-            .map_err(DappSubmitError::SendSubmissionApi)?;
+            .map_err(PlatformSubmitError::SendSubmissionApi)?;
 
         if response.status().is_success() {
             Ok(())
         } else {
             // If the response is unauthorized, return a specific error
             if response.status().as_u16() == 401 {
-                return Err(DappSubmitError::NoAuthToken);
+                return Err(PlatformSubmitError::NoAuthToken);
             }
-            Err(DappSubmitError::SubmissionFailed(
+            Err(PlatformSubmitError::SubmissionFailed(
                 response
                     .text()
                     .await
-                    .map_err(DappSubmitError::SendSubmissionApiResponse)?,
+                    .map_err(PlatformSubmitError::SendSubmissionApiResponse)?,
             ))
         }
     }
@@ -345,12 +348,12 @@ impl DappSubmitArgs {
     /// * `message` - Prompt message for interactive selection
     ///
     /// # Returns
-    /// * `Result<String, DappSubmitError>` - Selected value or error
+    /// * `Result<String, PlatformSubmitError>` - Selected value or error
     fn provide_or_select(
         maybe_key: Option<String>,
         values: Vec<String>,
         message: &str,
-    ) -> Result<String, DappSubmitError> {
+    ) -> Result<String, PlatformSubmitError> {
         Self::provide_or_select_with_prompter(maybe_key, values, message, &InquirePrompter)
     }
 
@@ -359,7 +362,7 @@ impl DappSubmitArgs {
         values: Vec<String>,
         message: &str,
         prompter: &dyn Prompter,
-    ) -> Result<String, DappSubmitError> {
+    ) -> Result<String, PlatformSubmitError> {
         match maybe_key {
             None => prompter.select(message, values),
             Some(key) => {
@@ -382,12 +385,12 @@ impl DappSubmitArgs {
     /// * `message` - Prompt message for interactive selection
     ///
     /// # Returns
-    /// * `Result<Vec<String>, DappSubmitError>` - Selected values or error
+    /// * `Result<Vec<String>, PlatformSubmitError>` - Selected values or error
     fn provide_or_multi_select(
         maybe_keys: Option<Vec<String>>,
         values: Vec<String>,
         message: &str,
-    ) -> Result<Vec<String>, DappSubmitError> {
+    ) -> Result<Vec<String>, PlatformSubmitError> {
         Self::provide_or_multi_select_with_prompter(maybe_keys, values, message, &InquirePrompter)
     }
 
@@ -396,7 +399,7 @@ impl DappSubmitArgs {
         values: Vec<String>,
         message: &str,
         prompter: &dyn Prompter,
-    ) -> Result<Vec<String>, DappSubmitError> {
+    ) -> Result<Vec<String>, PlatformSubmitError> {
         match maybe_keys {
             None => prompter.multi_select(message, values),
             Some(keys) => {
@@ -415,7 +418,10 @@ impl DappSubmitArgs {
             }
         }
     }
-    async fn get_projects(&self, config: &mut CliConfig) -> Result<Vec<Project>, DappSubmitError> {
+    async fn get_projects(
+        &self,
+        config: &mut CliConfig,
+    ) -> Result<Vec<Project>, PlatformSubmitError> {
         let client = reqwest::Client::new();
         let projects: Vec<Project> = client
             .get(format!(
@@ -424,24 +430,24 @@ impl DappSubmitArgs {
                 config
                     .auth
                     .as_ref()
-                    .ok_or(DappSubmitError::NoAuthToken)?
+                    .ok_or(PlatformSubmitError::NoAuthToken)?
                     .user_address
             ))
             .send()
             .await
-            .map_err(DappSubmitError::GetUserProjectsApi)?
+            .map_err(PlatformSubmitError::GetUserProjectsApi)?
             .json()
             .await
-            .map_err(DappSubmitError::GetUserProjectsApiResponse)?;
+            .map_err(PlatformSubmitError::GetUserProjectsApiResponse)?;
         Ok(projects)
     }
 }
 
-/// TODO(ODYSSEAS): Add tests for the `DappSubmitArgs` struct
+/// TODO(ODYSSEAS): Add tests for the `PlatformSubmitArgs` struct
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::assertion_submission::DappSubmitArgs;
+    use crate::assertion_submission::PlatformSubmitArgs;
 
     /// Mock prompter for testing that returns predefined values
     struct MockPrompter {
@@ -466,9 +472,15 @@ mod tests {
     }
 
     impl Prompter for MockPrompter {
-        fn select(&self, _message: &str, _values: Vec<String>) -> Result<String, DappSubmitError> {
+        fn select(
+            &self,
+            _message: &str,
+            _values: Vec<String>,
+        ) -> Result<String, PlatformSubmitError> {
             self.select_response.clone().ok_or_else(|| {
-                DappSubmitError::ProjectSelectionFailed(inquire::InquireError::OperationCanceled)
+                PlatformSubmitError::ProjectSelectionFailed(
+                    inquire::InquireError::OperationCanceled,
+                )
             })
         }
 
@@ -476,9 +488,11 @@ mod tests {
             &self,
             _message: &str,
             _values: Vec<String>,
-        ) -> Result<Vec<String>, DappSubmitError> {
+        ) -> Result<Vec<String>, PlatformSubmitError> {
             self.multi_select_response.clone().ok_or_else(|| {
-                DappSubmitError::ProjectSelectionFailed(inquire::InquireError::OperationCanceled)
+                PlatformSubmitError::ProjectSelectionFailed(
+                    inquire::InquireError::OperationCanceled,
+                )
             })
         }
     }
@@ -487,14 +501,14 @@ mod tests {
     fn test_provide_or_select_with_valid_input() {
         let values = vec!["Project1".to_string(), "Project2".to_string()];
         let result =
-            DappSubmitArgs::provide_or_select(Some("Project1".to_string()), values, "Select:");
+            PlatformSubmitArgs::provide_or_select(Some("Project1".to_string()), values, "Select:");
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "Project1");
     }
     #[test]
     fn test_no_stored_assertions() {
-        let args = DappSubmitArgs {
+        let args = PlatformSubmitArgs {
             api_url: String::new(),
             project_name: None,
             assertion_keys: None,
@@ -508,12 +522,12 @@ mod tests {
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
-            DappSubmitError::NoStoredAssertions
+            PlatformSubmitError::NoStoredAssertions
         ));
     }
     #[test]
     fn test_no_projects() {
-        let args = DappSubmitArgs {
+        let args = PlatformSubmitArgs {
             api_url: String::new(),
             project_name: None,
             assertion_keys: None,
@@ -527,12 +541,12 @@ mod tests {
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
-            DappSubmitError::NoProjectsFound
+            PlatformSubmitError::NoProjectsFound
         ));
     }
     #[test]
     fn test_select_assertions_with_preselected() {
-        let args = DappSubmitArgs {
+        let args = PlatformSubmitArgs {
             api_url: String::new(),
             project_name: None,
             assertion_keys: Some(vec![AssertionKey::new("assertion1".to_string(), vec![])]),
@@ -559,7 +573,7 @@ mod tests {
     #[test]
     fn test_provide_or_multi_select_with_preselected() {
         let values = vec!["assertion1".to_string(), "assertion2".to_string()];
-        let result = DappSubmitArgs::provide_or_multi_select(
+        let result = PlatformSubmitArgs::provide_or_multi_select(
             Some(vec!["assertion1".to_string()]),
             values.clone(),
             "Select:",
@@ -572,7 +586,7 @@ mod tests {
     #[test]
     fn test_provide_or_select_with_preselected() {
         let values = vec!["Project1".to_string(), "Project2".to_string()];
-        let result = DappSubmitArgs::provide_or_select(
+        let result = PlatformSubmitArgs::provide_or_select(
             Some("Project1".to_string()),
             values.clone(),
             "Select:",
@@ -584,7 +598,7 @@ mod tests {
 
     #[test]
     fn test_parse_assertion_keys_multiple_assertions() {
-        let args = DappSubmitArgs {
+        let args = PlatformSubmitArgs {
             api_url: String::new(),
             project_name: None,
             assertion_keys: Some(vec![
@@ -611,7 +625,7 @@ mod tests {
 
     #[test]
     fn test_parse_assertion_keys_string_format() {
-        let args = DappSubmitArgs {
+        let args = PlatformSubmitArgs {
             api_url: String::new(),
             project_name: None,
             assertion_keys: Some(vec![AssertionKey::from("AssertionName(arg1,arg2)")]),
@@ -627,7 +641,7 @@ mod tests {
 
     #[test]
     fn test_parse_assertion_keys_no_args() {
-        let args = DappSubmitArgs {
+        let args = PlatformSubmitArgs {
             api_url: String::new(),
             project_name: None,
             assertion_keys: Some(vec![AssertionKey::from("AssertionName()")]),
@@ -643,7 +657,7 @@ mod tests {
 
     #[test]
     fn test_parse_assertion_keys_positional_args() {
-        let args = DappSubmitArgs {
+        let args = PlatformSubmitArgs {
             api_url: String::new(),
             project_name: None,
             assertion_keys: None,
@@ -666,7 +680,7 @@ mod tests {
 
     #[test]
     fn test_parse_assertion_keys_positional_no_constructor_args() {
-        let args = DappSubmitArgs {
+        let args = PlatformSubmitArgs {
             api_url: String::new(),
             project_name: None,
             assertion_keys: None,
@@ -688,7 +702,7 @@ mod tests {
     fn test_parse_assertion_keys_positional_takes_precedence() {
         // With clap implementation, conflicts_with prevents both from being set
         // This test now verifies that assertion_keys takes precedence when both are set
-        let args = DappSubmitArgs {
+        let args = PlatformSubmitArgs {
             api_url: String::new(),
             project_name: None,
             assertion_keys: Some(vec![AssertionKey::new("FlagAssertion".to_string(), vec![])]),
@@ -705,7 +719,7 @@ mod tests {
     #[test]
     fn test_parse_assertion_keys_without_parentheses() {
         // Test that assertions without parentheses are supported
-        let args = DappSubmitArgs {
+        let args = PlatformSubmitArgs {
             api_url: String::new(),
             project_name: None,
             assertion_keys: Some(vec![AssertionKey::from("AssertionName")]),
@@ -722,7 +736,7 @@ mod tests {
     #[test]
     fn test_parse_assertion_keys_no_input() {
         // Test when no assertions are provided at all
-        let args = DappSubmitArgs {
+        let args = PlatformSubmitArgs {
             api_url: String::new(),
             project_name: None,
             assertion_keys: None,
@@ -737,7 +751,7 @@ mod tests {
     #[test]
     fn test_parse_assertion_keys_empty_assertion_keys_vec() {
         // Test when assertion_keys is Some but contains empty vec
-        let args = DappSubmitArgs {
+        let args = PlatformSubmitArgs {
             api_url: String::new(),
             project_name: None,
             assertion_keys: Some(vec![]),
@@ -752,7 +766,7 @@ mod tests {
     #[test]
     fn test_parse_assertion_keys_with_special_characters() {
         // Test handling of special characters in constructor args
-        let args = DappSubmitArgs {
+        let args = PlatformSubmitArgs {
             api_url: String::new(),
             project_name: None,
             assertion_keys: Some(vec![AssertionKey::from("AssertionName(arg-1,arg_2,arg.3)")]),
@@ -769,7 +783,7 @@ mod tests {
     #[test]
     fn test_parse_assertion_keys_with_spaces() {
         // Test handling of spaces around commas
-        let args = DappSubmitArgs {
+        let args = PlatformSubmitArgs {
             api_url: String::new(),
             project_name: None,
             assertion_keys: Some(vec![AssertionKey::from("AssertionName(arg1, arg2 , arg3)")]),
@@ -786,7 +800,7 @@ mod tests {
     #[test]
     fn test_parse_assertion_keys_with_numeric_args() {
         // Test handling of numeric constructor args
-        let args = DappSubmitArgs {
+        let args = PlatformSubmitArgs {
             api_url: String::new(),
             project_name: None,
             assertion_keys: Some(vec![AssertionKey::from("AssertionName(123,456,789)")]),
@@ -803,7 +817,7 @@ mod tests {
     #[test]
     fn test_parse_assertion_keys_mixed_format() {
         // Test multiple assertions with different formats
-        let args = DappSubmitArgs {
+        let args = PlatformSubmitArgs {
             api_url: String::new(),
             project_name: None,
             assertion_keys: Some(vec![
@@ -835,7 +849,7 @@ mod tests {
     #[test]
     fn test_parse_assertion_keys_address_format() {
         // Test handling of Ethereum addresses as constructor args
-        let args = DappSubmitArgs {
+        let args = PlatformSubmitArgs {
             api_url: String::new(),
             project_name: None,
             assertion_keys: Some(vec![AssertionKey::from(
@@ -857,7 +871,7 @@ mod tests {
     #[test]
     fn test_parse_assertion_keys_complex_args() {
         // Test handling of complex constructor args with mixed types
-        let args = DappSubmitArgs {
+        let args = PlatformSubmitArgs {
             api_url: String::new(),
             project_name: None,
             assertion_keys: Some(vec![AssertionKey::from(
@@ -884,7 +898,7 @@ mod tests {
     #[test]
     fn test_parse_assertion_keys_positional_with_address() {
         // Test positional args with Ethereum address
-        let args = DappSubmitArgs {
+        let args = PlatformSubmitArgs {
             api_url: String::new(),
             project_name: None,
             assertion_keys: None,
@@ -917,7 +931,7 @@ mod tests {
     #[test]
     fn test_parse_assertion_keys_with_nested_parentheses() {
         // Test handling of nested parentheses in constructor args
-        let args = DappSubmitArgs {
+        let args = PlatformSubmitArgs {
             api_url: String::new(),
             project_name: None,
             assertion_keys: Some(vec![AssertionKey::from(
@@ -940,7 +954,7 @@ mod tests {
     #[test]
     fn test_parse_assertion_keys_with_quoted_args() {
         // Test handling of quoted arguments (common for strings)
-        let args = DappSubmitArgs {
+        let args = PlatformSubmitArgs {
             api_url: String::new(),
             project_name: None,
             assertion_keys: Some(vec![AssertionKey::from(
@@ -962,7 +976,7 @@ mod tests {
     #[test]
     fn test_parse_assertion_keys_with_empty_string_args() {
         // Test handling of empty string arguments
-        let args = DappSubmitArgs {
+        let args = PlatformSubmitArgs {
             api_url: String::new(),
             project_name: None,
             assertion_keys: Some(vec![AssertionKey::from("EmptyStringAssertion(,arg2,)")]),
@@ -979,7 +993,7 @@ mod tests {
     #[test]
     fn test_parse_assertion_keys_with_url_args() {
         // Test handling of URLs as constructor args
-        let args = DappSubmitArgs {
+        let args = PlatformSubmitArgs {
             api_url: String::new(),
             project_name: None,
             assertion_keys: Some(vec![AssertionKey::from(
@@ -1001,7 +1015,7 @@ mod tests {
     #[test]
     fn test_parse_assertion_keys_positional_with_special_chars() {
         // Test positional args with special characters
-        let args = DappSubmitArgs {
+        let args = PlatformSubmitArgs {
             api_url: String::new(),
             project_name: None,
             assertion_keys: None,
@@ -1043,7 +1057,7 @@ mod tests {
     #[test]
     fn test_parse_assertion_keys_with_json_like_args() {
         // Test handling of JSON-like arguments
-        let args = DappSubmitArgs {
+        let args = PlatformSubmitArgs {
             api_url: String::new(),
             project_name: None,
             assertion_keys: Some(vec![AssertionKey::from(
@@ -1067,7 +1081,7 @@ mod tests {
     fn test_parse_assertion_keys_very_long_args() {
         // Test handling of very long constructor arguments
         let long_arg = "a".repeat(1000);
-        let args = DappSubmitArgs {
+        let args = PlatformSubmitArgs {
             api_url: String::new(),
             project_name: None,
             assertion_keys: Some(vec![AssertionKey::from(format!(
@@ -1087,7 +1101,7 @@ mod tests {
     #[test]
     fn test_parse_assertion_keys_unicode_args() {
         // Test handling of Unicode characters in args
-        let args = DappSubmitArgs {
+        let args = PlatformSubmitArgs {
             api_url: String::new(),
             project_name: None,
             assertion_keys: Some(vec![AssertionKey::from(
@@ -1109,7 +1123,7 @@ mod tests {
     #[test]
     fn test_parse_assertion_keys_malformed_parentheses() {
         // Test handling of malformed parentheses
-        let args = DappSubmitArgs {
+        let args = PlatformSubmitArgs {
             api_url: String::new(),
             project_name: None,
             assertion_keys: Some(vec![AssertionKey::from("MalformedAssertion(arg1,arg2")]), // Missing closing parenthesis
@@ -1127,7 +1141,7 @@ mod tests {
     #[test]
     fn test_parse_assertion_keys_constructor_args_without_name() {
         // Test that constructor_args are ignored without assertion_name
-        let args = DappSubmitArgs {
+        let args = PlatformSubmitArgs {
             api_url: String::new(),
             project_name: None,
             assertion_keys: None,
@@ -1142,7 +1156,7 @@ mod tests {
     #[test]
     fn test_parse_assertion_keys_multiple_positional_mixed_args() {
         // Test multiple positional args with different types
-        let args = DappSubmitArgs {
+        let args = PlatformSubmitArgs {
             api_url: String::new(),
             project_name: None,
             assertion_keys: None,
@@ -1187,7 +1201,7 @@ mod tests {
     #[test]
     fn test_parse_assertion_keys_single_flag_assertion() {
         // Test single assertion using -a flag instead of positional
-        let args = DappSubmitArgs {
+        let args = PlatformSubmitArgs {
             api_url: String::new(),
             project_name: None,
             assertion_keys: Some(vec![AssertionKey::new(
@@ -1207,7 +1221,7 @@ mod tests {
     #[test]
     fn test_parse_assertion_keys_whitespace_handling() {
         // Test handling of various whitespace scenarios
-        let args = DappSubmitArgs {
+        let args = PlatformSubmitArgs {
             api_url: String::new(),
             project_name: None,
             assertion_keys: Some(vec![
@@ -1231,7 +1245,7 @@ mod tests {
     #[test]
     fn test_parse_assertion_keys_consecutive_commas() {
         // Test handling of consecutive commas (empty args)
-        let args = DappSubmitArgs {
+        let args = PlatformSubmitArgs {
             api_url: String::new(),
             project_name: None,
             assertion_keys: Some(vec![AssertionKey::from(
@@ -1256,7 +1270,7 @@ mod tests {
         let values = vec!["Project1".to_string(), "Project2".to_string()];
         let mock_prompter = MockPrompter::new_select("Project2".to_string());
 
-        let result = DappSubmitArgs::provide_or_select_with_prompter(
+        let result = PlatformSubmitArgs::provide_or_select_with_prompter(
             Some("NonExistentProject".to_string()),
             values,
             "Select:",
@@ -1278,7 +1292,7 @@ mod tests {
             "assertion2".to_string(),
         ]);
 
-        let result = DappSubmitArgs::provide_or_multi_select_with_prompter(
+        let result = PlatformSubmitArgs::provide_or_multi_select_with_prompter(
             Some(preselected),
             values,
             "Select:",
@@ -1296,7 +1310,7 @@ mod tests {
     #[test]
     fn test_parse_assertion_keys_case_sensitivity() {
         // Test that assertion names preserve case
-        let args = DappSubmitArgs {
+        let args = PlatformSubmitArgs {
             api_url: String::new(),
             project_name: None,
             assertion_keys: Some(vec![
@@ -1324,7 +1338,7 @@ mod tests {
     #[test]
     fn test_positional_args_create_assertion_key() {
         // Test that positional arguments correctly create an AssertionKey
-        let args = DappSubmitArgs {
+        let args = PlatformSubmitArgs {
             api_url: String::new(),
             project_name: None,
             assertion_keys: None,
@@ -1346,7 +1360,7 @@ mod tests {
     #[test]
     fn test_positional_args_without_constructor_args() {
         // Test positional args when no constructor arguments are provided
-        let args = DappSubmitArgs {
+        let args = PlatformSubmitArgs {
             api_url: String::new(),
             project_name: None,
             assertion_keys: None,
@@ -1368,7 +1382,7 @@ mod tests {
     #[test]
     fn test_parse_assertion_keys_with_array_arg() {
         // Test handling of array arguments (e.g., address[])
-        let args = DappSubmitArgs {
+        let args = PlatformSubmitArgs {
             api_url: String::new(),
             project_name: None,
             assertion_keys: Some(vec![AssertionKey::from(
@@ -1387,7 +1401,7 @@ mod tests {
     #[test]
     fn test_parse_assertion_keys_with_array_and_other_args() {
         // Test array mixed with other arguments
-        let args = DappSubmitArgs {
+        let args = PlatformSubmitArgs {
             api_url: String::new(),
             project_name: None,
             assertion_keys: Some(vec![AssertionKey::from(
@@ -1409,7 +1423,7 @@ mod tests {
     #[test]
     fn test_parse_assertion_keys_with_multiple_arrays() {
         // Test multiple array arguments
-        let args = DappSubmitArgs {
+        let args = PlatformSubmitArgs {
             api_url: String::new(),
             project_name: None,
             assertion_keys: Some(vec![AssertionKey::from(
@@ -1428,7 +1442,7 @@ mod tests {
     #[test]
     fn test_parse_assertion_keys_with_ethereum_address_array() {
         // Test realistic use case: array of Ethereum addresses
-        let args = DappSubmitArgs {
+        let args = PlatformSubmitArgs {
             api_url: String::new(),
             project_name: None,
             assertion_keys: Some(vec![AssertionKey::from(
@@ -1452,7 +1466,7 @@ mod tests {
     #[test]
     fn test_parse_assertion_keys_positional_with_array() {
         // Test positional args where one arg is an array
-        let args = DappSubmitArgs {
+        let args = PlatformSubmitArgs {
             api_url: String::new(),
             project_name: None,
             assertion_keys: None,
@@ -1474,7 +1488,7 @@ mod tests {
     #[test]
     fn test_parse_assertion_keys_multiple_with_arrays() {
         // Test multiple assertions with array arguments
-        let args = DappSubmitArgs {
+        let args = PlatformSubmitArgs {
             api_url: String::new(),
             project_name: None,
             assertion_keys: Some(vec![

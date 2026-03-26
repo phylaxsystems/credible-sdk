@@ -2,7 +2,7 @@
 
 <!-- [![Tests, Linting, Format](https://github.com/phylaxsystems/credible-sdk/actions/workflows/rust-base.yml/badge.svg)](https://github.com/phylaxsystems/credible-sdk/actions/workflows/rust-base.yml) -->
 
-The Phylax Credible CLI (PCL) is a command-line interface for interacting with the Credible Layer. It allows developers to authenticate, build, test, and submit assertions to the Credible Layer dApp.
+The Phylax Credible CLI (PCL) is a command-line interface for interacting with the Credible Layer. It allows developers to authenticate, build, test, and submit assertions to the Credible Layer Platform.
 
 ## Table of Contents
 
@@ -17,7 +17,7 @@ The Phylax Credible CLI (PCL) is a command-line interface for interacting with t
     - [Testing](#testing)
     - [Assertion Submission](#assertion-submission)
       - [Store Assertions in Data Availability Layer](#store-assertions-in-data-availability-layer)
-      - [Submit Assertions to dApps](#submit-assertions-to-dapps)
+      - [Submit Assertions to Platform](#submit-assertions-to-platform)
   - [Examples](#examples)
     - [Complete Authentication Flow](#complete-authentication-flow)
     - [Development Workflow](#development-workflow)
@@ -72,7 +72,7 @@ Commands:
   status  Check current authentication status
 
 Options:
-  -u, --auth-url <AUTH_URL>  Base URL for authentication service [env: PCL_AUTH_URL=] [default: https://dapp.phylax.systems]
+  -u, --auth-url <AUTH_URL>  Base URL for authentication service [env: PCL_AUTH_URL=] [default: https://app.phylax.systems]
   -h, --help                 Print help
 ```
 
@@ -184,7 +184,7 @@ pcl apply --root ./my-project -c path/to/credible.toml
 
 ### Assertion Submission
 
-`pcl store` uploads the assertion bytecode and flattened source to the Credible Assertion Data Availability (DA) service. Once the DA has the assertion, `pcl submit` (or the dApp) can link it to a project so that it can be enforced. The full workflow is documented at https://docs.phylax.systems/credible/store-submit-assertions.
+`pcl store` uploads the assertion bytecode and flattened source to the Credible Assertion Data Availability (DA) service. Once the DA has the assertion, `pcl submit` (or the Platform) can link it to a project so that it can be enforced. The full workflow is documented at https://docs.phylax.systems/credible/store-submit-assertions.
 
 #### Store Assertions in Data Availability Layer
 
@@ -221,7 +221,7 @@ pcl store --root ./assertions \
 pcl store "NoArgsAssertion(),MockAssertion(0x0f6c13A04D358A5FEB9d073Da585bF6a2aF8d3d9)"
 ```
 
-#### Submit Assertions to dApps
+#### Submit Assertions to Platform
 
 ```bash
 pcl submit [OPTIONS] [ASSERTION_CONTRACT] [CONSTRUCTOR_ARGS]...
@@ -231,7 +231,7 @@ Arguments:
   [CONSTRUCTOR_ARGS]...  Constructor arguments for the assertion
 
 Options:
-  -u, --api-url <API_URL>           Base URL for the Credible Layer dApp API [env: PCL_API_URL=] [default: https://dapp.phylax.systems/api/v1]
+  -u, --api-url <API_URL>           Base URL for the Credible Layer Platform API [env: PCL_API_URL=] [default: https://app.phylax.systems/api/v1]
   -p, --project-name <PROJECT_NAME> Optional project name to skip interactive selection
   -a, --assertion <ASSERTION>       Assertion in format 'Name(arg1,arg2)'. Use multiple -a flags for multiple assertions.
   -h, --help                        Print help
@@ -297,7 +297,7 @@ pcl submit -a "my_assertion(arg1,arg2)" -a "another_assertion()" -p my_project
 ### Submission Issues
 
 - **Error: Failed to submit**: Ensure you're authenticated and have network connectivity
-- **Error: Project not found**: Create a project in the Credible Layer dApp first
+- **Error: Project not found**: Create a project in the Credible Layer Platform first
 - **Error: Assertion not found**: Ensure the assertion name is correct and exists in your project
 
 ## Contributing
