@@ -148,6 +148,7 @@ impl<DB> CoreEngine<DB> {
                 .max_capacity(super::ASSERTION_FAILURE_CACHE_SIZE)
                 .build(),
             custom_tx_executor: None,
+            state_worker_flush_control: None,
         }
     }
 }
@@ -254,6 +255,7 @@ async fn create_test_engine_with_timeout(
             source_monitoring_period: timeout / 2,
             overlay_cache_invalidation_every_block: false,
             incident_sender: None,
+            state_worker_flush_control: None,
             #[cfg(feature = "cache_validation")]
             provider_ws_url: None,
         },
@@ -667,6 +669,32 @@ async fn test_failed_commit_head_does_not_mark_first_commit_processed() {
         !engine.first_commit_head_processed,
         "first_commit_head_processed must remain false when CommitHead processing fails"
     );
+}
+
+#[tokio::test]
+async fn test_commit_head_success_notifies_state_worker_flush_control() {
+    let (mut engine, tx_sender) = create_test_engine().await;
+    let flush_control = FlushControl::new();
+    engine.state_worker_flush_control = Some(flush_control.clone());
+
+    let commit_head = queue::CommitHead::new(
+        U256::from(1),
+        0,
+        None,
+        0,
+        B256::from([0x11; 32]),
+        Some(B256::from([0x22; 32])),
+        U256::from(100),
+    );
+
+    tx_sender
+        .send(TxQueueContents::CommitHead(commit_head))
+        .expect("queue send should succeed");
+    drop(tx_sender);
+
+    let result = engine.run().await;
+    assert!(matches!(result, Err(EngineError::ChannelClosed)));
+    assert_eq!(flush_control.permitted_flush_block(), Some(1));
 }
 
 #[crate::utils::engine_test(all)]
@@ -1942,6 +1970,7 @@ async fn build_canonical_setup(caller: Address) -> CanonicalSetup {
             source_monitoring_period: Duration::from_millis(20),
             overlay_cache_invalidation_every_block: false,
             incident_sender: None,
+            state_worker_flush_control: None,
             #[cfg(feature = "cache_validation")]
             provider_ws_url: None,
         },

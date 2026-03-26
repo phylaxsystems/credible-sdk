@@ -541,18 +541,14 @@ impl<T: TestTransport> LocalInstance<T> {
             .map_err(|e| format!("Failed to insert assertion: {e}"))
     }
 
-    /// Create a simple test transaction using the default account
-    ///
-    /// # Panics
-    ///
-    /// Panics if the transaction builder fails to build a valid transaction.
+    /// Create a simple test transaction using the default account.
     pub fn create_test_transaction(
         &mut self,
         caller: Address,
         value: U256,
         data: Bytes,
         block_execution_id: BlockExecutionId,
-    ) -> TxEnv {
+    ) -> Result<TxEnv, String> {
         let nonce = self.next_nonce(caller, block_execution_id);
         TxEnvBuilder::new()
             .caller(caller)
@@ -563,7 +559,7 @@ impl<T: TestTransport> LocalInstance<T> {
             .data(data)
             .nonce(nonce)
             .build()
-            .expect("failed to build create test transaction")
+            .map_err(|err| format!("failed to build create test transaction: {err:?}"))
     }
 
     /// Generate a random transaction hash
@@ -663,8 +659,10 @@ impl<T: TestTransport> LocalInstance<T> {
         );
 
         if send_rpc_node {
+            let block_number_u64 = u64::try_from(block_number)
+                .map_err(|_| format!("block number {block_number} does not fit in u64"))?;
             self.eth_rpc_source_http_mock
-                .send_new_head_with_block_number(u64::try_from(block_number).unwrap());
+                .send_new_head_with_block_number(block_number_u64);
         }
 
         self.transport.send_commit_head(commit_head).await?;
@@ -734,7 +732,7 @@ impl<T: TestTransport> LocalInstance<T> {
             value,
             data,
             tx_execution_id.as_block_execution_id(),
-        );
+        )?;
 
         self.transport
             .send_transaction(tx_execution_id, tx_env)
@@ -1164,7 +1162,7 @@ impl<T: TestTransport> LocalInstance<T> {
             .max_fee_per_blob_gas(1)
             .tx_type(Some(3))
             .build()
-            .unwrap();
+            .map_err(|err| format!("failed to build EIP-4844 test transaction: {err:?}"))?;
         // FIXME: Propagate correctly the prev tx hash
         let tx_id = tx_execution_id;
         self.transport
@@ -1208,7 +1206,7 @@ impl<T: TestTransport> LocalInstance<T> {
             .nonce(nonce)
             .tx_type(Some(4))
             .build()
-            .unwrap();
+            .map_err(|err| format!("failed to build EIP-7702 test transaction: {err:?}"))?;
         // FIXME: Propagate correctly the prev tx hash
         self.transport
             .send_transaction(tx_execution_id, tx_env)
@@ -1517,17 +1515,17 @@ impl<T: TestTransport> LocalInstance<T> {
         }
     }
 
-    /// # Panics
-    /// Panics if waiting for the transaction exceeds the 8-second timeout, or
-    /// if the underlying wait returns an error.
-    pub async fn wait_for_processed(&self, tx_execution_id: &TxExecutionId) {
-        tokio::time::timeout(
+    pub async fn wait_for_processed(&self, tx_execution_id: &TxExecutionId) -> Result<(), String> {
+        match tokio::time::timeout(
             Duration::from_secs(8),
             self.wait_for_transaction_processed(tx_execution_id),
         )
         .await
-        .expect("timeout waiting for tx")
-        .expect("wait for tx");
+        {
+            Ok(Ok(_)) => Ok(()),
+            Ok(Err(err)) => Err(format!("wait for tx failed: {err}")),
+            Err(err) => Err(format!("timeout waiting for tx: {err}")),
+        }
     }
 }
 

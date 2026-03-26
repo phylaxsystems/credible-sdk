@@ -41,6 +41,10 @@ fn default_poll_interval() -> Duration {
     Duration::from_secs(1)
 }
 
+fn default_integrated_state_worker_buffer_capacity() -> usize {
+    3
+}
+
 #[derive(Clone, PartialEq, Eq, Default, Deserialize)]
 pub struct SecretString(String);
 
@@ -300,6 +304,20 @@ pub enum StateSourceConfig {
         mdbx_path: String,
         /// State worker depth (how many blocks behind head state worker will have the data from)
         depth: usize,
+    },
+    #[serde(rename = "integrated-mdbx")]
+    IntegratedMdbx {
+        /// MDBX path shared by the integrated state worker and the sidecar reader.
+        mdbx_path: String,
+        /// Maximum number of traced blocks the integrated worker may buffer ahead of commit.
+        #[serde(default = "default_integrated_state_worker_buffer_capacity")]
+        buffer_capacity: usize,
+        /// Execution node websocket URL used by the integrated state worker tracer.
+        ws_url: String,
+        /// Genesis file consumed to hydrate block 0.
+        genesis_file: String,
+        /// Optional manual override for the next traced block.
+        start_block: Option<u64>,
     },
     #[serde(rename = "eth-rpc")]
     EthRpc {
@@ -1194,6 +1212,63 @@ mod tests {
             vec![StateSourceConfig::Mdbx {
                 mdbx_path: "/data/state.mdbx".to_string(),
                 depth: 7,
+            }]
+        );
+    }
+
+    #[test]
+    fn test_integrated_state_source_from_file() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        write!(
+            temp_file,
+            r#"{{
+  "chain": {{
+    "spec_id": "CANCUN",
+    "chain_id": 1
+  }},
+  "credible": {{
+    "assertion_gas_limit": 30000000,
+    "assertion_da_rpc_url": "http://localhost:8545",
+    "event_source_url": "http://localhost:4350/graphql",
+    "assertion_store_db_path": "/tmp/store.db",
+    "state_oracle": "0x1234567890123456789012345678901234567890",
+    "state_oracle_deployment_block": 100,
+    "transaction_results_max_capacity": 10000
+  }},
+  "transport": {{
+    "bind_addr": "127.0.0.1:3000",
+    "health_bind_addr": "127.0.0.1:3001"
+  }},
+  "state": {{
+    "sources": [
+      {{
+        "type": "integrated-mdbx",
+        "mdbx_path": "/data/state_worker.mdbx",
+        "buffer_capacity": 8,
+        "ws_url": "ws://localhost:8548",
+        "genesis_file": "/data/genesis.json",
+        "start_block": 42
+      }}
+    ],
+    "minimum_state_diff": 10,
+    "sources_sync_timeout_ms": 30000,
+    "sources_monitoring_period_ms": 1000
+  }}
+}}"#
+        )
+        .unwrap();
+        temp_file.flush().unwrap();
+
+        let config = Config::from_file(temp_file.path()).unwrap();
+
+        assert_eq!(
+            config.state.sources,
+            vec![StateSourceConfig::IntegratedMdbx {
+                mdbx_path: "/data/state_worker.mdbx".to_string(),
+                buffer_capacity: 8,
+                ws_url: "ws://localhost:8548".to_string(),
+                genesis_file: "/data/genesis.json".to_string(),
+                start_block: Some(42),
             }]
         );
     }

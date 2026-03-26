@@ -98,6 +98,7 @@ use assertion_executor::{
     },
 };
 use revm::state::EvmState;
+use state_worker::FlushControl;
 use std::{
     fmt::Debug,
     sync::{
@@ -199,6 +200,7 @@ pub struct CoreEngineConfig {
     pub source_monitoring_period: Duration,
     pub overlay_cache_invalidation_every_block: bool,
     pub incident_sender: Option<IncidentReportSender>,
+    pub state_worker_flush_control: Option<Arc<FlushControl>>,
     #[cfg(feature = "cache_validation")]
     pub provider_ws_url: Option<String>,
 }
@@ -570,6 +572,7 @@ pub struct CoreEngine<DB> {
     /// Prevents duplicate logging/metrics on re-execution.
     assertion_failure_cache: moka::sync::Cache<TxHash, ()>,
     custom_tx_executor: Option<Arc<dyn CustomTxExecutor<DB>>>,
+    state_worker_flush_control: Option<Arc<FlushControl>>,
 }
 
 #[cfg(feature = "cache_validation")]
@@ -648,6 +651,14 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             cache_checker,
             assertion_failure_cache,
             custom_tx_executor: None,
+            state_worker_flush_control: config.state_worker_flush_control,
+        }
+    }
+
+    #[inline]
+    fn notify_state_worker_commit(&self, block_number: U256) {
+        if let Some(flush_control) = self.state_worker_flush_control.as_ref() {
+            flush_control.allow_flush_to(block_number.saturating_to::<u64>());
         }
     }
 
@@ -1336,11 +1347,13 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
 
             let event_start = Instant::now();
 
+            let mut committed_block = None;
             let result = match event {
                 TxQueueContents::NewIteration(new_iteration) => {
                     self.process_iteration(&new_iteration)
                 }
                 TxQueueContents::CommitHead(commit_head) => {
+                    committed_block = Some(commit_head.block_number);
                     self.process_commit_head(
                         &commit_head,
                         &mut processed_blocks,
@@ -1353,6 +1366,12 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 }
                 TxQueueContents::Reorg(reorg) => self.execute_reorg(&reorg),
             };
+
+            if result.is_ok()
+                && let Some(block_number) = committed_block
+            {
+                self.notify_state_worker_commit(block_number);
+            }
 
             if let Err(error) = result {
                 match ErrorRecoverability::from(&error) {
@@ -1468,11 +1487,13 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             let event_start = Instant::now();
 
             // Process event and handle errors appropriately
+            let mut committed_block = None;
             let result = match event {
                 TxQueueContents::NewIteration(new_iteration) => {
                     self.process_iteration(&new_iteration)
                 }
                 TxQueueContents::CommitHead(commit_head) => {
+                    committed_block = Some(commit_head.block_number);
                     self.process_commit_head(
                         &commit_head,
                         &mut processed_blocks,
@@ -1485,6 +1506,12 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 }
                 TxQueueContents::Reorg(reorg) => self.execute_reorg(&reorg),
             };
+
+            if result.is_ok()
+                && let Some(block_number) = committed_block
+            {
+                self.notify_state_worker_commit(block_number);
+            }
 
             // Handle the result of event processing
             if let Err(error) = result {
