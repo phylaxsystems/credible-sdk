@@ -16,12 +16,6 @@ pcl CLI
   |
   +--> test   -> pcl-phoundry -> phorge / Foundry tests
   |
-  +--> store  -> build_and_flatten -> Assertion DA submit
-  |                                  |
-  |                                  +--> save AssertionForSubmission in CliConfig
-  |
-  +--> submit -> app project APIs -> submitted-assertions endpoint
-  |
   +--> apply  -> credible.toml + build_and_flatten -> app releases endpoint
 ```
 
@@ -32,7 +26,7 @@ The PCL stack is the user and operator interface to the wider system.
 It is split into four crates:
 
 - `pcl/cli`: top-level binary and command routing,
-- `pcl/core`: app auth, DA storage, submission, apply, and config persistence,
+- `pcl/core`: app auth, apply workflow, and config persistence,
 - `pcl/common`: shared assertion helpers and argument types,
 - `pcl/phoundry`: wrappers around Foundry and phoundry build and test flows.
 
@@ -48,8 +42,6 @@ PCL does not replace `sidecar`. It serves a different boundary:
 The current top-level commands are:
 
 - `test`
-- `store`
-- `submit`
 - `apply`
 - `auth`
 - `config`
@@ -63,17 +55,9 @@ The CLI supports JSON output in error paths, but command implementations are sti
 
 The key persisted state is:
 
-- `auth: Option<UserAuth>`
-- `assertions_for_submission: HashMap<AssertionKey, AssertionForSubmission>`
+- `auth: Option<UserAuth>` — tokens, user ID, optional wallet address, optional email
 
-This makes PCL a staged workflow:
-
-1. users can authenticate once and keep tokens locally,
-2. store assertion artifacts into Assertion DA,
-3. keep those DA references in local config,
-4. later submit some or all of them to a project in the app backend.
-
-That local staging area is important. Submission to Assertion DA and submission to the app backend are intentionally separate steps.
+Users authenticate once and keep tokens locally. The `apply` command then uses these tokens when submitting releases to the app backend.
 
 ## Auth flow
 
@@ -84,7 +68,9 @@ The login path is:
 1. request a CLI auth code from the app,
 2. open a browser to the verification page with the returned session id,
 3. poll the auth-status endpoint until the session is verified,
-4. persist access token, refresh token, address, expiration, and optional user metadata in `CliConfig`.
+4. persist access token, refresh token, optional wallet address, expiration, and optional user metadata in `CliConfig`.
+
+The auth flow supports wallet-based, email-based, and OAuth-based authentication. Wallet address is optional — the CLI works without one.
 
 `logout` and `status` operate only on local config state.
 
@@ -100,36 +86,6 @@ The main roles are:
 - `phorge_test`: run Foundry and phorge tests in a blocking task.
 
 This means PCL correctness for local artifact generation depends heavily on Foundry project layout conventions and on Foundry and phoundry being installed correctly.
-
-## Assertion store flow
-
-The `store` command is implemented in `pcl core::assertion_da`.
-
-Its behavior is:
-
-1. resolve the target assertion source,
-2. build and flatten it through `pcl-phoundry`,
-3. construct a `DaSubmission`,
-4. submit that payload through `DaClient`,
-5. receive assertion id plus DA signature,
-6. write an `AssertionForSubmission` entry into `CliConfig.assertions_for_submission`.
-
-The important design choice is that `store` does not submit the assertion to a project. It only makes the artifact available in Assertion DA and records enough local metadata to submit it later.
-
-## Submission flow
-
-The `submit` command is implemented in `pcl core::assertion_submission`.
-
-Its behavior is:
-
-1. require valid app auth,
-2. fetch available user projects from the app backend,
-3. choose the target project interactively or by `--project-name`,
-4. choose locally staged assertions from `CliConfig`,
-5. send them to the app's submitted-assertions endpoint,
-6. remove successfully submitted assertions from local staged config.
-
-PCL therefore treats local config as a queue of pending submissions. DA storage is durable and external, but project submission state is tracked locally until the app accepts it.
 
 ## Apply flow
 

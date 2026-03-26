@@ -1,11 +1,8 @@
 use clap::Parser;
 use pcl_common::args::CliArgs;
 use pcl_core::{
-    DEFAULT_DA_URL,
     DEFAULT_PLATFORM_URL,
     apply::ApplyArgs,
-    assertion_da::DaStoreArgs,
-    assertion_submission::PlatformSubmitArgs,
     auth::AuthCommand,
     config::ConfigArgs,
 };
@@ -20,11 +17,10 @@ fn version_message() -> &'static str {
     VERSION
         .get_or_init(|| {
             format!(
-                "{}\nCommit: {}\nBuild Timestamp: {}\nDefault DA URL: {}\nDefault Platform URL: {}",
+                "{}\nCommit: {}\nBuild Timestamp: {}\nDefault Platform URL: {}",
                 env!("CARGO_PKG_VERSION"),
                 env!("VERGEN_GIT_SHA"),
                 env!("VERGEN_BUILD_TIMESTAMP"),
-                DEFAULT_DA_URL,
                 DEFAULT_PLATFORM_URL,
             )
         })
@@ -50,10 +46,6 @@ pub struct Cli {
 pub enum Commands {
     #[command(name = "test")]
     Test(PhorgeTest),
-    #[command(name = "store")]
-    Store(DaStoreArgs),
-    #[command(name = "submit")]
-    Submit(PlatformSubmitArgs),
     #[command(name = "apply")]
     Apply(ApplyArgs),
     Auth(AuthCommand),
@@ -67,61 +59,6 @@ pub enum Commands {
 mod tests {
     use super::*;
     use clap::Parser;
-
-    #[test]
-    fn parses_store_command_with_assertion_flag() {
-        let cli = Cli::try_parse_from(["pcl", "--json", "store", "-a", "TestAssertion()"]).unwrap();
-        assert!(cli.args.json_output());
-        match cli.command {
-            Commands::Store(args) => {
-                assert_eq!(args.assertion_specs.len(), 1);
-                assert_eq!(args.assertion_specs[0].assertion_name, "TestAssertion");
-                assert!(args.positional_assertions.is_empty());
-            }
-            _ => panic!("expected store command"),
-        }
-    }
-
-    #[test]
-    fn parses_store_command_with_positional_specs() {
-        let cli =
-            Cli::try_parse_from(["pcl", "store", "TestAssertion", "OtherAssertion(arg1,arg2)"])
-                .unwrap();
-
-        match cli.command {
-            Commands::Store(args) => {
-                assert!(args.assertion_specs.is_empty());
-                assert_eq!(args.positional_assertions.len(), 2);
-                assert_eq!(args.positional_assertions[0], "TestAssertion");
-                assert_eq!(args.positional_assertions[1], "OtherAssertion(arg1,arg2)");
-            }
-            _ => panic!("expected store command"),
-        }
-    }
-
-    #[test]
-    fn parses_submit_command_with_project_name() {
-        let cli = Cli::try_parse_from([
-            "pcl",
-            "submit",
-            "-a",
-            "TestAssertion(arg)",
-            "--project-name",
-            "demo",
-        ])
-        .unwrap();
-
-        match cli.command {
-            Commands::Submit(args) => {
-                assert_eq!(args.project_name.as_deref(), Some("demo"));
-                let keys = args.assertion_keys.expect("assertion keys");
-                assert_eq!(keys.len(), 1);
-                assert_eq!(keys[0].assertion_name, "TestAssertion");
-                assert_eq!(keys[0].constructor_args, vec!["arg"]);
-            }
-            _ => panic!("expected submit command"),
-        }
-    }
 
     #[test]
     fn parses_config_show_command() {

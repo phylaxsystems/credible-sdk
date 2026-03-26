@@ -26,7 +26,7 @@ This architecture split covers:
 - `sidecar` is the transaction admission and orchestration process.
 - `assertion-executor` is the EVM/assertion engine used by `sidecar`.
 - `assertion-da` is the durable assertion-artifact service used by both indexing and authoring flows.
-- `pcl` is the user-facing CLI layer that packages local assertion code and pushes it into the DA/app ecosystem.
+- `pcl` is the user-facing CLI layer that packages local assertion code and deploys it via declarative releases.
 
 ## End-to-end system schema
 

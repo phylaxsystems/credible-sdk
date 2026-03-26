@@ -1,86 +1,6 @@
-use assertion_da_client::DaClientError;
 use pcl_phoundry::error::PhoundryError;
 use reqwest::Error as ReqwestError;
 use thiserror::Error;
-
-/// Errors that can occur during assertion submission to the Data Availability (DA) layer
-#[derive(Error, Debug)]
-pub enum DaSubmitError {
-    /// Error when HTTP request to the DA layer fails
-    #[error("Da Submission Error: {0}")]
-    DaClientError(#[source] DaClientError),
-    /// Error during the build process of the assertion
-    #[error("There was an error with the solidity file")]
-    PhoundryError(#[source] Box<PhoundryError>),
-    /// Failed to parse bytecode as hex
-    #[error("Failed to parse bytecode as hex")]
-    ParseError,
-    /// From Hex Error
-    #[error("From Hex Error: {0}")]
-    FromHexError(#[source] alloy_primitives::hex::FromHexError),
-    /// HTTP Error with status code
-    #[error("HTTP Error: {0}")]
-    HttpError(u16),
-    /// Invalid Constructor Args
-    #[error(
-        "Invalid constructor args count. Expected {0} but received {1}. \
-        Provide args as positional parameters (`pcl store <contract> <arg0> <arg1>`) \
-        or as formatted specs (`pcl store -a \"Contract(arg0,arg1)\"`)."
-    )]
-    InvalidConstructorArgs(usize, usize),
-}
-
-impl From<Box<DaSubmitError>> for DaSubmitError {
-    fn from(error: Box<DaSubmitError>) -> Self {
-        *error
-    }
-}
-
-/// Errors that can occur during assertion submission to the Credible Layer Platform
-#[derive(Error, Debug)]
-pub enum PlatformSubmitError {
-    /// Error when no authentication token is found in the config
-    #[error("No auth token found, please run `pcl auth` first")]
-    NoAuthToken,
-
-    /// Error during project selection process
-    #[error("Project selection failed: {0}")]
-    ProjectSelectionFailed(#[source] inquire::InquireError),
-
-    /// Error when no projects are found for the authenticated user
-    #[error(
-        "No projects found for the authenticated user.\nVisit https://app.phylax.systems to create one, then rerun `pcl submit`."
-    )]
-    NoProjectsFound,
-
-    /// Error when sending a submission to the Platform API fails
-    #[error("Failed to send submission to the Platform API")]
-    SendSubmissionApi(#[source] ReqwestError),
-
-    /// Error while getting a submission response from the Platform API
-    #[error("Failed to read a submission response from the Platform API")]
-    SendSubmissionApiResponse(#[source] ReqwestError),
-
-    /// Error when sending a get user project to the Platform API fails
-    #[error("Failed to send a get user projects to the Platform API")]
-    GetUserProjectsApi(#[source] ReqwestError),
-
-    /// Error while getting a user project response from the Platform API
-    #[error("Failed to read a user project response from the Platform API")]
-    GetUserProjectsApiResponse(#[source] ReqwestError),
-
-    /// Error when the submission is rejected by the Platform
-    #[error("Submission failed: {0}")]
-    SubmissionFailed(String),
-
-    /// Error when could not find stored assertion
-    #[error("Could not find stored assertion {0} in the config.\nPlease run `pcl store` first.")]
-    CouldNotFindStoredAssertion(String),
-
-    /// Error when no stored assertions are found
-    #[error("No stored assertions found.\nPlease run `pcl store` first to store some assertions.")]
-    NoStoredAssertions,
-}
 
 /// Errors that can occur during declarative apply.
 #[derive(Error, Debug)]
@@ -199,10 +119,4 @@ pub enum AuthError {
     /// Error when config operations fail during auth
     #[error("Config error: {0}")]
     ConfigError(#[source] ConfigError),
-
-    /// Error when an invalid Ethereum address is received
-    #[error(
-        "Invalid Ethereum address received. Please ensure you're connecting with a valid wallet."
-    )]
-    InvalidAddress,
 }

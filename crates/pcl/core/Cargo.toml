@@ -14,9 +14,6 @@ pcl-phoundry = { workspace = true }
 # alloy deps
 alloy-primitives = { workspace = true }
 
-# assertion-da deps
-assertion-da-client = { workspace = true }
-
 # other workspace deps
 clap = { workspace = true }
 thiserror = { workspace = true }
@@ -44,6 +41,3 @@ full-test = []
 [dev-dependencies]
 mockito = "1.2"
 tempfile = "3.6.0"
-alloy = { workspace = true, features = ["signer-local"] }
-int-test-utils = { workspace = true }
-anyhow = { version = "1.0.98" }
