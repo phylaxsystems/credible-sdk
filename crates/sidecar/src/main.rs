@@ -349,7 +349,10 @@ fn transaction_observer_config_from(config: &Config) -> Option<TransactionObserv
     }
 }
 
-async fn build_sources_from_config(config: &Config) -> anyhow::Result<Vec<Arc<dyn Source>>> {
+async fn build_sources_from_config(
+    config: &Config,
+    mdbx_height: Arc<AtomicU64>,
+) -> anyhow::Result<Vec<Arc<dyn Source>>> {
     let mut sources: Vec<Arc<dyn Source>> = Vec::new();
 
     if config.state.sources.is_empty() {
@@ -365,7 +368,10 @@ async fn build_sources_from_config(config: &Config) -> anyhow::Result<Vec<Arc<dy
                 CircularBufferConfig::new(u8::try_from(state_worker_depth)?)?,
             ) {
                 Ok(state_worker_client) => {
-                    sources.push(Arc::new(MdbxSource::new(state_worker_client)));
+                    sources.push(Arc::new(MdbxSource::new(
+                        state_worker_client,
+                        Arc::clone(&mdbx_height),
+                    )));
                 }
                 Err(e) => {
                     error!(error = ?e, "Failed to connect MDBX");
@@ -398,7 +404,10 @@ async fn build_sources_from_config(config: &Config) -> anyhow::Result<Vec<Arc<dy
                         CircularBufferConfig::new(u8::try_from(*depth)?)?,
                     ) {
                         Ok(state_worker_client) => {
-                            sources.push(Arc::new(MdbxSource::new(state_worker_client)));
+                            sources.push(Arc::new(MdbxSource::new(
+                                state_worker_client,
+                                Arc::clone(&mdbx_height),
+                            )));
                         }
                         Err(e) => {
                             error!(error = ?e, "Failed to connect MDBX");
@@ -638,7 +647,21 @@ async fn run_sidecar_once(
     // Shared shutdown flag for this iteration
     let shutdown_flag = Arc::new(AtomicBool::new(false));
 
-    let sources = build_sources_from_config(config).await?;
+    // Detect embedded state worker config (first Mdbx source with ws_url).
+    let embedded_state_worker_config = find_embedded_state_worker_config(config);
+
+    // Channel: CoreEngine -> StateWorker (flush commands)
+    // Arc<AtomicU64>: state worker publishes MDBX height, MdbxSource reads it.
+    let (flush_tx, flush_rx, mdbx_height) = if embedded_state_worker_config.is_some() {
+        let (tx, rx) = flume::bounded::<u64>(64);
+        let height = Arc::new(AtomicU64::new(0));
+        (Some(tx), Some(rx), height)
+    } else {
+        // No embedded state worker — height stays at 0 (effectively disabled).
+        (None, None, Arc::new(AtomicU64::new(0)))
+    };
+
+    let sources = build_sources_from_config(config, Arc::clone(&mdbx_height)).await?;
     let state = Arc::new(Sources::new(sources, config.state.minimum_state_diff));
     let cache: OverlayDb<Sources> = OverlayDb::new(Some(state.clone()));
 
@@ -654,20 +677,6 @@ async fn run_sidecar_once(
         (Some(tx), Some(rx))
     } else {
         (None, None)
-    };
-
-    // Detect embedded state worker config (first Mdbx source with ws_url).
-    let embedded_state_worker_config = find_embedded_state_worker_config(config);
-
-    // Channel: CoreEngine -> StateWorker (flush commands)
-    // Arc<AtomicU64>: state worker publishes MDBX height, MdbxSource reads it.
-    let (flush_tx, flush_rx, mdbx_height) = if embedded_state_worker_config.is_some() {
-        let (tx, rx) = flume::bounded::<u64>(64);
-        let height = Arc::new(AtomicU64::new(0));
-        (Some(tx), Some(rx), height)
-    } else {
-        // No embedded state worker — height stays at 0 (effectively disabled).
-        (None, None, Arc::new(AtomicU64::new(0)))
     };
 
     let (result_tx, result_rx) = unbounded();

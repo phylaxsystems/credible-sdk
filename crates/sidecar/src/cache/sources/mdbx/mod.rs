@@ -42,19 +42,12 @@ use std::{
     sync::{
         Arc,
         atomic::{
-            AtomicBool,
             AtomicU64,
             Ordering,
         },
     },
-    time::Duration,
 };
 use thiserror::Error;
-use tokio::{
-    task::JoinHandle,
-    time,
-};
-use tokio_util::sync::CancellationToken;
 use tracing::{
     debug,
     error,
@@ -62,16 +55,14 @@ use tracing::{
     trace,
 };
 
-const DEFAULT_SYNC_INTERVAL: Duration = Duration::from_millis(50);
 #[derive(Debug)]
 pub struct MdbxSource {
     backend: StateReader,
     /// Target block to request from state worker.
     target_block: Arc<RwLock<U256>>,
-    cancel_token: CancellationToken,
-    range_poller_handle: JoinHandle<()>,
     available_oldest_block: Arc<AtomicU64>,
-    available_observed_head: Arc<AtomicU64>,
+    /// Shared atomic updated by the state worker after each MDBX write.
+    mdbx_height: Arc<AtomicU64>,
     cache_status: Arc<CacheStatus>,
 }
 
@@ -83,31 +74,28 @@ pub(crate) struct CacheStatus {
 
 impl MdbxSource {
     /// Creates a cache that stores entries under the default `state` namespace.
-    pub fn new(backend: StateReader) -> Self {
+    ///
+    /// * `mdbx_height` – shared atomic that the state worker updates with
+    ///   [`Ordering::Release`] after each successful MDBX write. `MdbxSource`
+    ///   reads it with [`Ordering::Acquire`] instead of polling.
+    pub fn new(backend: StateReader, mdbx_height: Arc<AtomicU64>) -> Self {
         let target_block = Arc::new(RwLock::new(U256::ZERO));
-        let cancel_token = CancellationToken::new();
         // Zero means "not yet loaded" for the MDBX available range.
         let available_oldest_block = Arc::new(AtomicU64::new(0));
-        let available_observed_head = Arc::new(AtomicU64::new(0));
         let cache_status = Arc::new(CacheStatus {
             min_synced_block: RwLock::new(U256::ZERO),
             latest_head: RwLock::new(U256::ZERO),
         });
 
-        let range_poller_handle = Self::spawn_block_range_poller(
-            backend.clone(),
-            cancel_token.clone(),
-            available_oldest_block.clone(),
-            available_observed_head.clone(),
-        );
+        // Eagerly load the oldest block from the backend so we have a
+        // baseline before the first is_synced call.
+        Self::refresh_oldest_block(&backend, &available_oldest_block);
 
         Self {
             backend,
             target_block,
-            cancel_token,
-            range_poller_handle,
             available_oldest_block,
-            available_observed_head,
+            mdbx_height,
             cache_status,
         }
     }
@@ -158,8 +146,11 @@ impl MdbxSource {
     }
 
     fn available_block_range(&self) -> Option<(u64, u64)> {
+        // Refresh the oldest block from the backend on demand.
+        Self::refresh_oldest_block(&self.backend, &self.available_oldest_block);
+
         let oldest = self.available_oldest_block.load(Ordering::Acquire);
-        let head = self.available_observed_head.load(Ordering::Acquire);
+        let head = self.mdbx_height.load(Ordering::Acquire);
 
         // Treat zero as the unset sentinel to avoid extra MDBX reads on startup.
         if oldest == 0 || head == 0 || oldest > head {
@@ -169,44 +160,10 @@ impl MdbxSource {
         Some((oldest, head))
     }
 
-    fn spawn_block_range_poller(
-        backend: StateReader,
-        cancel_token: CancellationToken,
-        available_oldest_block: Arc<AtomicU64>,
-        available_observed_head: Arc<AtomicU64>,
-    ) -> JoinHandle<()> {
-        Self::refresh_available_block_range(
-            &backend,
-            &available_oldest_block,
-            &available_observed_head,
-        );
-        tokio::spawn(async move {
-            let mut interval = time::interval(DEFAULT_SYNC_INTERVAL);
-
-            loop {
-                tokio::select! {
-                    () = cancel_token.cancelled() => {
-                        break;
-                    }
-                    _ = interval.tick() => Self::refresh_available_block_range(
-                        &backend,
-                        &available_oldest_block,
-                        &available_observed_head,
-                    ),
-                }
-            }
-        })
-    }
-
-    fn refresh_available_block_range(
-        backend: &StateReader,
-        available_oldest_block: &AtomicU64,
-        available_observed_head: &AtomicU64,
-    ) {
+    fn refresh_oldest_block(backend: &StateReader, available_oldest_block: &AtomicU64) {
         match backend.get_available_block_range() {
-            Ok(Some((oldest, head))) => {
+            Ok(Some((oldest, _head))) => {
                 available_oldest_block.store(oldest, Ordering::Release);
-                available_observed_head.store(head, Ordering::Release);
             }
             Ok(None) => {
                 debug!(target: "state_worker", "missing available block range");
@@ -387,13 +344,6 @@ impl Source for MdbxSource {
     /// Provides an identifier used in logs and metrics.
     fn name(&self) -> SourceName {
         SourceName::StateWorker
-    }
-}
-
-impl Drop for MdbxSource {
-    fn drop(&mut self) {
-        self.cancel_token.cancel();
-        self.range_poller_handle.abort();
     }
 }
 
@@ -1091,7 +1041,9 @@ mod tests {
         drop(writer);
 
         let reader = StateReader::new(&path, config).unwrap();
-        let source = MdbxSource::new(reader);
+        // In tests, simulate the state worker having written up to block 100.
+        let mdbx_height = Arc::new(AtomicU64::new(100));
+        let source = MdbxSource::new(reader, mdbx_height);
 
         // Requesting blocks below the bootstrap block should not consider the MDBX source synced
         assert!(!source.is_synced(u(99), u(99)));
