@@ -33,6 +33,8 @@ pub struct GethTraceProvider {
 }
 
 impl GethTraceProvider {
+    /// Create a new Geth trace provider with the given RPC provider and timeout.
+    #[must_use]
     pub fn new(provider: Arc<RootProvider>, trace_timeout: Duration) -> Self {
         Self {
             provider,

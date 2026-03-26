@@ -114,6 +114,11 @@ impl AccountSnapshot {
 pub struct BlockStateUpdateBuilder;
 
 impl BlockStateUpdateBuilder {
+    /// Build a [`BlockStateUpdate`] from Geth prestate tracer results.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the traces contain invalid or inconsistent data.
     pub fn from_geth_traces(
         block_number: u64,
         block_hash: B256,
@@ -131,6 +136,8 @@ impl BlockStateUpdateBuilder {
         })
     }
 
+    /// Build a [`BlockStateUpdate`] directly from a list of account states.
+    #[must_use]
     pub fn from_accounts(
         block_number: u64,
         block_hash: B256,
@@ -147,6 +154,7 @@ impl BlockStateUpdateBuilder {
 }
 
 /// Create a trace provider.
+#[must_use]
 pub fn create_trace_provider(
     provider: Arc<RootProvider>,
     trace_timeout: Duration,

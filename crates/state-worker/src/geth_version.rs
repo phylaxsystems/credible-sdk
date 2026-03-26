@@ -18,6 +18,7 @@ pub struct GethVersion {
 
 impl GethVersion {
     /// Create a new version from major, minor, and patch components.
+    #[must_use]
     pub const fn new(major: u64, minor: u64, patch: u64) -> Self {
         Self {
             major,
@@ -68,6 +69,7 @@ impl std::error::Error for GethVersionError {}
 ///
 /// Returns `Some(GethVersion)` if this is a Geth client with a parseable
 /// version, `None` otherwise.
+#[must_use]
 pub fn parse_geth_version(client_version: &str) -> Option<GethVersion> {
     // Strip "Geth/" prefix (case-sensitive, but also check lowercase)
     let remainder = client_version

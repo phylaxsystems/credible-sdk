@@ -60,6 +60,7 @@ pub struct SystemCalls {
 
 impl SystemCalls {
     /// Create a new `SystemCalls` instance with fork activation timestamps.
+    #[must_use]
     pub fn new(cancun_time: Option<u64>, prague_time: Option<u64>) -> Self {
         Self {
             cancun_time,
@@ -68,11 +69,13 @@ impl SystemCalls {
     }
 
     /// Check if Cancun fork is active at the given timestamp.
+    #[must_use]
     pub fn is_cancun_active(&self, timestamp: u64) -> bool {
         self.cancun_time.is_some_and(|t| timestamp >= t)
     }
 
     /// Check if Prague fork is active at the given timestamp.
+    #[must_use]
     pub fn is_prague_active(&self, timestamp: u64) -> bool {
         self.prague_time.is_some_and(|t| timestamp >= t)
     }
@@ -81,6 +84,10 @@ impl SystemCalls {
     ///
     /// Returns a list of `AccountState` records representing the state
     /// modifications from EIP-2935 and EIP-4788 system calls.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if required block header fields are missing.
     pub fn compute_system_call_states<R: Reader>(
         &self,
         config: &SystemCallConfig,

@@ -25,6 +25,11 @@ use mdbx::{
 };
 use std::collections::HashMap;
 
+/// Process Geth prestate diff traces into normalized account states.
+///
+/// # Errors
+///
+/// Returns an error if the traces contain unsupported or unexpected formats.
 pub fn process_geth_traces(traces: Vec<TraceResult>) -> anyhow::Result<Vec<AccountState>> {
     let mut accounts: HashMap<AddressHash, AccountSnapshot> = HashMap::new();
 
