@@ -1,10 +1,15 @@
 //! Core orchestration loop that keeps the database in sync with the execution client.
 //!
 //! The worker bootstraps from the last persisted block, catches up to head via
-//! RPC, and then tails new blocks from the `newHeads` subscription. Each block
-//! is traced with the pre-state tracer and buffered in memory. Blocks are only
-//! flushed to MDBX when a "flush up to block N" command arrives on the flush
-//! channel, ensuring the sidecar only reads committed state.
+//! RPC, and then tails new blocks from the `newHeads` subscription.
+//!
+//! **Embedded mode** (`commit_head_rx` is `Some`): traced blocks are buffered in
+//! a bounded [`VecDeque`] and only flushed to MDBX when the engine signals a
+//! committed head via the channel.
+//!
+//! **Standalone mode** (`commit_head_rx` is `None`): each traced block is
+//! written directly to MDBX, preserving the original write-immediately
+//! behaviour.
 use crate::{
     genesis::GenesisState,
     metrics,
@@ -38,16 +43,14 @@ use std::{
     sync::{
         Arc,
         atomic::{
+            AtomicBool,
             AtomicU64,
             Ordering,
         },
     },
     time::Duration,
 };
-use tokio::{
-    sync::broadcast,
-    time,
-};
+use tokio::time;
 use tracing::{
     debug,
     info,
@@ -63,9 +66,12 @@ pub const DEFAULT_BUFFER_CAPACITY: usize = 64;
 
 /// Coordinates block ingestion, tracing, and persistence.
 ///
-/// In embedded mode the worker buffers traced blocks in a bounded
-/// [`VecDeque`] and only flushes them to MDBX when the engine signals
-/// a committed head via the `flush_rx` channel.
+/// In **embedded mode** (`commit_head_rx` is `Some`) the worker buffers traced
+/// blocks in a bounded [`VecDeque`] and only flushes them to MDBX when the
+/// engine signals a committed head via the channel.
+///
+/// In **standalone mode** (`commit_head_rx` is `None`) each traced block is
+/// committed to MDBX immediately.
 pub struct StateWorker<WR>
 where
     WR: Writer + Reader,
@@ -75,14 +81,17 @@ where
     writer_reader: WR,
     genesis_state: Option<GenesisState>,
     system_calls: SystemCalls,
-    /// In-memory buffer of traced but not-yet-flushed block updates.
-    buffer: VecDeque<BlockStateUpdate>,
+    /// In-memory buffer of traced but not-yet-flushed block updates
+    /// (embedded mode only).
+    pending_updates: VecDeque<BlockStateUpdate>,
     /// Maximum number of entries the buffer may hold before backpressure.
     buffer_capacity: usize,
-    /// Receives "flush up to block N" commands from the engine.
-    flush_rx: flume::Receiver<u64>,
-    /// Atomically publishes the latest block number flushed to MDBX.
-    mdbx_height: Arc<AtomicU64>,
+    /// Receives "commit head up to block N" signals from the engine
+    /// (embedded mode). `None` in standalone mode.
+    commit_head_rx: Option<flume::Receiver<u64>>,
+    /// Atomically publishes the latest block number flushed to MDBX
+    /// (embedded mode). `None` in standalone mode.
+    committed_head_signal: Option<Arc<AtomicU64>>,
 }
 
 impl<WR> StateWorker<WR>
@@ -93,9 +102,13 @@ where
 {
     /// Create a new `StateWorker`.
     ///
-    /// * `flush_rx` – channel that carries "flush up to block N" commands.
-    /// * `mdbx_height` – shared atomic updated with [`Ordering::Release`]
-    ///   after each successful MDBX write.
+    /// * `commit_head_rx` – optional channel carrying "commit head up to block
+    ///   N" signals from the engine. When `Some` the worker operates in
+    ///   **embedded mode** (buffered writes). When `None` blocks are written to
+    ///   MDBX immediately (**standalone mode**).
+    /// * `committed_head_signal` – optional shared atomic updated with
+    ///   [`Ordering::Release`] after each successful MDBX flush in embedded
+    ///   mode.
     /// * `buffer_capacity` – optional override for the in-memory buffer size
     ///   (defaults to [`DEFAULT_BUFFER_CAPACITY`]).
     #[must_use]
@@ -106,8 +119,8 @@ where
         writer_reader: WR,
         genesis_state: Option<GenesisState>,
         system_calls: SystemCalls,
-        flush_rx: flume::Receiver<u64>,
-        mdbx_height: Arc<AtomicU64>,
+        commit_head_rx: Option<flume::Receiver<u64>>,
+        committed_head_signal: Option<Arc<AtomicU64>>,
         buffer_capacity: Option<usize>,
     ) -> Self {
         Self {
@@ -116,11 +129,17 @@ where
             writer_reader,
             genesis_state,
             system_calls,
-            buffer: VecDeque::new(),
+            pending_updates: VecDeque::new(),
             buffer_capacity: buffer_capacity.unwrap_or(DEFAULT_BUFFER_CAPACITY),
-            flush_rx,
-            mdbx_height,
+            commit_head_rx,
+            committed_head_signal,
         }
+    }
+
+    /// Returns `true` when the worker is running in embedded mode (i.e. a
+    /// `commit_head_rx` channel was supplied at construction time).
+    fn is_embedded(&self) -> bool {
+        self.commit_head_rx.is_some()
     }
 
     fn update_sync_metrics(next_block: u64, head_block: u64) {
@@ -146,14 +165,14 @@ where
     pub async fn run(
         &mut self,
         start_override: Option<u64>,
-        mut shutdown_rx: broadcast::Receiver<()>,
+        shutdown: Arc<AtomicBool>,
     ) -> Result<()> {
         let mut next_block = self.compute_start_block(start_override)?;
         let mut missing_block_retries: u32 = 0;
 
         loop {
             // Check for shutdown before starting catch-up
-            if shutdown_rx.try_recv().is_ok() {
+            if shutdown.load(Ordering::Acquire) {
                 info!("Shutdown signal received");
                 return Ok(());
             }
@@ -162,12 +181,12 @@ where
             self.drain_flush_commands()?;
 
             // Catch up block-by-block, checking shutdown between each
-            if self.catch_up(&mut next_block, &mut shutdown_rx).await? {
+            if self.catch_up(&mut next_block, &shutdown).await? {
                 info!("Shutdown signal received during catch-up");
                 return Ok(());
             }
 
-            match self.stream_blocks(&mut next_block, &mut shutdown_rx).await {
+            match self.stream_blocks(&mut next_block, &shutdown).await {
                 Ok(()) => {
                     info!("Shutdown signal received during streaming");
                     return Ok(());
@@ -192,12 +211,17 @@ where
                     }
 
                     warn!(error = %err, "block subscription ended, retrying");
-                    tokio::select! {
-                        _ = shutdown_rx.recv() => {
+                    let delay = time::sleep(Duration::from_secs(SUBSCRIPTION_RETRY_DELAY_SECS));
+                    tokio::pin!(delay);
+                    loop {
+                        if shutdown.load(Ordering::Acquire) {
                             info!("Shutdown signal received during retry sleep");
                             return Ok(());
                         }
-                        () = time::sleep(Duration::from_secs(SUBSCRIPTION_RETRY_DELAY_SECS)) => {}
+                        tokio::select! {
+                            () = &mut delay => { break; }
+                            () = tokio::time::sleep(Duration::from_millis(100)) => {}
+                        }
                     }
                 }
             }
@@ -226,11 +250,7 @@ where
     }
 
     /// Sequentially replay blocks until we reach the node's current head.
-    async fn catch_up(
-        &mut self,
-        next_block: &mut u64,
-        shutdown_rx: &mut broadcast::Receiver<()>,
-    ) -> Result<bool> {
+    async fn catch_up(&mut self, next_block: &mut u64, shutdown: &Arc<AtomicBool>) -> Result<bool> {
         loop {
             let head = self.provider.get_block_number().await?;
             Self::update_sync_metrics(*next_block, head);
@@ -252,7 +272,7 @@ where
                 self.drain_flush_commands()?;
 
                 // Check for shutdown after the block is complete
-                if shutdown_rx.try_recv().is_ok() {
+                if shutdown.load(Ordering::Acquire) {
                     return Ok(true);
                 }
             }
@@ -264,7 +284,7 @@ where
     async fn stream_blocks(
         &mut self,
         next_block: &mut u64,
-        shutdown_rx: &mut broadcast::Receiver<()>,
+        shutdown: &Arc<AtomicBool>,
     ) -> Result<()> {
         let subscription = self.provider.subscribe_blocks().await?;
         let mut stream = subscription.into_stream();
@@ -272,10 +292,13 @@ where
         metrics::set_following_head(true);
 
         loop {
+            // Poll shutdown every 100ms alongside the block stream.
             tokio::select! {
-                _ = shutdown_rx.recv() => {
-                    info!("Shutdown signal received during block streaming");
-                    return Ok(());
+                () = tokio::time::sleep(Duration::from_millis(100)) => {
+                    if shutdown.load(Ordering::Acquire) {
+                        info!("Shutdown signal received during block streaming");
+                        return Ok(());
+                    }
                 }
                 maybe_header = stream.next() => {
                     match maybe_header {
@@ -324,11 +347,11 @@ where
         }
     }
 
-    /// Pull, trace, and buffer a single block.
+    /// Pull, trace, and handle a single block.
     ///
-    /// The block update is appended to the in-memory buffer rather than
-    /// written directly to MDBX. Use [`Self::flush_to_mdbx`] to persist
-    /// buffered updates.
+    /// In **embedded mode** the traced update is appended to
+    /// [`Self::pending_updates`]. In **standalone mode** the update is written
+    /// directly to MDBX via `commit_block`.
     async fn process_block(&mut self, block_number: u64) -> Result<()> {
         info!(block_number, "processing block");
 
@@ -348,33 +371,58 @@ where
         // Apply system call state changes (EIP-2935 & EIP-4788)
         self.apply_system_calls(&mut update, block_number).await?;
 
-        self.buffer.push_back(update);
-        info!(
-            block_number,
-            buffer_len = self.buffer.len(),
-            "block buffered"
-        );
+        if self.is_embedded() {
+            // Embedded mode: buffer the update for later flushing.
+            self.pending_updates.push_back(update);
+            info!(
+                block_number,
+                buffer_len = self.pending_updates.len(),
+                "block buffered"
+            );
+        } else {
+            // Standalone mode: write directly to MDBX.
+            self.commit_single_block(&update)?;
+        }
 
         Ok(())
     }
 
-    /// Flush all buffered block updates with `block_number <= up_to_block`
-    /// to MDBX and update the shared atomic height.
+    /// Commit a single block update directly to MDBX. Used in standalone mode.
+    fn commit_single_block(&self, update: &BlockStateUpdate) -> Result<()> {
+        let block_number = update.block_number;
+        match self.writer_reader.commit_block(update) {
+            Ok(stats) => {
+                metrics::set_db_healthy(true);
+                metrics::record_commit(block_number, &stats);
+                info!(block_number, "block committed to MDBX");
+                Ok(())
+            }
+            Err(err) => {
+                critical!(error = ?err, block_number, "failed to persist block");
+                metrics::set_db_healthy(false);
+                metrics::record_block_failure();
+                Err(anyhow!("failed to persist block {block_number}"))
+            }
+        }
+    }
+
+    /// Flush all pending updates with `block_number <= up_to_block` to MDBX
+    /// and update [`Self::committed_head_signal`].
     ///
     /// # Errors
     ///
     /// Returns an error if any MDBX commit fails.
-    pub fn flush_to_mdbx(&mut self, up_to_block: u64) -> Result<()> {
+    pub fn flush_pending(&mut self, up_to_block: u64) -> Result<()> {
         let mut latest_flushed: Option<u64> = None;
 
-        while let Some(front) = self.buffer.front() {
+        while let Some(front) = self.pending_updates.front() {
             if front.block_number > up_to_block {
                 break;
             }
 
             // Safe to remove: we just verified the front exists and its
             // block_number is within range.
-            let Some(update) = self.buffer.pop_front() else {
+            let Some(update) = self.pending_updates.pop_front() else {
                 break;
             };
 
@@ -395,26 +443,34 @@ where
             }
         }
 
-        if let Some(block_number) = latest_flushed {
-            self.mdbx_height.store(block_number, Ordering::Release);
-            debug!(block_number, "mdbx_height updated");
+        if let Some(block_number) = latest_flushed
+            && let Some(ref signal) = self.committed_head_signal
+        {
+            signal.store(block_number, Ordering::Release);
+            debug!(block_number, "committed_head_signal updated");
         }
 
         Ok(())
     }
 
-    /// Drain all pending flush commands from the channel without blocking.
+    /// Drain all pending commit-head commands from the channel without
+    /// blocking.
     ///
-    /// When the sender side has been dropped (standalone mode) this flushes
-    /// every buffered block so the worker behaves like the pre-refactor
-    /// write-immediately mode.
+    /// In standalone mode (no channel) this is a no-op because blocks are
+    /// written directly in `process_block`.
     fn drain_flush_commands(&mut self) -> Result<()> {
+        // Clone the receiver to avoid holding an immutable borrow on `self`
+        // while calling `flush_pending` (which needs `&mut self`).
+        let rx = match self.commit_head_rx {
+            Some(ref rx) => rx.clone(),
+            None => return Ok(()),
+        };
         loop {
-            match self.flush_rx.try_recv() {
-                Ok(up_to_block) => self.flush_to_mdbx(up_to_block)?,
+            match rx.try_recv() {
+                Ok(up_to_block) => self.flush_pending(up_to_block)?,
                 Err(flume::TryRecvError::Empty) => break,
                 Err(flume::TryRecvError::Disconnected) => {
-                    // Sender dropped — auto-flush everything (standalone mode).
+                    // Sender dropped — flush everything remaining.
                     self.flush_all_buffered()?;
                     break;
                 }
@@ -425,31 +481,37 @@ where
 
     /// Flush every entry currently in the buffer to MDBX.
     fn flush_all_buffered(&mut self) -> Result<()> {
-        if let Some(back) = self.buffer.back() {
+        if let Some(back) = self.pending_updates.back() {
             let up_to = back.block_number;
-            self.flush_to_mdbx(up_to)?;
+            self.flush_pending(up_to)?;
         }
         Ok(())
     }
 
     /// Block until the buffer has room for at least one more entry.
     ///
-    /// When the buffer is full, this waits asynchronously on the flush channel
-    /// for commands that free space, providing natural backpressure on tracing.
+    /// In embedded mode, when the buffer is full this waits on the
+    /// `commit_head_rx` channel for commands that free space, providing natural
+    /// backpressure on tracing.
     ///
-    /// If the flush channel sender has been dropped (standalone mode), all
-    /// buffered blocks are flushed immediately to free space.
+    /// In standalone mode this is a no-op because blocks are not buffered.
     async fn wait_for_buffer_space(&mut self) -> Result<()> {
-        while self.buffer.len() >= self.buffer_capacity {
+        // Clone the receiver to avoid holding an immutable borrow on `self`
+        // while calling `flush_pending` (which needs `&mut self`).
+        let rx = match self.commit_head_rx {
+            Some(ref rx) => rx.clone(),
+            None => return Ok(()),
+        };
+        while self.pending_updates.len() >= self.buffer_capacity {
             info!(
-                buffer_len = self.buffer.len(),
+                buffer_len = self.pending_updates.len(),
                 buffer_capacity = self.buffer_capacity,
-                "buffer full, waiting for flush command (backpressure)"
+                "buffer full, waiting for commit_head signal (backpressure)"
             );
-            if let Ok(up_to_block) = self.flush_rx.recv_async().await {
-                self.flush_to_mdbx(up_to_block)?;
+            if let Ok(up_to_block) = rx.recv_async().await {
+                self.flush_pending(up_to_block)?;
             } else {
-                // Sender dropped — auto-flush everything (standalone mode).
+                // Sender dropped — flush everything.
                 self.flush_all_buffered()?;
                 break;
             }
@@ -735,6 +797,41 @@ mod tests {
             .map_or_else(|_| Vec::new(), |b| b.clone())
     }
 
+    /// Build a `StateWorker` in **embedded mode** (with commit-head channel).
+    fn make_embedded_worker(
+        wr: MockWriterReader,
+        commit_head_rx: flume::Receiver<u64>,
+        committed_head_signal: Arc<AtomicU64>,
+        buffer_capacity: usize,
+    ) -> StateWorker<MockWriterReader> {
+        StateWorker {
+            provider: dummy_provider(),
+            trace_provider: Box::new(NoopTraceProvider),
+            writer_reader: wr,
+            genesis_state: None,
+            system_calls: SystemCalls::new(None, None),
+            pending_updates: VecDeque::new(),
+            buffer_capacity,
+            commit_head_rx: Some(commit_head_rx),
+            committed_head_signal: Some(committed_head_signal),
+        }
+    }
+
+    /// Build a `StateWorker` in **standalone mode** (no commit-head channel).
+    fn make_standalone_worker(wr: MockWriterReader) -> StateWorker<MockWriterReader> {
+        StateWorker {
+            provider: dummy_provider(),
+            trace_provider: Box::new(NoopTraceProvider),
+            writer_reader: wr,
+            genesis_state: None,
+            system_calls: SystemCalls::new(None, None),
+            pending_updates: VecDeque::new(),
+            buffer_capacity: DEFAULT_BUFFER_CAPACITY,
+            commit_head_rx: None,
+            committed_head_signal: None,
+        }
+    }
+
     // ---------------------------------------------------------------------------
     // Tests
     // ---------------------------------------------------------------------------
@@ -742,135 +839,107 @@ mod tests {
     #[test]
     fn buffering_without_flush_does_not_write_to_mdbx() {
         let wr = MockWriterReader::default();
-        let (_flush_tx, flush_rx) = flume::bounded::<u64>(16);
-        let mdbx_height = Arc::new(AtomicU64::new(0));
+        let (_commit_head_tx, commit_head_rx) = flume::bounded::<u64>(16);
+        let committed_head = Arc::new(AtomicU64::new(0));
 
-        // We cannot call `new()` without a real provider/trace_provider, but we
-        // can construct the struct directly inside this test module since we have
-        // access to private fields.
-        let mut worker = StateWorker {
-            provider: dummy_provider(),
-            trace_provider: Box::new(NoopTraceProvider),
-            writer_reader: wr,
-            genesis_state: None,
-            system_calls: SystemCalls::new(None, None),
-            buffer: VecDeque::new(),
-            buffer_capacity: DEFAULT_BUFFER_CAPACITY,
-            flush_rx,
-            mdbx_height: mdbx_height.clone(),
-        };
+        let mut worker = make_embedded_worker(
+            wr,
+            commit_head_rx,
+            committed_head.clone(),
+            DEFAULT_BUFFER_CAPACITY,
+        );
 
         // Push blocks directly into the buffer (simulating what process_block does
         // after tracing).
-        worker.buffer.push_back(make_update(1));
-        worker.buffer.push_back(make_update(2));
-        worker.buffer.push_back(make_update(3));
+        worker.pending_updates.push_back(make_update(1));
+        worker.pending_updates.push_back(make_update(2));
+        worker.pending_updates.push_back(make_update(3));
 
         // Nothing should have been written yet.
         assert_eq!(committed_blocks(&worker.writer_reader), Vec::<u64>::new());
-        assert_eq!(mdbx_height.load(Ordering::Acquire), 0);
-        assert_eq!(worker.buffer.len(), 3);
+        assert_eq!(committed_head.load(Ordering::Acquire), 0);
+        assert_eq!(worker.pending_updates.len(), 3);
     }
 
     #[test]
     fn flush_signal_writes_buffered_blocks_to_mdbx() {
         let wr = MockWriterReader::default();
-        let (flush_tx, flush_rx) = flume::bounded::<u64>(16);
-        let mdbx_height = Arc::new(AtomicU64::new(0));
+        let (commit_head_tx, commit_head_rx) = flume::bounded::<u64>(16);
+        let committed_head = Arc::new(AtomicU64::new(0));
 
-        let mut worker = StateWorker {
-            provider: dummy_provider(),
-            trace_provider: Box::new(NoopTraceProvider),
-            writer_reader: wr,
-            genesis_state: None,
-            system_calls: SystemCalls::new(None, None),
-            buffer: VecDeque::new(),
-            buffer_capacity: DEFAULT_BUFFER_CAPACITY,
-            flush_rx,
-            mdbx_height: mdbx_height.clone(),
-        };
+        let mut worker = make_embedded_worker(
+            wr,
+            commit_head_rx,
+            committed_head.clone(),
+            DEFAULT_BUFFER_CAPACITY,
+        );
 
         // Buffer several blocks.
-        worker.buffer.push_back(make_update(1));
-        worker.buffer.push_back(make_update(2));
-        worker.buffer.push_back(make_update(3));
-        worker.buffer.push_back(make_update(4));
+        worker.pending_updates.push_back(make_update(1));
+        worker.pending_updates.push_back(make_update(2));
+        worker.pending_updates.push_back(make_update(3));
+        worker.pending_updates.push_back(make_update(4));
 
         // Nothing written yet.
         assert!(committed_blocks(&worker.writer_reader).is_empty());
 
         // Flush up to block 2.
-        flush_tx.send(2).expect("send should succeed");
+        commit_head_tx.send(2).expect("send should succeed");
         worker.drain_flush_commands().expect("drain should succeed");
 
         assert_eq!(committed_blocks(&worker.writer_reader), vec![1, 2]);
-        assert_eq!(mdbx_height.load(Ordering::Acquire), 2);
+        assert_eq!(committed_head.load(Ordering::Acquire), 2);
         // Blocks 3 and 4 remain in the buffer.
-        assert_eq!(worker.buffer.len(), 2);
+        assert_eq!(worker.pending_updates.len(), 2);
 
         // Flush up to block 4.
-        flush_tx.send(4).expect("send should succeed");
+        commit_head_tx.send(4).expect("send should succeed");
         worker.drain_flush_commands().expect("drain should succeed");
 
         assert_eq!(committed_blocks(&worker.writer_reader), vec![1, 2, 3, 4]);
-        assert_eq!(mdbx_height.load(Ordering::Acquire), 4);
-        assert!(worker.buffer.is_empty());
+        assert_eq!(committed_head.load(Ordering::Acquire), 4);
+        assert!(worker.pending_updates.is_empty());
     }
 
     #[test]
     fn flush_with_no_matching_blocks_is_noop() {
         let wr = MockWriterReader::default();
-        let (_flush_tx, flush_rx) = flume::bounded::<u64>(16);
-        let mdbx_height = Arc::new(AtomicU64::new(0));
+        let (_commit_head_tx, commit_head_rx) = flume::bounded::<u64>(16);
+        let committed_head = Arc::new(AtomicU64::new(0));
 
-        let mut worker = StateWorker {
-            provider: dummy_provider(),
-            trace_provider: Box::new(NoopTraceProvider),
-            writer_reader: wr,
-            genesis_state: None,
-            system_calls: SystemCalls::new(None, None),
-            buffer: VecDeque::new(),
-            buffer_capacity: DEFAULT_BUFFER_CAPACITY,
-            flush_rx,
-            mdbx_height: mdbx_height.clone(),
-        };
+        let mut worker = make_embedded_worker(
+            wr,
+            commit_head_rx,
+            committed_head.clone(),
+            DEFAULT_BUFFER_CAPACITY,
+        );
 
         // Buffer block 5 only.
-        worker.buffer.push_back(make_update(5));
+        worker.pending_updates.push_back(make_update(5));
 
         // Flush up to block 3 – nothing should be drained because 5 > 3.
-        worker.flush_to_mdbx(3).expect("flush should succeed");
+        worker.flush_pending(3).expect("flush should succeed");
 
         assert!(committed_blocks(&worker.writer_reader).is_empty());
-        assert_eq!(mdbx_height.load(Ordering::Acquire), 0);
-        assert_eq!(worker.buffer.len(), 1);
+        assert_eq!(committed_head.load(Ordering::Acquire), 0);
+        assert_eq!(worker.pending_updates.len(), 1);
     }
 
     #[test]
     fn backpressure_blocks_when_buffer_full() {
         let wr = MockWriterReader::default();
-        let (flush_tx, flush_rx) = flume::bounded::<u64>(16);
-        let mdbx_height = Arc::new(AtomicU64::new(0));
+        let (commit_head_tx, commit_head_rx) = flume::bounded::<u64>(16);
+        let committed_head = Arc::new(AtomicU64::new(0));
 
-        let mut worker = StateWorker {
-            provider: dummy_provider(),
-            trace_provider: Box::new(NoopTraceProvider),
-            writer_reader: wr,
-            genesis_state: None,
-            system_calls: SystemCalls::new(None, None),
-            buffer: VecDeque::new(),
-            buffer_capacity: 2, // tiny capacity for testing
-            flush_rx,
-            mdbx_height: mdbx_height.clone(),
-        };
+        let mut worker = make_embedded_worker(wr, commit_head_rx, committed_head.clone(), 2);
 
         // Fill the buffer to capacity.
-        worker.buffer.push_back(make_update(1));
-        worker.buffer.push_back(make_update(2));
-        assert_eq!(worker.buffer.len(), worker.buffer_capacity);
+        worker.pending_updates.push_back(make_update(1));
+        worker.pending_updates.push_back(make_update(2));
+        assert_eq!(worker.pending_updates.len(), worker.buffer_capacity);
 
         // Send a flush command that will free space.
-        flush_tx.send(1).expect("send should succeed");
+        commit_head_tx.send(1).expect("send should succeed");
 
         // wait_for_buffer_space should drain the flush and make room.
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -885,29 +954,84 @@ mod tests {
         });
 
         // Block 1 was flushed, block 2 remains.
-        assert_eq!(worker.buffer.len(), 1);
+        assert_eq!(worker.pending_updates.len(), 1);
         assert_eq!(committed_blocks(&worker.writer_reader), vec![1]);
-        assert_eq!(mdbx_height.load(Ordering::Acquire), 1);
+        assert_eq!(committed_head.load(Ordering::Acquire), 1);
     }
 
     #[test]
     fn buffer_capacity_defaults_to_64() {
-        let (_flush_tx, flush_rx) = flume::bounded::<u64>(1);
-        let mdbx_height = Arc::new(AtomicU64::new(0));
-
-        let worker = StateWorker {
-            provider: dummy_provider(),
-            trace_provider: Box::new(NoopTraceProvider),
-            writer_reader: MockWriterReader::default(),
-            genesis_state: None,
-            system_calls: SystemCalls::new(None, None),
-            buffer: VecDeque::new(),
-            buffer_capacity: DEFAULT_BUFFER_CAPACITY,
-            flush_rx,
-            mdbx_height,
-        };
+        let worker = StateWorker::new(
+            dummy_provider(),
+            Box::new(NoopTraceProvider),
+            MockWriterReader::default(),
+            None,
+            SystemCalls::new(None, None),
+            None,
+            None,
+            None,
+        );
 
         assert_eq!(worker.buffer_capacity, 64);
+    }
+
+    #[test]
+    fn standalone_mode_process_block_writes_directly() {
+        let wr = MockWriterReader::default();
+        let worker = make_standalone_worker(wr);
+
+        // In standalone mode process_block calls commit_single_block which
+        // writes directly to MDBX. We simulate this by calling
+        // commit_single_block directly since process_block needs async I/O.
+        worker
+            .commit_single_block(&make_update(10))
+            .expect("commit should succeed");
+        worker
+            .commit_single_block(&make_update(11))
+            .expect("commit should succeed");
+
+        assert_eq!(committed_blocks(&worker.writer_reader), vec![10, 11]);
+        // Buffer should remain empty in standalone mode.
+        assert!(worker.pending_updates.is_empty());
+    }
+
+    #[test]
+    fn embedded_mode_buffers_blocks_and_flushes_on_commit_head() {
+        let wr = MockWriterReader::default();
+        let (commit_head_tx, commit_head_rx) = flume::bounded::<u64>(16);
+        let committed_head = Arc::new(AtomicU64::new(0));
+
+        let mut worker = make_embedded_worker(wr, commit_head_rx, committed_head.clone(), 128);
+
+        // Simulate process_block in embedded mode: blocks are buffered.
+        worker.pending_updates.push_back(make_update(100));
+        worker.pending_updates.push_back(make_update(101));
+        worker.pending_updates.push_back(make_update(102));
+
+        // Nothing written yet.
+        assert!(committed_blocks(&worker.writer_reader).is_empty());
+        assert_eq!(committed_head.load(Ordering::Acquire), 0);
+
+        // Engine signals commit head at block 101.
+        commit_head_tx.send(101).expect("send should succeed");
+        worker.drain_flush_commands().expect("drain should succeed");
+
+        // Blocks 100 and 101 are flushed; 102 remains buffered.
+        assert_eq!(committed_blocks(&worker.writer_reader), vec![100, 101]);
+        assert_eq!(committed_head.load(Ordering::Acquire), 101);
+        assert_eq!(worker.pending_updates.len(), 1);
+        assert_eq!(
+            worker.pending_updates.front().map(|u| u.block_number),
+            Some(102)
+        );
+
+        // Engine signals commit head at block 102.
+        commit_head_tx.send(102).expect("send should succeed");
+        worker.drain_flush_commands().expect("drain should succeed");
+
+        assert_eq!(committed_blocks(&worker.writer_reader), vec![100, 101, 102]);
+        assert_eq!(committed_head.load(Ordering::Acquire), 102);
+        assert!(worker.pending_updates.is_empty());
     }
 
     // A no-op trace provider used only for constructing the struct in tests.

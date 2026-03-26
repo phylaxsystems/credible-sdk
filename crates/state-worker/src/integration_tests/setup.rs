@@ -5,7 +5,11 @@
 
 use crate::{
     connect_provider,
+    genesis::GenesisState,
     integration_tests::mdbx_fixture::MdbxTestDir,
+    state,
+    system_calls::SystemCalls,
+    worker::StateWorker,
 };
 use alloy::primitives::{
     B256,
@@ -16,14 +20,13 @@ use mdbx::{
     AddressHash,
     Reader,
 };
-use crate::{
-    genesis::GenesisState,
-    state,
-    system_calls::SystemCalls,
-    worker::StateWorker,
+use std::{
+    sync::{
+        Arc,
+        atomic::AtomicBool,
+    },
+    time::Duration,
 };
-use std::time::Duration;
-use tokio::sync::broadcast;
 use tracing::error;
 
 /// Unified test instance for MDBX-backed integration tests.
@@ -119,24 +122,21 @@ impl TestInstance {
             })
             .unwrap_or_default();
 
-        // In integration tests, drop the sender so the worker auto-flushes.
-        let (flush_tx, flush_rx) = flume::bounded::<u64>(64);
-        drop(flush_tx);
-        let mdbx_height = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-
+        // Standalone mode for integration tests — blocks are written directly.
         let mut worker = StateWorker::new(
             provider,
             trace_provider,
             writer_reader,
             genesis_state,
             system_calls,
-            flush_rx,
-            mdbx_height,
-            None,
+            None, // commit_head_rx
+            None, // committed_head_signal
+            None, // buffer_capacity
         );
-        let (shutdown_tx, _) = broadcast::channel(1);
+
+        let shutdown = Arc::new(AtomicBool::new(false));
         let handle_worker = tokio::spawn(async move {
-            if let Err(e) = worker.run(Some(0), shutdown_tx.subscribe()).await {
+            if let Err(e) = worker.run(Some(0), shutdown).await {
                 error!("worker server error: {}", e);
             }
         });

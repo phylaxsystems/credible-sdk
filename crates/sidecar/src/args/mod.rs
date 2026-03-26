@@ -347,7 +347,13 @@ impl StateSourceConfig {
     /// Returns `true` when this MDBX source is configured to run an embedded
     /// state worker (i.e. `ws_url` is `Some`).
     pub fn is_embedded(&self) -> bool {
-        matches!(self, Self::Mdbx { ws_url: Some(_), .. })
+        matches!(
+            self,
+            Self::Mdbx {
+                ws_url: Some(_),
+                ..
+            }
+        )
     }
 
     /// Returns the buffer capacity, falling back to [`DEFAULT_EMBEDDED_BUFFER_CAPACITY`].

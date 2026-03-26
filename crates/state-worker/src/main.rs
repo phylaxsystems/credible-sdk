@@ -35,11 +35,13 @@ use std::{
     panic::AssertUnwindSafe,
     sync::{
         Arc,
-        atomic::AtomicU64,
+        atomic::{
+            AtomicBool,
+            Ordering,
+        },
     },
     time::Duration,
 };
-use tokio::sync::broadcast;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -143,38 +145,34 @@ async fn run_once(args: &Args) -> Result<()> {
     // Create the trace provider based on config
     let trace_provider = state::create_trace_provider(provider.clone(), Duration::from_secs(30));
 
-    let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
+    // Shared shutdown flag: set to true on SIGTERM/SIGINT.
+    let shutdown = Arc::new(AtomicBool::new(false));
 
-    // Spawn signal handler
-    let shutdown_tx_clone = shutdown_tx.clone();
+    // Spawn signal handler that sets the shutdown flag.
+    let shutdown_flag = Arc::clone(&shutdown);
     tokio::spawn(async move {
         if let Err(e) = shutdown_signal().await {
             warn!("Error setting up signal handler: {}", e);
         } else {
             info!("Shutdown signal received, initiating graceful shutdown...");
-            let _ = shutdown_tx_clone.send(());
+            shutdown_flag.store(true, Ordering::Release);
         }
     });
 
-    // In standalone mode we drop the sender immediately so the worker detects
-    // a disconnected channel and auto-flushes every buffered block to MDBX,
-    // preserving the original write-immediately behaviour.
-    let (flush_tx, flush_rx) = flume::bounded::<u64>(64);
-    drop(flush_tx);
-    let mdbx_height = Arc::new(AtomicU64::new(0));
-
+    // Standalone mode: no commit_head channel or signal — blocks are written
+    // directly to MDBX in process_block().
     let mut worker = StateWorker::new(
         provider,
         trace_provider,
         writer_reader,
         Some(genesis_state),
         system_calls,
-        flush_rx,
-        mdbx_height,
-        None,
+        None, // commit_head_rx
+        None, // committed_head_signal
+        None, // buffer_capacity
     );
 
-    match worker.run(args.start_block, shutdown_rx).await {
+    match worker.run(args.start_block, shutdown).await {
         Ok(()) => {
             info!("State worker shutdown gracefully");
             Ok(())

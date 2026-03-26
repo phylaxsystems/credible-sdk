@@ -1,4 +1,7 @@
-use crate::integration_tests::setup::TestInstance;
+use crate::{
+    genesis,
+    integration_tests::setup::TestInstance,
+};
 use alloy::primitives::{
     B256,
     Bytes,
@@ -16,7 +19,6 @@ use mdbx::{
     Reader,
 };
 use serde_json::json;
-use crate::genesis;
 use std::{
     collections::HashMap,
     time::Duration,

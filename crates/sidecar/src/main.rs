@@ -978,35 +978,18 @@ fn run_state_worker_once(
 
         let trace_provider = create_trace_provider(provider.clone(), Duration::from_secs(30));
 
-        // Build a broadcast channel for shutdown signaling.
-        // The state worker listens on shutdown_rx; we send when the shutdown
-        // flag is set.
-        let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
-
-        // Spawn a task that monitors the AtomicBool shutdown flag and
-        // translates it into a broadcast message for the state worker.
-        let shutdown_flag = Arc::clone(shutdown);
-        tokio::spawn(async move {
-            loop {
-                if shutdown_flag.load(Ordering::Acquire) {
-                    let _ = shutdown_tx.send(());
-                    return;
-                }
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-        });
-
+        // Embedded mode: pass the commit-head channel and shared signal.
         let mut worker = StateWorker::new(
             provider,
             trace_provider,
             writer_reader,
             genesis_state,
             system_calls,
-            flush_rx,
-            mdbx_height,
+            Some(flush_rx),
+            Some(mdbx_height),
             None,
         );
 
-        worker.run(None, shutdown_rx).await
+        worker.run(None, Arc::clone(shutdown)).await
     })
 }
