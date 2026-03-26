@@ -1,6 +1,7 @@
 //! # The credible layer sidecar
 #![doc = include_str!("../README.md")]
 
+use anyhow::Context;
 use assertion_da_client::DaClient;
 use assertion_executor::{
     AssertionExecutor,
@@ -44,6 +45,7 @@ use sidecar::{
     indexer,
     indexer::IndexerCfg,
     transaction_observer::{
+        IncidentReportSender,
         TransactionObserver,
         TransactionObserverConfig,
     },
@@ -57,6 +59,12 @@ use sidecar::{
     },
     utils::ErrorRecoverability,
 };
+use state_worker::{
+    DEFAULT_TRACE_TIMEOUT as STATE_WORKER_DEFAULT_TRACE_TIMEOUT,
+    FlushControl,
+    WorkerConfig as StateWorkerConfig,
+    run_supervisor_loop,
+};
 use std::{
     net::SocketAddr,
     sync::{
@@ -69,6 +77,7 @@ use std::{
     thread::JoinHandle,
     time::Duration,
 };
+use tokio_util::sync::CancellationToken;
 use tracing::{
     error,
     warn,
@@ -270,6 +279,7 @@ struct ThreadHandles {
         Option<JoinHandle<Result<(), sidecar::event_sequencing::EventSequencingError>>>,
     transaction_observer:
         Option<JoinHandle<Result<(), sidecar::transaction_observer::TransactionObserverError>>>,
+    state_worker: Option<JoinHandle<anyhow::Result<()>>>,
 }
 
 impl ThreadHandles {
@@ -278,6 +288,7 @@ impl ThreadHandles {
             engine: None,
             event_sequencing: None,
             transaction_observer: None,
+            state_worker: None,
         }
     }
 
@@ -307,7 +318,25 @@ impl ThreadHandles {
                 Err(_) => tracing::error!("Transaction observer thread panicked"),
             }
         }
+        if let Some(handle) = self.state_worker.take() {
+            match handle.join() {
+                Ok(Ok(())) => tracing::info!("State worker thread exited cleanly"),
+                Ok(Err(e)) => tracing::error!(error = ?e, "State worker thread exited with error"),
+                Err(_) => tracing::error!("State worker thread panicked"),
+            }
+        }
     }
+}
+
+struct IntegratedStateWorker {
+    commit_control: Arc<FlushControl>,
+    shutdown: CancellationToken,
+    handle: JoinHandle<anyhow::Result<()>>,
+}
+
+struct BuiltSources {
+    sources: Vec<Arc<dyn Source>>,
+    integrated_state_worker: Option<IntegratedStateWorker>,
 }
 
 fn transaction_observer_config_from(config: &Config) -> Option<TransactionObserverConfig> {
@@ -338,8 +367,82 @@ fn transaction_observer_config_from(config: &Config) -> Option<TransactionObserv
     }
 }
 
-async fn build_sources_from_config(config: &Config) -> anyhow::Result<Vec<Arc<dyn Source>>> {
+fn spawn_integrated_state_worker(
+    config: StateWorkerConfig,
+    shutdown: CancellationToken,
+    commit_control: Arc<FlushControl>,
+) -> anyhow::Result<JoinHandle<anyhow::Result<()>>> {
+    Ok(std::thread::Builder::new()
+        .name("sidecar-state-worker".into())
+        .spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(run_supervisor_loop(config, Some(commit_control), shutdown))
+        })?)
+}
+
+fn connect_mdbx_source(
+    sources: &mut Vec<Arc<dyn Source>>,
+    mdbx_path: &str,
+    depth: u8,
+) -> anyhow::Result<()> {
+    match StateReader::new(mdbx_path, CircularBufferConfig::new(depth)?) {
+        Ok(state_worker_client) => sources.push(Arc::new(MdbxSource::new(state_worker_client))),
+        Err(err) => error!(error = ?err, "Failed to connect MDBX"),
+    }
+
+    Ok(())
+}
+
+async fn connect_eth_rpc_source(sources: &mut Vec<Arc<dyn Source>>, ws_url: &str, http_url: &str) {
+    if let Ok(eth_rpc_source) = EthRpcSource::try_build(ws_url, http_url).await {
+        sources.push(eth_rpc_source);
+    }
+}
+
+fn build_integrated_mdbx_source(
+    mdbx_path: &str,
+    buffer_capacity: usize,
+    ws_url: &str,
+    genesis_file: &str,
+    start_block: Option<u64>,
+) -> anyhow::Result<(Arc<dyn Source>, IntegratedStateWorker)> {
+    let reader = StateReader::new(mdbx_path, CircularBufferConfig::new(1)?)
+        .with_context(|| format!("failed to initialize integrated MDBX reader at {mdbx_path}"))?;
+
+    let commit_control = FlushControl::new();
+    let source = Arc::new(MdbxSource::new_with_flush_control(
+        reader,
+        commit_control.clone(),
+    ));
+
+    let shutdown = CancellationToken::new();
+    let worker_config = StateWorkerConfig {
+        ws_url: ws_url.to_owned(),
+        mdbx_path: mdbx_path.to_owned(),
+        start_block,
+        mdbx_depth: 1,
+        buffer_capacity,
+        genesis_file: genesis_file.to_owned(),
+        trace_timeout: STATE_WORKER_DEFAULT_TRACE_TIMEOUT,
+    };
+    let handle =
+        spawn_integrated_state_worker(worker_config, shutdown.clone(), commit_control.clone())?;
+
+    Ok((
+        source,
+        IntegratedStateWorker {
+            commit_control,
+            shutdown,
+            handle,
+        },
+    ))
+}
+
+async fn build_sources_from_config(config: &Config) -> anyhow::Result<BuiltSources> {
     let mut sources: Vec<Arc<dyn Source>> = Vec::new();
+    let mut integrated_state_worker: Option<IntegratedStateWorker> = None;
 
     if config.state.sources.is_empty() {
         if config.state.legacy.has_any() {
@@ -349,29 +452,23 @@ async fn build_sources_from_config(config: &Config) -> anyhow::Result<Vec<Arc<dy
             config.state.legacy.state_worker_mdbx_path.as_ref(),
             config.state.legacy.state_worker_depth,
         ) {
-            match StateReader::new(
+            connect_mdbx_source(
+                &mut sources,
                 state_worker_path,
-                CircularBufferConfig::new(u8::try_from(state_worker_depth)?)?,
-            ) {
-                Ok(state_worker_client) => {
-                    sources.push(Arc::new(MdbxSource::new(state_worker_client)));
-                }
-                Err(e) => {
-                    error!(error = ?e, "Failed to connect MDBX");
-                }
-            }
+                u8::try_from(state_worker_depth)?,
+            )?;
         }
 
         if let (Some(eth_rpc_source_ws_url), Some(eth_rpc_source_http_url)) = (
             &config.state.legacy.eth_rpc_source_ws_url,
             &config.state.legacy.eth_rpc_source_http_url,
-        ) && let Ok(eth_rpc_source) = EthRpcSource::try_build(
-            eth_rpc_source_ws_url.as_str(),
-            eth_rpc_source_http_url.as_str(),
-        )
-        .await
-        {
-            sources.push(eth_rpc_source);
+        ) {
+            connect_eth_rpc_source(
+                &mut sources,
+                eth_rpc_source_ws_url.as_str(),
+                eth_rpc_source_http_url.as_str(),
+            )
+            .await;
         }
     } else {
         if config.state.legacy.has_any() {
@@ -380,30 +477,40 @@ async fn build_sources_from_config(config: &Config) -> anyhow::Result<Vec<Arc<dy
         for source_config in &config.state.sources {
             match source_config {
                 StateSourceConfig::Mdbx { mdbx_path, depth } => {
-                    match StateReader::new(
-                        mdbx_path,
-                        CircularBufferConfig::new(u8::try_from(*depth)?)?,
-                    ) {
-                        Ok(state_worker_client) => {
-                            sources.push(Arc::new(MdbxSource::new(state_worker_client)));
-                        }
-                        Err(e) => {
-                            error!(error = ?e, "Failed to connect MDBX");
-                        }
+                    connect_mdbx_source(&mut sources, mdbx_path, u8::try_from(*depth)?)?;
+                }
+                StateSourceConfig::IntegratedMdbx {
+                    mdbx_path,
+                    buffer_capacity,
+                    ws_url,
+                    genesis_file,
+                    start_block,
+                } => {
+                    if integrated_state_worker.is_some() {
+                        anyhow::bail!("only one integrated-mdbx source is supported");
                     }
+
+                    let (source, worker) = build_integrated_mdbx_source(
+                        mdbx_path,
+                        *buffer_capacity,
+                        ws_url,
+                        genesis_file,
+                        *start_block,
+                    )?;
+                    sources.push(source);
+                    integrated_state_worker = Some(worker);
                 }
                 StateSourceConfig::EthRpc { ws_url, http_url } => {
-                    if let Ok(eth_rpc_source) =
-                        EthRpcSource::try_build(ws_url.as_str(), http_url.as_str()).await
-                    {
-                        sources.push(eth_rpc_source);
-                    }
+                    connect_eth_rpc_source(&mut sources, ws_url.as_str(), http_url.as_str()).await;
                 }
             }
         }
     }
 
-    Ok(sources)
+    Ok(BuiltSources {
+        sources,
+        integrated_state_worker,
+    })
 }
 
 fn result_ttl(config: &Config) -> Duration {
@@ -594,6 +701,36 @@ async fn stop_da_reachability_monitor(da_reachability_handle: tokio::task::JoinH
     }
 }
 
+fn install_integrated_state_worker(
+    thread_handles: &mut ThreadHandles,
+    integrated_state_worker: Option<IntegratedStateWorker>,
+) -> (Option<CancellationToken>, Option<Arc<FlushControl>>) {
+    let mut state_worker_shutdown = None;
+    let mut state_worker_commit_control = None;
+
+    if let Some(integrated_state_worker) = integrated_state_worker {
+        state_worker_commit_control = Some(integrated_state_worker.commit_control.clone());
+        state_worker_shutdown = Some(integrated_state_worker.shutdown.clone());
+        thread_handles.state_worker = Some(integrated_state_worker.handle);
+    }
+
+    (state_worker_shutdown, state_worker_commit_control)
+}
+
+fn incident_channels(
+    transaction_observer_enabled: bool,
+) -> (
+    Option<IncidentReportSender>,
+    Option<flume::Receiver<sidecar::transaction_observer::IncidentReport>>,
+) {
+    if transaction_observer_enabled {
+        let (tx, rx) = unbounded();
+        (Some(tx), Some(rx))
+    } else {
+        (None, None)
+    }
+}
+
 async fn run_sidecar_once(
     config: &Config,
     executor_config: &assertion_executor::ExecutorConfig,
@@ -606,7 +743,13 @@ async fn run_sidecar_once(
     // Shared shutdown flag for this iteration
     let shutdown_flag = Arc::new(AtomicBool::new(false));
 
-    let sources = build_sources_from_config(config).await?;
+    let BuiltSources {
+        sources,
+        integrated_state_worker,
+    } = build_sources_from_config(config).await?;
+    let (state_worker_shutdown, state_worker_commit_control) =
+        install_integrated_state_worker(&mut thread_handles, integrated_state_worker);
+
     let state = Arc::new(Sources::new(sources, config.state.minimum_state_diff));
     let cache: OverlayDb<Sources> = OverlayDb::new(Some(state.clone()));
 
@@ -617,12 +760,8 @@ async fn run_sidecar_once(
     // Channel: EventSequencing -> CoreEngine
     let (event_sequencing_tx, engine_rx) = unbounded();
     // Channel: CoreEngine -> TransactionObserver
-    let (incident_report_tx, incident_report_rx) = if transaction_observer_config.is_some() {
-        let (tx, rx) = unbounded();
-        (Some(tx), Some(rx))
-    } else {
-        (None, None)
-    };
+    let (incident_report_tx, incident_report_rx) =
+        incident_channels(transaction_observer_config.is_some());
 
     let (result_tx, result_rx) = unbounded();
     let accepted_txs_ttl = result_ttl(config);
@@ -652,6 +791,7 @@ async fn run_sidecar_once(
             .overlay_cache_invalidation_every_block
             .unwrap_or(false),
         incident_sender: incident_report_tx,
+        state_worker_flush_control: state_worker_commit_control,
         #[cfg(feature = "cache_validation")]
         provider_ws_url: Some(config.credible.cache_checker_ws_url.clone()),
     };
@@ -708,6 +848,9 @@ async fn run_sidecar_once(
     // Signal threads to stop
     tracing::info!("Signaling threads to shutdown...");
     shutdown_flag.store(true, Ordering::Relaxed);
+    if let Some(state_worker_shutdown) = state_worker_shutdown {
+        state_worker_shutdown.cancel();
+    }
 
     // Cleanup async components
     transport.stop();

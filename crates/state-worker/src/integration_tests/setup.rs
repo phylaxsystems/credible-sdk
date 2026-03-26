@@ -21,7 +21,7 @@ use mdbx::{
     Reader,
 };
 use std::time::Duration;
-use tokio::sync::broadcast;
+use tokio_util::sync::CancellationToken;
 use tracing::error;
 
 /// Unified test instance for MDBX-backed integration tests.
@@ -123,10 +123,12 @@ impl TestInstance {
             writer_reader,
             genesis_state,
             system_calls,
+            None,
+            3,
         );
-        let (shutdown_tx, _) = broadcast::channel(1);
+        let shutdown = CancellationToken::new();
         let handle_worker = tokio::spawn(async move {
-            if let Err(e) = worker.run(Some(0), shutdown_tx.subscribe()).await {
+            if let Err(e) = worker.run(Some(0), shutdown.clone()).await {
                 error!("worker server error: {}", e);
             }
         });

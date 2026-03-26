@@ -29,16 +29,19 @@ pub struct GenesisState {
 impl GenesisState {
     /// Immutable view of the parsed account commits.
     #[cfg(test)]
+    #[must_use]
     pub fn accounts(&self) -> &[AccountState] {
         &self.accounts
     }
 
     /// Consume the state and return the owned account commits.
+    #[must_use]
     pub fn into_accounts(self) -> Vec<AccountState> {
         self.accounts
     }
 
     /// Immutable view of the parsed genesis config.
+    #[must_use]
     pub fn config(&self) -> &Config {
         &self.config
     }

@@ -2,8 +2,11 @@
 //!
 //! The worker bootstraps from the last persisted block, catches up to head via
 //! RPC, and then tails new blocks from the `newHeads` subscription. Each block
-//! is traced with the pre-state tracer and written into the database.
+//! is traced with the pre-state tracer. When integrated into the sidecar, traced
+//! updates are buffered in memory and only flushed to MDBX after the engine has
+//! committed the corresponding block.
 use crate::{
+    coordination::FlushControl,
     genesis::GenesisState,
     metrics,
     state::{
@@ -32,13 +35,12 @@ use mdbx::{
     Writer,
 };
 use std::{
+    collections::VecDeque,
     sync::Arc,
     time::Duration,
 };
-use tokio::{
-    sync::broadcast,
-    time,
-};
+use tokio::time;
+use tokio_util::sync::CancellationToken;
 use tracing::{
     debug,
     info,
@@ -47,6 +49,157 @@ use tracing::{
 
 const SUBSCRIPTION_RETRY_DELAY_SECS: u64 = 5;
 const MAX_MISSING_BLOCK_RETRIES: u32 = 3;
+
+#[derive(Debug)]
+struct BufferedCommitState {
+    flush_control: Option<Arc<FlushControl>>,
+    buffer_capacity: usize,
+    buffered_updates: VecDeque<BlockStateUpdate>,
+}
+
+impl BufferedCommitState {
+    fn new(flush_control: Option<Arc<FlushControl>>, buffer_capacity: usize) -> Self {
+        Self {
+            flush_control,
+            buffer_capacity,
+            buffered_updates: VecDeque::new(),
+        }
+    }
+
+    fn should_listen_for_flush(&self) -> bool {
+        self.flush_control.is_some() && !self.buffered_updates.is_empty()
+    }
+
+    async fn wait_for_update(&self) {
+        if let Some(control) = self.flush_control.as_ref() {
+            control.wait_for_update().await;
+        }
+    }
+
+    fn sync_committed_head<WR>(&self, writer_reader: &WR) -> Result<()>
+    where
+        WR: Reader,
+        <WR as Reader>::Error: std::error::Error + Send + Sync + 'static,
+    {
+        if let Some(control) = self.flush_control.as_ref()
+            && let Some(block_number) = writer_reader.latest_block_number().map_err(|err| {
+                metrics::set_db_healthy(false);
+                anyhow!(err)
+            })?
+        {
+            metrics::set_db_healthy(true);
+            control.record_committed_block(block_number);
+        }
+        Ok(())
+    }
+
+    fn enqueue_or_commit<WR>(&mut self, writer_reader: &WR, update: BlockStateUpdate) -> Result<()>
+    where
+        WR: Writer + Reader,
+        <WR as Writer>::Error: std::error::Error + Send + Sync + 'static,
+        <WR as Reader>::Error: std::error::Error + Send + Sync + 'static,
+    {
+        if self.flush_control.is_none() {
+            self.persist_update(writer_reader, &update)?;
+            return Ok(());
+        }
+
+        self.buffered_updates.push_back(update);
+        self.flush_ready_updates(writer_reader)
+    }
+
+    fn flush_ready_updates<WR>(&mut self, writer_reader: &WR) -> Result<()>
+    where
+        WR: Writer + Reader,
+        <WR as Writer>::Error: std::error::Error + Send + Sync + 'static,
+        <WR as Reader>::Error: std::error::Error + Send + Sync + 'static,
+    {
+        let Some(control) = self.flush_control.as_ref() else {
+            return Ok(());
+        };
+        let Some(permitted_block) = control.permitted_flush_block() else {
+            return Ok(());
+        };
+
+        while self
+            .buffered_updates
+            .front()
+            .is_some_and(|update| update.block_number <= permitted_block)
+        {
+            let Some(update) = self.buffered_updates.pop_front() else {
+                break;
+            };
+            self.persist_update(writer_reader, &update)?;
+        }
+
+        Ok(())
+    }
+
+    async fn wait_for_capacity<WR>(
+        &mut self,
+        writer_reader: &WR,
+        shutdown: &CancellationToken,
+    ) -> Result<bool>
+    where
+        WR: Writer + Reader,
+        <WR as Writer>::Error: std::error::Error + Send + Sync + 'static,
+        <WR as Reader>::Error: std::error::Error + Send + Sync + 'static,
+    {
+        while self.buffered_updates.len() >= self.buffer_capacity {
+            self.flush_ready_updates(writer_reader)?;
+            if self.buffered_updates.len() < self.buffer_capacity {
+                return Ok(false);
+            }
+
+            let Some(control) = self.flush_control.as_ref() else {
+                return Err(anyhow!(
+                    "state worker buffer reached capacity without flush control"
+                ));
+            };
+
+            tokio::select! {
+                () = shutdown.cancelled() => return Ok(true),
+                () = control.wait_for_update() => {}
+            }
+        }
+
+        Ok(false)
+    }
+
+    fn persist_update<WR>(&self, writer_reader: &WR, update: &BlockStateUpdate) -> Result<()>
+    where
+        WR: Writer + Reader,
+        <WR as Writer>::Error: std::error::Error + Send + Sync + 'static,
+        <WR as Reader>::Error: std::error::Error + Send + Sync + 'static,
+    {
+        match writer_reader.commit_block(update) {
+            Ok(stats) => {
+                metrics::set_db_healthy(true);
+                metrics::record_commit(update.block_number, &stats);
+            }
+            Err(err) => {
+                critical!(
+                    error = ?err,
+                    block_number = update.block_number,
+                    "failed to persist block"
+                );
+                metrics::set_db_healthy(false);
+                metrics::record_block_failure();
+                return Err(anyhow!("failed to persist block {}", update.block_number));
+            }
+        }
+
+        if let Some(control) = self.flush_control.as_ref() {
+            control.record_committed_block(update.block_number);
+        }
+
+        info!(
+            block_number = update.block_number,
+            "block persisted to database"
+        );
+        Ok(())
+    }
+}
 
 /// Coordinates block ingestion, tracing, and persistence.
 pub struct StateWorker<WR>
@@ -58,6 +211,7 @@ where
     writer_reader: WR,
     genesis_state: Option<GenesisState>,
     system_calls: SystemCalls,
+    buffered_commits: BufferedCommitState,
 }
 
 impl<WR> StateWorker<WR>
@@ -72,13 +226,19 @@ where
         writer_reader: WR,
         genesis_state: Option<GenesisState>,
         system_calls: SystemCalls,
+        flush_control: Option<Arc<FlushControl>>,
+        buffer_capacity: usize,
     ) -> Self {
+        let buffered_commits = BufferedCommitState::new(flush_control, buffer_capacity);
+        let _ = buffered_commits.sync_committed_head(&writer_reader);
+
         Self {
             provider,
             trace_provider,
             writer_reader,
             genesis_state,
             system_calls,
+            buffered_commits,
         }
     }
 
@@ -96,30 +256,32 @@ where
         metrics::set_following_head(!is_syncing);
     }
 
-    /// Drive the catch-up + streaming loop. We keep retrying the subscription
-    /// because websocket connections can drop in practice.
+    /// Run the worker until shutdown, retrying subscriptions as needed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when RPC access, tracing, or MDBX persistence fails and
+    /// the worker cannot continue the current run loop iteration.
     pub async fn run(
         &mut self,
         start_override: Option<u64>,
-        mut shutdown_rx: broadcast::Receiver<()>,
+        shutdown: CancellationToken,
     ) -> Result<()> {
         let mut next_block = self.compute_start_block(start_override)?;
         let mut missing_block_retries: u32 = 0;
 
         loop {
-            // Check for shutdown before starting catch-up
-            if shutdown_rx.try_recv().is_ok() {
+            if shutdown.is_cancelled() {
                 info!("Shutdown signal received");
                 return Ok(());
             }
 
-            // Catch up block-by-block, checking shutdown between each
-            if self.catch_up(&mut next_block, &mut shutdown_rx).await? {
+            if self.catch_up(&mut next_block, &shutdown).await? {
                 info!("Shutdown signal received during catch-up");
                 return Ok(());
             }
 
-            match self.stream_blocks(&mut next_block, &mut shutdown_rx).await {
+            match self.stream_blocks(&mut next_block, &shutdown).await {
                 Ok(()) => {
                     info!("Shutdown signal received during streaming");
                     return Ok(());
@@ -139,13 +301,12 @@ where
                             );
                         }
                     } else {
-                        // Reset retry counter for non-missing-block errors
                         missing_block_retries = 0;
                     }
 
                     warn!(error = %err, "block subscription ended, retrying");
                     tokio::select! {
-                        _ = shutdown_rx.recv() => {
+                        () = shutdown.cancelled() => {
                             info!("Shutdown signal received during retry sleep");
                             return Ok(());
                         }
@@ -156,8 +317,6 @@ where
         }
     }
 
-    /// Determine the next block to ingest. We respect manual overrides so
-    /// operators can force a resync of historical ranges when needed.
     fn compute_start_block(&self, override_start: Option<u64>) -> Result<u64> {
         if let Some(block) = override_start {
             return Ok(block);
@@ -177,40 +336,45 @@ where
         Ok(current.map_or(0, |b| b + 1))
     }
 
-    /// Sequentially replay blocks until we reach the node's current head.
     async fn catch_up(
         &mut self,
         next_block: &mut u64,
-        shutdown_rx: &mut broadcast::Receiver<()>,
+        shutdown: &CancellationToken,
     ) -> Result<bool> {
         loop {
             let head = self.provider.get_block_number().await?;
             Self::update_sync_metrics(*next_block, head);
 
             if *next_block > head {
+                self.buffered_commits
+                    .flush_ready_updates(&self.writer_reader)?;
                 return Ok(false);
             }
 
             while *next_block <= head {
-                // Process the block fully before checking shutdown
+                if self
+                    .buffered_commits
+                    .wait_for_capacity(&self.writer_reader, shutdown)
+                    .await?
+                {
+                    return Ok(true);
+                }
+
                 self.process_block(*next_block).await?;
                 *next_block += 1;
                 Self::update_sync_metrics(*next_block, head);
 
-                // Check for shutdown after the block is complete
-                if shutdown_rx.try_recv().is_ok() {
+                if shutdown.is_cancelled() {
                     return Ok(true);
                 }
             }
         }
     }
 
-    /// Follow the `newHeads` stream and process new blocks in order, tolerating
-    /// duplicate/stale headers after reconnects.
     async fn stream_blocks(
         &mut self,
         next_block: &mut u64,
-        shutdown_rx: &mut broadcast::Receiver<()>,
+        shutdown: &CancellationToken,
     ) -> Result<()> {
         let subscription = self.provider.subscribe_blocks().await?;
         let mut stream = subscription.into_stream();
@@ -219,9 +383,12 @@ where
 
         loop {
             tokio::select! {
-                _ = shutdown_rx.recv() => {
+                () = shutdown.cancelled() => {
                     info!("Shutdown signal received during block streaming");
                     return Ok(());
+                }
+                () = self.buffered_commits.wait_for_update(), if self.buffered_commits.should_listen_for_flush() => {
+                    self.buffered_commits.flush_ready_updates(&self.writer_reader)?;
                 }
                 maybe_header = stream.next() => {
                     match maybe_header {
@@ -229,9 +396,6 @@ where
                             let Header { hash: _, inner, .. } = header;
                             let block_number = inner.number;
 
-                            // We may receive a header we already processed if the stream
-                            // briefly disconnects; skip without rewinding because we do not
-                            // currently handle reorgs.
                             if block_number + 1 < *next_block {
                                 debug!(block_number, next_block, "skipping stale header");
                                 continue;
@@ -239,9 +403,6 @@ where
 
                             Self::update_sync_metrics(*next_block, block_number);
 
-                            // If we are missing a block, log a warning and return error.
-                            // The run() loop tracks consecutive failures and escalates to
-                            // critical if we cannot recover after MAX_MISSING_BLOCK_RETRIES.
                             if block_number > *next_block {
                                 warn!("Missing block {block_number} (next block: {next_block})");
                                 return Err(anyhow!(
@@ -250,6 +411,14 @@ where
                             }
 
                             while *next_block <= block_number {
+                                if self
+                                    .buffered_commits
+                                    .wait_for_capacity(&self.writer_reader, shutdown)
+                                    .await?
+                                {
+                                    return Ok(());
+                                }
+
                                 self.process_block(*next_block).await?;
                                 *next_block += 1;
                                 Self::update_sync_metrics(*next_block, block_number);
@@ -264,7 +433,6 @@ where
         }
     }
 
-    /// Pull, trace, and persist a single block.
     async fn process_block(&mut self, block_number: u64) -> Result<()> {
         info!(block_number, "processing block");
 
@@ -281,47 +449,28 @@ where
             }
         };
 
-        // Apply system call state changes (EIP-2935 & EIP-4788)
         self.apply_system_calls(&mut update, block_number).await?;
-
-        match self.writer_reader.commit_block(&update) {
-            Ok(stats) => {
-                metrics::set_db_healthy(true);
-                metrics::record_commit(block_number, &stats);
-            }
-            Err(err) => {
-                critical!(error = ?err, block_number, "failed to persist block");
-                metrics::set_db_healthy(false);
-                metrics::record_block_failure();
-                return Err(anyhow!("failed to persist block {block_number}"));
-            }
-        }
-
-        info!(block_number, "block persisted to database");
+        self.buffered_commits
+            .enqueue_or_commit(&self.writer_reader, update)?;
         Ok(())
     }
 
-    /// Apply EIP-2935 and EIP-4788 system call state changes
     async fn apply_system_calls(
         &self,
         update: &mut BlockStateUpdate,
         block_number: u64,
     ) -> Result<()> {
-        // Fetch block header for system call data
         let block = self
             .provider
             .get_block_by_number(block_number.into())
             .await?
             .context(format!("block {block_number} not found"))?;
 
-        // Get parent block hash (current block's parent_hash field)
         let parent_block_hash = if block_number > 0 {
             Some(block.header.parent_hash)
         } else {
             None
         };
-
-        // Get parent beacon block root from block header (EIP-4788)
         let parent_beacon_block_root = block.header.parent_beacon_block_root;
 
         let config = SystemCallConfig {
@@ -331,7 +480,6 @@ where
             parent_beacon_block_root,
         };
 
-        // Pass the reader to fetch existing account state
         match self
             .system_calls
             .compute_system_call_states(&config, Some(&self.writer_reader))
@@ -344,7 +492,6 @@ where
                 Ok(())
             }
             Err(err) => {
-                // Log but don't fail
                 warn!(
                     block_number,
                     error = %err,
@@ -355,7 +502,6 @@ where
         }
     }
 
-    /// Process block 0 using the configured genesis state
     async fn process_genesis_block(&mut self) -> Result<()> {
         let Some(genesis) = self.genesis_state.take() else {
             warn!("no genesis state configured; skipping genesis hydration");
@@ -377,6 +523,8 @@ where
 
         if already_exists {
             info!("block 0 already exists in database; skipping genesis hydration");
+            self.buffered_commits
+                .sync_committed_head(&self.writer_reader)?;
             return Ok(());
         }
 
@@ -387,7 +535,6 @@ where
             return Ok(());
         }
 
-        // Fetch genesis block header to get hash and state root
         let block = self
             .provider
             .get_block_by_number(0.into())
@@ -403,20 +550,241 @@ where
             accounts,
         );
 
-        match self.writer_reader.commit_block(&update) {
-            Ok(stats) => {
-                metrics::set_db_healthy(true);
-                metrics::record_commit(0, &stats);
-            }
-            Err(err) => {
-                critical!(error = ?err, block_number = 0, "failed to persist genesis block");
-                metrics::set_db_healthy(false);
-                metrics::record_block_failure();
-                return Err(anyhow!("failed to persist genesis block"));
-            }
+        self.buffered_commits
+            .persist_update(&self.writer_reader, &update)?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BufferedCommitState;
+    use crate::coordination::FlushControl;
+    use alloy::primitives::{
+        B256,
+        Bytes,
+        U256,
+    };
+    use mdbx::{
+        AccountInfo,
+        AccountState,
+        AddressHash,
+        BlockMetadata,
+        BlockStateUpdate,
+        CommitStats,
+        Reader,
+        Writer,
+    };
+    use std::{
+        collections::HashMap,
+        sync::{
+            Mutex,
+            MutexGuard,
+            PoisonError,
+        },
+        time::Duration,
+    };
+    use tokio_util::sync::CancellationToken;
+
+    #[derive(Debug, Default)]
+    struct FakeWriterReader {
+        committed_blocks: Mutex<Vec<u64>>,
+    }
+
+    impl FakeWriterReader {
+        fn committed_blocks(&self) -> MutexGuard<'_, Vec<u64>> {
+            self.committed_blocks
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+        }
+    }
+
+    #[derive(Debug)]
+    struct FakeError;
+
+    impl std::fmt::Display for FakeError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("fake error")
+        }
+    }
+
+    impl std::error::Error for FakeError {}
+
+    impl Reader for FakeWriterReader {
+        type Error = FakeError;
+
+        fn latest_block_number(&self) -> std::result::Result<Option<u64>, Self::Error> {
+            Ok(self.committed_blocks().last().copied())
         }
 
-        info!(block_number = 0, "genesis block persisted to database");
+        fn is_block_available(&self, _block_number: u64) -> std::result::Result<bool, Self::Error> {
+            Ok(false)
+        }
+
+        fn get_account(
+            &self,
+            _address_hash: AddressHash,
+            _block_number: u64,
+        ) -> std::result::Result<Option<AccountInfo>, Self::Error> {
+            Ok(None)
+        }
+
+        fn get_storage(
+            &self,
+            _address_hash: AddressHash,
+            _slot_hash: B256,
+            _block_number: u64,
+        ) -> std::result::Result<Option<U256>, Self::Error> {
+            Ok(None)
+        }
+
+        fn get_all_storage(
+            &self,
+            _address_hash: AddressHash,
+            _block_number: u64,
+        ) -> std::result::Result<HashMap<B256, U256>, Self::Error> {
+            Ok(HashMap::new())
+        }
+
+        fn get_code(
+            &self,
+            _code_hash: B256,
+            _block_number: u64,
+        ) -> std::result::Result<Option<Bytes>, Self::Error> {
+            Ok(None)
+        }
+
+        fn get_full_account(
+            &self,
+            _address_hash: AddressHash,
+            _block_number: u64,
+        ) -> std::result::Result<Option<AccountState>, Self::Error> {
+            Ok(None)
+        }
+
+        fn get_block_hash(
+            &self,
+            _block_number: u64,
+        ) -> std::result::Result<Option<B256>, Self::Error> {
+            Ok(None)
+        }
+
+        fn get_state_root(
+            &self,
+            _block_number: u64,
+        ) -> std::result::Result<Option<B256>, Self::Error> {
+            Ok(None)
+        }
+
+        fn get_block_metadata(
+            &self,
+            _block_number: u64,
+        ) -> std::result::Result<Option<BlockMetadata>, Self::Error> {
+            Ok(None)
+        }
+
+        fn get_available_block_range(
+            &self,
+        ) -> std::result::Result<Option<(u64, u64)>, Self::Error> {
+            Ok(None)
+        }
+
+        fn scan_account_hashes(
+            &self,
+            _block_number: u64,
+        ) -> std::result::Result<Vec<AddressHash>, Self::Error> {
+            Ok(Vec::new())
+        }
+    }
+
+    impl Writer for FakeWriterReader {
+        type Error = FakeError;
+
+        fn commit_block(
+            &self,
+            update: &BlockStateUpdate,
+        ) -> std::result::Result<CommitStats, Self::Error> {
+            self.committed_blocks().push(update.block_number);
+            Ok(CommitStats::default())
+        }
+
+        fn bootstrap_from_snapshot(
+            &self,
+            _accounts: Vec<AccountState>,
+            _block_number: u64,
+            _block_hash: B256,
+            _state_root: B256,
+        ) -> std::result::Result<CommitStats, Self::Error> {
+            Ok(CommitStats::default())
+        }
+    }
+
+    fn update(block_number: u64) -> BlockStateUpdate {
+        let block_hash_byte = u8::try_from(block_number).unwrap_or(u8::MAX);
+        BlockStateUpdate {
+            block_number,
+            block_hash: B256::repeat_byte(block_hash_byte),
+            state_root: B256::repeat_byte(block_hash_byte.saturating_add(1)),
+            accounts: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn immediate_mode_commits_without_flush_control() -> anyhow::Result<()> {
+        let writer_reader = FakeWriterReader::default();
+        let mut buffered = BufferedCommitState::new(None, 1);
+
+        buffered.enqueue_or_commit(&writer_reader, update(1))?;
+
+        assert_eq!(*writer_reader.committed_blocks(), vec![1]);
+        Ok(())
+    }
+
+    #[test]
+    fn buffered_mode_commits_only_after_permission() -> anyhow::Result<()> {
+        let writer_reader = FakeWriterReader::default();
+        let control = FlushControl::new();
+        let mut buffered = BufferedCommitState::new(Some(control.clone()), 4);
+
+        buffered.enqueue_or_commit(&writer_reader, update(1))?;
+        buffered.enqueue_or_commit(&writer_reader, update(2))?;
+
+        assert!(writer_reader.committed_blocks().is_empty());
+
+        control.allow_flush_to(1);
+        buffered.flush_ready_updates(&writer_reader)?;
+        assert_eq!(control.committed_block(), Some(1));
+        assert_eq!(*writer_reader.committed_blocks(), vec![1]);
+
+        control.allow_flush_to(2);
+        buffered.flush_ready_updates(&writer_reader)?;
+        assert_eq!(control.committed_block(), Some(2));
+        assert_eq!(*writer_reader.committed_blocks(), vec![1, 2]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn waits_for_capacity_until_permission_advances() -> anyhow::Result<()> {
+        let writer_reader = FakeWriterReader::default();
+        let control = FlushControl::new();
+        let mut buffered = BufferedCommitState::new(Some(control.clone()), 1);
+        let shutdown = CancellationToken::new();
+
+        buffered.enqueue_or_commit(&writer_reader, update(1))?;
+        assert!(buffered.should_listen_for_flush());
+
+        let control_clone = control.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            control_clone.allow_flush_to(1);
+        });
+
+        let shutdown_received = buffered
+            .wait_for_capacity(&writer_reader, &shutdown)
+            .await?;
+        assert!(!shutdown_received);
+        assert_eq!(control.committed_block(), Some(1));
+        assert_eq!(*writer_reader.committed_blocks(), vec![1]);
         Ok(())
     }
 }
