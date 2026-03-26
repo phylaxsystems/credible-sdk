@@ -5,11 +5,7 @@
 
 use crate::{
     connect_provider,
-    genesis::GenesisState,
     integration_tests::mdbx_fixture::MdbxTestDir,
-    state,
-    system_calls::SystemCalls,
-    worker::StateWorker,
 };
 use alloy::primitives::{
     B256,
@@ -19,6 +15,12 @@ use int_test_utils::node_protocol_mock_server::DualProtocolMockServer;
 use mdbx::{
     AddressHash,
     Reader,
+};
+use state_worker::{
+    genesis::GenesisState,
+    state,
+    system_calls::SystemCalls,
+    worker::StateWorker,
 };
 use std::time::Duration;
 use tokio::sync::broadcast;

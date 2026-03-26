@@ -300,6 +300,13 @@ pub enum StateSourceConfig {
         mdbx_path: String,
         /// State worker depth (how many blocks behind head state worker will have the data from)
         depth: usize,
+        /// Execution client WebSocket URL for the embedded state worker.
+        /// When set, the sidecar spawns a dedicated state worker thread.
+        #[serde(default)]
+        ws_url: Option<String>,
+        /// Path to genesis file for the embedded state worker.
+        #[serde(default)]
+        genesis_file: Option<String>,
     },
     #[serde(rename = "eth-rpc")]
     EthRpc {
@@ -958,6 +965,8 @@ mod tests {
                 StateSourceConfig::Mdbx {
                     mdbx_path: "/data/state_worker.mdbx".to_string(),
                     depth: 100,
+                    ws_url: None,
+                    genesis_file: None,
                 }
             ]
         );
@@ -1194,6 +1203,8 @@ mod tests {
             vec![StateSourceConfig::Mdbx {
                 mdbx_path: "/data/state.mdbx".to_string(),
                 depth: 7,
+                ws_url: None,
+                genesis_file: None,
             }]
         );
     }
@@ -1507,6 +1518,8 @@ mod tests {
                 StateSourceConfig::Mdbx {
                     mdbx_path: "/data/state_worker.mdbx".to_string(),
                     depth: 42,
+                    ws_url: None,
+                    genesis_file: None,
                 }
             ]
         );
@@ -1574,10 +1587,14 @@ mod tests {
                 StateSourceConfig::Mdbx {
                     mdbx_path: "/data/state_worker_a.mdbx".to_string(),
                     depth: 10,
+                    ws_url: None,
+                    genesis_file: None,
                 },
                 StateSourceConfig::Mdbx {
                     mdbx_path: "/data/state_worker_b.mdbx".to_string(),
                     depth: 20,
+                    ws_url: None,
+                    genesis_file: None,
                 },
                 StateSourceConfig::EthRpc {
                     ws_url: "ws://rpc.example:8546".to_string(),

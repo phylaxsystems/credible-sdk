@@ -199,6 +199,8 @@ pub struct CoreEngineConfig {
     pub source_monitoring_period: Duration,
     pub overlay_cache_invalidation_every_block: bool,
     pub incident_sender: Option<IncidentReportSender>,
+    /// Sender for "flush up to block N" commands to the embedded state worker.
+    pub flush_sender: Option<flume::Sender<u64>>,
     #[cfg(feature = "cache_validation")]
     pub provider_ws_url: Option<String>,
 }
@@ -570,6 +572,8 @@ pub struct CoreEngine<DB> {
     /// Prevents duplicate logging/metrics on re-execution.
     assertion_failure_cache: moka::sync::Cache<TxHash, ()>,
     custom_tx_executor: Option<Arc<dyn CustomTxExecutor<DB>>>,
+    /// Sender for "flush up to block N" commands to the embedded state worker.
+    flush_sender: Option<flume::Sender<u64>>,
 }
 
 #[cfg(feature = "cache_validation")]
@@ -648,6 +652,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             cache_checker,
             assertion_failure_cache,
             custom_tx_executor: None,
+            flush_sender: config.flush_sender,
         }
     }
 
@@ -1706,6 +1711,19 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         );
         self.current_block_iterations.clear();
         self.first_commit_head_processed = true;
+
+        // Signal the embedded state worker to flush up to the committed block.
+        if let Some(ref flush_sender) = self.flush_sender {
+            let block_number = commit_head.block_number.saturating_to::<u64>();
+            if let Err(e) = flush_sender.try_send(block_number) {
+                warn!(
+                    target = "engine",
+                    error = %e,
+                    block_number = block_number,
+                    "Failed to send flush command to state worker"
+                );
+            }
+        }
 
         debug!(
             target = "engine",

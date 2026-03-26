@@ -17,6 +17,7 @@ dapp-api-client.workspace = true
 eip-system-calls.workspace = true
 sidecar-test-macros = { path = "src/utils/test-macros", optional = true }
 mdbx = { workspace = true, features = ["reader"] }
+state-worker.workspace = true
 int-test-utils = { workspace = true, optional = true }
 
 clap = { workspace = true }

@@ -66,6 +66,7 @@ eip-system-calls = { path = "crates/eip-system-calls" }
 assertion-verification = { path = "crates/assertion-verification" }
 
 sidecar = { path = "crates/sidecar" }
+state-worker = { path = "crates/state-worker" }
 mdbx = { path = "crates/mdbx", features = ["reader"] }
 benchmark-utils = { path = "crates/benchmark-utils", features = [] }
 

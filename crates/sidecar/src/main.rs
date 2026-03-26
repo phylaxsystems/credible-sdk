@@ -59,10 +59,12 @@ use sidecar::{
 };
 use std::{
     net::SocketAddr,
+    panic::AssertUnwindSafe,
     sync::{
         Arc,
         atomic::{
             AtomicBool,
+            AtomicU64,
             Ordering,
         },
     },
@@ -270,6 +272,7 @@ struct ThreadHandles {
         Option<JoinHandle<Result<(), sidecar::event_sequencing::EventSequencingError>>>,
     transaction_observer:
         Option<JoinHandle<Result<(), sidecar::transaction_observer::TransactionObserverError>>>,
+    state_worker: Option<JoinHandle<()>>,
 }
 
 impl ThreadHandles {
@@ -278,6 +281,7 @@ impl ThreadHandles {
             engine: None,
             event_sequencing: None,
             transaction_observer: None,
+            state_worker: None,
         }
     }
 
@@ -305,6 +309,13 @@ impl ThreadHandles {
                     tracing::error!(error = ?e, "Transaction observer thread exited with error");
                 }
                 Err(_) => tracing::error!("Transaction observer thread panicked"),
+            }
+        }
+        if let Some(handle) = self.state_worker.take() {
+            if handle.join().is_err() {
+                tracing::error!("State worker thread panicked");
+            } else {
+                tracing::info!("State worker thread exited cleanly");
             }
         }
     }
@@ -379,7 +390,9 @@ async fn build_sources_from_config(config: &Config) -> anyhow::Result<Vec<Arc<dy
         }
         for source_config in &config.state.sources {
             match source_config {
-                StateSourceConfig::Mdbx { mdbx_path, depth } => {
+                StateSourceConfig::Mdbx {
+                    mdbx_path, depth, ..
+                } => {
                     match StateReader::new(
                         mdbx_path,
                         CircularBufferConfig::new(u8::try_from(*depth)?)?,
@@ -521,6 +534,19 @@ fn handle_indexer_exit(result: Result<(), indexer::IndexerError>) {
     }
 }
 
+/// Wraps an optional oneshot receiver into a future that either completes
+/// when the state worker signals exit or pends forever when no state worker
+/// is running.
+async fn state_worker_exit_future(
+    state_worker_exited_rx: Option<tokio::sync::oneshot::Receiver<()>>,
+) {
+    if let Some(rx) = state_worker_exited_rx {
+        let _ = rx.await;
+    } else {
+        std::future::pending::<()>().await;
+    }
+}
+
 async fn run_async_components(
     transport: &mut GrpcTransport,
     health_server: &mut HealthServer,
@@ -534,9 +560,11 @@ async fn run_async_components(
             Result<(), sidecar::transaction_observer::TransactionObserverError>,
         >,
     >,
+    state_worker_exited_rx: Option<tokio::sync::oneshot::Receiver<()>>,
 ) -> bool {
     let mut should_shutdown = false;
     let observer_exited = observer_exit_future(observer_exited_rx);
+    let state_worker_exited = state_worker_exit_future(state_worker_exited_rx);
 
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {
@@ -558,6 +586,9 @@ async fn run_async_components(
         }
         result = observer_exited => {
             handle_observer_exit(result);
+        }
+        () = state_worker_exited => {
+            tracing::error!("State worker thread exited unexpectedly");
         }
         result = health_server.run() => {
             if let Err(e) = result {
@@ -594,6 +625,7 @@ async fn stop_da_reachability_monitor(da_reachability_handle: tokio::task::JoinH
     }
 }
 
+#[allow(clippy::too_many_lines)]
 async fn run_sidecar_once(
     config: &Config,
     executor_config: &assertion_executor::ExecutorConfig,
@@ -624,6 +656,20 @@ async fn run_sidecar_once(
         (None, None)
     };
 
+    // Detect embedded state worker config (first Mdbx source with ws_url).
+    let embedded_state_worker_config = find_embedded_state_worker_config(config);
+
+    // Channel: CoreEngine -> StateWorker (flush commands)
+    // Arc<AtomicU64>: state worker publishes MDBX height, MdbxSource reads it.
+    let (flush_tx, flush_rx, mdbx_height) = if embedded_state_worker_config.is_some() {
+        let (tx, rx) = flume::bounded::<u64>(64);
+        let height = Arc::new(AtomicU64::new(0));
+        (Some(tx), Some(rx), height)
+    } else {
+        // No embedded state worker — height stays at 0 (effectively disabled).
+        (None, None, Arc::new(AtomicU64::new(0)))
+    };
+
     let (result_tx, result_rx) = unbounded();
     let accepted_txs_ttl = result_ttl(config);
     let engine_state_results =
@@ -652,6 +698,7 @@ async fn run_sidecar_once(
             .overlay_cache_invalidation_every_block
             .unwrap_or(false),
         incident_sender: incident_report_tx,
+        flush_sender: flush_tx,
         #[cfg(feature = "cache_validation")]
         provider_ws_url: Some(config.credible.cache_checker_ws_url.clone()),
     };
@@ -681,6 +728,29 @@ async fn run_sidecar_once(
         None
     };
 
+    // Spawn embedded state worker on a dedicated OS thread (if configured)
+    let state_worker_exited_rx =
+        if let (Some(sw_config), Some(flush_rx)) = (embedded_state_worker_config, flush_rx) {
+            let (sw_handle, sw_exited_rx) = spawn_state_worker_thread(
+                sw_config,
+                flush_rx,
+                Arc::clone(&mdbx_height),
+                Arc::clone(&shutdown_flag),
+            )?;
+            thread_handles.state_worker = Some(sw_handle);
+            Some(sw_exited_rx)
+        } else {
+            if config
+                .state
+                .sources
+                .iter()
+                .any(|s| matches!(s, StateSourceConfig::Mdbx { .. }))
+            {
+                tracing::info!("MDBX source configured without ws_url; state worker not embedded");
+            }
+            None
+        };
+
     let mut health_server = HealthServer::new(health_bind_addr);
 
     let da_client = DaClient::new(&config.credible.assertion_da_rpc_url)?;
@@ -700,6 +770,7 @@ async fn run_sidecar_once(
         engine_exited,
         seq_exited,
         observer_exited_rx,
+        state_worker_exited_rx,
     ))
     .await;
 
@@ -719,4 +790,213 @@ async fn run_sidecar_once(
     thread_handles.join_all();
 
     Ok(should_shutdown)
+}
+
+/// Configuration extracted from [`StateSourceConfig::Mdbx`] for the embedded state worker.
+struct EmbeddedStateWorkerConfig {
+    ws_url: String,
+    mdbx_path: String,
+    depth: usize,
+    genesis_file: Option<String>,
+}
+
+/// Returns the first Mdbx source config that has `ws_url` set, if any.
+fn find_embedded_state_worker_config(config: &Config) -> Option<EmbeddedStateWorkerConfig> {
+    for source in &config.state.sources {
+        if let StateSourceConfig::Mdbx {
+            mdbx_path,
+            depth,
+            ws_url: Some(ws_url),
+            genesis_file,
+        } = source
+        {
+            return Some(EmbeddedStateWorkerConfig {
+                ws_url: ws_url.clone(),
+                mdbx_path: mdbx_path.clone(),
+                depth: *depth,
+                genesis_file: genesis_file.clone(),
+            });
+        }
+    }
+    None
+}
+
+/// Exponential backoff constants for state worker restart.
+const STATE_WORKER_BACKOFF_INITIAL: Duration = Duration::from_secs(1);
+const STATE_WORKER_BACKOFF_MULTIPLIER: u32 = 2;
+const STATE_WORKER_BACKOFF_CAP: Duration = Duration::from_secs(30);
+
+/// Spawns the state worker on a dedicated OS thread with its own single-threaded
+/// tokio runtime. The thread entry point is wrapped in `catch_unwind` with
+/// exponential backoff restart (1s → 2s → 4s → ... → 30s cap).
+///
+/// Returns the thread's `JoinHandle` and a oneshot receiver that fires when the
+/// thread exits (either due to shutdown or permanent failure).
+#[allow(clippy::needless_pass_by_value)] // consumed by move closure
+fn spawn_state_worker_thread(
+    sw_config: EmbeddedStateWorkerConfig,
+    flush_rx: flume::Receiver<u64>,
+    mdbx_height: Arc<AtomicU64>,
+    shutdown: Arc<AtomicBool>,
+) -> std::io::Result<(JoinHandle<()>, tokio::sync::oneshot::Receiver<()>)> {
+    let (exit_tx, exit_rx) = tokio::sync::oneshot::channel();
+
+    let handle = std::thread::Builder::new()
+        .name("sidecar-state-worker".into())
+        .spawn(move || {
+            run_state_worker_loop(sw_config, flush_rx, mdbx_height, shutdown);
+            let _ = exit_tx.send(());
+        })?;
+
+    Ok((handle, exit_rx))
+}
+
+/// Inner loop for the state worker OS thread.
+///
+/// Runs with exponential backoff restart on panics or errors, matching the
+/// existing pattern in `state-worker/src/main.rs`.
+#[allow(clippy::needless_pass_by_value)] // owned from spawn_state_worker_thread
+fn run_state_worker_loop(
+    sw_config: EmbeddedStateWorkerConfig,
+    flush_rx: flume::Receiver<u64>,
+    mdbx_height: Arc<AtomicU64>,
+    shutdown: Arc<AtomicBool>,
+) {
+    let mut backoff = STATE_WORKER_BACKOFF_INITIAL;
+
+    loop {
+        if shutdown.load(Ordering::Acquire) {
+            tracing::info!("State worker thread: shutdown flag set, exiting");
+            return;
+        }
+
+        let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            run_state_worker_once(
+                &sw_config,
+                flush_rx.clone(),
+                Arc::clone(&mdbx_height),
+                &shutdown,
+            )
+        }));
+
+        if shutdown.load(Ordering::Acquire) {
+            tracing::info!("State worker thread: shutdown after run, exiting");
+            return;
+        }
+
+        match result {
+            Ok(Ok(())) => {
+                tracing::warn!("State worker exited normally; restarting");
+            }
+            Ok(Err(err)) => {
+                tracing::warn!(error = %err, "State worker failed; restarting");
+            }
+            Err(panic_payload) => {
+                if let Some(message) = panic_payload.downcast_ref::<&str>() {
+                    tracing::warn!(panic = %message, "State worker panicked; restarting");
+                } else if let Some(message) = panic_payload.downcast_ref::<String>() {
+                    tracing::warn!(panic = %message, "State worker panicked; restarting");
+                } else {
+                    tracing::warn!("State worker panicked; restarting");
+                }
+            }
+        }
+
+        tracing::info!(
+            backoff_secs = backoff.as_secs(),
+            "Restarting state worker after backoff"
+        );
+        std::thread::sleep(backoff);
+
+        // Exponential backoff: 1s → 2s → 4s → 8s → 16s → 30s (cap)
+        backoff = backoff
+            .saturating_mul(STATE_WORKER_BACKOFF_MULTIPLIER)
+            .min(STATE_WORKER_BACKOFF_CAP);
+    }
+}
+
+/// Runs one lifecycle of the embedded state worker inside a single-threaded
+/// tokio runtime on the current OS thread.
+fn run_state_worker_once(
+    sw_config: &EmbeddedStateWorkerConfig,
+    flush_rx: flume::Receiver<u64>,
+    mdbx_height: Arc<AtomicU64>,
+    shutdown: &Arc<AtomicBool>,
+) -> anyhow::Result<()> {
+    use mdbx::{
+        StateWriter,
+        common::CircularBufferConfig,
+    };
+    use state_worker::{
+        genesis,
+        state::create_trace_provider,
+        system_calls::SystemCalls,
+        worker::StateWorker,
+    };
+
+    use alloy_provider::Provider;
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+
+    rt.block_on(async {
+        let ws_connect = alloy_provider::WsConnect::new(&sw_config.ws_url);
+        let provider = alloy_provider::ProviderBuilder::new()
+            .connect_ws(ws_connect)
+            .await
+            .map_err(|e| anyhow::anyhow!("state worker: failed to connect WS: {e}"))?;
+        let provider = Arc::new(provider.root().clone());
+
+        let writer_reader = StateWriter::new(
+            sw_config.mdbx_path.as_str(),
+            CircularBufferConfig::new(u8::try_from(sw_config.depth)?)?,
+        )?;
+
+        let genesis_state = if let Some(ref genesis_file) = sw_config.genesis_file {
+            let contents = std::fs::read_to_string(genesis_file)?;
+            Some(genesis::parse_from_str(&contents)?)
+        } else {
+            None
+        };
+
+        let system_calls = if let Some(ref gs) = genesis_state {
+            SystemCalls::new(gs.config().cancun_time, gs.config().prague_time)
+        } else {
+            SystemCalls::new(None, None)
+        };
+
+        let trace_provider = create_trace_provider(provider.clone(), Duration::from_secs(30));
+
+        // Build a broadcast channel for shutdown signaling.
+        // The state worker listens on shutdown_rx; we send when the shutdown
+        // flag is set.
+        let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
+
+        // Spawn a task that monitors the AtomicBool shutdown flag and
+        // translates it into a broadcast message for the state worker.
+        let shutdown_flag = Arc::clone(shutdown);
+        tokio::spawn(async move {
+            loop {
+                if shutdown_flag.load(Ordering::Acquire) {
+                    let _ = shutdown_tx.send(());
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        });
+
+        let mut worker = StateWorker::new(
+            provider,
+            trace_provider,
+            writer_reader,
+            genesis_state,
+            system_calls,
+            flush_rx,
+            mdbx_height,
+            None,
+        );
+
+        worker.run(None, shutdown_rx).await
+    })
 }
