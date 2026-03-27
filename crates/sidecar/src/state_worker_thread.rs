@@ -439,7 +439,6 @@ mod tests {
         let update = BlockStateUpdate::new(1, B256::ZERO, B256::ZERO);
         let result: Result<(), ChannelWriterError> = tx
             .send(update)
-            .map(|()| ())
             .map_err(|_| ChannelWriterError::ChannelDisconnected);
 
         assert!(result.is_err());
