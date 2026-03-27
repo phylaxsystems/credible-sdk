@@ -292,25 +292,23 @@ jobs:
             homepage "https://github.com/phylaxsystems/credible-sdk"
             version "VERSION_PLACEHOLDER"
 
-            if OS.mac?
-              if Hardware::CPU.arm?
-                url "https://github.com/phylaxsystems/credible-sdk/releases/download/#{version}/pcl-#{version}-macos-arm64.tar.gz"
-                sha256 "MACOS_ARM64_SHA_PLACEHOLDER"
-              else
-                odie "Intel macOS is no longer supported."
-              end
-            elsif OS.linux?
-              if Hardware::CPU.intel?
+            on_macos do
+              depends_on arch: :arm64
+
+              url "https://github.com/phylaxsystems/credible-sdk/releases/download/#{version}/pcl-#{version}-macos-arm64.tar.gz"
+              sha256 "MACOS_ARM64_SHA_PLACEHOLDER"
+            end
+
+            on_linux do
+              on_intel do
                 url "https://github.com/phylaxsystems/credible-sdk/releases/download/#{version}/pcl-#{version}-linux-x86_64.tar.gz"
                 sha256 "LINUX_X86_64_SHA_PLACEHOLDER"
-              elsif Hardware::CPU.arm?
+              end
+
+              on_arm do
                 url "https://github.com/phylaxsystems/credible-sdk/releases/download/#{version}/pcl-#{version}-linux-arm64.tar.gz"
                 sha256 "LINUX_ARM64_SHA_PLACEHOLDER"
-              else
-                odie "Unsupported Linux architecture."
               end
-            else
-              odie "Unsupported operating system."
             end
 
             def install
