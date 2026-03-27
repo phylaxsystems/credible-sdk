@@ -53,10 +53,7 @@ impl Default for FlushLoopConfig {
 pub enum FlushError {
     /// The MDBX writer returned an error during `commit_block`.
     #[error("writer commit failed for block {block_number}: {reason}")]
-    WriterCommit {
-        block_number: u64,
-        reason: String,
-    },
+    WriterCommit { block_number: u64, reason: String },
 }
 
 /// In-memory buffer that orders [`BlockStateUpdate`]s by block number and
@@ -171,7 +168,10 @@ fn run_flush_loop<W>(
                 buffer.insert(update);
                 // Drain any additional updates that arrived while we were busy.
                 while let Ok(update) = update_rx.try_recv() {
-                    debug!(block = update.block_number, "buffered block state update (batch)");
+                    debug!(
+                        block = update.block_number,
+                        "buffered block state update (batch)"
+                    );
                     buffer.insert(update);
                 }
             }
@@ -182,9 +182,7 @@ fn run_flush_loop<W>(
                 info!("update channel disconnected; draining remaining commit signals");
                 // Channel closed — drain any remaining commit-head signals and exit.
                 while let Ok(head) = commit_head_rx.try_recv() {
-                    current_ceiling = Some(
-                        current_ceiling.map_or(head, |c: u64| c.max(head)),
-                    );
+                    current_ceiling = Some(current_ceiling.map_or(head, |c: u64| c.max(head)));
                 }
                 if let Some(ceiling) = current_ceiling {
                     flush_up_to(&mut buffer, ceiling, writer, committed_height);
@@ -196,9 +194,7 @@ fn run_flush_loop<W>(
 
         // Phase 2: consume all pending commit-head signals, keeping the max.
         while let Ok(head) = commit_head_rx.try_recv() {
-            current_ceiling = Some(
-                current_ceiling.map_or(head, |c: u64| c.max(head)),
-            );
+            current_ceiling = Some(current_ceiling.map_or(head, |c: u64| c.max(head)));
         }
 
         // Phase 3: flush buffered updates up to the current ceiling.
@@ -315,6 +311,53 @@ mod tests {
             Ok(CommitStats::default())
         }
 
+        fn bootstrap_from_snapshot(
+            &self,
+            _accounts: Vec<mdbx::AccountState>,
+            _block_number: u64,
+            _block_hash: B256,
+            _state_root: B256,
+        ) -> Result<CommitStats, Self::Error> {
+            Ok(CommitStats::default())
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Arc wrapper for test use
+    // -----------------------------------------------------------------------
+
+    /// A wrapper that delegates to an `Arc<MockWriter>`, used in integration
+    /// tests where the writer must be shared across threads.
+    struct ArcWriter(Arc<MockWriter>);
+
+    impl Writer for ArcWriter {
+        type Error = MockWriterError;
+        fn commit_block(&self, update: &BlockStateUpdate) -> Result<CommitStats, Self::Error> {
+            self.0.commit_block(update)
+        }
+        fn bootstrap_from_snapshot(
+            &self,
+            accounts: Vec<mdbx::AccountState>,
+            block_number: u64,
+            block_hash: B256,
+            state_root: B256,
+        ) -> Result<CommitStats, Self::Error> {
+            self.0
+                .bootstrap_from_snapshot(accounts, block_number, block_hash, state_root)
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Noop writer for shutdown tests
+    // -----------------------------------------------------------------------
+
+    struct NoopWriter;
+
+    impl Writer for NoopWriter {
+        type Error = MockWriterError;
+        fn commit_block(&self, _update: &BlockStateUpdate) -> Result<CommitStats, Self::Error> {
+            Ok(CommitStats::default())
+        }
         fn bootstrap_from_snapshot(
             &self,
             _accounts: Vec<mdbx::AccountState>,
@@ -462,28 +505,6 @@ mod tests {
         let h = Arc::clone(&height);
         let s = Arc::clone(&shutdown);
 
-        // Use a wrapper that delegates to the Arc<MockWriter>.
-        struct ArcWriter(Arc<MockWriter>);
-        impl Writer for ArcWriter {
-            type Error = MockWriterError;
-            fn commit_block(
-                &self,
-                update: &BlockStateUpdate,
-            ) -> Result<CommitStats, Self::Error> {
-                self.0.commit_block(update)
-            }
-            fn bootstrap_from_snapshot(
-                &self,
-                accounts: Vec<mdbx::AccountState>,
-                block_number: u64,
-                block_hash: B256,
-                state_root: B256,
-            ) -> Result<CommitStats, Self::Error> {
-                self.0
-                    .bootstrap_from_snapshot(accounts, block_number, block_hash, state_root)
-            }
-        }
-
         let config = FlushLoopConfig {
             recv_timeout: Duration::from_millis(10),
         };
@@ -510,26 +531,6 @@ mod tests {
         let (_commit_tx, commit_rx) = flume::bounded::<u64>(16);
         let height = Arc::new(AtomicU64::new(0));
         let shutdown = Arc::new(AtomicBool::new(true)); // already set
-
-        struct NoopWriter;
-        impl Writer for NoopWriter {
-            type Error = MockWriterError;
-            fn commit_block(
-                &self,
-                _update: &BlockStateUpdate,
-            ) -> Result<CommitStats, Self::Error> {
-                Ok(CommitStats::default())
-            }
-            fn bootstrap_from_snapshot(
-                &self,
-                _accounts: Vec<mdbx::AccountState>,
-                _block_number: u64,
-                _block_hash: B256,
-                _state_root: B256,
-            ) -> Result<CommitStats, Self::Error> {
-                Ok(CommitStats::default())
-            }
-        }
 
         let config = FlushLoopConfig {
             recv_timeout: Duration::from_millis(10),
