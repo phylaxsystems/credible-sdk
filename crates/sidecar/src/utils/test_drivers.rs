@@ -282,6 +282,7 @@ impl CommonSetup {
                 #[cfg(feature = "cache_validation")]
                 provider_ws_url: Some(self.eth_rpc_source_http_mock.ws_url()),
             },
+            None,
         )
         .await;
         engine.set_canonical_db_for_tests(self.underlying_db.clone());

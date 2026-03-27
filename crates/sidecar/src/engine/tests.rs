@@ -148,6 +148,7 @@ impl<DB> CoreEngine<DB> {
                 .max_capacity(super::ASSERTION_FAILURE_CACHE_SIZE)
                 .build(),
             custom_tx_executor: None,
+            flush_signal_tx: None,
         }
     }
 }
@@ -257,6 +258,7 @@ async fn create_test_engine_with_timeout(
             #[cfg(feature = "cache_validation")]
             provider_ws_url: None,
         },
+        None,
     )
     .await;
     (engine, tx_sender)
@@ -1945,6 +1947,7 @@ async fn build_canonical_setup(caller: Address) -> CanonicalSetup {
             #[cfg(feature = "cache_validation")]
             provider_ws_url: None,
         },
+        None,
     )
     .await;
     engine.set_canonical_db_for_tests(canonical.clone());
