@@ -27,7 +27,7 @@ impl FlushControl {
     pub fn allow_flush_to(&self, block_number: u64) {
         self.permitted_flush_block
             .fetch_max(Self::encode(block_number), Ordering::AcqRel);
-        self.notify.notify_waiters();
+        self.notify.notify_one();
     }
 
     #[must_use]
@@ -38,7 +38,7 @@ impl FlushControl {
     pub fn record_committed_block(&self, block_number: u64) {
         self.committed_block
             .fetch_max(Self::encode(block_number), Ordering::AcqRel);
-        self.notify.notify_waiters();
+        self.notify.notify_one();
     }
 
     #[must_use]
@@ -55,11 +55,13 @@ impl FlushControl {
     }
 
     #[inline]
+    /// Shift block number into "set" space so `0` remains the sentinel for "never set".
     const fn encode(block_number: u64) -> u64 {
         block_number.saturating_add(1)
     }
 
     #[inline]
+    /// Reverse `encode`, mapping the sentinel back to `None`.
     const fn decode(value: u64) -> Option<u64> {
         if value == 0 { None } else { Some(value - 1) }
     }
@@ -91,5 +93,18 @@ mod tests {
         control.record_committed_block(7);
 
         assert_eq!(control.committed_block(), Some(7));
+    }
+
+    #[tokio::test]
+    async fn notification_permit_is_retained_until_waiter_arrives() {
+        let control = FlushControl::new();
+        control.allow_flush_to(4);
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            control.wait_for_update(),
+        )
+        .await;
+        assert!(result.is_ok(), "flush notification should not be lost");
     }
 }

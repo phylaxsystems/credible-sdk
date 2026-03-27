@@ -10,6 +10,7 @@ use assertion_executor::{
 use credible_utils::shutdown::wait_for_sigterm;
 use flume::unbounded;
 use mdbx::{
+    Reader,
     StateReader,
     common::CircularBufferConfig,
 };
@@ -407,11 +408,42 @@ fn build_integrated_mdbx_source(
     ws_url: &str,
     genesis_file: &str,
     start_block: Option<u64>,
-) -> anyhow::Result<(Arc<dyn Source>, IntegratedStateWorker)> {
+) -> anyhow::Result<(Arc<dyn Source>, Option<IntegratedStateWorker>)> {
+    build_integrated_mdbx_source_with(
+        mdbx_path,
+        buffer_capacity,
+        ws_url,
+        genesis_file,
+        start_block,
+        spawn_integrated_state_worker,
+    )
+}
+
+fn build_integrated_mdbx_source_with<F>(
+    mdbx_path: &str,
+    buffer_capacity: usize,
+    ws_url: &str,
+    genesis_file: &str,
+    start_block: Option<u64>,
+    spawn_worker: F,
+) -> anyhow::Result<(Arc<dyn Source>, Option<IntegratedStateWorker>)>
+where
+    F: FnOnce(
+        StateWorkerConfig,
+        CancellationToken,
+        Arc<FlushControl>,
+    ) -> anyhow::Result<JoinHandle<anyhow::Result<()>>>,
+{
     let reader = StateReader::new(mdbx_path, CircularBufferConfig::new(1)?)
         .with_context(|| format!("failed to initialize integrated MDBX reader at {mdbx_path}"))?;
 
     let commit_control = FlushControl::new();
+    if let Some(block_number) = reader
+        .latest_block_number()
+        .with_context(|| format!("failed to read integrated MDBX head at {mdbx_path}"))?
+    {
+        commit_control.record_committed_block(block_number);
+    }
     let source = Arc::new(MdbxSource::new_with_flush_control(
         reader,
         commit_control.clone(),
@@ -427,22 +459,63 @@ fn build_integrated_mdbx_source(
         genesis_file: genesis_file.to_owned(),
         trace_timeout: STATE_WORKER_DEFAULT_TRACE_TIMEOUT,
     };
-    let handle =
-        spawn_integrated_state_worker(worker_config, shutdown.clone(), commit_control.clone())?;
+    let worker = match spawn_worker(worker_config, shutdown.clone(), commit_control.clone()) {
+        Ok(handle) => {
+            Some(IntegratedStateWorker {
+                commit_control,
+                shutdown,
+                handle,
+            })
+        }
+        Err(err) => {
+            error!(
+                error = ?err,
+                mdbx_path,
+                "failed to start integrated state worker; continuing with existing MDBX state"
+            );
+            None
+        }
+    };
 
-    Ok((
-        source,
-        IntegratedStateWorker {
-            commit_control,
-            shutdown,
-            handle,
-        },
-    ))
+    Ok((source, worker))
+}
+
+fn try_add_integrated_mdbx_source(
+    sources: &mut Vec<Arc<dyn Source>>,
+    source_index: usize,
+    mdbx_path: &str,
+    buffer_capacity: usize,
+    ws_url: &str,
+    genesis_file: &str,
+    start_block: Option<u64>,
+) -> Option<IntegratedStateWorker> {
+    match build_integrated_mdbx_source(
+        mdbx_path,
+        buffer_capacity,
+        ws_url,
+        genesis_file,
+        start_block,
+    ) {
+        Ok((source, worker)) => {
+            sources.push(source);
+            worker
+        }
+        Err(err) => {
+            error!(
+                error = ?err,
+                source_index,
+                mdbx_path,
+                "failed to initialize integrated MDBX source"
+            );
+            None
+        }
+    }
 }
 
 async fn build_sources_from_config(config: &Config) -> anyhow::Result<BuiltSources> {
     let mut sources: Vec<Arc<dyn Source>> = Vec::new();
     let mut integrated_state_worker: Option<IntegratedStateWorker> = None;
+    let mut saw_integrated_mdbx = false;
 
     if config.state.sources.is_empty() {
         if config.state.legacy.has_any() {
@@ -474,7 +547,7 @@ async fn build_sources_from_config(config: &Config) -> anyhow::Result<BuiltSourc
         if config.state.legacy.has_any() {
             warn!("Ignoring legacy state source configuration; state.sources is set.");
         }
-        for source_config in &config.state.sources {
+        for (source_index, source_config) in config.state.sources.iter().enumerate() {
             match source_config {
                 StateSourceConfig::Mdbx { mdbx_path, depth } => {
                     connect_mdbx_source(&mut sources, mdbx_path, u8::try_from(*depth)?)?;
@@ -486,19 +559,21 @@ async fn build_sources_from_config(config: &Config) -> anyhow::Result<BuiltSourc
                     genesis_file,
                     start_block,
                 } => {
-                    if integrated_state_worker.is_some() {
-                        anyhow::bail!("only one integrated-mdbx source is supported");
+                    if saw_integrated_mdbx {
+                        anyhow::bail!(
+                            "only one integrated-mdbx source is supported (duplicate at state.sources[{source_index}])"
+                        );
                     }
-
-                    let (source, worker) = build_integrated_mdbx_source(
+                    saw_integrated_mdbx = true;
+                    integrated_state_worker = try_add_integrated_mdbx_source(
+                        &mut sources,
+                        source_index,
                         mdbx_path,
                         *buffer_capacity,
                         ws_url,
                         genesis_file,
                         *start_block,
-                    )?;
-                    sources.push(source);
-                    integrated_state_worker = Some(worker);
+                    );
                 }
                 StateSourceConfig::EthRpc { ws_url, http_url } => {
                     connect_eth_rpc_source(&mut sources, ws_url.as_str(), http_url.as_str()).await;
@@ -862,4 +937,76 @@ async fn run_sidecar_once(
     thread_handles.join_all();
 
     Ok(should_shutdown)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        build_integrated_mdbx_source_with,
+        try_add_integrated_mdbx_source,
+    };
+    use alloy::primitives::{
+        B256,
+        U256,
+    };
+    use anyhow::anyhow;
+    use mdbx::{
+        BlockStateUpdate,
+        StateWriter,
+        Writer,
+        common::CircularBufferConfig,
+    };
+    use tempfile::tempdir;
+
+    fn commit_empty_block(writer: &StateWriter, block_number: u64) -> anyhow::Result<()> {
+        let block_hash_byte = u8::try_from(block_number).unwrap_or(u8::MAX);
+        writer.commit_block(&BlockStateUpdate {
+            block_number,
+            block_hash: B256::repeat_byte(block_hash_byte),
+            state_root: B256::repeat_byte(block_hash_byte.saturating_add(1)),
+            accounts: Vec::new(),
+        })?;
+        Ok(())
+    }
+
+    #[test]
+    fn integrated_source_keeps_existing_mdbx_state_when_worker_start_fails() -> anyhow::Result<()> {
+        let dir = tempdir()?;
+        let path = dir.path().join("state");
+        let writer = StateWriter::new(&path, CircularBufferConfig::new(1)?)?;
+        commit_empty_block(&writer, 5)?;
+        drop(writer);
+
+        let path_str = path.to_string_lossy().into_owned();
+        let (source, worker) = build_integrated_mdbx_source_with(
+            &path_str,
+            3,
+            "ws://127.0.0.1:8546",
+            "/tmp/genesis.json",
+            None,
+            |_config, _shutdown, _commit_control| Err(anyhow!("spawn failed")),
+        )?;
+
+        assert!(worker.is_none());
+        assert!(source.is_synced(U256::from(5), U256::from(9)));
+        Ok(())
+    }
+
+    #[test]
+    fn integrated_source_init_failure_does_not_abort_source_setup() {
+        let mut sources = Vec::new();
+
+        let worker = try_add_integrated_mdbx_source(
+            &mut sources,
+            0,
+            "/definitely/missing/state-worker.mdbx",
+            3,
+            "ws://127.0.0.1:8546",
+            "/tmp/genesis.json",
+            None,
+        );
+
+        assert!(worker.is_none());
+        assert!(sources.is_empty());
+    }
 }
