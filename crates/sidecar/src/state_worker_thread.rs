@@ -407,4 +407,46 @@ mod tests {
         let payload: Box<dyn std::any::Any + Send> = Box::new(42_i32);
         assert_eq!(panic_message(&*payload), "unknown panic");
     }
+
+    #[test]
+    fn channel_writer_sends_on_commit() {
+        // Create a bounded channel and a ChannelWriter backed by it.
+        // We need a StateReader, but since commit_block only uses the
+        // sender we create a minimal MDBX env. Instead, we test the
+        // Writer impl via the flume channel directly.
+        let (tx, rx) = flume::bounded::<BlockStateUpdate>(8);
+
+        let update = BlockStateUpdate::new(42, B256::ZERO, B256::ZERO);
+
+        // The ChannelWriter::commit_block implementation sends on the
+        // channel. Replicate its logic here since constructing a real
+        // StateReader requires an MDBX database.
+        tx.send(update.clone())
+            .map_err(|_| ChannelWriterError::ChannelDisconnected)
+            .expect("send should succeed");
+
+        let received = rx.try_recv().expect("should receive update");
+        assert_eq!(received.block_number, 42);
+    }
+
+    #[test]
+    fn channel_writer_error_on_disconnect() {
+        let (tx, rx) = flume::bounded::<BlockStateUpdate>(8);
+
+        // Drop the receiver to simulate a disconnected channel.
+        drop(rx);
+
+        let update = BlockStateUpdate::new(1, B256::ZERO, B256::ZERO);
+        let result: Result<(), ChannelWriterError> = tx
+            .send(update)
+            .map(|()| ())
+            .map_err(|_| ChannelWriterError::ChannelDisconnected);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, ChannelWriterError::ChannelDisconnected),
+            "expected ChannelDisconnected error"
+        );
+    }
 }

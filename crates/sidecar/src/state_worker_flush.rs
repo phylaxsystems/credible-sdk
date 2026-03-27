@@ -547,4 +547,165 @@ mod tests {
         // Loop should have exited immediately.
         assert_eq!(height.load(Ordering::Acquire), 0);
     }
+
+    #[test]
+    fn flush_loop_buffers_and_flushes_up_to_signal() {
+        let (update_tx, update_rx) = flume::bounded(16);
+        let (commit_tx, commit_rx) = flume::bounded(16);
+        let writer = Arc::new(MockWriter::new());
+        let height = Arc::new(AtomicU64::new(0));
+        let shutdown = Arc::new(AtomicBool::new(false));
+
+        // Send updates for blocks 1 through 5.
+        for block in 1..=5 {
+            update_tx.send(make_update(block)).unwrap();
+        }
+
+        // Signal flush up to block 3.
+        commit_tx.send(3).unwrap();
+
+        // Drop senders so the loop will exit after draining.
+        drop(update_tx);
+        drop(commit_tx);
+
+        let w = Arc::clone(&writer);
+        let h = Arc::clone(&height);
+        let s = Arc::clone(&shutdown);
+
+        let config = FlushLoopConfig {
+            recv_timeout: Duration::from_millis(10),
+        };
+
+        let handle = std::thread::spawn(move || {
+            run_flush_loop(&config, &update_rx, &commit_rx, &ArcWriter(w), &h, &s);
+        });
+
+        handle.join().expect("flush loop panicked");
+
+        let committed = writer.committed_blocks();
+        assert_eq!(committed, vec![1, 2, 3]);
+        assert_eq!(height.load(Ordering::Acquire), 3);
+    }
+
+    #[test]
+    fn flush_loop_handles_out_of_order() {
+        let (update_tx, update_rx) = flume::bounded(16);
+        let (commit_tx, commit_rx) = flume::bounded(16);
+        let writer = Arc::new(MockWriter::new());
+        let height = Arc::new(AtomicU64::new(0));
+        let shutdown = Arc::new(AtomicBool::new(false));
+
+        // Send blocks out of order: 3, 1, 2.
+        update_tx.send(make_update(3)).unwrap();
+        update_tx.send(make_update(1)).unwrap();
+        update_tx.send(make_update(2)).unwrap();
+
+        // Signal flush up to block 2.
+        commit_tx.send(2).unwrap();
+
+        // Drop senders so the loop will exit.
+        drop(update_tx);
+        drop(commit_tx);
+
+        let w = Arc::clone(&writer);
+        let h = Arc::clone(&height);
+        let s = Arc::clone(&shutdown);
+
+        let config = FlushLoopConfig {
+            recv_timeout: Duration::from_millis(10),
+        };
+
+        let handle = std::thread::spawn(move || {
+            run_flush_loop(&config, &update_rx, &commit_rx, &ArcWriter(w), &h, &s);
+        });
+
+        handle.join().expect("flush loop panicked");
+
+        // Blocks 1 and 2 should be written in ascending order despite
+        // arriving out of order. Block 3 is above the ceiling.
+        let committed = writer.committed_blocks();
+        assert_eq!(committed, vec![1, 2]);
+        assert_eq!(height.load(Ordering::Acquire), 2);
+    }
+
+    #[test]
+    fn committed_height_updated() {
+        let (update_tx, update_rx) = flume::bounded(16);
+        let (commit_tx, commit_rx) = flume::bounded(16);
+        let writer = Arc::new(MockWriter::new());
+        let height = Arc::new(AtomicU64::new(0));
+        let shutdown = Arc::new(AtomicBool::new(false));
+
+        // Send blocks 1, 2, 3 and signal flush to 3.
+        for block in 1..=3 {
+            update_tx.send(make_update(block)).unwrap();
+        }
+        commit_tx.send(3).unwrap();
+
+        drop(update_tx);
+        drop(commit_tx);
+
+        let w = Arc::clone(&writer);
+        let h = Arc::clone(&height);
+        let s = Arc::clone(&shutdown);
+
+        let config = FlushLoopConfig {
+            recv_timeout: Duration::from_millis(10),
+        };
+
+        let handle = std::thread::spawn(move || {
+            run_flush_loop(&config, &update_rx, &commit_rx, &ArcWriter(w), &h, &s);
+        });
+
+        handle.join().expect("flush loop panicked");
+
+        // The committed height should equal the highest flushed block.
+        assert_eq!(height.load(Ordering::Acquire), 3);
+    }
+
+    #[test]
+    fn flush_loop_continues_on_writer_error() {
+        // Writer fails on block 2 but should continue with block 3 on
+        // the next flush cycle.
+        let (update_tx, update_rx) = flume::bounded(16);
+        let (commit_tx, commit_rx) = flume::bounded(16);
+        let writer = Arc::new(MockWriter::with_fail_on(2));
+        let height = Arc::new(AtomicU64::new(0));
+        let shutdown = Arc::new(AtomicBool::new(false));
+
+        // Send blocks 1, 2, 3.
+        for block in 1..=3 {
+            update_tx.send(make_update(block)).unwrap();
+        }
+
+        // Signal flush up to block 3. This will attempt to flush 1 (ok),
+        // 2 (fail — re-buffered), 3 (re-buffered). Then on the disconnect
+        // path with ceiling still 3, it retries 2 (fails again), leaving 3
+        // un-flushed.
+        commit_tx.send(3).unwrap();
+
+        drop(update_tx);
+        drop(commit_tx);
+
+        let w = Arc::clone(&writer);
+        let h = Arc::clone(&height);
+        let s = Arc::clone(&shutdown);
+
+        let config = FlushLoopConfig {
+            recv_timeout: Duration::from_millis(10),
+        };
+
+        let handle = std::thread::spawn(move || {
+            run_flush_loop(&config, &update_rx, &commit_rx, &ArcWriter(w), &h, &s);
+        });
+
+        handle.join().expect("flush loop panicked");
+
+        // Block 1 should have been committed. Block 2 fails persistently
+        // so committed_height stays at 1. The loop must NOT panic.
+        let committed = writer.committed_blocks();
+        assert!(committed.contains(&1));
+        assert!(!committed.contains(&2));
+        assert_eq!(height.load(Ordering::Acquire), 1);
+    }
 }
