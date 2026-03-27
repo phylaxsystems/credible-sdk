@@ -1,18 +1,12 @@
 #![recursion_limit = "1024"]
-#![doc = include_str!("../README.md")]
 
 #[macro_use]
 extern crate credible_utils;
 
 mod cli;
-mod genesis;
 mod geth_version;
 #[cfg(test)]
 mod integration_tests;
-mod metrics;
-mod state;
-mod system_calls;
-mod worker;
 
 use crate::{
     cli::Args,
@@ -21,8 +15,11 @@ use crate::{
         MIN_GETH_VERSION,
         parse_geth_version,
     },
-    system_calls::SystemCalls,
-    worker::StateWorker,
+};
+use state_worker::{
+    StateWorker,
+    SystemCalls,
+    metrics,
 };
 
 use futures_util::FutureExt;
@@ -135,7 +132,7 @@ async fn run_once(args: &Args) -> Result<()> {
     let contents = std::fs::read_to_string(file_path)
         .inspect_err(|e| warn!(error = ?e, file_path = file_path, "Failed to read genesis file"))
         .with_context(|| format!("failed to read genesis file: {file_path}"))?;
-    let genesis_state = genesis::parse_from_str(&contents)
+    let genesis_state = state_worker::parse_genesis_from_str(&contents)
         .inspect_err(
             |e| warn!(error = ?e, file_path = file_path, "Failed to parse genesis from file"),
         )
@@ -154,7 +151,8 @@ async fn run_once(args: &Args) -> Result<()> {
     );
 
     // Create the trace provider based on config
-    let trace_provider = state::create_trace_provider(provider.clone(), Duration::from_secs(30));
+    let trace_provider =
+        state_worker::create_trace_provider(provider.clone(), Duration::from_secs(30));
 
     let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
 

@@ -6,6 +6,14 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[lib]
+name = "state_worker"
+path = "src/lib.rs"
+
+[[bin]]
+name = "state-worker"
+path = "src/main.rs"
+
 [dependencies]
 
 # internal 

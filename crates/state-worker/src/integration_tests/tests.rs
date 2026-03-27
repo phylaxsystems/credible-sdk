@@ -1,7 +1,4 @@
-use crate::{
-    genesis,
-    integration_tests::setup::TestInstance,
-};
+use crate::integration_tests::setup::TestInstance;
 use alloy::primitives::{
     B256,
     Bytes,
@@ -19,6 +16,7 @@ use mdbx::{
     Reader,
 };
 use serde_json::json;
+use state_worker::parse_genesis_from_str;
 use std::{
     collections::HashMap,
     time::Duration,
@@ -325,7 +323,7 @@ async fn test_state_worker_hydrates_genesis_state() -> Result<()> {
         code = genesis_code
     );
     let genesis_state =
-        genesis::parse_from_str(&genesis_json).context("failed to parse test genesis json")?;
+        parse_genesis_from_str(&genesis_json).context("failed to parse test genesis json")?;
 
     // Create a new instance with genesis based on the backend
     let instance = TestInstance::new_mdbx_with_genesis(genesis_state)

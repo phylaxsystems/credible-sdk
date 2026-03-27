@@ -5,11 +5,7 @@
 
 use crate::{
     connect_provider,
-    genesis::GenesisState,
     integration_tests::mdbx_fixture::MdbxTestDir,
-    state,
-    system_calls::SystemCalls,
-    worker::StateWorker,
 };
 use alloy::primitives::{
     B256,
@@ -19,6 +15,12 @@ use int_test_utils::node_protocol_mock_server::DualProtocolMockServer;
 use mdbx::{
     AddressHash,
     Reader,
+};
+use state_worker::{
+    GenesisState,
+    StateWorker,
+    SystemCalls,
+    create_trace_provider,
 };
 use std::time::Duration;
 use tokio::sync::broadcast;
@@ -103,8 +105,7 @@ impl TestInstance {
         // so the cloned reader shares the same underlying database connection.
         let mdbx_reader = writer_reader.reader().clone();
 
-        let trace_provider =
-            state::create_trace_provider(provider.clone(), Duration::from_secs(30));
+        let trace_provider = create_trace_provider(provider.clone(), Duration::from_secs(30));
 
         // Extract fork timestamps from genesis if available, otherwise use defaults.
         let system_calls = genesis_state
