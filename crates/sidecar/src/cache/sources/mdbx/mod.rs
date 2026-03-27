@@ -68,11 +68,14 @@ pub struct MdbxSource {
     backend: StateReader,
     /// Target block to request from state worker.
     target_block: Arc<RwLock<U256>>,
-    cancel_token: CancellationToken,
-    range_poller_handle: JoinHandle<()>,
+    cancel_token: Option<CancellationToken>,
+    range_poller_handle: Option<JoinHandle<()>>,
     available_oldest_block: Arc<AtomicU64>,
     available_observed_head: Arc<AtomicU64>,
     cache_status: Arc<CacheStatus>,
+    /// When set, the source uses the committed height from the flush loop
+    /// instead of polling MDBX for the available block range.
+    committed_height: Option<Arc<AtomicU64>>,
 }
 
 #[derive(Debug)]
@@ -83,6 +86,9 @@ pub(crate) struct CacheStatus {
 
 impl MdbxSource {
     /// Creates a cache that stores entries under the default `state` namespace.
+    ///
+    /// This constructor spawns a background polling task that periodically
+    /// queries MDBX for the available block range.
     pub fn new(backend: StateReader) -> Self {
         let target_block = Arc::new(RwLock::new(U256::ZERO));
         let cancel_token = CancellationToken::new();
@@ -104,11 +110,36 @@ impl MdbxSource {
         Self {
             backend,
             target_block,
-            cancel_token,
-            range_poller_handle,
+            cancel_token: Some(cancel_token),
+            range_poller_handle: Some(range_poller_handle),
             available_oldest_block,
             available_observed_head,
             cache_status,
+            committed_height: None,
+        }
+    }
+
+    /// Creates a cache backed by a shared committed-height atomic.
+    ///
+    /// Instead of polling MDBX for the available block range, the source reads
+    /// the committed height from an `Arc<AtomicU64>` that is updated externally
+    /// by the flush loop after each MDBX commit. No background polling task is
+    /// spawned.
+    pub fn with_committed_height(backend: StateReader, committed_height: Arc<AtomicU64>) -> Self {
+        let cache_status = Arc::new(CacheStatus {
+            min_synced_block: RwLock::new(U256::ZERO),
+            latest_head: RwLock::new(U256::ZERO),
+        });
+
+        Self {
+            backend,
+            target_block: Arc::new(RwLock::new(U256::ZERO)),
+            cancel_token: None,
+            range_poller_handle: None,
+            available_oldest_block: Arc::new(AtomicU64::new(0)),
+            available_observed_head: Arc::new(AtomicU64::new(0)),
+            cache_status,
+            committed_height: Some(committed_height),
         }
     }
 
@@ -334,6 +365,28 @@ impl DatabaseRef for MdbxSource {
 impl Source for MdbxSource {
     /// Reports whether the cache has synchronized past the requested block.
     fn is_synced(&self, min_synced_block: U256, latest_head: U256) -> bool {
+        // When using committed height, synced means the flush loop has written
+        // up to at least the latest head requested by the engine.
+        if let Some(committed) = &self.committed_height {
+            let height = committed.load(Ordering::Acquire);
+            let Ok(latest_u64) = Self::u256_to_u64(latest_head) else {
+                return false;
+            };
+
+            trace!(
+                target: "state_worker",
+                committed_height = height,
+                latest_head = %latest_head,
+                "is_synced (committed_height path)"
+            );
+
+            if height >= latest_u64 {
+                *self.target_block.write() = latest_head;
+                return true;
+            }
+            return false;
+        }
+
         let Some((state_worker_oldest_block, state_worker_observed_head)) =
             self.available_block_range()
         else {
@@ -367,6 +420,17 @@ impl Source for MdbxSource {
         *self.cache_status.min_synced_block.write() = min_synced_block;
         *self.cache_status.latest_head.write() = latest_head;
 
+        // When using committed height, target block is simply the latest head
+        // (clamped to committed height).
+        if let Some(committed) = &self.committed_height {
+            let height = committed.load(Ordering::Acquire);
+            let height_u256 = U256::from(height);
+            if height_u256 >= latest_head {
+                *self.target_block.write() = latest_head;
+            }
+            return;
+        }
+
         let Some((state_worker_oldest_block, state_worker_observed_head)) =
             self.available_block_range()
         else {
@@ -392,8 +456,12 @@ impl Source for MdbxSource {
 
 impl Drop for MdbxSource {
     fn drop(&mut self) {
-        self.cancel_token.cancel();
-        self.range_poller_handle.abort();
+        if let Some(token) = &self.cancel_token {
+            token.cancel();
+        }
+        if let Some(handle) = &self.range_poller_handle {
+            handle.abort();
+        }
     }
 }
 
@@ -1096,5 +1164,122 @@ mod tests {
         // Requesting blocks below the bootstrap block should not consider the MDBX source synced
         assert!(!source.is_synced(u(99), u(99)));
         assert!(source.is_synced(u(100), u(100)));
+    }
+
+    /// Helper to create an `MdbxSource` via `with_committed_height` backed by
+    /// a temporary MDBX database. Returns the source and the shared committed
+    /// height atomic so tests can control the value.
+    fn create_committed_height_source(committed: u64) -> (MdbxSource, Arc<AtomicU64>) {
+        use mdbx::{
+            StateReader,
+            StateWriter,
+            Writer as _,
+            common::CircularBufferConfig,
+        };
+        use tempfile::TempDir;
+
+        // We leak the TempDir so the database files stay alive for the
+        // duration of the test. The OS cleans them up when the process exits.
+        let tmp = TempDir::new().expect("failed to create temp dir");
+        let path = tmp.path().join("state");
+        let config = CircularBufferConfig::new(1).expect("invalid buffer config");
+
+        // Create a writer first to initialise the MDBX environment, then drop
+        // it so the reader can open the same path.
+        let writer =
+            StateWriter::new(&path, config.clone()).expect("failed to create state writer");
+        drop(writer);
+
+        let reader = StateReader::new(&path, config).expect("failed to create state reader");
+
+        let committed_height = Arc::new(AtomicU64::new(committed));
+        let source = MdbxSource::with_committed_height(reader, Arc::clone(&committed_height));
+
+        // Prevent the TempDir from being deleted while the source is alive.
+        std::mem::forget(tmp);
+
+        (source, committed_height)
+    }
+
+    #[test]
+    fn with_committed_height_synced() {
+        // committed_height=100, latest_head=100 → is_synced returns true
+        let (source, _committed) = create_committed_height_source(100);
+        assert!(
+            source.is_synced(u(0), u(100)),
+            "source should be synced when committed_height >= latest_head"
+        );
+    }
+
+    #[test]
+    fn with_committed_height_not_synced() {
+        // committed_height=50, latest_head=100 → is_synced returns false
+        let (source, _committed) = create_committed_height_source(50);
+        assert!(
+            !source.is_synced(u(0), u(100)),
+            "source should NOT be synced when committed_height < latest_head"
+        );
+    }
+
+    #[test]
+    fn with_committed_height_no_poller() {
+        // Verify that with_committed_height does not spawn a background task.
+        // The cancel_token and range_poller_handle fields should both be None.
+        let (source, _committed) = create_committed_height_source(0);
+        assert!(
+            source.cancel_token.is_none(),
+            "cancel_token should be None — no poller spawned"
+        );
+        assert!(
+            source.range_poller_handle.is_none(),
+            "range_poller_handle should be None — no poller spawned"
+        );
+    }
+
+    #[test]
+    fn with_committed_height_update_cache_status_tracks_latest_head() {
+        let (source, _committed) = create_committed_height_source(200);
+
+        source.update_cache_status(u(50), u(150));
+
+        let stored_latest = *source.cache_status.latest_head.read();
+        assert_eq!(
+            stored_latest,
+            u(150),
+            "update_cache_status should store latest_head"
+        );
+
+        let stored_min = *source.cache_status.min_synced_block.read();
+        assert_eq!(
+            stored_min,
+            u(50),
+            "update_cache_status should store min_synced_block"
+        );
+
+        // target_block should be set to latest_head since committed >= latest_head
+        let target = *source.target_block.read();
+        assert_eq!(
+            target,
+            u(150),
+            "target_block should equal latest_head when committed >= latest_head"
+        );
+    }
+
+    #[test]
+    fn with_committed_height_dynamic_update() {
+        // Verify that is_synced reflects changes to the shared atomic.
+        let (source, committed) = create_committed_height_source(50);
+
+        // Initially not synced for block 100
+        assert!(!source.is_synced(u(0), u(100)));
+
+        // External flush loop advances committed height
+        committed.store(100, Ordering::Release);
+
+        // Now should be synced
+        assert!(
+            source.is_synced(u(0), u(100)),
+            "source should become synced after committed_height is advanced"
+        );
     }
 }
