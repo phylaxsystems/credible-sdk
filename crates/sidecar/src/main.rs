@@ -399,6 +399,9 @@ async fn build_sources_from_config(config: &Config) -> anyhow::Result<Vec<Arc<dy
                         sources.push(eth_rpc_source);
                     }
                 }
+                StateSourceConfig::EmbeddedStateWorker { .. } => {
+                    warn!("Embedded state worker source is not yet supported; skipping");
+                }
             }
         }
     }

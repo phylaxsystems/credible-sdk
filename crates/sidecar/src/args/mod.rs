@@ -308,6 +308,52 @@ pub enum StateSourceConfig {
         /// Eth RPC source HTTP bind address and port
         http_url: String,
     },
+    #[serde(rename = "embedded-state-worker")]
+    EmbeddedStateWorker {
+        /// MDBX database path for state storage
+        mdbx_path: String,
+        /// Circular buffer depth
+        depth: usize,
+        /// Embedded state worker configuration
+        state_worker: StateWorkerConfig,
+    },
+}
+
+fn default_trace_timeout_ms() -> u64 {
+    30_000
+}
+
+fn default_buffer_capacity() -> usize {
+    128
+}
+
+fn default_restart_backoff_base_ms() -> u64 {
+    1_000
+}
+
+fn default_restart_backoff_max_ms() -> u64 {
+    60_000
+}
+
+/// Configuration for the embedded state worker
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct StateWorkerConfig {
+    /// Execution client WebSocket URL
+    pub ws_url: String,
+    /// Path to genesis JSON file
+    pub genesis_path: String,
+    /// Timeout in milliseconds for `debug_trace` calls
+    #[serde(default = "default_trace_timeout_ms")]
+    pub trace_timeout_ms: u64,
+    /// Bounded channel buffer capacity
+    #[serde(default = "default_buffer_capacity")]
+    pub buffer_capacity: usize,
+    /// Base backoff duration in milliseconds for restart attempts
+    #[serde(default = "default_restart_backoff_base_ms")]
+    pub restart_backoff_base_ms: u64,
+    /// Maximum backoff duration in milliseconds for restart attempts
+    #[serde(default = "default_restart_backoff_max_ms")]
+    pub restart_backoff_max_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
