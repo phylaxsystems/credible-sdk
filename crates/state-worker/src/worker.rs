@@ -146,20 +146,23 @@ impl BufferedCommitState {
         <WR as Reader>::Error: std::error::Error + Send + Sync + 'static,
     {
         while self.buffered_updates.len() >= self.buffer_capacity {
-            self.flush_ready_updates(writer_reader)?;
-            if self.buffered_updates.len() < self.buffer_capacity {
-                return Ok(false);
-            }
-
-            let Some(control) = self.flush_control.as_ref() else {
+            let Some(control) = self.flush_control.clone() else {
                 return Err(anyhow!(
                     "state worker buffer reached capacity without flush control"
                 ));
             };
 
+            let notified = async move { control.wait_for_update().await };
+            tokio::pin!(notified);
+
+            self.flush_ready_updates(writer_reader)?;
+            if self.buffered_updates.len() < self.buffer_capacity {
+                return Ok(false);
+            }
+
             tokio::select! {
                 () = shutdown.cancelled() => return Ok(true),
-                () = control.wait_for_update() => {}
+                () = &mut notified => {}
             }
         }
 
@@ -387,6 +390,9 @@ where
                     info!("Shutdown signal received during block streaming");
                     return Ok(());
                 }
+                // `persist_update` also records the committed head, so this can wake on our own
+                // writes. That is intentional: spurious wakes are harmless, but missed flush
+                // permits would leave ready blocks buffered until another event arrives.
                 () = self.buffered_commits.wait_for_update(), if self.buffered_commits.should_listen_for_flush() => {
                     self.buffered_commits.flush_ready_updates(&self.writer_reader)?;
                 }

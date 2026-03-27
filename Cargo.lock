@@ -11733,6 +11733,7 @@ dependencies = [
  "mdbx",
  "metrics",
  "revm",
+ "rust-tracing",
  "rustls",
  "serde",
  "serde_json",

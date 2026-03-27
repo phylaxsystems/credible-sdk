@@ -662,6 +662,18 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         }
     }
 
+    #[inline]
+    fn maybe_notify_state_worker_commit(
+        &self,
+        result: &Result<(), EngineError>,
+        committed_block: Option<U256>,
+    ) {
+        let should_notify = result.is_ok() || matches!(result, Err(EngineError::NothingToCommit));
+        if should_notify && let Some(block_number) = committed_block {
+            self.notify_state_worker_commit(block_number);
+        }
+    }
+
     #[cfg(any(test, feature = "bench-utils"))]
     pub fn set_canonical_db_for_tests(
         &mut self,
@@ -1367,11 +1379,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 TxQueueContents::Reorg(reorg) => self.execute_reorg(&reorg),
             };
 
-            if result.is_ok()
-                && let Some(block_number) = committed_block
-            {
-                self.notify_state_worker_commit(block_number);
-            }
+            self.maybe_notify_state_worker_commit(&result, committed_block);
 
             if let Err(error) = result {
                 match ErrorRecoverability::from(&error) {
@@ -1507,11 +1515,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 TxQueueContents::Reorg(reorg) => self.execute_reorg(&reorg),
             };
 
-            if result.is_ok()
-                && let Some(block_number) = committed_block
-            {
-                self.notify_state_worker_commit(block_number);
-            }
+            self.maybe_notify_state_worker_commit(&result, committed_block);
 
             // Handle the result of event processing
             if let Err(error) = result {

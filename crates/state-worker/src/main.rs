@@ -6,6 +6,7 @@ use anyhow::{
 };
 use clap::Parser;
 use credible_utils::critical;
+use rust_tracing::trace;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use tracing::{
@@ -21,6 +22,8 @@ use state_worker::{
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let _guard = trace();
+
     if rustls::crypto::aws_lc_rs::default_provider()
         .install_default()
         .is_err()

@@ -11,6 +11,7 @@ repository.workspace = true
 # internal 
 eip-system-calls.workspace = true
 credible-utils.workspace = true
+rust-tracing = { workspace = true }
 
 anyhow = { workspace = true }
 async-trait.workspace = true
