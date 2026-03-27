@@ -570,6 +570,9 @@ pub struct CoreEngine<DB> {
     /// Prevents duplicate logging/metrics on re-execution.
     assertion_failure_cache: moka::sync::Cache<TxHash, ()>,
     custom_tx_executor: Option<Arc<dyn CustomTxExecutor<DB>>>,
+    /// Optional channel to signal that a commit head has been processed up to a given block number.
+    /// Used by the flush loop to know when buffered state updates can be written to MDBX.
+    flush_signal_tx: Option<flume::Sender<u64>>,
 }
 
 #[cfg(feature = "cache_validation")]
@@ -593,6 +596,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         assertion_executor: AssertionExecutor,
         state_results: Arc<TransactionsState>,
         config: CoreEngineConfig,
+        flush_signal_tx: Option<flume::Sender<u64>>,
     ) -> Self {
         #[cfg(feature = "cache_validation")]
         let (processed_transactions, cache_checker) = {
@@ -648,6 +652,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             cache_checker,
             assertion_failure_cache,
             custom_tx_executor: None,
+            flush_signal_tx,
         }
     }
 
@@ -1637,6 +1642,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 block_processing_time,
             );
             self.first_commit_head_processed = true;
+            self.send_flush_signal(commit_head.block_number);
             return Ok(());
         }
 
@@ -1706,6 +1712,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         );
         self.current_block_iterations.clear();
         self.first_commit_head_processed = true;
+        self.send_flush_signal(commit_head.block_number);
 
         debug!(
             target = "engine",
@@ -1715,6 +1722,22 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         );
 
         Ok(())
+    }
+
+    /// Sends the committed block number on the flush signal channel, if present.
+    ///
+    /// Logs a warning if the receiver has been dropped but does not propagate the error.
+    fn send_flush_signal(&self, block_number: U256) {
+        if let Some(tx) = &self.flush_signal_tx {
+            let block_num = block_number.saturating_to::<u64>();
+            if let Err(e) = tx.send(block_num) {
+                warn!(
+                    block_number = block_num,
+                    error = %e,
+                    "Failed to send flush signal: receiver dropped"
+                );
+            }
+        }
     }
 
     /// Process an incoming transaction

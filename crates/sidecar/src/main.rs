@@ -10,6 +10,7 @@ use credible_utils::shutdown::wait_for_sigterm;
 use flume::unbounded;
 use mdbx::{
     StateReader,
+    StateWriter,
     common::CircularBufferConfig,
 };
 use metrics::counter;
@@ -43,6 +44,11 @@ use sidecar::{
     health::HealthServer,
     indexer,
     indexer::IndexerCfg,
+    state_worker_flush::{
+        FlushLoopConfig,
+        spawn_flush_loop,
+    },
+    state_worker_thread::spawn_state_worker,
     transaction_observer::{
         TransactionObserver,
         TransactionObserverConfig,
@@ -63,6 +69,7 @@ use std::{
         Arc,
         atomic::{
             AtomicBool,
+            AtomicU64,
             Ordering,
         },
     },
@@ -270,6 +277,8 @@ struct ThreadHandles {
         Option<JoinHandle<Result<(), sidecar::event_sequencing::EventSequencingError>>>,
     transaction_observer:
         Option<JoinHandle<Result<(), sidecar::transaction_observer::TransactionObserverError>>>,
+    state_worker: Option<JoinHandle<()>>,
+    flush_loop: Option<JoinHandle<()>>,
 }
 
 impl ThreadHandles {
@@ -278,6 +287,8 @@ impl ThreadHandles {
             engine: None,
             event_sequencing: None,
             transaction_observer: None,
+            state_worker: None,
+            flush_loop: None,
         }
     }
 
@@ -305,6 +316,20 @@ impl ThreadHandles {
                     tracing::error!(error = ?e, "Transaction observer thread exited with error");
                 }
                 Err(_) => tracing::error!("Transaction observer thread panicked"),
+            }
+        }
+        if let Some(handle) = self.state_worker.take() {
+            if handle.join().is_ok() {
+                tracing::info!("State worker thread exited cleanly");
+            } else {
+                tracing::error!("State worker thread panicked");
+            }
+        }
+        if let Some(handle) = self.flush_loop.take() {
+            if handle.join().is_ok() {
+                tracing::info!("Flush loop thread exited cleanly");
+            } else {
+                tracing::error!("Flush loop thread panicked");
             }
         }
     }
@@ -338,8 +363,78 @@ fn transaction_observer_config_from(config: &Config) -> Option<TransactionObserv
     }
 }
 
-async fn build_sources_from_config(config: &Config) -> anyhow::Result<Vec<Arc<dyn Source>>> {
+/// Context returned when an embedded state worker source is configured.
+///
+/// Contains the channels, shared state, and thread handles needed to
+/// drive the state worker and flush loop alongside the sidecar.
+struct EmbeddedStateWorkerContext {
+    /// Sender for the flush signal channel (passed to [`CoreEngine`]).
+    flush_signal_tx: flume::Sender<u64>,
+    /// Thread handle for the state worker.
+    state_worker_handle: JoinHandle<()>,
+    /// Thread handle for the flush loop.
+    flush_loop_handle: JoinHandle<()>,
+}
+
+/// Return value of [`build_sources_from_config`].
+struct SourcesResult {
+    sources: Vec<Arc<dyn Source>>,
+    embedded_ctx: Option<EmbeddedStateWorkerContext>,
+}
+
+/// Sets up the embedded state worker: creates MDBX reader/writer with depth=1,
+/// channels, shared committed height, spawns both the state worker and flush
+/// loop threads, and returns an `MdbxSource` backed by the committed-height
+/// atomic together with the [`EmbeddedStateWorkerContext`].
+fn setup_embedded_state_worker(
+    mdbx_path: &str,
+    sw_config: &sidecar::args::StateWorkerConfig,
+    shutdown_flag: &Arc<AtomicBool>,
+) -> anyhow::Result<(Arc<dyn Source>, EmbeddedStateWorkerContext)> {
+    let cb_config = CircularBufferConfig::new(1)?;
+    let writer = StateWriter::new(mdbx_path, cb_config.clone())?;
+    let reader = StateReader::new(mdbx_path, cb_config)?;
+
+    let (update_tx, update_rx) = flume::bounded(sw_config.buffer_capacity);
+    let (flush_signal_tx, flush_signal_rx) = flume::unbounded();
+    let committed_height = Arc::new(AtomicU64::new(0));
+
+    let source: Arc<dyn Source> = Arc::new(MdbxSource::with_committed_height(
+        reader.clone(),
+        Arc::clone(&committed_height),
+    ));
+
+    let state_worker_handle = spawn_state_worker(
+        sw_config.clone(),
+        update_tx,
+        reader,
+        Arc::clone(shutdown_flag),
+    )?;
+
+    let flush_loop_handle = spawn_flush_loop(
+        FlushLoopConfig::default(),
+        update_rx,
+        flush_signal_rx,
+        writer,
+        Arc::clone(&committed_height),
+        Arc::clone(shutdown_flag),
+    )?;
+
+    let ctx = EmbeddedStateWorkerContext {
+        flush_signal_tx,
+        state_worker_handle,
+        flush_loop_handle,
+    };
+
+    Ok((source, ctx))
+}
+
+async fn build_sources_from_config(
+    config: &Config,
+    shutdown_flag: &Arc<AtomicBool>,
+) -> anyhow::Result<SourcesResult> {
     let mut sources: Vec<Arc<dyn Source>> = Vec::new();
+    let mut embedded_ctx: Option<EmbeddedStateWorkerContext> = None;
 
     if config.state.sources.is_empty() {
         if config.state.legacy.has_any() {
@@ -399,14 +494,47 @@ async fn build_sources_from_config(config: &Config) -> anyhow::Result<Vec<Arc<dy
                         sources.push(eth_rpc_source);
                     }
                 }
-                StateSourceConfig::EmbeddedStateWorker { .. } => {
-                    warn!("Embedded state worker source is not yet supported; skipping");
+                StateSourceConfig::EmbeddedStateWorker {
+                    mdbx_path,
+                    depth: _,
+                    state_worker: sw_config,
+                } => {
+                    let (source, ctx) =
+                        setup_embedded_state_worker(mdbx_path, sw_config, shutdown_flag)?;
+                    sources.push(source);
+                    embedded_ctx = Some(ctx);
                 }
             }
         }
     }
 
-    Ok(sources)
+    Ok(SourcesResult {
+        sources,
+        embedded_ctx,
+    })
+}
+
+fn spawn_transaction_observer(
+    config: Option<TransactionObserverConfig>,
+    incident_rx: Option<sidecar::transaction_observer::IncidentReportReceiver>,
+    shutdown: &Arc<AtomicBool>,
+    handles: &mut ThreadHandles,
+) -> anyhow::Result<
+    Option<
+        tokio::sync::oneshot::Receiver<
+            Result<(), sidecar::transaction_observer::TransactionObserverError>,
+        >,
+    >,
+> {
+    if let (Some(config), Some(rx)) = (config, incident_rx) {
+        let observer = TransactionObserver::new(config, rx)?;
+        let (handle, exited) = observer.spawn(Arc::clone(shutdown))?;
+        handles.transaction_observer = Some(handle);
+        Ok(Some(exited))
+    } else {
+        tracing::info!("Transaction observer disabled: missing config");
+        Ok(None)
+    }
 }
 
 fn result_ttl(config: &Config) -> Duration {
@@ -609,8 +737,19 @@ async fn run_sidecar_once(
     // Shared shutdown flag for this iteration
     let shutdown_flag = Arc::new(AtomicBool::new(false));
 
-    let sources = build_sources_from_config(config).await?;
-    let state = Arc::new(Sources::new(sources, config.state.minimum_state_diff));
+    let sources_result = build_sources_from_config(config, &shutdown_flag).await?;
+    let flush_signal_tx = sources_result
+        .embedded_ctx
+        .as_ref()
+        .map(|c| c.flush_signal_tx.clone());
+    if let Some(ctx) = sources_result.embedded_ctx {
+        thread_handles.state_worker = Some(ctx.state_worker_handle);
+        thread_handles.flush_loop = Some(ctx.flush_loop_handle);
+    }
+    let state = Arc::new(Sources::new(
+        sources_result.sources,
+        config.state.minimum_state_diff,
+    ));
     let cache: OverlayDb<Sources> = OverlayDb::new(Some(state.clone()));
 
     let transaction_observer_config = transaction_observer_config_from(config);
@@ -665,24 +804,18 @@ async fn run_sidecar_once(
         assertion_executor.clone(),
         engine_state_results.clone(),
         engine_config,
+        flush_signal_tx,
     )
     .await;
     let (engine_handle, engine_exited) = engine.spawn(Arc::clone(&shutdown_flag))?;
     thread_handles.engine = Some(engine_handle);
 
-    let observer_exited_rx = if let (Some(transaction_observer_config), Some(incident_report_rx)) =
-        (transaction_observer_config, incident_report_rx)
-    {
-        let transaction_observer =
-            TransactionObserver::new(transaction_observer_config, incident_report_rx)?;
-        let (observer_handle, observer_exited) =
-            transaction_observer.spawn(Arc::clone(&shutdown_flag))?;
-        thread_handles.transaction_observer = Some(observer_handle);
-        Some(observer_exited)
-    } else {
-        tracing::info!("Transaction observer disabled: missing config");
-        None
-    };
+    let observer_exited_rx = spawn_transaction_observer(
+        transaction_observer_config,
+        incident_report_rx,
+        &shutdown_flag,
+        &mut thread_handles,
+    )?;
 
     let mut health_server = HealthServer::new(health_bind_addr);
 
