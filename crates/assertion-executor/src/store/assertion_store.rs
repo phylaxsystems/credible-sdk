@@ -239,6 +239,16 @@ impl StoreBackend {
             Self::Sled { expiry_tree, .. } => expiry_tree.len(),
         }
     }
+
+    /// Returns whether the backend currently contains any adopter entries.
+    fn has_any_assertions(&self) -> bool {
+        match self {
+            Self::InMemory { assertions, .. } => !assertions.is_empty(),
+            // Keep the hint conservative on backend errors: if we cannot prove emptiness,
+            // fall back to "maybe non-empty" so reads never skip potentially real work.
+            Self::Sled { db, .. } => db.is_empty().map(|is_empty| !is_empty).unwrap_or(true),
+        }
+    }
 }
 
 /// Struct representing an assertion contract, matched fn selectors, and the adopter.
@@ -352,8 +362,9 @@ pub struct AssertionStore {
     current_block: Arc<std::sync::atomic::AtomicU64>,
     /// Conservative fast-empty hint for the read path.
     /// `false` means the store is definitely empty; `true` means it may contain assertions.
-    /// Once set, it can stay true even after pruning. That is fine because it is only used
-    /// to skip obviously empty reads, never to skip real work when assertions might exist.
+    /// Background pruning clears it again when the store is observed empty under the store lock.
+    /// This hint is only used to skip obviously empty reads, never to skip real work when
+    /// assertions might exist.
     has_any_assertions: Arc<std::sync::atomic::AtomicBool>,
     /// Prune configuration
     prune_config: PruneConfig,
@@ -417,7 +428,7 @@ impl AssertionStore {
 
     /// Creates a new assertion store with the given backend.
     fn with_backend(backend: StoreBackend, prune_config: PruneConfig) -> Self {
-        let has_any_assertions_init = matches!(&backend, StoreBackend::Sled { .. });
+        let has_any_assertions_init = backend.has_any_assertions();
         let inner = Arc::new(Mutex::new(AssertionStoreInner { backend }));
         let current_block = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let has_any_assertions =
@@ -429,12 +440,14 @@ impl AssertionStore {
         let prune_task = tokio::runtime::Handle::try_current().ok().map(|handle| {
             let task_inner = Arc::clone(&inner);
             let task_current_block = Arc::clone(&current_block);
+            let task_has_any_assertions = Arc::clone(&has_any_assertions);
             let task_config = prune_config.clone();
 
             Arc::new(handle.spawn(async move {
                 Self::prune_background_task(
                     task_inner,
                     task_current_block,
+                    task_has_any_assertions,
                     task_config,
                     shutdown_rx,
                 )
@@ -462,6 +475,7 @@ impl AssertionStore {
     async fn prune_background_task(
         inner: Arc<Mutex<AssertionStoreInner>>,
         current_block: Arc<std::sync::atomic::AtomicU64>,
+        has_any_assertions: Arc<std::sync::atomic::AtomicBool>,
         config: PruneConfig,
         mut shutdown_rx: watch::Receiver<bool>,
     ) {
@@ -474,7 +488,11 @@ impl AssertionStore {
                     let block = current_block.load(std::sync::atomic::Ordering::Acquire);
                     if block > config.retention_blocks {
                         let prune_before = block - config.retention_blocks;
-                        if let Err(e) = Self::prune_expired_inner(&inner, prune_before) {
+                        if let Err(e) = Self::prune_expired_inner(
+                            &inner,
+                            &has_any_assertions,
+                            prune_before,
+                        ) {
                             error!(
                                 target: "assertion-executor::assertion_store",
                                 error = ?e,
@@ -606,7 +624,7 @@ impl AssertionStore {
             .load(std::sync::atomic::Ordering::Acquire);
         if block > self.prune_config.retention_blocks {
             let prune_before = block - self.prune_config.retention_blocks;
-            let _ = Self::prune_expired_inner(&self.inner, prune_before);
+            let _ = Self::prune_expired_inner(&self.inner, &self.has_any_assertions, prune_before);
         }
     }
 
@@ -614,6 +632,7 @@ impl AssertionStore {
     /// This is O(k) where k is the number of expired assertions, not total assertions.
     fn prune_expired_inner(
         inner: &Arc<Mutex<AssertionStoreInner>>,
+        has_any_assertions: &std::sync::atomic::AtomicBool,
         prune_before_block: u64,
     ) -> Result<usize, AssertionStoreError> {
         let mut inner_guard = inner
@@ -662,6 +681,10 @@ impl AssertionStore {
         // Remove all expired keys from the expiry index
         for key in expired_keys {
             let _ = inner_guard.backend.remove_expiry(&key);
+        }
+
+        if !inner_guard.backend.has_any_assertions() {
+            has_any_assertions.store(false, std::sync::atomic::Ordering::Release);
         }
 
         debug!(
@@ -1072,7 +1095,7 @@ impl AssertionStore {
     ///
     /// Returns an error if the store cannot be accessed or updated.
     pub fn prune_now(&self, prune_before_block: u64) -> Result<usize, AssertionStoreError> {
-        Self::prune_expired_inner(&self.inner, prune_before_block)
+        Self::prune_expired_inner(&self.inner, &self.has_any_assertions, prune_before_block)
     }
 
     #[cfg(any(test, feature = "test"))]
@@ -2169,6 +2192,39 @@ mod tests {
 
         assert_eq!(store.assertion_contract_count(aa1), 1);
         assert!(!store.has_assertions(aa2)?); // aa2 should be completely removed
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_prune_resets_fast_empty_hint_when_store_becomes_empty()
+    -> Result<(), AssertionStoreError> {
+        let config = PruneConfig {
+            interval_ms: 100_000,
+            retention_blocks: 0,
+        };
+        let store = AssertionStore::new_ephemeral_with_config(config);
+        let aa = Address::random();
+
+        let add_mod = create_test_modification(10, aa, 0);
+        let assertion_id = add_mod.assertion_contract_id();
+        store.apply_pending_modifications(vec![add_mod])?;
+        assert!(
+            store
+                .has_any_assertions
+                .load(std::sync::atomic::Ordering::Acquire)
+        );
+
+        let remove_mod = create_test_modification_remove(100, aa, 1, assertion_id);
+        store.apply_pending_modifications(vec![remove_mod])?;
+        let pruned = store.prune_now(100)?;
+
+        assert_eq!(pruned, 1);
+        assert!(
+            !store
+                .has_any_assertions
+                .load(std::sync::atomic::Ordering::Acquire)
+        );
 
         Ok(())
     }

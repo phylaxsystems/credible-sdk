@@ -472,6 +472,8 @@ impl CallTracer {
     pub fn storage_change_index(&self) -> &StorageChangeIndex {
         // Build the storage index once per traced tx. Assertion execution only reads from a
         // finalized journal, so a cached snapshot is both safe and cheaper than rescanning.
+        // If this were called during tracing, the OnceLock would intentionally freeze the
+        // currently visible journal contents for the rest of the tx.
         self.lazy_state
             .storage_change_index
             .get_or_init(|| StorageChangeIndex::build(&self.journal))

@@ -512,7 +512,10 @@ impl AssertionExecutor {
     ///
     /// Returns an error if executing the transaction or assertions fails.
     #[instrument(level = "debug", skip_all, target = "executor::validate_tx")]
-    #[allow(clippy::needless_pass_by_value)]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "This public API preserves the existing ownership-taking signature for external callers"
+    )]
     pub fn validate_transaction_ext_db<ExtDb, Active>(
         &mut self,
         block_env: BlockEnv,
@@ -927,7 +930,10 @@ impl AssertionExecutor {
     ///
     /// Returns an error if executing the transaction or assertions fails.
     #[instrument(level = "debug", skip_all, target = "executor::validate_tx")]
-    #[allow(clippy::needless_pass_by_value)]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "This public API preserves the existing ownership-taking signature for external callers"
+    )]
     pub fn validate_transaction<Active>(
         &mut self,
         block_env: BlockEnv,
