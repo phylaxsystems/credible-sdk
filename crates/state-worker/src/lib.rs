@@ -46,6 +46,10 @@ use mdbx::{
 };
 use std::{
     panic::AssertUnwindSafe,
+    path::{
+        Path,
+        PathBuf,
+    },
     sync::Arc,
     time::Duration,
 };
@@ -55,31 +59,42 @@ use tracing::{
     info,
     warn,
 };
+use url::Url;
 
 pub const DEFAULT_TRACE_TIMEOUT: Duration = Duration::from_secs(30);
 const INITIAL_RESTART_DELAY: Duration = Duration::from_secs(1);
 const MAX_RESTART_DELAY: Duration = Duration::from_secs(300);
 
+/// Configuration for a single state worker run.
 #[derive(Debug, Clone)]
 pub struct WorkerConfig {
-    pub ws_url: String,
-    pub mdbx_path: String,
+    /// Execution client websocket URL (used for `newHeads` + `prestateTracer`).
+    pub ws_url: Url,
+    /// Filesystem path to the MDBX database directory.
+    pub mdbx_path: PathBuf,
+    /// Optional manual override for the first block to trace.
     pub start_block: Option<u64>,
+    /// Circular buffer depth — how many historical blocks to retain in MDBX.
     pub mdbx_depth: u8,
+    /// Maximum traced blocks allowed ahead of the commit head before
+    /// back-pressure is applied.
     pub buffer_capacity: usize,
-    pub genesis_file: String,
+    /// Path to the genesis JSON file used to hydrate block 0.
+    pub genesis_file: PathBuf,
+    /// Maximum time the worker will wait for a `prestateTracer` RPC response.
     pub trace_timeout: Duration,
 }
 
 impl From<cli::Args> for WorkerConfig {
+    #[allow(clippy::expect_used)] // CLI-validated URL is guaranteed to parse.
     fn from(args: cli::Args) -> Self {
         Self {
-            ws_url: args.ws_url,
-            mdbx_path: args.mdbx_path,
+            ws_url: Url::parse(&args.ws_url).expect("CLI-validated ws_url"),
+            mdbx_path: PathBuf::from(args.mdbx_path),
             start_block: args.start_block,
             mdbx_depth: args.state_depth,
             buffer_capacity: usize::from(args.state_depth),
-            genesis_file: args.file_to_genesis,
+            genesis_file: PathBuf::from(args.file_to_genesis),
             trace_timeout: DEFAULT_TRACE_TIMEOUT,
         }
     }
@@ -169,11 +184,11 @@ pub async fn build_state_worker(
         "state worker buffer_capacity must be greater than zero"
     );
 
-    let provider = connect_provider(&config.ws_url).await?;
+    let provider = connect_provider(config.ws_url.as_str()).await?;
 
     validate_geth_version(&provider).await?;
     let writer_reader = match StateWriter::new(
-        config.mdbx_path.as_str(),
+        &config.mdbx_path,
         CircularBufferConfig::new(config.mdbx_depth)?,
     ) {
         Ok(writer_reader) => {
@@ -226,16 +241,14 @@ pub async fn build_state_worker(
 ///
 /// Returns an error when the file cannot be read or its JSON cannot be parsed
 /// into a valid genesis state.
-pub fn load_genesis_state(file_path: &str) -> Result<GenesisState> {
-    info!("Loading genesis from file: {}", file_path);
+pub fn load_genesis_state(file_path: &Path) -> Result<GenesisState> {
+    info!("Loading genesis from file: {}", file_path.display());
     let contents = std::fs::read_to_string(file_path)
-        .inspect_err(|e| warn!(error = ?e, file_path = file_path, "Failed to read genesis file"))
-        .with_context(|| format!("failed to read genesis file: {file_path}"))?;
+        .inspect_err(|e| warn!(error = ?e, ?file_path, "Failed to read genesis file"))
+        .with_context(|| format!("failed to read genesis file: {}", file_path.display()))?;
     genesis::parse_from_str(&contents)
-        .inspect_err(
-            |e| warn!(error = ?e, file_path = file_path, "Failed to parse genesis from file"),
-        )
-        .with_context(|| format!("failed to parse genesis from file: {file_path}"))
+        .inspect_err(|e| warn!(error = ?e, ?file_path, "Failed to parse genesis from file"))
+        .with_context(|| format!("failed to parse genesis from file: {}", file_path.display()))
 }
 
 /// Connect to the execution client over websocket.

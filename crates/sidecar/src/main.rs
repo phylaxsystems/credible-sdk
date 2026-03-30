@@ -463,12 +463,12 @@ where
 
     let shutdown = CancellationToken::new();
     let worker_config = StateWorkerConfig {
-        ws_url: ws_url.to_string(),
-        mdbx_path: mdbx_path.to_string_lossy().into_owned(),
+        ws_url: ws_url.clone(),
+        mdbx_path: mdbx_path.to_path_buf(),
         start_block,
         mdbx_depth: 1,
         buffer_capacity,
-        genesis_file: genesis_file.to_string_lossy().into_owned(),
+        genesis_file: genesis_file.to_path_buf(),
         trace_timeout: STATE_WORKER_DEFAULT_TRACE_TIMEOUT,
     };
     let worker = match spawn_worker(worker_config, shutdown.clone(), commit_control.clone()) {
