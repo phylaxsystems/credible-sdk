@@ -37,6 +37,9 @@ pub enum ApplyError {
         body: String,
     },
 
+    #[error("{0}")]
+    VerificationFailed(String),
+
     #[error("Apply cancelled")]
     ApplyCancelled,
 

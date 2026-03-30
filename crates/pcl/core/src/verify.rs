@@ -63,22 +63,12 @@ pub struct VerifyArgs {
 }
 
 struct VerifyInput {
-    name: String,
     display_name: String,
     bytecode: Bytes,
 }
 
-#[derive(Serialize)]
-struct VerifyJsonOutput {
-    status: &'static str,
-    assertions: Vec<VerifyJsonAssertion>,
-    total: usize,
-    passed: usize,
-    failed: usize,
-}
-
-#[derive(Serialize)]
-struct VerifyJsonAssertion {
+#[derive(Debug, Serialize)]
+pub struct VerifyJsonAssertion {
     name: String,
     #[serde(flatten)]
     result: VerificationResult,
@@ -105,59 +95,35 @@ impl VerifyArgs {
             None => Self::build_from_toml(&root, &self.config)?,
         };
 
-        let executor_config = ExecutorConfig::default();
-        let outputs: Vec<(String, String, VerificationResult)> = inputs
-            .into_iter()
-            .map(|input| {
-                let result = verify_assertion(&input.bytecode, &executor_config);
-                (input.name, input.display_name, result)
-            })
+        let bytecodes: Vec<(&str, Bytes)> = inputs
+            .iter()
+            .map(|input| (input.display_name.as_str(), input.bytecode.clone()))
             .collect();
 
-        let total = outputs.len();
-        let failed = outputs
-            .iter()
-            .filter(|(_, _, r)| r.status != VerificationStatus::Success)
-            .count();
-        let passed = total - failed;
+        let summary = run_verification(&bytecodes);
 
         if json_output {
-            let output = VerifyJsonOutput {
-                status: if failed == 0 { "success" } else { "failure" },
-                assertions: outputs
-                    .iter()
-                    .map(|(name, _, result)| {
-                        VerifyJsonAssertion {
-                            name: name.clone(),
-                            result: result.clone(),
-                        }
-                    })
-                    .collect(),
-                total,
-                passed,
-                failed,
-            };
-            println!("{}", serde_json::to_string_pretty(&output)?);
+            println!("{}", serde_json::to_string_pretty(&summary)?);
         } else {
             println!("pcl verify \u{2014} Assertion Verification\n");
-            for (_, display_name, result) in &outputs {
-                print_human_result(display_name, result);
-            }
-            if failed == 0 {
+            print_verification_summary(&summary);
+            if summary.failed == 0 {
                 println!(
                     "All {} assertion{} verified successfully.",
-                    total,
-                    if total == 1 { "" } else { "s" }
+                    summary.total,
+                    if summary.total == 1 { "" } else { "s" }
                 );
             } else {
                 println!(
-                    "{failed} of {total} assertion{} failed verification.",
-                    if total == 1 { "" } else { "s" }
+                    "{} of {} assertion{} failed verification.",
+                    summary.failed,
+                    summary.total,
+                    if summary.total == 1 { "" } else { "s" }
                 );
             }
         }
 
-        if failed > 0 {
+        if summary.failed > 0 {
             std::process::exit(1);
         }
 
@@ -177,7 +143,6 @@ impl VerifyArgs {
         let display_name = format_display_name(&contract_name, &self.args);
 
         Ok(vec![VerifyInput {
-            name: contract_name,
             display_name,
             bytecode,
         }])
@@ -203,7 +168,6 @@ impl VerifyArgs {
                 let display_name = format_display_name(&contract_name, &assertion.args);
 
                 inputs.push(VerifyInput {
-                    name: contract_name,
                     display_name,
                     bytecode,
                 });
@@ -232,7 +196,57 @@ fn parse_assertion_name(arg: &str) -> String {
     }
 }
 
-fn build_deployment_bytecode(
+/// Result of verifying a set of assertions.
+#[derive(Debug, Serialize)]
+pub struct VerificationSummary {
+    pub status: &'static str,
+    pub assertions: Vec<VerifyJsonAssertion>,
+    pub total: usize,
+    pub passed: usize,
+    pub failed: usize,
+}
+
+/// Runs verification on a set of assertions and returns results without printing.
+///
+/// Each entry is `(display_name, deployment_bytecode)`.
+/// Callers are responsible for display (human or JSON).
+pub fn run_verification(inputs: &[(&str, Bytes)]) -> VerificationSummary {
+    let executor_config = ExecutorConfig::default();
+    let assertions: Vec<VerifyJsonAssertion> = inputs
+        .iter()
+        .map(|(display_name, bytecode)| {
+            let result = verify_assertion(bytecode, &executor_config);
+            VerifyJsonAssertion {
+                name: (*display_name).to_string(),
+                result,
+            }
+        })
+        .collect();
+
+    let total = assertions.len();
+    let failed = assertions
+        .iter()
+        .filter(|a| a.result.status != VerificationStatus::Success)
+        .count();
+    let passed = total - failed;
+
+    VerificationSummary {
+        status: if failed == 0 { "success" } else { "failure" },
+        assertions,
+        total,
+        passed,
+        failed,
+    }
+}
+
+/// Prints verification results in human-readable format.
+pub fn print_verification_summary(summary: &VerificationSummary) {
+    for assertion in &summary.assertions {
+        print_human_result(&assertion.name, &assertion.result);
+    }
+}
+
+pub fn build_deployment_bytecode(
     bytecode_hex: &str,
     abi: &JsonAbi,
     args: &[String],
@@ -248,7 +262,7 @@ fn build_deployment_bytecode(
     Ok(Bytes::from(bytecode))
 }
 
-fn encode_constructor_args(abi: &JsonAbi, args: &[String]) -> Result<Vec<u8>, VerifyError> {
+pub fn encode_constructor_args(abi: &JsonAbi, args: &[String]) -> Result<Vec<u8>, VerifyError> {
     let constructor = abi.constructor.as_ref().ok_or_else(|| {
         VerifyError::AbiEncode(
             "contract has no constructor but arguments were provided".to_string(),
@@ -285,7 +299,7 @@ fn encode_constructor_args(abi: &JsonAbi, args: &[String]) -> Result<Vec<u8>, Ve
     Ok(DynSolValue::Tuple(values).abi_encode_params())
 }
 
-fn format_display_name(name: &str, args: &[String]) -> String {
+pub fn format_display_name(name: &str, args: &[String]) -> String {
     if args.is_empty() {
         name.to_string()
     } else {
@@ -294,7 +308,7 @@ fn format_display_name(name: &str, args: &[String]) -> String {
     }
 }
 
-fn abbreviate_arg(arg: &str) -> String {
+pub fn abbreviate_arg(arg: &str) -> String {
     if arg.len() > 10 && arg.starts_with("0x") {
         format!("{}...{}", &arg[..6], &arg[arg.len() - 4..])
     } else {
@@ -302,7 +316,7 @@ fn abbreviate_arg(arg: &str) -> String {
     }
 }
 
-fn status_str(status: VerificationStatus) -> &'static str {
+pub fn status_str(status: VerificationStatus) -> &'static str {
     match status {
         VerificationStatus::Success => "success",
         VerificationStatus::DeploymentFailure => "deployment_failure",
@@ -312,7 +326,7 @@ fn status_str(status: VerificationStatus) -> &'static str {
     }
 }
 
-fn print_human_result(display_name: &str, result: &VerificationResult) {
+pub fn print_human_result(display_name: &str, result: &VerificationResult) {
     if result.status == VerificationStatus::Success {
         println!("  \u{2713} {display_name}");
         if let Some(triggers) = &result.triggers {
