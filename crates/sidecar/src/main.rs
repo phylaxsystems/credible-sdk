@@ -492,38 +492,6 @@ where
     Ok((source, worker))
 }
 
-fn try_add_integrated_mdbx_source(
-    sources: &mut Vec<Arc<dyn Source>>,
-    source_index: usize,
-    mdbx_path: &Path,
-    buffer_capacity: usize,
-    ws_url: &Url,
-    genesis_file: &Path,
-    start_block: Option<u64>,
-) -> Option<IntegratedStateWorker> {
-    match build_integrated_mdbx_source(
-        mdbx_path,
-        buffer_capacity,
-        ws_url,
-        genesis_file,
-        start_block,
-    ) {
-        Ok((source, worker)) => {
-            sources.push(source);
-            worker
-        }
-        Err(err) => {
-            error!(
-                error = ?err,
-                source_index,
-                ?mdbx_path,
-                "failed to initialize integrated MDBX source"
-            );
-            None
-        }
-    }
-}
-
 async fn build_sources_from_config(config: &Config) -> anyhow::Result<BuiltSources> {
     let mut sources: Vec<Arc<dyn Source>> = Vec::new();
     let mut integrated_state_worker: Option<IntegratedStateWorker> = None;
@@ -573,15 +541,27 @@ async fn build_sources_from_config(config: &Config) -> anyhow::Result<BuiltSourc
                         );
                     }
                     saw_integrated_mdbx = true;
-                    integrated_state_worker = try_add_integrated_mdbx_source(
-                        &mut sources,
-                        source_index,
+                    integrated_state_worker = match build_integrated_mdbx_source(
                         mdbx_path,
                         *buffer_capacity,
                         ws_url,
                         genesis_file,
                         *start_block,
-                    );
+                    ) {
+                        Ok((source, worker)) => {
+                            sources.push(source);
+                            worker
+                        }
+                        Err(err) => {
+                            error!(
+                                error = ?err,
+                                source_index,
+                                ?mdbx_path,
+                                "failed to initialize integrated MDBX source"
+                            );
+                            None
+                        }
+                    };
                 }
                 StateSourceConfig::EthRpc { ws_url, http_url } => {
                     connect_eth_rpc_source(&mut sources, ws_url, http_url).await;
