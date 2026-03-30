@@ -6,6 +6,7 @@ pub(crate) mod error;
 
 pub use error::StateWorkerCacheError;
 use mdbx::StateReader;
+use state_worker::runtime::CommittedWindow;
 
 use crate::{
     Source,
@@ -43,18 +44,12 @@ use std::{
         Arc,
         atomic::{
             AtomicBool,
-            AtomicU64,
             Ordering,
         },
     },
-    time::Duration,
 };
 use thiserror::Error;
-use tokio::{
-    task::JoinHandle,
-    time,
-};
-use tokio_util::sync::CancellationToken;
+use tokio::sync::watch;
 use tracing::{
     debug,
     error,
@@ -62,16 +57,12 @@ use tracing::{
     trace,
 };
 
-const DEFAULT_SYNC_INTERVAL: Duration = Duration::from_millis(50);
 #[derive(Debug)]
 pub struct MdbxSource {
     backend: StateReader,
     /// Target block to request from state worker.
     target_block: Arc<RwLock<U256>>,
-    cancel_token: CancellationToken,
-    range_poller_handle: JoinHandle<()>,
-    available_oldest_block: Arc<AtomicU64>,
-    available_observed_head: Arc<AtomicU64>,
+    committed_window_rx: watch::Receiver<Option<CommittedWindow>>,
     cache_status: Arc<CacheStatus>,
 }
 
@@ -83,31 +74,22 @@ pub(crate) struct CacheStatus {
 
 impl MdbxSource {
     /// Creates a cache that stores entries under the default `state` namespace.
-    pub fn new(backend: StateReader) -> Self {
+    pub fn new(
+        backend: StateReader,
+        committed_window_rx: Option<watch::Receiver<Option<CommittedWindow>>>,
+    ) -> Self {
         let target_block = Arc::new(RwLock::new(U256::ZERO));
-        let cancel_token = CancellationToken::new();
-        // Zero means "not yet loaded" for the MDBX available range.
-        let available_oldest_block = Arc::new(AtomicU64::new(0));
-        let available_observed_head = Arc::new(AtomicU64::new(0));
         let cache_status = Arc::new(CacheStatus {
             min_synced_block: RwLock::new(U256::ZERO),
             latest_head: RwLock::new(U256::ZERO),
         });
-
-        let range_poller_handle = Self::spawn_block_range_poller(
-            backend.clone(),
-            cancel_token.clone(),
-            available_oldest_block.clone(),
-            available_observed_head.clone(),
-        );
+        let committed_window_rx =
+            committed_window_rx.unwrap_or_else(|| Self::seed_committed_window(&backend));
 
         Self {
             backend,
             target_block,
-            cancel_token,
-            range_poller_handle,
-            available_oldest_block,
-            available_observed_head,
+            committed_window_rx,
             cache_status,
         }
     }
@@ -158,63 +140,23 @@ impl MdbxSource {
     }
 
     fn available_block_range(&self) -> Option<(u64, u64)> {
-        let oldest = self.available_oldest_block.load(Ordering::Acquire);
-        let head = self.available_observed_head.load(Ordering::Acquire);
-
-        // Treat zero as the unset sentinel to avoid extra MDBX reads on startup.
-        if oldest == 0 || head == 0 || oldest > head {
-            return None;
-        }
-
-        Some((oldest, head))
+        (*self.committed_window_rx.borrow()).map(CommittedWindow::range)
     }
 
-    fn spawn_block_range_poller(
-        backend: StateReader,
-        cancel_token: CancellationToken,
-        available_oldest_block: Arc<AtomicU64>,
-        available_observed_head: Arc<AtomicU64>,
-    ) -> JoinHandle<()> {
-        Self::refresh_available_block_range(
-            &backend,
-            &available_oldest_block,
-            &available_observed_head,
-        );
-        tokio::spawn(async move {
-            let mut interval = time::interval(DEFAULT_SYNC_INTERVAL);
-
-            loop {
-                tokio::select! {
-                    () = cancel_token.cancelled() => {
-                        break;
-                    }
-                    _ = interval.tick() => Self::refresh_available_block_range(
-                        &backend,
-                        &available_oldest_block,
-                        &available_observed_head,
-                    ),
-                }
-            }
-        })
-    }
-
-    fn refresh_available_block_range(
-        backend: &StateReader,
-        available_oldest_block: &AtomicU64,
-        available_observed_head: &AtomicU64,
-    ) {
-        match backend.get_available_block_range() {
-            Ok(Some((oldest, head))) => {
-                available_oldest_block.store(oldest, Ordering::Release);
-                available_observed_head.store(head, Ordering::Release);
-            }
+    fn seed_committed_window(backend: &StateReader) -> watch::Receiver<Option<CommittedWindow>> {
+        let committed_window = match backend.get_available_block_range() {
+            Ok(Some((oldest, head))) => CommittedWindow::from_range(oldest, head),
             Ok(None) => {
                 debug!(target: "state_worker", "missing available block range");
+                None
             }
             Err(e) => {
                 error!(target: "state_worker", error = ?e, "failed to get available block range");
+                None
             }
-        }
+        };
+        let (_committed_window_tx, committed_window_rx) = watch::channel(committed_window);
+        committed_window_rx
     }
 }
 
@@ -387,13 +329,6 @@ impl Source for MdbxSource {
     /// Provides an identifier used in logs and metrics.
     fn name(&self) -> SourceName {
         SourceName::StateWorker
-    }
-}
-
-impl Drop for MdbxSource {
-    fn drop(&mut self) {
-        self.cancel_token.cancel();
-        self.range_poller_handle.abort();
     }
 }
 
@@ -1091,10 +1026,40 @@ mod tests {
         drop(writer);
 
         let reader = StateReader::new(&path, config).unwrap();
-        let source = MdbxSource::new(reader);
+        let source = MdbxSource::new(reader, None);
 
         // Requesting blocks below the bootstrap block should not consider the MDBX source synced
         assert!(!source.is_synced(u(99), u(99)));
+        assert!(source.is_synced(u(100), u(100)));
+    }
+
+    #[test]
+    fn mdbx_source_uses_committed_window_updates_without_polling() {
+        use mdbx::{
+            StateReader,
+            StateWriter,
+            common::CircularBufferConfig,
+        };
+        use tempfile::TempDir;
+        use tokio::sync::watch;
+
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("state");
+        let config = CircularBufferConfig::new(5).unwrap();
+
+        let writer = StateWriter::new(&path, config.clone()).unwrap();
+        drop(writer);
+
+        let reader = StateReader::new(&path, config).unwrap();
+        let (committed_window_tx, committed_window_rx) = watch::channel(None);
+        let source = MdbxSource::new(reader, Some(committed_window_rx));
+
+        assert!(!source.is_synced(u(100), u(100)));
+
+        committed_window_tx
+            .send(CommittedWindow::from_range(100, 100))
+            .unwrap();
+
         assert!(source.is_synced(u(100), u(100)));
     }
 }

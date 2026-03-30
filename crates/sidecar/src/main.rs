@@ -80,6 +80,7 @@ use state_worker::{
         initialize_runtime_heads,
     },
     runtime::{
+        CommittedWindow,
         RuntimeObserver,
         StateWorkerRuntimeConfig,
         run_supervisor,
@@ -100,6 +101,7 @@ use std::{
     thread::JoinHandle,
     time::Duration,
 };
+use tokio::sync::watch;
 use tracing::{
     error,
     info,
@@ -396,7 +398,10 @@ fn transaction_observer_config_from(config: &Config) -> Option<TransactionObserv
     }
 }
 
-async fn build_sources_from_config(config: &Config) -> anyhow::Result<Vec<Arc<dyn Source>>> {
+async fn build_sources_from_config(
+    config: &Config,
+    committed_window_rx: Option<watch::Receiver<Option<CommittedWindow>>>,
+) -> anyhow::Result<Vec<Arc<dyn Source>>> {
     let mut sources: Vec<Arc<dyn Source>> = Vec::new();
 
     if config.state.sources.is_empty() {
@@ -412,7 +417,10 @@ async fn build_sources_from_config(config: &Config) -> anyhow::Result<Vec<Arc<dy
                 CircularBufferConfig::new(u8::try_from(state_worker_depth)?)?,
             ) {
                 Ok(state_worker_client) => {
-                    sources.push(Arc::new(MdbxSource::new(state_worker_client)));
+                    sources.push(Arc::new(MdbxSource::new(
+                        state_worker_client,
+                        committed_window_rx.clone(),
+                    )));
                 }
                 Err(e) => {
                     error!(error = ?e, "Failed to connect MDBX");
@@ -443,7 +451,10 @@ async fn build_sources_from_config(config: &Config) -> anyhow::Result<Vec<Arc<dy
                         CircularBufferConfig::new(u8::try_from(*depth)?)?,
                     ) {
                         Ok(state_worker_client) => {
-                            sources.push(Arc::new(MdbxSource::new(state_worker_client)));
+                            sources.push(Arc::new(MdbxSource::new(
+                                state_worker_client,
+                                committed_window_rx.clone(),
+                            )));
                         }
                         Err(e) => {
                             error!(error = ?e, "Failed to connect MDBX");
@@ -687,6 +698,7 @@ struct SidecarRuntimeState {
     state: Arc<Sources>,
     cache: OverlayDb<Sources>,
     state_worker: Option<StateWorkerRuntimeConfig>,
+    committed_window_tx: watch::Sender<Option<CommittedWindow>>,
 }
 
 struct SidecarChannels {
@@ -800,8 +812,10 @@ async fn run_sidecar_once(
 }
 
 async fn initialize_sidecar_runtime(config: &Config) -> anyhow::Result<SidecarRuntimeState> {
-    initialize_state_worker_runtime(config);
-    let sources = build_sources_from_config(config).await?;
+    let committed_window = state_worker_committed_window(config);
+    initialize_state_worker_runtime(committed_window);
+    let (committed_window_tx, committed_window_rx) = watch::channel(committed_window);
+    let sources = build_sources_from_config(config, Some(committed_window_rx)).await?;
     let state = Arc::new(Sources::new(sources, config.state.minimum_state_diff));
     let cache = OverlayDb::new(Some(state.clone()));
     let state_worker = integrated_state_worker_config(config)?;
@@ -809,6 +823,7 @@ async fn initialize_sidecar_runtime(config: &Config) -> anyhow::Result<SidecarRu
         state,
         cache,
         state_worker,
+        committed_window_tx,
     })
 }
 
@@ -867,6 +882,7 @@ async fn spawn_sidecar_threads(
         state,
         cache,
         state_worker,
+        committed_window_tx,
     }: SidecarRuntimeState,
     SidecarChannels {
         event_sequencing_rx,
@@ -882,7 +898,9 @@ async fn spawn_sidecar_threads(
     transaction_observer_config: Option<TransactionObserverConfig>,
 ) -> anyhow::Result<SidecarThreads> {
     let mut thread_handles = ThreadHandles::new();
-    if let Some((handle, shutdown_tx)) = spawn_state_worker_supervisor(state_worker)? {
+    if let Some((handle, shutdown_tx)) =
+        spawn_state_worker_supervisor(state_worker, committed_window_tx)?
+    {
         thread_handles.state_worker = Some(handle);
         thread_handles.state_worker_shutdown_tx = Some(shutdown_tx);
     }
@@ -998,8 +1016,8 @@ async fn shutdown_sidecar_runtime(
     thread_handles.join_all();
 }
 
-fn initialize_state_worker_runtime(config: &Config) {
-    let durable_head = state_worker_available_head(config);
+fn initialize_state_worker_runtime(committed_window: Option<CommittedWindow>) {
+    let durable_head = committed_window.map(CommittedWindow::durable_head);
     state_worker_runtime_state().replace(state_worker_runtime_snapshot(
         0,
         Duration::ZERO,
@@ -1040,14 +1058,14 @@ fn state_worker_runtime_snapshot(
     StateWorkerRuntimeSnapshot::restart_snapshot(restart_count, restart_backoff, durable_head)
 }
 
-fn state_worker_available_head(config: &Config) -> Option<u64> {
+fn state_worker_committed_window(config: &Config) -> Option<CommittedWindow> {
     let (path, depth) = state_worker_mdbx_config(config)?;
     let backend = StateReader::new(path.as_str(), CircularBufferConfig::new(depth).ok()?).ok()?;
     backend
         .get_available_block_range()
         .ok()
         .flatten()
-        .map(|(_, head)| head)
+        .and_then(|(oldest, head)| CommittedWindow::from_range(oldest, head))
 }
 
 fn state_worker_mdbx_config(config: &Config) -> Option<(String, u8)> {
@@ -1102,7 +1120,31 @@ fn repo_relative_existing_path(path: &str) -> Option<String> {
     candidate.exists().then(|| candidate.display().to_string())
 }
 
-struct SidecarStateWorkerObserver;
+struct SidecarStateWorkerObserver {
+    committed_window_tx: watch::Sender<Option<CommittedWindow>>,
+    buffer_size: u8,
+}
+
+impl SidecarStateWorkerObserver {
+    fn new(committed_window_tx: watch::Sender<Option<CommittedWindow>>, buffer_size: u8) -> Self {
+        Self {
+            committed_window_tx,
+            buffer_size,
+        }
+    }
+
+    fn advance_committed_window(&self, block_number: u64) {
+        let current_window = *self.committed_window_tx.borrow();
+        let next_window = Some(match current_window {
+            Some(window) => window.advance(block_number, self.buffer_size),
+            None => CommittedWindow::from_block(block_number),
+        });
+
+        if current_window != next_window {
+            let _ = self.committed_window_tx.send(next_window);
+        }
+    }
+}
 
 impl RuntimeObserver for SidecarStateWorkerObserver {
     fn on_restart_state(&self, restart_count: u64, restart_backoff: Duration) {
@@ -1141,12 +1183,14 @@ impl RuntimeObserver for SidecarStateWorkerObserver {
     }
 
     fn on_durable_head(&self, block_number: u64) {
+        self.advance_committed_window(block_number);
         state_worker_runtime_state().set_durable_head(Some(block_number));
     }
 }
 
 fn spawn_state_worker_supervisor(
     config: Option<StateWorkerRuntimeConfig>,
+    committed_window_tx: watch::Sender<Option<CommittedWindow>>,
 ) -> anyhow::Result<
     Option<(
         JoinHandle<anyhow::Result<()>>,
@@ -1168,7 +1212,10 @@ fn spawn_state_worker_supervisor(
             runtime.block_on(run_supervisor(
                 &config,
                 shutdown_rx,
-                Arc::new(SidecarStateWorkerObserver),
+                Arc::new(SidecarStateWorkerObserver::new(
+                    committed_window_tx,
+                    config.state_depth,
+                )),
             ))
         })?;
 
@@ -1183,11 +1230,15 @@ mod tests {
         state_worker_runtime_snapshot,
     };
     use sidecar::metrics::state_worker_runtime_state;
-    use state_worker::runtime::RuntimeObserver;
+    use state_worker::runtime::{
+        CommittedWindow,
+        RuntimeObserver,
+    };
     use std::{
         sync::Mutex,
         time::Duration,
     };
+    use tokio::sync::watch;
 
     static STATE_WORKER_RUNTIME_TEST_LOCK: Mutex<()> = Mutex::new(());
 
@@ -1209,7 +1260,9 @@ mod tests {
         runtime_state.reset();
         runtime_state.replace(state_worker_runtime_snapshot(0, Duration::ZERO, Some(42)));
 
-        let observer = SidecarStateWorkerObserver;
+        let (committed_window_tx, _committed_window_rx) =
+            watch::channel(CommittedWindow::from_range(42, 42));
+        let observer = SidecarStateWorkerObserver::new(committed_window_tx, 8);
         observer.on_traced_head(42);
         observer.on_flush_permitted_head(42);
 
@@ -1238,7 +1291,9 @@ mod tests {
         runtime_state.set_traced_head(Some(43));
         runtime_state.set_flush_permitted_head(Some(43));
 
-        let observer = SidecarStateWorkerObserver;
+        let (committed_window_tx, _committed_window_rx) =
+            watch::channel(CommittedWindow::from_range(42, 42));
+        let observer = SidecarStateWorkerObserver::new(committed_window_tx, 8);
         observer.on_restart_state(2, Duration::from_secs(1));
 
         let snapshot = runtime_state.snapshot();
@@ -1249,6 +1304,25 @@ mod tests {
         assert_eq!(snapshot.durable_head, Some(42));
 
         runtime_state.reset();
+    }
+
+    #[test]
+    fn state_worker_observer_advances_committed_window_only_on_durable_flush() {
+        let (committed_window_tx, committed_window_rx) =
+            watch::channel(CommittedWindow::from_range(100, 102));
+        let observer = SidecarStateWorkerObserver::new(committed_window_tx, 4);
+
+        observer.on_durable_head(104);
+        assert_eq!(
+            *committed_window_rx.borrow(),
+            CommittedWindow::from_range(101, 104)
+        );
+
+        observer.on_durable_head(103);
+        assert_eq!(
+            *committed_window_rx.borrow(),
+            CommittedWindow::from_range(101, 104)
+        );
     }
 
     #[test]
