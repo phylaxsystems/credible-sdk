@@ -42,14 +42,14 @@
     },
     "sources": [
       {
-        "type": "eth-rpc",
-        "ws_url": "ws://sequencer:8546",
-        "http_url": "http://sequencer:8545"
-      },
-      {
         "type": "mdbx",
         "mdbx_path": "/var/lib/credible/state_worker.mdbx",
         "depth": 3
+      },
+      {
+        "type": "eth-rpc",
+        "ws_url": "ws://sequencer:8546",
+        "http_url": "http://sequencer:8545"
       }
     ],
     "minimum_state_diff": 100,
