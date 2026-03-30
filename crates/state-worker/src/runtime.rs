@@ -64,6 +64,56 @@ pub struct StateWorkerRuntimeConfig {
     pub genesis_path: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CommittedWindow {
+    oldest_block: u64,
+    durable_head: u64,
+}
+
+impl CommittedWindow {
+    pub fn from_range(oldest_block: u64, durable_head: u64) -> Option<Self> {
+        (oldest_block <= durable_head).then_some(Self {
+            oldest_block,
+            durable_head,
+        })
+    }
+
+    pub fn from_block(block_number: u64) -> Self {
+        Self {
+            oldest_block: block_number,
+            durable_head: block_number,
+        }
+    }
+
+    pub fn oldest_block(self) -> u64 {
+        self.oldest_block
+    }
+
+    pub fn durable_head(self) -> u64 {
+        self.durable_head
+    }
+
+    pub fn range(self) -> (u64, u64) {
+        (self.oldest_block, self.durable_head)
+    }
+
+    pub fn advance(self, durable_head: u64, buffer_size: u8) -> Self {
+        if durable_head <= self.durable_head {
+            return self;
+        }
+
+        let retained_depth = u64::from(buffer_size.saturating_sub(1));
+        let oldest_block = self
+            .oldest_block
+            .max(durable_head.saturating_sub(retained_depth));
+
+        Self {
+            oldest_block,
+            durable_head,
+        }
+    }
+}
+
 pub trait RuntimeObserver: Any + Send + Sync + 'static {
     fn on_restart_state(&self, _restart_count: u64, _restart_backoff: Duration) {}
 
@@ -96,10 +146,13 @@ impl CommitPermitGate {
         self.permitted_head_tx.subscribe()
     }
 
+    pub fn current_permitted_head(&self) -> Option<u64> {
+        *self.permitted_head_tx.borrow()
+    }
+
     pub fn grant_flush_permission(&self, block_number: u64) {
         if self
-            .permitted_head_tx
-            .borrow()
+            .current_permitted_head()
             .is_some_and(|permitted_head| permitted_head >= block_number)
         {
             return;
@@ -148,7 +201,7 @@ fn commit_permit_gate_slot() -> &'static Mutex<Option<Arc<CommitPermitGate>>> {
 }
 
 #[cfg(test)]
-fn reset_commit_permit_gate() {
+pub fn reset_commit_permit_gate() {
     *commit_permit_gate_slot()
         .lock()
         .expect("commit permit gate mutex poisoned") = None;
@@ -217,6 +270,7 @@ pub async fn run_once(
     shutdown_rx: broadcast::Receiver<()>,
     observer: Arc<dyn RuntimeObserver>,
 ) -> Result<()> {
+    let _ = commit_permit_gate_for_observer(observer.as_ref());
     let provider = connect_provider(&config.ws_url).await?;
 
     validate_geth_version(&provider).await?;
@@ -257,6 +311,7 @@ pub async fn run_once(
         system_calls,
         observer,
     );
+    worker.set_pending_update_capacity(usize::from(config.state_depth).max(1));
 
     worker
         .run(config.start_block, shutdown_rx)
@@ -360,11 +415,8 @@ where
         .context("failed to read current block from the database")?;
 
     if let Some(block_number) = durable_head {
-        metrics::set_traced_head(block_number);
-        metrics::set_flush_permitted_head(block_number);
+        grant_flush_permission(block_number);
         metrics::set_durable_head(block_number);
-        observer.on_traced_head(block_number);
-        observer.on_flush_permitted_head(block_number);
         observer.on_durable_head(block_number);
     }
 
@@ -405,5 +457,21 @@ mod tests {
 
         grant_flush_permission(9);
         assert_eq!(*permission_rx.borrow(), Some(9));
+    }
+
+    #[test]
+    fn committed_window_preserves_seeded_oldest_until_buffer_wraps() {
+        let window = CommittedWindow::from_range(100, 102).expect("valid committed window");
+
+        assert_eq!(window.advance(103, 5).range(), (100, 103));
+        assert_eq!(window.advance(106, 5).range(), (102, 106));
+    }
+
+    #[test]
+    fn committed_window_ignores_non_advancing_heads() {
+        let window = CommittedWindow::from_range(40, 45).expect("valid committed window");
+
+        assert_eq!(window.advance(45, 8), window);
+        assert_eq!(window.advance(44, 8), window);
     }
 }

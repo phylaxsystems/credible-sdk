@@ -1644,7 +1644,6 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 block_processing_time,
             );
             self.first_commit_head_processed = true;
-            grant_flush_permission(commit_head.block_number.saturating_to::<u64>());
             return Ok(());
         }
 
@@ -2086,5 +2085,88 @@ where
             ExecutorError::ForkTxExecutionError(e) => e.into(),
             ExecutorError::AssertionExecutionError(..) => ErrorRecoverability::Unrecoverable,
         }
+    }
+}
+
+#[cfg(test)]
+mod commit_gate_tests {
+    use super::*;
+    use crate::utils::TestDbError;
+    use assertion_executor::db::VersionDb;
+    use revm::database::{
+        CacheDB,
+        EmptyDBTyped,
+    };
+    use state_worker::runtime::{
+        ensure_commit_permit_gate,
+        reset_commit_permit_gate,
+    };
+
+    #[test]
+    fn commit_head_only_advances_flush_permission_after_successful_validation() {
+        reset_commit_permit_gate();
+
+        let mut engine: CoreEngine<CacheDB<EmptyDBTyped<TestDbError>>> = CoreEngine::new_test();
+        let tx_execution_id = TxExecutionId::new(U256::from(1), 0, B256::from([0x11; 32]), 0);
+        let mut version_db = VersionDb::new(engine.cache.clone());
+        version_db.commit(EvmState::default());
+
+        engine.current_block_iterations.insert(
+            tx_execution_id.as_block_execution_id(),
+            BlockIterationData {
+                version_db,
+                executed_txs: vec![ExecutedTx::valid(
+                    tx_execution_id,
+                    (tx_execution_id.tx_hash, TxEnv::default()),
+                )],
+                #[cfg(any(test, feature = "bench-utils"))]
+                executed_state_deltas: Vec::new(),
+                block_env: BlockEnv {
+                    number: U256::from(1),
+                    ..Default::default()
+                },
+            },
+        );
+
+        let commit_head = queue::CommitHead::new(
+            U256::from(1),
+            0,
+            Some(tx_execution_id.tx_hash),
+            1,
+            B256::ZERO,
+            Some(B256::ZERO),
+            U256::ZERO,
+        );
+
+        engine
+            .process_commit_head(&commit_head, &mut 0, &mut Instant::now())
+            .expect("valid commit head should succeed");
+
+        assert_eq!(
+            ensure_commit_permit_gate().current_permitted_head(),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn invalid_commit_head_does_not_advance_flush_permission() {
+        reset_commit_permit_gate();
+
+        let mut engine: CoreEngine<CacheDB<EmptyDBTyped<TestDbError>>> = CoreEngine::new_test();
+        let commit_head = queue::CommitHead::new(
+            U256::from(1),
+            0,
+            None,
+            0,
+            B256::ZERO,
+            Some(B256::ZERO),
+            U256::ZERO,
+        );
+
+        engine
+            .process_commit_head(&commit_head, &mut 0, &mut Instant::now())
+            .expect("invalid commit head should be handled");
+
+        assert_eq!(ensure_commit_permit_gate().current_permitted_head(), None);
     }
 }

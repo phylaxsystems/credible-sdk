@@ -33,15 +33,20 @@ use anyhow::{
 use futures_util::StreamExt;
 use mdbx::{
     BlockStateUpdate,
+    CommitStats,
     Reader,
     Writer,
 };
 use std::{
+    collections::VecDeque,
     sync::Arc,
     time::Duration,
 };
 use tokio::{
-    sync::broadcast,
+    sync::{
+        broadcast,
+        watch,
+    },
     time,
 };
 use tracing::{
@@ -52,6 +57,7 @@ use tracing::{
 
 const SUBSCRIPTION_RETRY_DELAY_SECS: u64 = 5;
 const MAX_MISSING_BLOCK_RETRIES: u32 = 3;
+const DEFAULT_PENDING_UPDATE_CAPACITY: usize = 1;
 
 /// Coordinates block ingestion, tracing, and persistence.
 pub struct StateWorker<WR>
@@ -65,6 +71,9 @@ where
     system_calls: SystemCalls,
     observer: Arc<dyn RuntimeObserver>,
     flush_gate: Option<Arc<CommitPermitGate>>,
+    pending_updates: VecDeque<BlockStateUpdate>,
+    pending_update_capacity: usize,
+    last_notified_flush_permitted_head: Option<u64>,
 }
 
 impl<WR> StateWorker<WR>
@@ -89,7 +98,14 @@ where
             system_calls,
             flush_gate: commit_permit_gate_for_observer(observer.as_ref()),
             observer,
+            pending_updates: VecDeque::new(),
+            pending_update_capacity: DEFAULT_PENDING_UPDATE_CAPACITY,
+            last_notified_flush_permitted_head: None,
         }
+    }
+
+    pub fn set_pending_update_capacity(&mut self, capacity: usize) {
+        self.pending_update_capacity = capacity.max(1);
     }
 
     fn update_sync_metrics(next_block: u64, head_block: u64) {
@@ -226,14 +242,21 @@ where
     ) -> Result<()> {
         let subscription = self.provider.subscribe_blocks().await?;
         let mut stream = subscription.into_stream();
+        let mut flush_permission_rx = self.flush_gate.as_ref().map(|gate| gate.subscribe());
         metrics::set_syncing(false);
         metrics::set_following_head(true);
 
         loop {
+            self.flush_ready_updates()?;
+
             tokio::select! {
                 _ = shutdown_rx.recv() => {
                     info!("Shutdown signal received during block streaming");
                     return Ok(());
+                }
+                changed = wait_for_flush_permission_change(flush_permission_rx.as_mut().expect("flush gate missing receiver")), if flush_permission_rx.is_some() && !self.pending_updates.is_empty() => {
+                    changed?;
+                    self.flush_ready_updates()?;
                 }
                 maybe_header = stream.next() => {
                     match maybe_header {
@@ -305,62 +328,69 @@ where
 
         // Apply system call state changes (EIP-2935 & EIP-4788)
         self.apply_system_calls(&mut update, block_number).await?;
-        if self
-            .await_flush_permission(block_number, shutdown_rx)
-            .await?
-        {
+        self.pending_updates.push_back(update);
+        self.flush_ready_updates()?;
+
+        if self.await_buffer_capacity(shutdown_rx).await? {
             return Ok(true);
         }
-
-        match self.writer_reader.commit_block(&update) {
-            Ok(stats) => {
-                metrics::set_db_healthy(true);
-                metrics::record_commit(block_number, &stats);
-                metrics::set_durable_head(block_number);
-                self.observer.on_durable_head(block_number);
-            }
-            Err(err) => {
-                critical!(error = ?err, block_number, "failed to persist block");
-                metrics::set_db_healthy(false);
-                metrics::record_block_failure();
-                return Err(anyhow!("failed to persist block {block_number}"));
-            }
-        }
-
-        info!(block_number, "block persisted to database");
         Ok(false)
     }
 
-    async fn await_flush_permission(
-        &self,
-        block_number: u64,
+    fn flush_ready_updates(&mut self) -> Result<()> {
+        let permitted_head = self.current_flush_permitted_head();
+
+        if let Some(block_number) = permitted_head
+            && self.last_notified_flush_permitted_head != Some(block_number)
+        {
+            metrics::set_flush_permitted_head(block_number);
+            self.observer.on_flush_permitted_head(block_number);
+            self.last_notified_flush_permitted_head = Some(block_number);
+        }
+
+        commit_ready_updates(
+            &mut self.pending_updates,
+            &self.writer_reader,
+            &self.observer,
+            permitted_head,
+        )
+    }
+
+    fn current_flush_permitted_head(&self) -> Option<u64> {
+        self.flush_gate
+            .as_ref()
+            .and_then(|gate| gate.current_permitted_head())
+            .or_else(|| {
+                self.pending_updates
+                    .back()
+                    .map(|update| update.block_number)
+            })
+    }
+
+    async fn await_buffer_capacity(
+        &mut self,
         shutdown_rx: &mut broadcast::Receiver<()>,
     ) -> Result<bool> {
         let Some(flush_gate) = self.flush_gate.as_ref() else {
-            metrics::set_flush_permitted_head(block_number);
-            self.observer.on_flush_permitted_head(block_number);
             return Ok(false);
         };
 
         let mut permission_rx = flush_gate.subscribe();
 
         loop {
-            if permission_rx
-                .borrow()
-                .is_some_and(|permitted_head| permitted_head >= block_number)
-            {
-                metrics::set_flush_permitted_head(block_number);
-                self.observer.on_flush_permitted_head(block_number);
+            self.flush_ready_updates()?;
+
+            if self.pending_updates.len() < self.pending_update_capacity {
                 return Ok(false);
             }
 
             tokio::select! {
                 _ = shutdown_rx.recv() => {
-                    info!(block_number, "shutdown received while waiting for flush permission");
+                    info!("shutdown received while waiting for pending update buffer space");
                     return Ok(true);
                 }
-                changed = permission_rx.changed() => {
-                    changed.context("commit permit gate closed unexpectedly")?;
+                changed = wait_for_flush_permission_change(&mut permission_rx) => {
+                    changed?;
                 }
             }
         }
@@ -472,26 +502,163 @@ where
         );
         metrics::set_traced_head(0);
         self.observer.on_traced_head(0);
-        if self.await_flush_permission(0, shutdown_rx).await? {
+        self.pending_updates.push_back(update);
+        self.flush_ready_updates()?;
+
+        if self.await_buffer_capacity(shutdown_rx).await? {
             return Ok(true);
         }
+        Ok(false)
+    }
+}
 
-        match self.writer_reader.commit_block(&update) {
-            Ok(stats) => {
-                metrics::set_db_healthy(true);
-                metrics::record_commit(0, &stats);
-                metrics::set_durable_head(0);
-                self.observer.on_durable_head(0);
-            }
+fn commit_ready_updates<WR>(
+    pending_updates: &mut VecDeque<BlockStateUpdate>,
+    writer_reader: &WR,
+    observer: &Arc<dyn RuntimeObserver>,
+    permitted_head: Option<u64>,
+) -> Result<()>
+where
+    WR: Writer,
+    <WR as Writer>::Error: std::error::Error + Send + Sync + 'static,
+{
+    let Some(permitted_head) = permitted_head else {
+        return Ok(());
+    };
+
+    while pending_updates
+        .front()
+        .is_some_and(|update| update.block_number <= permitted_head)
+    {
+        let update = pending_updates
+            .pop_front()
+            .expect("front update disappeared during flush");
+        let block_number = update.block_number;
+
+        match writer_reader.commit_block(&update) {
+            Ok(stats) => record_committed_update(block_number, &stats, observer),
             Err(err) => {
-                critical!(error = ?err, block_number = 0, "failed to persist genesis block");
+                critical!(error = ?err, block_number, "failed to persist block");
                 metrics::set_db_healthy(false);
                 metrics::record_block_failure();
-                return Err(anyhow!("failed to persist genesis block"));
+                return Err(anyhow!("failed to persist block {block_number}"));
             }
         }
 
-        info!(block_number = 0, "genesis block persisted to database");
-        Ok(false)
+        info!(block_number, "block persisted to database");
+    }
+
+    Ok(())
+}
+
+fn record_committed_update(
+    block_number: u64,
+    stats: &CommitStats,
+    observer: &Arc<dyn RuntimeObserver>,
+) {
+    metrics::set_db_healthy(true);
+    metrics::record_commit(block_number, stats);
+    metrics::set_durable_head(block_number);
+    observer.on_durable_head(block_number);
+}
+
+async fn wait_for_flush_permission_change(
+    permission_rx: &mut watch::Receiver<Option<u64>>,
+) -> Result<()> {
+    permission_rx
+        .changed()
+        .await
+        .context("commit permit gate closed unexpectedly")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::commit_ready_updates;
+    use crate::runtime::{
+        RuntimeObserver,
+        grant_flush_permission,
+        reset_commit_permit_gate,
+    };
+    use alloy::primitives::B256;
+    use mdbx::{
+        AccountState,
+        BlockStateUpdate,
+        CommitStats,
+        Writer,
+    };
+    use std::{
+        collections::VecDeque,
+        sync::{
+            Arc,
+            Mutex,
+        },
+    };
+
+    #[derive(Debug, Default)]
+    struct TestObserver;
+
+    impl RuntimeObserver for TestObserver {}
+
+    #[derive(Debug, Default)]
+    struct TestWriter {
+        committed_blocks: Mutex<Vec<u64>>,
+    }
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("test writer error")]
+    struct TestWriterError;
+
+    impl TestWriter {
+        fn committed_blocks(&self) -> Vec<u64> {
+            self.committed_blocks
+                .lock()
+                .expect("committed block mutex poisoned")
+                .clone()
+        }
+    }
+
+    impl Writer for TestWriter {
+        type Error = TestWriterError;
+
+        fn commit_block(&self, update: &BlockStateUpdate) -> Result<CommitStats, Self::Error> {
+            self.committed_blocks
+                .lock()
+                .expect("committed block mutex poisoned")
+                .push(update.block_number);
+            Ok(CommitStats::default())
+        }
+
+        fn bootstrap_from_snapshot(
+            &self,
+            _accounts: Vec<AccountState>,
+            _block_number: u64,
+            _block_hash: B256,
+            _state_root: B256,
+        ) -> Result<CommitStats, Self::Error> {
+            Ok(CommitStats::default())
+        }
+    }
+
+    #[test]
+    fn buffered_updates_wait_for_commit_permission() {
+        reset_commit_permit_gate();
+        let writer = TestWriter::default();
+        let observer: Arc<dyn RuntimeObserver> = Arc::new(TestObserver);
+        let mut pending_updates =
+            VecDeque::from([BlockStateUpdate::new(7, B256::ZERO, B256::ZERO)]);
+
+        commit_ready_updates(&mut pending_updates, &writer, &observer, None)
+            .expect("flush without permission should succeed");
+
+        assert_eq!(writer.committed_blocks(), Vec::<u64>::new());
+        assert_eq!(pending_updates.len(), 1);
+
+        grant_flush_permission(7);
+
+        commit_ready_updates(&mut pending_updates, &writer, &observer, Some(7))
+            .expect("flush with permission should succeed");
+
+        assert_eq!(writer.committed_blocks(), vec![7]);
+        assert!(pending_updates.is_empty());
     }
 }
