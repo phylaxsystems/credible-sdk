@@ -9,6 +9,11 @@ on:
         description: "Version tag for Docker images (e.g. 1.0.3-patch). If not provided, will detect from Cargo.toml changes."
         required: false
         type: string
+      publish-state-worker:
+        description: "Also publish the standalone state-worker image for manual bootstrap/recovery utility flows."
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   packages: write
@@ -97,7 +102,7 @@ jobs:
 
   # Standalone state-worker images remain available only for manual bootstrap/recovery utility flows.
   docker-ghcr-push-state-worker:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && inputs.publish-state-worker
     needs: get-version
     uses: phylaxsystems/actions/.github/workflows/release-docker-ghcr.yaml@main
     with:

@@ -97,6 +97,13 @@ jobs:
             exit 1
           fi
 
+      - name: Verify supported image repository
+        run: |
+          if [[ "${SIDECAR_IMAGE_REPO}" == *"/state-worker" ]]; then
+            echo "Helm deploys support the integrated sidecar image only: ${SIDECAR_IMAGE_REPO}" >&2
+            exit 1
+          fi
+
       - name: Deploy with Helm
         id: helm-deploy
         run: |
