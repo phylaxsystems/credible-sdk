@@ -14,6 +14,9 @@ to allow running the full stack from within the credible-sdk repository.
 
    This starts the supported local topology: one `credible-sidecar` process with the state-worker
    embedded inside it. Do not launch a separate `state-worker` service alongside this stack.
+   Compose also waits for Maru's GraphQL assertion event source at `http://localhost:8080/graphql`
+   to answer the sidecar's `_meta` probe before starting `credible-sidecar`, which avoids the
+   indexer health-check race during startup.
 
 3. Use the sidecar readiness endpoint to check whether the integrated worker is healthy or whether
    the sidecar is serving from fallback state sources:
@@ -51,6 +54,10 @@ Common examples:
 SIDECAR_RUST_LOG=info make run-sidecar-host      # adjust log level
 SIDECAR_BESU_CLIENT_WS_URL=ws://127.0.0.1:8546 make run-sidecar-host
 ```
+
+When running the sidecar on the host, keep the compose-managed Maru service up first. The reused
+stack config points `credible.event_source_url` at Maru's GraphQL assertion event source on
+`http://127.0.0.1:8080/graphql`.
 
 If you already have the compose stack running, set `SIDECAR_SKIP_COMPOSE=true` to leave it untouched.
 
