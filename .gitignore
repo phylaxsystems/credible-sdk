@@ -13,6 +13,10 @@
 .claude/*
 !.claude/skills/
 CLAUDE*
+.tmp/
+
+# Git worktrees
+.worktrees/
 
 # Logs
 logs
