@@ -21,6 +21,8 @@ use tracing::{
     instrument,
 };
 
+const HEALTH_RESPONSE_BODY: &str = "OK";
+
 #[derive(thiserror::Error, Debug)]
 pub enum HealthServerError {
     #[error("failed to bind health server address: {addr}")]
@@ -159,9 +161,10 @@ impl HealthServer {
     }
 }
 
-#[instrument(name = "health_server::health", level = "trace")]
-async fn health() -> &'static str {
-    "OK"
+#[instrument(name = "health_server::health", skip(health_state), level = "trace")]
+async fn health(State(health_state): State<Arc<HealthState>>) -> (StatusCode, &'static str) {
+    let snapshot = health_state.readiness_snapshot();
+    (readiness_status(&snapshot), HEALTH_RESPONSE_BODY)
 }
 
 #[instrument(name = "health_server::ready", skip(health_state), level = "trace")]
@@ -186,9 +189,15 @@ mod tests {
         ReadinessSnapshot,
         SourceReadinessSnapshot,
         WorkerReadiness,
+        health,
+        HEALTH_RESPONSE_BODY,
         readiness_status,
     };
-    use axum::http::StatusCode;
+    use axum::{
+        extract::State,
+        http::StatusCode,
+    };
+    use std::sync::Arc;
 
     #[test]
     fn readiness_is_healthy_when_worker_is_degraded_but_rpc_fallback_is_ready() {
@@ -238,5 +247,26 @@ mod tests {
         assert!(!snapshot.ready);
         assert!(!snapshot.fallback_active);
         assert_eq!(snapshot.worker, WorkerReadiness::Unavailable);
+    }
+
+    #[tokio::test]
+    async fn health_endpoint_uses_readiness_status_when_no_source_is_ready() {
+        let health_state = Arc::new(HealthState::default());
+        health_state.update_readiness(ReadinessSnapshot {
+            ready: false,
+            fallback_active: false,
+            worker: WorkerReadiness::Unavailable,
+            required_head: 256,
+            minimum_synced_block: 248,
+            sources: vec![
+                SourceReadinessSnapshot::new("StateWorker", false),
+                SourceReadinessSnapshot::new("EthRpcSource", false),
+            ],
+        });
+
+        let (status, body) = health(State(health_state)).await;
+
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body, HEALTH_RESPONSE_BODY);
     }
 }
