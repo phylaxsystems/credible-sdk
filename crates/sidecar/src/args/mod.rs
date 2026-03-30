@@ -430,6 +430,7 @@ pub struct StateConfigFile {
     pub sources_monitoring_period_ms: Option<u64>,
 }
 
+/// Resolved state configuration used by the sidecar runtime.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct StateConfig {
     /// State sources

@@ -30,6 +30,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 mdbx = { workspace = true, features = ["writer"] }
 metrics = { workspace = true }
+url = { workspace = true }
 
 [dev-dependencies]
 int-test-utils = { path = "../int-test-utils" }

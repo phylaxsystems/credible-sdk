@@ -11773,6 +11773,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-test",
+ "url",
  "uuid 1.23.0",
 ]
 
