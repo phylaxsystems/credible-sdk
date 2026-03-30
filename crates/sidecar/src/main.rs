@@ -12,6 +12,7 @@ use flume::unbounded;
 use mdbx::{
     Reader,
     StateReader,
+    StateWriter,
     common::CircularBufferConfig,
 };
 use metrics::counter;
@@ -434,16 +435,18 @@ where
         Arc<FlushControl>,
     ) -> anyhow::Result<JoinHandle<anyhow::Result<()>>>,
 {
-    let reader = StateReader::new(mdbx_path, CircularBufferConfig::new(1)?)
-        .with_context(|| format!("failed to initialize integrated MDBX reader at {mdbx_path}"))?;
+    let writer = StateWriter::new(mdbx_path, CircularBufferConfig::new(1)?)
+        .with_context(|| format!("failed to initialize integrated MDBX database at {mdbx_path}"))?;
+    let reader = writer.reader().clone();
 
     let commit_control = FlushControl::new();
-    if let Some(block_number) = reader
+    if let Some(block_number) = writer
         .latest_block_number()
         .with_context(|| format!("failed to read integrated MDBX head at {mdbx_path}"))?
     {
         commit_control.record_committed_block(block_number);
     }
+    drop(writer);
     let source = Arc::new(MdbxSource::new_with_flush_control(
         reader,
         commit_control.clone(),
@@ -941,10 +944,7 @@ async fn run_sidecar_once(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        build_integrated_mdbx_source_with,
-        try_add_integrated_mdbx_source,
-    };
+    use super::build_integrated_mdbx_source_with;
     use alloy::primitives::{
         B256,
         U256,
@@ -993,20 +993,24 @@ mod tests {
     }
 
     #[test]
-    fn integrated_source_init_failure_does_not_abort_source_setup() {
-        let mut sources = Vec::new();
+    fn integrated_source_fresh_path_still_builds_source_when_worker_start_fails()
+    -> anyhow::Result<()> {
+        let dir = tempdir()?;
+        let path = dir.path().join("fresh-state");
+        let path_str = path.to_string_lossy().into_owned();
 
-        let worker = try_add_integrated_mdbx_source(
-            &mut sources,
-            0,
-            "/definitely/missing/state-worker.mdbx",
+        let (source, worker) = build_integrated_mdbx_source_with(
+            &path_str,
             3,
             "ws://127.0.0.1:8546",
             "/tmp/genesis.json",
             None,
-        );
+            |_config, _shutdown, _commit_control| Err(anyhow!("spawn failed")),
+        )?;
 
+        assert!(path.exists());
         assert!(worker.is_none());
-        assert!(sources.is_empty());
+        assert!(!source.is_synced(U256::ZERO, U256::ZERO));
+        Ok(())
     }
 }

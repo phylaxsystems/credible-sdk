@@ -704,7 +704,8 @@ async fn test_commit_head_nothing_to_commit_still_notifies_state_worker_flush_co
     engine.state_worker_flush_control = Some(flush_control.clone());
 
     let tx_execution_id = TxExecutionId::new(U256::from(1), 0, B256::ZERO, 0);
-    let version_db = VersionDb::new(engine.cache.clone());
+    let mut version_db = VersionDb::new(engine.cache.clone());
+    version_db.commit_empty();
     engine.current_block_iterations.insert(
         tx_execution_id.as_block_execution_id(),
         BlockIterationData {
