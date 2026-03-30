@@ -33,17 +33,37 @@ use url::Url;
 
 const DEFAULT_CONFIG: &str = include_str!("../../default_config.json");
 
-fn default_accepted_txs_ttl_ms() -> Duration {
-    Duration::from_secs(2)
-}
+// ── CredibleConfig defaults ──────────────────────────────────────────────────
 
-fn default_poll_interval() -> Duration {
-    Duration::from_secs(1)
-}
+/// Gas limit for each assertion EVM execution.
+const DEFAULT_ASSERTION_GAS_LIMIT: u64 = 3_000_000;
+/// Sled cache capacity in bytes (256 MB).
+const DEFAULT_CACHE_CAPACITY_BYTES: usize = 256_000_000;
+/// How often the `FsDb` is flushed to disk (5 s).
+const DEFAULT_FLUSH_EVERY_MS: usize = 5_000;
+/// Local assertion DA server endpoint.
+const DEFAULT_ASSERTION_DA_RPC_URL: &str = "http://127.0.0.1:5001";
+/// Local GraphQL event source endpoint.
+const DEFAULT_EVENT_SOURCE_URL: &str = "http://127.0.0.1:4350/graphql";
+/// Event source indexer poll interval (1 s).
+const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(1);
+/// Local path for the sled assertion store.
+const DEFAULT_ASSERTION_STORE_DB_PATH: &str = ".local/sidecar-host/assertion_store_database";
+/// Maximum number of cached transaction results.
+const DEFAULT_TRANSACTION_RESULTS_MAX_CAPACITY: usize = 1_000;
+/// TTL for accepted transactions awaiting results (2 s).
+const DEFAULT_ACCEPTED_TXS_TTL: Duration = Duration::from_secs(2);
 
-fn default_integrated_state_worker_buffer_capacity() -> usize {
-    3
-}
+// ── StateSourceConfig defaults ───────────────────────────────────────────────
+
+/// Default MDBX path for the integrated state worker.
+const DEFAULT_MDBX_PATH: &str = "/data/state_worker.mdbx";
+/// Maximum traced blocks the integrated worker may buffer ahead of commit.
+const DEFAULT_BUFFER_CAPACITY: usize = 3;
+/// Execution node websocket URL for the integrated state worker tracer.
+const DEFAULT_STATE_WORKER_WS_URL: &str = "ws://127.0.0.1:8546";
+/// Genesis file consumed to hydrate block 0.
+const DEFAULT_GENESIS_FILE: &str = "/data/genesis.json";
 
 #[derive(Clone, PartialEq, Eq, Default, Deserialize)]
 pub struct SecretString(String);
@@ -269,7 +289,6 @@ pub struct CredibleConfig {
     /// Maximum capacity for transaction results
     pub transaction_results_max_capacity: usize,
     /// Maximum time (ms) to keep accepted transactions without results.
-    #[serde(default = "default_accepted_txs_ttl_ms")]
     #[serde_as(as = "DurationMilliSeconds<u64>")]
     pub accepted_txs_ttl_ms: Duration,
     /// Cache checker client websocket url
@@ -281,6 +300,36 @@ pub struct CredibleConfig {
     pub assertion_store_prune_config_retention_blocks: Option<u64>,
     /// Address of the on-chain DA verifier, `DAVerifierOnChain`.
     pub onchain_da_verifier: Option<Address>,
+}
+
+impl Default for CredibleConfig {
+    fn default() -> Self {
+        Self {
+            assertion_gas_limit: DEFAULT_ASSERTION_GAS_LIMIT,
+            overlay_cache_invalidation_every_block: None,
+            cache_capacity_bytes: Some(DEFAULT_CACHE_CAPACITY_BYTES),
+            flush_every_ms: Some(DEFAULT_FLUSH_EVERY_MS),
+            assertion_da_rpc_url: DEFAULT_ASSERTION_DA_RPC_URL.into(),
+            event_source_url: DEFAULT_EVENT_SOURCE_URL.into(),
+            poll_interval: DEFAULT_POLL_INTERVAL,
+            assertion_store_db_path: DEFAULT_ASSERTION_STORE_DB_PATH.into(),
+            transaction_observer_db_path: None,
+            transaction_observer_endpoint: None,
+            transaction_observer_auth_token: None,
+            transaction_observer_endpoint_rps_max: None,
+            transaction_observer_poll_interval_ms: None,
+            aeges_url: None,
+            state_oracle: Address::ZERO,
+            state_oracle_deployment_block: 0,
+            transaction_results_max_capacity: DEFAULT_TRANSACTION_RESULTS_MAX_CAPACITY,
+            accepted_txs_ttl_ms: DEFAULT_ACCEPTED_TXS_TTL,
+            #[cfg(feature = "cache_validation")]
+            cache_checker_ws_url: String::new(),
+            assertion_store_prune_config_interval_ms: None,
+            assertion_store_prune_config_retention_blocks: None,
+            onchain_da_verifier: None,
+        }
+    }
 }
 
 /// Transport configuration from file
@@ -310,7 +359,6 @@ pub enum StateSourceConfig {
         /// MDBX path shared by the integrated state worker and the sidecar reader.
         mdbx_path: String,
         /// Maximum number of traced blocks the integrated worker may buffer ahead of commit.
-        #[serde(default = "default_integrated_state_worker_buffer_capacity")]
         buffer_capacity: usize,
         /// Execution node websocket URL used by the integrated state worker tracer.
         ws_url: String,
@@ -327,6 +375,19 @@ pub enum StateSourceConfig {
         http_url: String,
     },
 }
+
+impl Default for StateSourceConfig {
+    fn default() -> Self {
+        Self::IntegratedMdbx {
+            mdbx_path: DEFAULT_MDBX_PATH.into(),
+            buffer_capacity: DEFAULT_BUFFER_CAPACITY,
+            ws_url: DEFAULT_STATE_WORKER_WS_URL.into(),
+            genesis_file: DEFAULT_GENESIS_FILE.into(),
+            start_block: None,
+        }
+    }
+}
+
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
 pub struct LegacyStateConfig {
@@ -614,7 +675,7 @@ fn resolve_credible_optional(
         flush_every_ms: optional_or_env(credible_file.flush_every_ms, "SIDECAR_FLUSH_EVERY_MS")?,
         poll_interval: parse_env_duration_ms("SIDECAR_POLL_INTERVAL_MS")?
             .or(credible_file.poll_interval)
-            .unwrap_or_else(default_poll_interval),
+            .unwrap_or(DEFAULT_POLL_INTERVAL),
         transaction_observer_db_path: optional_or_env(
             credible_file.transaction_observer_db_path.clone(),
             "SIDECAR_TRANSACTION_OBSERVER_DB_PATH",
@@ -643,7 +704,7 @@ fn resolve_credible_ttls(credible_file: &CredibleConfigFile) -> Result<CredibleT
     Ok(CredibleTtls {
         accepted_txs_ttl_ms: parse_env_duration_ms("SIDECAR_ACCEPTED_TXS_TTL_MS")?
             .or(credible_file.accepted_txs_ttl_ms)
-            .unwrap_or_else(default_accepted_txs_ttl_ms),
+            .unwrap_or(DEFAULT_ACCEPTED_TXS_TTL),
     })
 }
 
