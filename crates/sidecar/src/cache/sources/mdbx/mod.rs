@@ -59,10 +59,12 @@ pub(crate) struct CacheStatus {
 }
 
 impl MdbxSource {
+    #[must_use]
     pub fn new(backend: StateReader) -> Self {
         Self::build(backend, None)
     }
 
+    #[must_use]
     pub fn new_with_flush_control(backend: StateReader, committed_head: Arc<FlushControl>) -> Self {
         Self::build(backend, Some(committed_head))
     }

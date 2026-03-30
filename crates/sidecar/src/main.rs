@@ -570,6 +570,10 @@ async fn build_sources_from_config(config: &Config) -> anyhow::Result<BuiltSourc
         }
     }
 
+    if sources.is_empty() {
+        anyhow::bail!("no usable state sources were configured");
+    }
+
     Ok(BuiltSources {
         sources,
         integrated_state_worker,

@@ -321,6 +321,7 @@ where
     }
 
     fn compute_start_block(&self, override_start: Option<u64>) -> Result<u64> {
+        // An explicit override is used verbatim so callers can resume from a known block.
         if let Some(block) = override_start {
             return Ok(block);
         }
@@ -354,6 +355,8 @@ where
                 return Ok(false);
             }
 
+            // Catch up deterministically to the last observed head before returning to live
+            // subscription mode, while still honoring buffer backpressure and shutdown.
             while *next_block <= head {
                 if self
                     .buffered_commits

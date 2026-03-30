@@ -84,18 +84,19 @@ pub struct WorkerConfig {
     pub trace_timeout: Duration,
 }
 
-impl From<cli::Args> for WorkerConfig {
-    #[allow(clippy::expect_used)] // CLI-validated URL is guaranteed to parse.
-    fn from(args: cli::Args) -> Self {
-        Self {
-            ws_url: Url::parse(&args.ws_url).expect("CLI-validated ws_url"),
+impl TryFrom<cli::Args> for WorkerConfig {
+    type Error = anyhow::Error;
+
+    fn try_from(args: cli::Args) -> Result<Self> {
+        Ok(Self {
+            ws_url: Url::parse(&args.ws_url).context("invalid STATE_WORKER_WS_URL / --ws-url")?,
             mdbx_path: PathBuf::from(args.mdbx_path),
             start_block: args.start_block,
             mdbx_depth: args.state_depth,
             buffer_capacity: usize::from(args.state_depth),
             genesis_file: PathBuf::from(args.file_to_genesis),
             trace_timeout: DEFAULT_TRACE_TIMEOUT,
-        }
+        })
     }
 }
 
@@ -299,8 +300,10 @@ mod tests {
     use super::{
         INITIAL_RESTART_DELAY,
         MAX_RESTART_DELAY,
+        WorkerConfig,
         restart_delay_for_attempt,
     };
+    use crate::cli::Args;
     use std::time::Duration;
 
     #[test]
@@ -318,5 +321,18 @@ mod tests {
     #[test]
     fn restart_delay_is_capped() {
         assert_eq!(restart_delay_for_attempt(100), MAX_RESTART_DELAY);
+    }
+
+    #[test]
+    fn worker_config_rejects_invalid_ws_url() {
+        let result = WorkerConfig::try_from(Args {
+            ws_url: "not a url".to_string(),
+            mdbx_path: "/tmp/state".to_string(),
+            start_block: None,
+            state_depth: 3,
+            file_to_genesis: "/tmp/genesis.json".to_string(),
+        });
+
+        assert!(result.is_err());
     }
 }
