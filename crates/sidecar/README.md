@@ -311,12 +311,12 @@ The configuration file is a JSON file with the following schema:
         },
         "event_source_url": {
           "type": "string",
-          "description": "WebSocket URL the RPC store will use to index assertions",
+          "description": "HTTP URL of the GraphQL endpoint queried by GraphqlEventSource to index assertions",
           "format": "uri",
-          "pattern": "^wss?://",
+          "pattern": "^https?://",
           "examples": [
-            "ws://localhost:8546",
-            "wss://mainnet.infura.io/ws/v3/YOUR-PROJECT-ID"
+            "http://localhost:4350/graphql",
+            "https://indexer.example.com/graphql"
           ]
         },
         "assertion_store_db_path": {
@@ -630,7 +630,7 @@ A representative integrated-topology configuration looks like:
     "cache_capacity_bytes": 256000000,
     "flush_every_ms": 5000,
     "assertion_da_rpc_url": "http://127.0.0.1:5001",
-    "event_source_url": "ws://127.0.0.1:8546",
+    "event_source_url": "http://127.0.0.1:4350/graphql",
     "assertion_store_db_path": ".local/sidecar-host/assertion_store_database",
     "transaction_observer_db_path": ".local/sidecar-host/transaction_observer_database",
     "transaction_observer_endpoint": "",
