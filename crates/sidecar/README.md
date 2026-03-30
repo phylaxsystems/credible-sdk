@@ -179,9 +179,9 @@ State:
 
 The sidecar exposes separate liveness and readiness probes for the integrated topology:
 
-- `/health` is a liveness probe. It returns `200 OK` while the sidecar process and supervisor loop are still running, even if the embedded worker is restarting or MDBX is behind.
-- `/ready` is the readiness probe. It returns `200 OK` while at least one state source can serve the cache's required block range, and `503 Service Unavailable` when neither durable MDBX nor RPC fallback can cover that range.
-- `/ready` also reports degraded conditions in its JSON payload. Fallback-active operation, worker degradation, or runtime component failures can leave the process live and ready while still surfacing `"degraded": true` for operators.
+- `/health` is the liveness probe. It returns a plain-text `200 OK` response while the sidecar process is up and the health server is reachable. It does not encode worker catch-up or fallback state.
+- `/ready` is the operator-facing readiness probe. It returns `200 OK` while at least one state source can serve the cache's required block range, and `503 Service Unavailable` when neither durable MDBX nor RPC fallback can cover that range.
+- `/ready` returns a JSON snapshot whose HTTP status is driven by `ready`. The payload can still surface `"degraded": true` when fallback is active, the worker is degraded, or runtime components such as assertion DA or the transaction observer have failed.
 
 Operators should alert on degraded fallback behavior separately from process liveness so a worker restart does not get
 mistaken for a full service outage.
@@ -471,7 +471,7 @@ The configuration file is a JSON file with the following schema:
         },
         "health_bind_addr": {
           "type": "string",
-          "description": "Bind address for the always-on health probe server",
+          "description": "Bind address for the always-on liveness/readiness probe server",
           "pattern": "^([0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}|[a-zA-Z0-9.-]+):[0-9]{1,5}$",
           "examples": [
             "127.0.0.1:3001",
