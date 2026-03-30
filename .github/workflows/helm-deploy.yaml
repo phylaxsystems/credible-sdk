@@ -128,9 +128,10 @@ jobs:
           RELEASE_NAME="${{ secrets.RELEASE_NAME }}"
           NAMESPACE="${{ secrets.NAMESPACE }}"
 
-          # GitHub Actions runs bash with errexit enabled by default.
-          # Relax it here so every diagnostic command still contributes output.
+          # GitHub Actions runs bash with `errexit` and `pipefail` enabled by default.
+          # Relax them here so failed diagnostics still contribute output to the summary.
           set +e
+          set +o pipefail
 
           {
             echo "## Helm deployment failed"
@@ -141,8 +142,8 @@ jobs:
             echo ""
             echo "### Helm upgrade output"
             echo '```'
-            if [ -f /tmp/helm-upgrade.log ]; then
-              tail -n 200 /tmp/helm-upgrade.log
+            if [[ -f /tmp/helm-upgrade.log ]]; then
+              tail -n 200 /tmp/helm-upgrade.log || true
             else
               echo "No helm upgrade log found."
             fi
