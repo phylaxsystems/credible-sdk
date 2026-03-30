@@ -95,8 +95,9 @@ jobs:
       dockerfile-path: dockerfile/Dockerfile.shadow-driver
       version-tag: ${{ needs.get-version.outputs.version }}
 
-  # Standalone state-worker images remain available for bootstrap/recovery utility flows only.
+  # Standalone state-worker images remain available only for manual bootstrap/recovery utility flows.
   docker-ghcr-push-state-worker:
+    if: github.event_name == 'workflow_dispatch'
     needs: get-version
     uses: phylaxsystems/actions/.github/workflows/release-docker-ghcr.yaml@main
     with:
