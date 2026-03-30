@@ -494,6 +494,22 @@ pub struct StateWorkerRuntimeSnapshot {
     pub durable_head: Option<u64>,
 }
 
+impl StateWorkerRuntimeSnapshot {
+    pub fn restart_snapshot(
+        restart_count: u64,
+        restart_backoff: Duration,
+        durable_head: Option<u64>,
+    ) -> Self {
+        Self {
+            restart_count,
+            restart_backoff,
+            traced_head: durable_head,
+            flush_permitted_head: durable_head,
+            durable_head,
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct StateWorkerRuntimeState {
     snapshot: RwLock<StateWorkerRuntimeSnapshot>,

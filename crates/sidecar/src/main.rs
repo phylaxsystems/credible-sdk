@@ -37,7 +37,10 @@ use sidecar::{
     engine::{
         CoreEngine,
         CoreEngineConfig,
-        queue::TransactionQueueSender,
+        queue::{
+            TransactionQueueReceiver,
+            TransactionQueueSender,
+        },
     },
     event_sequencing::EventSequencing,
     graphql_event_source::GraphqlEventSource,
@@ -54,6 +57,8 @@ use sidecar::{
         state_worker_runtime_state,
     },
     transaction_observer::{
+        IncidentReportReceiver,
+        IncidentReportSender,
         TransactionObserver,
         TransactionObserverConfig,
     },
@@ -93,6 +98,8 @@ struct SidecarInfo {
     os_info: String,
 }
 
+const STATE_WORKER_RESTART_BACKOFF: Duration = Duration::from_secs(1);
+
 #[cfg(feature = "dhat-heap")]
 #[global_allocator]
 static ALLOC: dhat::Alloc = dhat::Alloc;
@@ -125,6 +132,8 @@ async fn main() -> anyhow::Result<()> {
     let assertion_executor =
         AssertionExecutor::new(executor_config.clone(), assertion_store.clone());
     let health_bind_addr: SocketAddr = config.transport.health_bind_addr.parse()?;
+    let mut state_worker_restart_count = 0_u64;
+    let mut state_worker_restart_backoff = Duration::ZERO;
 
     loop {
         let should_shutdown = Box::pin(run_sidecar_once(
@@ -132,6 +141,8 @@ async fn main() -> anyhow::Result<()> {
             &executor_config,
             &assertion_store,
             &assertion_executor,
+            state_worker_restart_count,
+            state_worker_restart_backoff,
             health_bind_addr,
         ))
         .await?;
@@ -139,8 +150,18 @@ async fn main() -> anyhow::Result<()> {
         if should_shutdown {
             break;
         }
+
+        state_worker_restart_count = state_worker_restart_count.saturating_add(1);
+        state_worker_restart_backoff = STATE_WORKER_RESTART_BACKOFF;
+        state_worker_runtime_state()
+            .set_restart_state(state_worker_restart_count, state_worker_restart_backoff);
         counter!("sidecar_restarts_total").increment(1);
-        tracing::warn!("Sidecar restarting...");
+        tracing::warn!(
+            state_worker_restart_count,
+            state_worker_restart_backoff_seconds = state_worker_restart_backoff.as_secs_f64(),
+            "Sidecar restarting..."
+        );
+        tokio::time::sleep(state_worker_restart_backoff).await;
     }
 
     tracing::info!("Sidecar shutdown complete.");
@@ -635,38 +656,169 @@ async fn stop_da_reachability_monitor(
     }
 }
 
+struct SidecarRuntimeState {
+    state: Arc<Sources>,
+    cache: OverlayDb<Sources>,
+}
+
+struct SidecarChannels {
+    transport_tx_sender: TransactionQueueSender,
+    event_sequencing_rx: TransactionQueueReceiver,
+    event_sequencing_tx: TransactionQueueSender,
+    engine_rx: TransactionQueueReceiver,
+    incident_report_tx: Option<IncidentReportSender>,
+    incident_report_rx: Option<IncidentReportReceiver>,
+    engine_state_results: Arc<TransactionsState>,
+    result_event_rx: Option<flume::Receiver<TransactionResultEvent>>,
+}
+
+struct AsyncSupportServices {
+    health_server: HealthServer,
+    indexer_cfg: IndexerCfg<GraphqlEventSource>,
+    da_reachability_handle: tokio::task::JoinHandle<()>,
+}
+
+type EngineExitReceiver = tokio::sync::oneshot::Receiver<Result<(), sidecar::engine::EngineError>>;
+type SequencingExitReceiver =
+    tokio::sync::oneshot::Receiver<Result<(), sidecar::event_sequencing::EventSequencingError>>;
+type ObserverExitReceiver = tokio::sync::oneshot::Receiver<
+    Result<(), sidecar::transaction_observer::TransactionObserverError>,
+>;
+type ObserverThread = (
+    JoinHandle<Result<(), sidecar::transaction_observer::TransactionObserverError>>,
+    ObserverExitReceiver,
+);
+
+struct SidecarThreads {
+    thread_handles: ThreadHandles,
+    engine_exited: EngineExitReceiver,
+    seq_exited: SequencingExitReceiver,
+    observer_exited_rx: Option<ObserverExitReceiver>,
+}
+
 async fn run_sidecar_once(
     config: &Config,
     executor_config: &assertion_executor::ExecutorConfig,
     assertion_store: &assertion_executor::store::AssertionStore,
     assertion_executor: &AssertionExecutor,
+    state_worker_restart_count: u64,
+    state_worker_restart_backoff: Duration,
     health_bind_addr: SocketAddr,
 ) -> anyhow::Result<bool> {
-    let mut thread_handles = ThreadHandles::new();
     let health_state = Arc::new(HealthState::default());
 
     // Shared shutdown flag for this iteration
     let shutdown_flag = Arc::new(AtomicBool::new(false));
 
-    initialize_state_worker_runtime(config);
+    let runtime_state = initialize_sidecar_runtime(
+        config,
+        state_worker_restart_count,
+        state_worker_restart_backoff,
+    )
+    .await?;
+    let transaction_observer_config = initialize_health_runtime(config, health_state.as_ref());
+    let mut channels = initialize_sidecar_channels(config, transaction_observer_config.is_some());
+
+    let mut transport = create_transport_from_args(
+        config,
+        channels.transport_tx_sender.clone(),
+        channels.engine_state_results.clone(),
+        channels.result_event_rx.take(),
+    )?;
+    let SidecarThreads {
+        thread_handles,
+        engine_exited,
+        seq_exited,
+        observer_exited_rx,
+    } = spawn_sidecar_threads(
+        config,
+        Arc::clone(&shutdown_flag),
+        runtime_state,
+        channels,
+        assertion_executor,
+        health_state.clone(),
+        transaction_observer_config,
+    )
+    .await?;
+
+    let AsyncSupportServices {
+        mut health_server,
+        indexer_cfg,
+        da_reachability_handle,
+    } = initialize_async_support_services(
+        config,
+        executor_config,
+        assertion_store,
+        health_bind_addr,
+        health_state.clone(),
+    )
+    .await?;
+
+    let should_shutdown = Box::pin(run_async_components(
+        &mut transport,
+        &mut health_server,
+        health_state.clone(),
+        indexer_cfg,
+        engine_exited,
+        seq_exited,
+        observer_exited_rx,
+    ))
+    .await;
+
+    shutdown_sidecar_runtime(
+        shutdown_flag,
+        transport,
+        health_server,
+        thread_handles,
+        da_reachability_handle,
+        health_state.as_ref(),
+    )
+    .await;
+
+    Ok(should_shutdown)
+}
+
+async fn initialize_sidecar_runtime(
+    config: &Config,
+    state_worker_restart_count: u64,
+    state_worker_restart_backoff: Duration,
+) -> anyhow::Result<SidecarRuntimeState> {
+    initialize_state_worker_runtime(
+        config,
+        state_worker_restart_count,
+        state_worker_restart_backoff,
+    );
     let sources = build_sources_from_config(config).await?;
     let state = Arc::new(Sources::new(sources, config.state.minimum_state_diff));
-    let cache: OverlayDb<Sources> = OverlayDb::new(Some(state.clone()));
+    let cache = OverlayDb::new(Some(state.clone()));
+    Ok(SidecarRuntimeState { state, cache })
+}
 
+fn initialize_health_runtime(
+    config: &Config,
+    health_state: &HealthState,
+) -> Option<TransactionObserverConfig> {
     let transaction_observer_config = transaction_observer_config_from(config);
-    health_state.set_transaction_observer_readiness(if transaction_observer_config.is_some() {
+    let observer_readiness = if transaction_observer_config.is_some() {
         TransactionObserverReadiness::Healthy
     } else {
         TransactionObserverReadiness::Disabled
-    });
+    };
+    health_state.set_transaction_observer_readiness(observer_readiness);
     health_state.set_assertion_da_readiness(AssertionDaReadiness::Unknown);
+    transaction_observer_config
+}
 
+fn initialize_sidecar_channels(
+    config: &Config,
+    transaction_observer_enabled: bool,
+) -> SidecarChannels {
     // Channel: Transport -> EventSequencing
     let (transport_tx_sender, event_sequencing_rx) = unbounded();
     // Channel: EventSequencing -> CoreEngine
     let (event_sequencing_tx, engine_rx) = unbounded();
     // Channel: CoreEngine -> TransactionObserver
-    let (incident_report_tx, incident_report_rx) = if transaction_observer_config.is_some() {
+    let (incident_report_tx, incident_report_rx) = if transaction_observer_enabled {
         let (tx, rx) = unbounded();
         (Some(tx), Some(rx))
     } else {
@@ -677,26 +829,46 @@ async fn run_sidecar_once(
     let accepted_txs_ttl = result_ttl(config);
     let engine_state_results =
         TransactionsState::with_result_sender_and_ttls(result_tx, accepted_txs_ttl);
-    let result_event_rx = Some(result_rx);
 
-    let mut transport = create_transport_from_args(
-        config,
+    SidecarChannels {
         transport_tx_sender,
-        engine_state_results.clone(),
-        result_event_rx,
-    )?;
+        event_sequencing_rx,
+        event_sequencing_tx,
+        engine_rx,
+        incident_report_tx,
+        incident_report_rx,
+        engine_state_results,
+        result_event_rx: Some(result_rx),
+    }
+}
 
-    // Spawn EventSequencing on a dedicated OS thread
+async fn spawn_sidecar_threads(
+    config: &Config,
+    shutdown_flag: Arc<AtomicBool>,
+    SidecarRuntimeState { state, cache }: SidecarRuntimeState,
+    SidecarChannels {
+        event_sequencing_rx,
+        event_sequencing_tx,
+        engine_rx,
+        incident_report_tx,
+        incident_report_rx,
+        engine_state_results,
+        ..
+    }: SidecarChannels,
+    assertion_executor: &AssertionExecutor,
+    health_state: Arc<HealthState>,
+    transaction_observer_config: Option<TransactionObserverConfig>,
+) -> anyhow::Result<SidecarThreads> {
+    let mut thread_handles = ThreadHandles::new();
     let event_sequencing = EventSequencing::new(event_sequencing_rx, event_sequencing_tx);
     let (seq_handle, seq_exited) = event_sequencing.spawn(Arc::clone(&shutdown_flag))?;
     thread_handles.event_sequencing = Some(seq_handle);
 
-    // Spawn CoreEngine on a dedicated OS thread
     let engine_config = CoreEngineConfig {
         transaction_results_max_capacity: config.credible.transaction_results_max_capacity,
         state_sources_sync_timeout: Duration::from_millis(config.state.sources_sync_timeout_ms),
         source_monitoring_period: Duration::from_millis(config.state.sources_monitoring_period_ms),
-        health_state: health_state.clone(),
+        health_state,
         overlay_cache_invalidation_every_block: config
             .credible
             .overlay_cache_invalidation_every_block
@@ -710,29 +882,58 @@ async fn run_sidecar_once(
         state,
         engine_rx,
         assertion_executor.clone(),
-        engine_state_results.clone(),
+        engine_state_results,
         engine_config,
     )
     .await;
     let (engine_handle, engine_exited) = engine.spawn(Arc::clone(&shutdown_flag))?;
     thread_handles.engine = Some(engine_handle);
 
-    let observer_exited_rx = if let (Some(transaction_observer_config), Some(incident_report_rx)) =
+    let observer_exited_rx = spawn_transaction_observer(
+        shutdown_flag,
+        transaction_observer_config,
+        incident_report_rx,
+    )?
+    .inspect(|_| tracing::info!("Transaction observer enabled"))
+    .map(|(observer_handle, observer_exited)| {
+        thread_handles.transaction_observer = Some(observer_handle);
+        observer_exited
+    });
+
+    Ok(SidecarThreads {
+        thread_handles,
+        engine_exited,
+        seq_exited,
+        observer_exited_rx,
+    })
+}
+
+fn spawn_transaction_observer(
+    shutdown_flag: Arc<AtomicBool>,
+    transaction_observer_config: Option<TransactionObserverConfig>,
+    incident_report_rx: Option<IncidentReportReceiver>,
+) -> anyhow::Result<Option<ObserverThread>> {
+    if let (Some(transaction_observer_config), Some(incident_report_rx)) =
         (transaction_observer_config, incident_report_rx)
     {
         let transaction_observer =
             TransactionObserver::new(transaction_observer_config, incident_report_rx)?;
-        let (observer_handle, observer_exited) =
-            transaction_observer.spawn(Arc::clone(&shutdown_flag))?;
-        thread_handles.transaction_observer = Some(observer_handle);
-        Some(observer_exited)
-    } else {
-        tracing::info!("Transaction observer disabled: missing config");
-        None
-    };
+        let observer_thread = transaction_observer.spawn(shutdown_flag)?;
+        return Ok(Some(observer_thread));
+    }
 
-    let mut health_server = HealthServer::new(health_bind_addr, health_state.clone());
+    tracing::info!("Transaction observer disabled: missing config");
+    Ok(None)
+}
 
+async fn initialize_async_support_services(
+    config: &Config,
+    executor_config: &assertion_executor::ExecutorConfig,
+    assertion_store: &assertion_executor::store::AssertionStore,
+    health_bind_addr: SocketAddr,
+    health_state: Arc<HealthState>,
+) -> anyhow::Result<AsyncSupportServices> {
+    let health_server = HealthServer::new(health_bind_addr, health_state.clone());
     let da_client = DaClient::new(&config.credible.assertion_da_rpc_url)?;
     let indexer_cfg = init_indexer_config(
         config,
@@ -741,52 +942,50 @@ async fn run_sidecar_once(
         da_client.clone(),
     )
     .await?;
-    let da_reachability_handle =
-        spawn_da_reachability_monitor(config, da_client, health_state.clone());
+    let da_reachability_handle = spawn_da_reachability_monitor(config, da_client, health_state);
 
-    let should_shutdown = Box::pin(run_async_components(
-        &mut transport,
-        &mut health_server,
-        health_state.clone(),
+    Ok(AsyncSupportServices {
+        health_server,
         indexer_cfg,
-        engine_exited,
-        seq_exited,
-        observer_exited_rx,
-    ))
-    .await;
+        da_reachability_handle,
+    })
+}
 
-    stop_da_reachability_monitor(da_reachability_handle, &health_state).await;
+async fn shutdown_sidecar_runtime(
+    shutdown_flag: Arc<AtomicBool>,
+    mut transport: GrpcTransport,
+    mut health_server: HealthServer,
+    mut thread_handles: ThreadHandles,
+    da_reachability_handle: tokio::task::JoinHandle<()>,
+    health_state: &HealthState,
+) {
+    stop_da_reachability_monitor(da_reachability_handle, health_state).await;
 
-    // Signal threads to stop
     tracing::info!("Signaling threads to shutdown...");
     shutdown_flag.store(true, Ordering::Relaxed);
 
-    // Cleanup async components
     transport.stop();
     health_server.stop();
     drop(transport);
     drop(health_server);
 
-    // Wait for threads
     thread_handles.join_all();
-
-    Ok(should_shutdown)
 }
 
-fn initialize_state_worker_runtime(config: &Config) {
-    state_worker_runtime_state().replace(initial_state_worker_runtime_snapshot(
+fn initialize_state_worker_runtime(config: &Config, restart_count: u64, restart_backoff: Duration) {
+    state_worker_runtime_state().replace(state_worker_runtime_snapshot(
+        restart_count,
+        restart_backoff,
         state_worker_available_head(config),
     ));
 }
 
-fn initial_state_worker_runtime_snapshot(durable_head: Option<u64>) -> StateWorkerRuntimeSnapshot {
-    StateWorkerRuntimeSnapshot {
-        restart_count: 0,
-        restart_backoff: Duration::ZERO,
-        traced_head: None,
-        flush_permitted_head: None,
-        durable_head,
-    }
+fn state_worker_runtime_snapshot(
+    restart_count: u64,
+    restart_backoff: Duration,
+    durable_head: Option<u64>,
+) -> StateWorkerRuntimeSnapshot {
+    StateWorkerRuntimeSnapshot::restart_snapshot(restart_count, restart_backoff, durable_head)
 }
 
 fn state_worker_available_head(config: &Config) -> Option<u64> {
@@ -818,17 +1017,17 @@ fn state_worker_mdbx_config(config: &Config) -> Option<(String, u8)> {
 
 #[cfg(test)]
 mod tests {
-    use super::initial_state_worker_runtime_snapshot;
+    use super::state_worker_runtime_snapshot;
     use std::time::Duration;
 
     #[test]
-    fn initial_state_worker_runtime_snapshot_only_seeds_durable_head() {
-        let snapshot = initial_state_worker_runtime_snapshot(Some(42));
+    fn state_worker_runtime_snapshot_publishes_supervisor_restart_state() {
+        let snapshot = state_worker_runtime_snapshot(3, Duration::from_secs(2), Some(42));
 
-        assert_eq!(snapshot.restart_count, 0);
-        assert_eq!(snapshot.restart_backoff, Duration::ZERO);
-        assert_eq!(snapshot.traced_head, None);
-        assert_eq!(snapshot.flush_permitted_head, None);
+        assert_eq!(snapshot.restart_count, 3);
+        assert_eq!(snapshot.restart_backoff, Duration::from_secs(2));
+        assert_eq!(snapshot.traced_head, Some(42));
+        assert_eq!(snapshot.flush_permitted_head, Some(42));
         assert_eq!(snapshot.durable_head, Some(42));
     }
 }
