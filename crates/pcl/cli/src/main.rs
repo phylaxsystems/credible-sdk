@@ -45,6 +45,9 @@ async fn main() -> Result<()> {
             Commands::Build(build_cmd) => {
                 build_cmd.run()?;
             }
+            Commands::Verify(verify_cmd) => {
+                verify_cmd.run(&cli.args)?;
+            }
         }
         config.write_to_file(&cli.args)?;
         Ok::<_, Report>(())

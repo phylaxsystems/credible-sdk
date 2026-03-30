@@ -11,8 +11,14 @@ repository.workspace = true
 pcl-common = { workspace = true }
 pcl-phoundry = { workspace = true }
 
+# assertion deps
+assertion-verification = { workspace = true }
+assertion-executor = { workspace = true }
+
 # alloy deps
 alloy-primitives = { workspace = true }
+alloy-json-abi = { workspace = true }
+alloy-dyn-abi = { workspace = true }
 
 # other workspace deps
 clap = { workspace = true }

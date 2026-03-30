@@ -5,6 +5,7 @@ use pcl_core::{
     apply::ApplyArgs,
     auth::AuthCommand,
     config::ConfigArgs,
+    verify::VerifyArgs,
 };
 use pcl_phoundry::{
     build::BuildArgs,
@@ -53,6 +54,8 @@ pub enum Commands {
     Config(ConfigArgs),
     #[command(name = "build")]
     Build(BuildArgs),
+    #[command(name = "verify")]
+    Verify(VerifyArgs),
 }
 
 #[cfg(test)]

@@ -1,3 +1,4 @@
+use crate::credible_config::CredibleConfigError;
 use pcl_phoundry::error::PhoundryError;
 use reqwest::Error as ReqwestError;
 use thiserror::Error;
@@ -49,6 +50,35 @@ pub enum ApplyError {
 
     #[error("JSON mode with pending changes requires `--yes`")]
     JsonConfirmationRequiresYes,
+
+    #[error("Failed to encode JSON output: {0}")]
+    Json(#[from] serde_json::Error),
+}
+
+impl From<CredibleConfigError> for ApplyError {
+    fn from(e: CredibleConfigError) -> Self {
+        Self::InvalidConfig(e.to_string())
+    }
+}
+
+/// Errors that can occur during assertion verification.
+#[derive(Error, Debug)]
+pub enum VerifyError {
+    #[error(transparent)]
+    Config(#[from] CredibleConfigError),
+
+    #[error("{message}: {source}")]
+    Io {
+        message: String,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("Build failed: {0}")]
+    BuildFailed(#[source] Box<PhoundryError>),
+
+    #[error("Failed to encode constructor arguments: {0}")]
+    AbiEncode(String),
 
     #[error("Failed to encode JSON output: {0}")]
     Json(#[from] serde_json::Error),
