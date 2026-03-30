@@ -7,10 +7,6 @@ use crate::{
     },
     error::ApplyError,
 };
-use chrono::{
-    DateTime,
-    Utc,
-};
 use clap::ValueHint;
 use dapp_api_client::generated::client::{
     Client as GeneratedClient,
@@ -92,32 +88,7 @@ struct ApplyJsonOutput {
     project_id: Uuid,
     preview: Value,
     applied: bool,
-    release: Option<ReleaseJsonOutput>,
-}
-
-/// Simplified release output for JSON mode (avoids exposing generated type details)
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ReleaseJsonOutput {
-    id: Uuid,
-    release_number: u64,
-    status: String,
-    previously_deployed: bool,
-    created_at: DateTime<Utc>,
-    review_url: String,
-}
-
-impl From<&PostProjectsProjectIdReleasesResponse> for ReleaseJsonOutput {
-    fn from(r: &PostProjectsProjectIdReleasesResponse) -> Self {
-        Self {
-            id: r.id,
-            release_number: u64::from(r.release_number),
-            status: r.status.to_string(),
-            previously_deployed: r.previously_deployed,
-            created_at: r.created_at,
-            review_url: r.review_url.clone(),
-        }
-    }
+    release: Option<PostProjectsProjectIdReleasesResponse>,
 }
 
 impl ApplyArgs {
@@ -165,7 +136,7 @@ impl ApplyArgs {
                     project_id,
                     preview,
                     applied: true,
-                    release: Some(ReleaseJsonOutput::from(&release)),
+                    release: Some(release),
                 })?
             );
             return Ok(());
