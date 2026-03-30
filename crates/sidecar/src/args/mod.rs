@@ -752,7 +752,9 @@ mod tests {
     use super::*;
     use std::{
         env,
+        fs,
         io::Write,
+        path::PathBuf,
         sync::Mutex,
     };
     use tempfile::NamedTempFile;
@@ -1583,6 +1585,42 @@ mod tests {
                     ws_url: "ws://rpc.example:8546".to_string(),
                     http_url: "http://rpc.example:8545".to_string(),
                 }
+            ]
+        );
+    }
+
+    #[test]
+    fn test_local_stack_config_does_not_advertise_integrated_worker_surface() {
+        let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let stack_config_path =
+            repo_root.join("docker/maru-besu-sidecar/config/credible-sidecar/grpc.config.json");
+        let host_script_path = repo_root.join("scripts/run-sidecar-host.sh");
+        let stack_config = fs::read_to_string(&stack_config_path).unwrap();
+        let host_script = fs::read_to_string(&host_script_path).unwrap();
+
+        assert!(
+            !stack_config.contains("\"integrated_worker\""),
+            "local stack config should only advertise state settings the sidecar parser resolves",
+        );
+        assert!(
+            !host_script.contains("SIDECAR_STATE_INTEGRATED_WORKER"),
+            "run-sidecar-host should only advertise environment variables the sidecar parser resolves",
+        );
+
+        let config = Config::from_file(&stack_config_path).unwrap();
+
+        assert!(!config.state.legacy.has_any());
+        assert_eq!(
+            config.state.sources,
+            vec![
+                StateSourceConfig::Mdbx {
+                    mdbx_path: "/var/lib/credible/state_worker.mdbx".to_string(),
+                    depth: 3,
+                },
+                StateSourceConfig::EthRpc {
+                    ws_url: "ws://sequencer:8546".to_string(),
+                    http_url: "http://sequencer:8545".to_string(),
+                },
             ]
         );
     }

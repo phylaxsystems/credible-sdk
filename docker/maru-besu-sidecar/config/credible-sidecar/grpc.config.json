@@ -29,17 +29,6 @@
     "health_bind_addr": "0.0.0.0:9547"
   },
   "state": {
-    "integrated_worker": {
-      "execution_ws_url": "ws://sequencer:8546",
-      "genesis_file_path": "/etc/credible-sidecar/genesis-besu.json",
-      "mdbx_path": "/var/lib/credible/state_worker.mdbx",
-      "depth": 3,
-      "buffer_capacity": 128,
-      "restart": {
-        "initial_backoff_ms": 1000,
-        "max_backoff_ms": 30000
-      }
-    },
     "sources": [
       {
         "type": "mdbx",
