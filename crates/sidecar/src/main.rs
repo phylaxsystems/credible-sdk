@@ -72,8 +72,15 @@ use sidecar::{
     },
     utils::ErrorRecoverability,
 };
+use state_worker::runtime::{
+    RuntimeObserver,
+    StateWorkerRuntimeConfig,
+    run_supervisor,
+};
 use std::{
+    env,
     net::SocketAddr,
+    path::Path,
     sync::{
         Arc,
         atomic::{
@@ -81,11 +88,13 @@ use std::{
             Ordering,
         },
     },
+    thread,
     thread::JoinHandle,
     time::Duration,
 };
 use tracing::{
     error,
+    info,
     warn,
 };
 
@@ -99,6 +108,9 @@ struct SidecarInfo {
 }
 
 const STATE_WORKER_RESTART_BACKOFF: Duration = Duration::from_secs(1);
+const DEFAULT_HOST_GENESIS_PATH: &str =
+    "docker/maru-besu-sidecar/config/l2-genesis-initialization/genesis-besu.json";
+const DEFAULT_CONTAINER_GENESIS_PATH: &str = "/etc/credible-sidecar/genesis-besu.json";
 
 #[cfg(feature = "dhat-heap")]
 #[global_allocator]
@@ -132,8 +144,6 @@ async fn main() -> anyhow::Result<()> {
     let assertion_executor =
         AssertionExecutor::new(executor_config.clone(), assertion_store.clone());
     let health_bind_addr: SocketAddr = config.transport.health_bind_addr.parse()?;
-    let mut state_worker_restart_count = 0_u64;
-    let mut state_worker_restart_backoff = Duration::ZERO;
 
     loop {
         let should_shutdown = Box::pin(run_sidecar_once(
@@ -141,8 +151,6 @@ async fn main() -> anyhow::Result<()> {
             &executor_config,
             &assertion_store,
             &assertion_executor,
-            state_worker_restart_count,
-            state_worker_restart_backoff,
             health_bind_addr,
         ))
         .await?;
@@ -151,17 +159,12 @@ async fn main() -> anyhow::Result<()> {
             break;
         }
 
-        state_worker_restart_count = state_worker_restart_count.saturating_add(1);
-        state_worker_restart_backoff = STATE_WORKER_RESTART_BACKOFF;
-        state_worker_runtime_state()
-            .set_restart_state(state_worker_restart_count, state_worker_restart_backoff);
         counter!("sidecar_restarts_total").increment(1);
         tracing::warn!(
-            state_worker_restart_count,
-            state_worker_restart_backoff_seconds = state_worker_restart_backoff.as_secs_f64(),
+            state_worker_restart_backoff_seconds = STATE_WORKER_RESTART_BACKOFF.as_secs_f64(),
             "Sidecar restarting..."
         );
-        tokio::time::sleep(state_worker_restart_backoff).await;
+        tokio::time::sleep(STATE_WORKER_RESTART_BACKOFF).await;
     }
 
     tracing::info!("Sidecar shutdown complete.");
@@ -296,6 +299,8 @@ fn create_transport_from_args(
 
 /// Holds handles to spawned threads for graceful shutdown
 struct ThreadHandles {
+    state_worker: Option<JoinHandle<anyhow::Result<()>>>,
+    state_worker_shutdown_tx: Option<tokio::sync::broadcast::Sender<()>>,
     engine: Option<JoinHandle<Result<(), sidecar::engine::EngineError>>>,
     event_sequencing:
         Option<JoinHandle<Result<(), sidecar::event_sequencing::EventSequencingError>>>,
@@ -306,6 +311,8 @@ struct ThreadHandles {
 impl ThreadHandles {
     fn new() -> Self {
         Self {
+            state_worker: None,
+            state_worker_shutdown_tx: None,
             engine: None,
             event_sequencing: None,
             transaction_observer: None,
@@ -313,6 +320,18 @@ impl ThreadHandles {
     }
 
     fn join_all(&mut self) {
+        if let Some(shutdown_tx) = self.state_worker_shutdown_tx.take() {
+            let _ = shutdown_tx.send(());
+        }
+        if let Some(handle) = self.state_worker.take() {
+            match handle.join() {
+                Ok(Ok(())) => tracing::info!("State worker thread exited cleanly"),
+                Ok(Err(err)) => {
+                    tracing::error!(error = ?err, "State worker thread exited with error")
+                }
+                Err(_) => tracing::error!("State worker thread panicked"),
+            }
+        }
         if let Some(handle) = self.engine.take() {
             match handle.join() {
                 Ok(Ok(())) => tracing::info!("Engine thread exited cleanly"),
@@ -659,6 +678,7 @@ async fn stop_da_reachability_monitor(
 struct SidecarRuntimeState {
     state: Arc<Sources>,
     cache: OverlayDb<Sources>,
+    state_worker: Option<StateWorkerRuntimeConfig>,
 }
 
 struct SidecarChannels {
@@ -701,8 +721,6 @@ async fn run_sidecar_once(
     executor_config: &assertion_executor::ExecutorConfig,
     assertion_store: &assertion_executor::store::AssertionStore,
     assertion_executor: &AssertionExecutor,
-    state_worker_restart_count: u64,
-    state_worker_restart_backoff: Duration,
     health_bind_addr: SocketAddr,
 ) -> anyhow::Result<bool> {
     let health_state = Arc::new(HealthState::default());
@@ -710,12 +728,7 @@ async fn run_sidecar_once(
     // Shared shutdown flag for this iteration
     let shutdown_flag = Arc::new(AtomicBool::new(false));
 
-    let runtime_state = initialize_sidecar_runtime(
-        config,
-        state_worker_restart_count,
-        state_worker_restart_backoff,
-    )
-    .await?;
+    let runtime_state = initialize_sidecar_runtime(config).await?;
     let transaction_observer_config = initialize_health_runtime(config, health_state.as_ref());
     let mut channels = initialize_sidecar_channels(config, transaction_observer_config.is_some());
 
@@ -778,20 +791,17 @@ async fn run_sidecar_once(
     Ok(should_shutdown)
 }
 
-async fn initialize_sidecar_runtime(
-    config: &Config,
-    state_worker_restart_count: u64,
-    state_worker_restart_backoff: Duration,
-) -> anyhow::Result<SidecarRuntimeState> {
-    initialize_state_worker_runtime(
-        config,
-        state_worker_restart_count,
-        state_worker_restart_backoff,
-    );
+async fn initialize_sidecar_runtime(config: &Config) -> anyhow::Result<SidecarRuntimeState> {
+    initialize_state_worker_runtime(config);
     let sources = build_sources_from_config(config).await?;
     let state = Arc::new(Sources::new(sources, config.state.minimum_state_diff));
     let cache = OverlayDb::new(Some(state.clone()));
-    Ok(SidecarRuntimeState { state, cache })
+    let state_worker = integrated_state_worker_config(config)?;
+    Ok(SidecarRuntimeState {
+        state,
+        cache,
+        state_worker,
+    })
 }
 
 fn initialize_health_runtime(
@@ -845,7 +855,11 @@ fn initialize_sidecar_channels(
 async fn spawn_sidecar_threads(
     config: &Config,
     shutdown_flag: Arc<AtomicBool>,
-    SidecarRuntimeState { state, cache }: SidecarRuntimeState,
+    SidecarRuntimeState {
+        state,
+        cache,
+        state_worker,
+    }: SidecarRuntimeState,
     SidecarChannels {
         event_sequencing_rx,
         event_sequencing_tx,
@@ -860,6 +874,10 @@ async fn spawn_sidecar_threads(
     transaction_observer_config: Option<TransactionObserverConfig>,
 ) -> anyhow::Result<SidecarThreads> {
     let mut thread_handles = ThreadHandles::new();
+    if let Some((handle, shutdown_tx)) = spawn_state_worker_supervisor(state_worker)? {
+        thread_handles.state_worker = Some(handle);
+        thread_handles.state_worker_shutdown_tx = Some(shutdown_tx);
+    }
     let event_sequencing = EventSequencing::new(event_sequencing_rx, event_sequencing_tx);
     let (seq_handle, seq_exited) = event_sequencing.spawn(Arc::clone(&shutdown_flag))?;
     thread_handles.event_sequencing = Some(seq_handle);
@@ -972,12 +990,35 @@ async fn shutdown_sidecar_runtime(
     thread_handles.join_all();
 }
 
-fn initialize_state_worker_runtime(config: &Config, restart_count: u64, restart_backoff: Duration) {
+fn initialize_state_worker_runtime(config: &Config) {
     state_worker_runtime_state().replace(state_worker_runtime_snapshot(
-        restart_count,
-        restart_backoff,
+        0,
+        Duration::ZERO,
         state_worker_available_head(config),
     ));
+}
+
+fn integrated_state_worker_config(
+    config: &Config,
+) -> anyhow::Result<Option<StateWorkerRuntimeConfig>> {
+    let Some((mdbx_path, depth)) = state_worker_mdbx_config(config) else {
+        return Ok(None);
+    };
+    let Some(ws_url) = state_worker_ws_url(config) else {
+        return Ok(None);
+    };
+    let Some(genesis_path) = integrated_state_worker_genesis_path() else {
+        warn!("State worker genesis file was not found; integrated worker will stay disabled");
+        return Ok(None);
+    };
+
+    Ok(Some(StateWorkerRuntimeConfig {
+        ws_url,
+        mdbx_path,
+        start_block: None,
+        state_depth: depth,
+        genesis_path,
+    }))
 }
 
 fn state_worker_runtime_snapshot(
@@ -1015,9 +1056,97 @@ fn state_worker_mdbx_config(config: &Config) -> Option<(String, u8)> {
     })
 }
 
+fn state_worker_ws_url(config: &Config) -> Option<String> {
+    if config.state.sources.is_empty() {
+        return config.state.legacy.eth_rpc_source_ws_url.clone();
+    }
+
+    config.state.sources.iter().find_map(|source| {
+        match source {
+            StateSourceConfig::EthRpc { ws_url, .. } => Some(ws_url.clone()),
+            StateSourceConfig::Mdbx { .. } => None,
+        }
+    })
+}
+
+fn integrated_state_worker_genesis_path() -> Option<String> {
+    [
+        env::var("SIDECAR_STATE_WORKER_FILE_TO_GENESIS").ok(),
+        env::var("STATE_WORKER_FILE_TO_GENESIS").ok(),
+        existing_path(DEFAULT_CONTAINER_GENESIS_PATH),
+        repo_relative_existing_path(DEFAULT_HOST_GENESIS_PATH),
+    ]
+    .into_iter()
+    .flatten()
+    .find(|path| Path::new(path).exists())
+}
+
+fn existing_path(path: &str) -> Option<String> {
+    Path::new(path).exists().then(|| path.to_string())
+}
+
+fn repo_relative_existing_path(path: &str) -> Option<String> {
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let candidate = repo_root.join(path);
+    candidate.exists().then(|| candidate.display().to_string())
+}
+
+struct SidecarStateWorkerObserver;
+
+impl RuntimeObserver for SidecarStateWorkerObserver {
+    fn on_restart_state(&self, restart_count: u64, restart_backoff: Duration) {
+        state_worker_runtime_state().set_restart_state(restart_count, restart_backoff);
+    }
+
+    fn on_traced_head(&self, block_number: u64) {
+        state_worker_runtime_state().set_traced_head(Some(block_number));
+    }
+
+    fn on_flush_permitted_head(&self, block_number: u64) {
+        state_worker_runtime_state().set_flush_permitted_head(Some(block_number));
+    }
+
+    fn on_durable_head(&self, block_number: u64) {
+        state_worker_runtime_state().set_durable_head(Some(block_number));
+    }
+}
+
+fn spawn_state_worker_supervisor(
+    config: Option<StateWorkerRuntimeConfig>,
+) -> anyhow::Result<
+    Option<(
+        JoinHandle<anyhow::Result<()>>,
+        tokio::sync::broadcast::Sender<()>,
+    )>,
+> {
+    let Some(config) = config else {
+        info!("Integrated state worker disabled: missing runtime configuration");
+        return Ok(None);
+    };
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
+    let handle = thread::Builder::new()
+        .name("sidecar-state-worker".to_string())
+        .spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(run_supervisor(
+                &config,
+                shutdown_rx,
+                Arc::new(SidecarStateWorkerObserver),
+            ))
+        })?;
+
+    Ok(Some((handle, shutdown_tx)))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::state_worker_runtime_snapshot;
+    use super::{
+        integrated_state_worker_genesis_path,
+        state_worker_runtime_snapshot,
+    };
     use std::time::Duration;
 
     #[test]
@@ -1029,5 +1158,15 @@ mod tests {
         assert_eq!(snapshot.traced_head, Some(42));
         assert_eq!(snapshot.flush_permitted_head, Some(42));
         assert_eq!(snapshot.durable_head, Some(42));
+    }
+
+    #[test]
+    fn integrated_state_worker_genesis_path_falls_back_to_repo_fixture() {
+        let path = integrated_state_worker_genesis_path().expect("missing genesis path");
+        assert!(
+            path.ends_with(
+                "docker/maru-besu-sidecar/config/l2-genesis-initialization/genesis-besu.json"
+            ) || path == "/etc/credible-sidecar/genesis-besu.json"
+        );
     }
 }

@@ -6,6 +6,7 @@
 use crate::{
     genesis::GenesisState,
     metrics,
+    runtime::RuntimeObserver,
     state::{
         BlockStateUpdateBuilder,
         TraceProvider,
@@ -58,6 +59,7 @@ where
     writer_reader: WR,
     genesis_state: Option<GenesisState>,
     system_calls: SystemCalls,
+    observer: Arc<dyn RuntimeObserver>,
 }
 
 impl<WR> StateWorker<WR>
@@ -72,6 +74,7 @@ where
         writer_reader: WR,
         genesis_state: Option<GenesisState>,
         system_calls: SystemCalls,
+        observer: Arc<dyn RuntimeObserver>,
     ) -> Self {
         Self {
             provider,
@@ -79,6 +82,7 @@ where
             writer_reader,
             genesis_state,
             system_calls,
+            observer,
         }
     }
 
@@ -281,13 +285,20 @@ where
             }
         };
 
+        metrics::set_traced_head(block_number);
+        self.observer.on_traced_head(block_number);
+
         // Apply system call state changes (EIP-2935 & EIP-4788)
         self.apply_system_calls(&mut update, block_number).await?;
+        metrics::set_flush_permitted_head(block_number);
+        self.observer.on_flush_permitted_head(block_number);
 
         match self.writer_reader.commit_block(&update) {
             Ok(stats) => {
                 metrics::set_db_healthy(true);
                 metrics::record_commit(block_number, &stats);
+                metrics::set_durable_head(block_number);
+                self.observer.on_durable_head(block_number);
             }
             Err(err) => {
                 critical!(error = ?err, block_number, "failed to persist block");
@@ -402,11 +413,17 @@ where
             block.header.state_root,
             accounts,
         );
+        metrics::set_traced_head(0);
+        self.observer.on_traced_head(0);
+        metrics::set_flush_permitted_head(0);
+        self.observer.on_flush_permitted_head(0);
 
         match self.writer_reader.commit_block(&update) {
             Ok(stats) => {
                 metrics::set_db_healthy(true);
                 metrics::record_commit(0, &stats);
+                metrics::set_durable_head(0);
+                self.observer.on_durable_head(0);
             }
             Err(err) => {
                 critical!(error = ?err, block_number = 0, "failed to persist genesis block");

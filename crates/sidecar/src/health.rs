@@ -148,10 +148,7 @@ impl HealthState {
         let readiness = self.readiness_snapshot();
         let runtime = self.runtime.read().clone();
         let runtime_degraded = matches!(runtime.assertion_da, AssertionDaReadiness::Unreachable)
-            || matches!(
-                runtime.transaction_observer,
-                TransactionObserverReadiness::Disabled | TransactionObserverReadiness::Failed
-            )
+            || matches!(runtime.transaction_observer, TransactionObserverReadiness::Failed)
             || !runtime.failed_components.is_empty();
 
         ReadySnapshot {
@@ -173,7 +170,7 @@ fn readiness_status(snapshot: &ReadySnapshot) -> StatusCode {
     }
 }
 
-/// Health endpoint, used to signal sidecar readiness
+/// Health endpoint, used to signal sidecar process liveness
 #[derive(Debug)]
 pub struct HealthServer {
     bind_addr: SocketAddr,
@@ -240,8 +237,8 @@ impl HealthServer {
 
 #[instrument(name = "health_server::health", skip(health_state), level = "trace")]
 async fn health(State(health_state): State<Arc<HealthState>>) -> (StatusCode, &'static str) {
-    let snapshot = health_state.ready_snapshot();
-    (readiness_status(&snapshot), HEALTH_RESPONSE_BODY)
+    let _ = health_state;
+    (StatusCode::OK, HEALTH_RESPONSE_BODY)
 }
 
 #[instrument(name = "health_server::ready", skip(health_state), level = "trace")]
@@ -269,8 +266,10 @@ mod tests {
         WorkerReadiness,
         health,
         readiness_status,
+        ready,
     };
     use axum::{
+        Json,
         extract::State,
         http::StatusCode,
     };
@@ -329,7 +328,61 @@ mod tests {
     }
 
     #[test]
-    fn ready_snapshot_marks_runtime_degraded_when_da_is_unreachable_and_observer_disabled() {
+    fn ready_snapshot_keeps_runtime_healthy_when_observer_is_disabled() {
+        let state = HealthState::default();
+        state.update_readiness(ReadinessSnapshot {
+            ready: true,
+            fallback_active: false,
+            worker: WorkerReadiness::Healthy,
+            required_head: 128,
+            minimum_synced_block: 120,
+            sources: vec![
+                SourceReadinessSnapshot::new("StateWorker", true),
+                SourceReadinessSnapshot::new("EthRpcSource", true),
+            ],
+        });
+        state.set_transaction_observer_readiness(TransactionObserverReadiness::Disabled);
+
+        let snapshot = state.ready_snapshot();
+
+        assert_eq!(readiness_status(&snapshot), StatusCode::OK);
+        assert!(snapshot.readiness.ready);
+        assert!(!snapshot.degraded);
+        assert_eq!(
+            snapshot.runtime.transaction_observer,
+            TransactionObserverReadiness::Disabled
+        );
+    }
+
+    #[test]
+    fn ready_snapshot_marks_runtime_degraded_when_observer_fails() {
+        let state = HealthState::default();
+        state.update_readiness(ReadinessSnapshot {
+            ready: true,
+            fallback_active: false,
+            worker: WorkerReadiness::Healthy,
+            required_head: 128,
+            minimum_synced_block: 120,
+            sources: vec![
+                SourceReadinessSnapshot::new("StateWorker", true),
+                SourceReadinessSnapshot::new("EthRpcSource", true),
+            ],
+        });
+        state.set_transaction_observer_readiness(TransactionObserverReadiness::Failed);
+
+        let snapshot = state.ready_snapshot();
+
+        assert_eq!(readiness_status(&snapshot), StatusCode::OK);
+        assert!(snapshot.readiness.ready);
+        assert!(snapshot.degraded);
+        assert_eq!(
+            snapshot.runtime.transaction_observer,
+            TransactionObserverReadiness::Failed
+        );
+    }
+
+    #[test]
+    fn ready_snapshot_marks_runtime_degraded_when_da_is_unreachable() {
         let state = HealthState::default();
         state.update_readiness(ReadinessSnapshot {
             ready: true,
@@ -343,7 +396,6 @@ mod tests {
             ],
         });
         state.set_assertion_da_readiness(AssertionDaReadiness::Unreachable);
-        state.set_transaction_observer_readiness(TransactionObserverReadiness::Disabled);
 
         let snapshot = state.ready_snapshot();
 
@@ -353,10 +405,6 @@ mod tests {
         assert_eq!(
             snapshot.runtime.assertion_da,
             AssertionDaReadiness::Unreachable
-        );
-        assert_eq!(
-            snapshot.runtime.transaction_observer,
-            TransactionObserverReadiness::Disabled
         );
     }
 
@@ -385,7 +433,64 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn health_endpoint_uses_readiness_status_when_no_source_is_ready() {
+    async fn health_endpoint_reports_liveness_when_runtime_is_healthy() {
+        let health_state = Arc::new(HealthState::default());
+        health_state.update_readiness(ReadinessSnapshot {
+            ready: true,
+            fallback_active: false,
+            worker: WorkerReadiness::Healthy,
+            required_head: 256,
+            minimum_synced_block: 248,
+            sources: vec![
+                SourceReadinessSnapshot::new("StateWorker", true),
+                SourceReadinessSnapshot::new("EthRpcSource", true),
+            ],
+        });
+
+        let (health_status, health_body) = health(State(health_state.clone())).await;
+        let (ready_status, Json(snapshot)) = ready(State(health_state)).await;
+
+        assert_eq!(health_status, StatusCode::OK);
+        assert_eq!(health_body, HEALTH_RESPONSE_BODY);
+        assert_eq!(ready_status, StatusCode::OK);
+        assert!(snapshot.readiness.ready);
+        assert!(!snapshot.degraded);
+    }
+
+    #[tokio::test]
+    async fn health_endpoint_reports_liveness_when_runtime_is_degraded() {
+        let health_state = Arc::new(HealthState::default());
+        health_state.update_readiness(ReadinessSnapshot {
+            ready: true,
+            fallback_active: true,
+            worker: WorkerReadiness::Degraded,
+            required_head: 256,
+            minimum_synced_block: 248,
+            sources: vec![
+                SourceReadinessSnapshot::new("StateWorker", false),
+                SourceReadinessSnapshot::new("EthRpcSource", true),
+            ],
+        });
+        health_state.set_assertion_da_readiness(AssertionDaReadiness::Unreachable);
+
+        let (health_status, health_body) = health(State(health_state.clone())).await;
+        let (ready_status, Json(snapshot)) = ready(State(health_state)).await;
+
+        assert_eq!(health_status, StatusCode::OK);
+        assert_eq!(health_body, HEALTH_RESPONSE_BODY);
+        assert_eq!(ready_status, StatusCode::OK);
+        assert!(snapshot.readiness.ready);
+        assert!(snapshot.degraded);
+        assert!(snapshot.readiness.fallback_active);
+        assert_eq!(snapshot.readiness.worker, WorkerReadiness::Degraded);
+        assert_eq!(
+            snapshot.runtime.assertion_da,
+            AssertionDaReadiness::Unreachable
+        );
+    }
+
+    #[tokio::test]
+    async fn health_endpoint_reports_liveness_when_runtime_is_unready() {
         let health_state = Arc::new(HealthState::default());
         health_state.update_readiness(ReadinessSnapshot {
             ready: false,
@@ -399,9 +504,13 @@ mod tests {
             ],
         });
 
-        let (status, body) = health(State(health_state)).await;
+        let (health_status, health_body) = health(State(health_state.clone())).await;
+        let (ready_status, Json(snapshot)) = ready(State(health_state)).await;
 
-        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
-        assert_eq!(body, HEALTH_RESPONSE_BODY);
+        assert_eq!(health_status, StatusCode::OK);
+        assert_eq!(health_body, HEALTH_RESPONSE_BODY);
+        assert_eq!(ready_status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(!snapshot.readiness.ready);
+        assert!(snapshot.degraded);
     }
 }
