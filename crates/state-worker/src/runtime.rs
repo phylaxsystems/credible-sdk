@@ -30,11 +30,22 @@ use mdbx::{
     common::CircularBufferConfig,
 };
 use std::{
+    any::{
+        Any,
+        TypeId,
+    },
     panic::AssertUnwindSafe,
-    sync::Arc,
+    sync::{
+        Arc,
+        Mutex,
+        OnceLock,
+    },
     time::Duration,
 };
-use tokio::sync::broadcast;
+use tokio::sync::{
+    broadcast,
+    watch,
+};
 use tracing::{
     info,
     warn,
@@ -42,6 +53,7 @@ use tracing::{
 
 const RESTART_BACKOFF: Duration = Duration::from_secs(1);
 const TRACE_TIMEOUT: Duration = Duration::from_secs(30);
+static COMMIT_PERMIT_GATE: OnceLock<Mutex<Option<Arc<CommitPermitGate>>>> = OnceLock::new();
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StateWorkerRuntimeConfig {
@@ -52,7 +64,7 @@ pub struct StateWorkerRuntimeConfig {
     pub genesis_path: String,
 }
 
-pub trait RuntimeObserver: Send + Sync + 'static {
+pub trait RuntimeObserver: Any + Send + Sync + 'static {
     fn on_restart_state(&self, _restart_count: u64, _restart_backoff: Duration) {}
 
     fn on_traced_head(&self, _block_number: u64) {}
@@ -66,6 +78,81 @@ pub trait RuntimeObserver: Send + Sync + 'static {
 pub struct NoopRuntimeObserver;
 
 impl RuntimeObserver for NoopRuntimeObserver {}
+
+#[derive(Debug)]
+pub struct CommitPermitGate {
+    permitted_head_tx: watch::Sender<Option<u64>>,
+}
+
+impl Default for CommitPermitGate {
+    fn default() -> Self {
+        let (permitted_head_tx, _) = watch::channel(None);
+        Self { permitted_head_tx }
+    }
+}
+
+impl CommitPermitGate {
+    pub fn subscribe(&self) -> watch::Receiver<Option<u64>> {
+        self.permitted_head_tx.subscribe()
+    }
+
+    pub fn grant_flush_permission(&self, block_number: u64) {
+        if self
+            .permitted_head_tx
+            .borrow()
+            .is_some_and(|permitted_head| permitted_head >= block_number)
+        {
+            return;
+        }
+
+        let _ = self.permitted_head_tx.send(Some(block_number));
+    }
+}
+
+pub fn ensure_commit_permit_gate() -> Arc<CommitPermitGate> {
+    let mut slot = commit_permit_gate_slot()
+        .lock()
+        .expect("commit permit gate mutex poisoned");
+
+    if let Some(gate) = slot.as_ref() {
+        return Arc::clone(gate);
+    }
+
+    let gate = Arc::new(CommitPermitGate::default());
+    *slot = Some(Arc::clone(&gate));
+    gate
+}
+
+pub fn grant_flush_permission(block_number: u64) {
+    if let Some(gate) = current_commit_permit_gate() {
+        gate.grant_flush_permission(block_number);
+    }
+}
+
+pub(crate) fn commit_permit_gate_for_observer(
+    observer: &dyn RuntimeObserver,
+) -> Option<Arc<CommitPermitGate>> {
+    (observer.type_id() != TypeId::of::<NoopRuntimeObserver>()).then(ensure_commit_permit_gate)
+}
+
+fn current_commit_permit_gate() -> Option<Arc<CommitPermitGate>> {
+    commit_permit_gate_slot()
+        .lock()
+        .expect("commit permit gate mutex poisoned")
+        .as_ref()
+        .map(Arc::clone)
+}
+
+fn commit_permit_gate_slot() -> &'static Mutex<Option<Arc<CommitPermitGate>>> {
+    COMMIT_PERMIT_GATE.get_or_init(|| Mutex::new(None))
+}
+
+#[cfg(test)]
+fn reset_commit_permit_gate() {
+    *commit_permit_gate_slot()
+        .lock()
+        .expect("commit permit gate mutex poisoned") = None;
+}
 
 pub async fn run_supervisor(
     config: &StateWorkerRuntimeConfig,
@@ -282,4 +369,41 @@ where
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Debug)]
+    struct TestObserver;
+
+    impl RuntimeObserver for TestObserver {}
+
+    #[test]
+    fn noop_observer_does_not_install_commit_gate() {
+        reset_commit_permit_gate();
+
+        assert!(commit_permit_gate_for_observer(&NoopRuntimeObserver).is_none());
+        assert!(current_commit_permit_gate().is_none());
+    }
+
+    #[test]
+    fn flush_permissions_advance_monotonically() {
+        reset_commit_permit_gate();
+
+        let gate =
+            commit_permit_gate_for_observer(&TestObserver).expect("test observer should install");
+        let permission_rx = gate.subscribe();
+        assert_eq!(*permission_rx.borrow(), None);
+
+        grant_flush_permission(7);
+        assert_eq!(*permission_rx.borrow(), Some(7));
+
+        grant_flush_permission(4);
+        assert_eq!(*permission_rx.borrow(), Some(7));
+
+        grant_flush_permission(9);
+        assert_eq!(*permission_rx.borrow(), Some(9));
+    }
 }

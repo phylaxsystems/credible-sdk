@@ -98,6 +98,10 @@ use assertion_executor::{
     },
 };
 use revm::state::EvmState;
+use state_worker::runtime::{
+    ensure_commit_permit_gate,
+    grant_flush_permission,
+};
 use std::{
     fmt::Debug,
     sync::{
@@ -615,6 +619,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         let assertion_failure_cache = moka::sync::Cache::builder()
             .max_capacity(ASSERTION_FAILURE_CACHE_SIZE)
             .build();
+        let _ = ensure_commit_permit_gate();
 
         Self {
             cache_metrics_handle: Some(cache.spawn_monitoring_thread()),
@@ -1639,6 +1644,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
                 block_processing_time,
             );
             self.first_commit_head_processed = true;
+            grant_flush_permission(commit_head.block_number.saturating_to::<u64>());
             return Ok(());
         }
 
@@ -1708,6 +1714,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
         );
         self.current_block_iterations.clear();
         self.first_commit_head_processed = true;
+        grant_flush_permission(commit_head.block_number.saturating_to::<u64>());
 
         debug!(
             target = "engine",

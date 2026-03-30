@@ -6,7 +6,11 @@
 use crate::{
     genesis::GenesisState,
     metrics,
-    runtime::RuntimeObserver,
+    runtime::{
+        CommitPermitGate,
+        RuntimeObserver,
+        commit_permit_gate_for_observer,
+    },
     state::{
         BlockStateUpdateBuilder,
         TraceProvider,
@@ -60,6 +64,7 @@ where
     genesis_state: Option<GenesisState>,
     system_calls: SystemCalls,
     observer: Arc<dyn RuntimeObserver>,
+    flush_gate: Option<Arc<CommitPermitGate>>,
 }
 
 impl<WR> StateWorker<WR>
@@ -82,6 +87,7 @@ where
             writer_reader,
             genesis_state,
             system_calls,
+            flush_gate: commit_permit_gate_for_observer(observer.as_ref()),
             observer,
         }
     }
@@ -197,7 +203,9 @@ where
 
             while *next_block <= head {
                 // Process the block fully before checking shutdown
-                self.process_block(*next_block).await?;
+                if self.process_block(*next_block, shutdown_rx).await? {
+                    return Ok(true);
+                }
                 *next_block += 1;
                 Self::update_sync_metrics(*next_block, head);
 
@@ -254,7 +262,10 @@ where
                             }
 
                             while *next_block <= block_number {
-                                self.process_block(*next_block).await?;
+                                if self.process_block(*next_block, shutdown_rx).await? {
+                                    info!("Shutdown signal received while awaiting flush permission");
+                                    return Ok(());
+                                }
                                 *next_block += 1;
                                 Self::update_sync_metrics(*next_block, block_number);
                             }
@@ -269,11 +280,15 @@ where
     }
 
     /// Pull, trace, and persist a single block.
-    async fn process_block(&mut self, block_number: u64) -> Result<()> {
+    async fn process_block(
+        &mut self,
+        block_number: u64,
+        shutdown_rx: &mut broadcast::Receiver<()>,
+    ) -> Result<bool> {
         info!(block_number, "processing block");
 
         if block_number == 0 && self.genesis_state.is_some() {
-            return self.process_genesis_block().await;
+            return self.process_genesis_block(shutdown_rx).await;
         }
 
         let mut update = match self.trace_provider.fetch_block_state(block_number).await {
@@ -290,8 +305,12 @@ where
 
         // Apply system call state changes (EIP-2935 & EIP-4788)
         self.apply_system_calls(&mut update, block_number).await?;
-        metrics::set_flush_permitted_head(block_number);
-        self.observer.on_flush_permitted_head(block_number);
+        if self
+            .await_flush_permission(block_number, shutdown_rx)
+            .await?
+        {
+            return Ok(true);
+        }
 
         match self.writer_reader.commit_block(&update) {
             Ok(stats) => {
@@ -309,7 +328,42 @@ where
         }
 
         info!(block_number, "block persisted to database");
-        Ok(())
+        Ok(false)
+    }
+
+    async fn await_flush_permission(
+        &self,
+        block_number: u64,
+        shutdown_rx: &mut broadcast::Receiver<()>,
+    ) -> Result<bool> {
+        let Some(flush_gate) = self.flush_gate.as_ref() else {
+            metrics::set_flush_permitted_head(block_number);
+            self.observer.on_flush_permitted_head(block_number);
+            return Ok(false);
+        };
+
+        let mut permission_rx = flush_gate.subscribe();
+
+        loop {
+            if permission_rx
+                .borrow()
+                .is_some_and(|permitted_head| permitted_head >= block_number)
+            {
+                metrics::set_flush_permitted_head(block_number);
+                self.observer.on_flush_permitted_head(block_number);
+                return Ok(false);
+            }
+
+            tokio::select! {
+                _ = shutdown_rx.recv() => {
+                    info!(block_number, "shutdown received while waiting for flush permission");
+                    return Ok(true);
+                }
+                changed = permission_rx.changed() => {
+                    changed.context("commit permit gate closed unexpectedly")?;
+                }
+            }
+        }
     }
 
     /// Apply EIP-2935 and EIP-4788 system call state changes
@@ -367,10 +421,13 @@ where
     }
 
     /// Process block 0 using the configured genesis state
-    async fn process_genesis_block(&mut self) -> Result<()> {
+    async fn process_genesis_block(
+        &mut self,
+        shutdown_rx: &mut broadcast::Receiver<()>,
+    ) -> Result<bool> {
         let Some(genesis) = self.genesis_state.take() else {
             warn!("no genesis state configured; skipping genesis hydration");
-            return Ok(());
+            return Ok(false);
         };
 
         let already_exists = match self.writer_reader.latest_block_number() {
@@ -388,14 +445,14 @@ where
 
         if already_exists {
             info!("block 0 already exists in database; skipping genesis hydration");
-            return Ok(());
+            return Ok(false);
         }
 
         let accounts = genesis.into_accounts();
 
         if accounts.is_empty() {
             warn!("genesis file contained no accounts; skipping hydration");
-            return Ok(());
+            return Ok(false);
         }
 
         // Fetch genesis block header to get hash and state root
@@ -415,8 +472,9 @@ where
         );
         metrics::set_traced_head(0);
         self.observer.on_traced_head(0);
-        metrics::set_flush_permitted_head(0);
-        self.observer.on_flush_permitted_head(0);
+        if self.await_flush_permission(0, shutdown_rx).await? {
+            return Ok(true);
+        }
 
         match self.writer_reader.commit_block(&update) {
             Ok(stats) => {
@@ -434,6 +492,6 @@ where
         }
 
         info!(block_number = 0, "genesis block persisted to database");
-        Ok(())
+        Ok(false)
     }
 }
