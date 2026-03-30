@@ -50,12 +50,10 @@ impl FlushControl {
         self.notify.notified().await;
     }
 
-    pub fn notify_waiters(&self) {
-        self.notify.notify_waiters();
-    }
-
     #[inline]
     /// Shift block number into "set" space so `0` remains the sentinel for "never set".
+    ///
+    /// This encoding reserves `u64::MAX` and therefore cannot represent that exact block number.
     const fn encode(block_number: u64) -> u64 {
         block_number.saturating_add(1)
     }

@@ -40,7 +40,6 @@ use anyhow::{
 };
 use futures_util::FutureExt;
 use mdbx::{
-    Reader,
     StateWriter,
     common::CircularBufferConfig,
 };
@@ -200,14 +199,6 @@ pub async fn build_state_worker(
             return Err(err).context("failed to initialize database client");
         }
     };
-
-    if let Some(control) = flush_control.as_ref()
-        && let Some(block_number) = writer_reader
-            .latest_block_number()
-            .context("failed to read current block from the database")?
-    {
-        control.record_committed_block(block_number);
-    }
 
     let genesis_state = load_genesis_state(&config.genesis_file)?;
 

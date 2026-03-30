@@ -100,6 +100,20 @@ impl MdbxSource {
         }
     }
 
+    fn available_block_range(&self) -> Option<(u64, u64)> {
+        match self.backend.get_available_block_range() {
+            Ok(range) => range,
+            Err(err) => {
+                error!(
+                    target: "state_worker",
+                    error = ?err,
+                    "failed to get available MDBX block range"
+                );
+                None
+            }
+        }
+    }
+
     fn update_target_block_from_head(&self, latest_head: U256) -> bool {
         let Some(committed_block) = self.latest_committed_block() else {
             debug!(target: "state_worker", "missing committed block");
@@ -220,6 +234,25 @@ impl Source for MdbxSource {
             return false;
         };
 
+        if self.committed_head.is_none() {
+            let Some((oldest_available_block, _latest_available_block)) =
+                self.available_block_range()
+            else {
+                debug!(target: "state_worker", "missing available MDBX block range");
+                return false;
+            };
+
+            if min_synced_block < U256::from(oldest_available_block) {
+                debug!(
+                    target: "state_worker",
+                    min_synced_block = %min_synced_block,
+                    oldest_available_block,
+                    "requested minimum synced block has already been evicted from MDBX",
+                );
+                return false;
+            }
+        }
+
         trace!(
             target: "state_worker",
             committed_block = committed_block,
@@ -319,5 +352,21 @@ mod tests {
 
         assert!(source.is_synced(u(5), u(9)));
         assert_eq!(source.current_target_block(), u(5));
+    }
+
+    #[test]
+    fn external_source_is_unsynced_when_minimum_block_has_been_evicted() {
+        let dir = tempdir().expect("tmpdir");
+        let path = dir.path().join("state");
+        let writer =
+            StateWriter::new(&path, CircularBufferConfig::new(2).expect("config")).expect("writer");
+        commit_empty_block(&writer, 4);
+        commit_empty_block(&writer, 5);
+        commit_empty_block(&writer, 6);
+
+        let reader = writer.reader().clone();
+        let source = MdbxSource::new(reader);
+
+        assert!(!source.is_synced(u(4), u(9)));
     }
 }
