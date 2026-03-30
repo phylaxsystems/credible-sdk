@@ -143,7 +143,7 @@ Credible:
 - `credible.cache_capacity_bytes` -> `SIDECAR_CACHE_CAPACITY_BYTES`
 - `credible.flush_every_ms` -> `SIDECAR_FLUSH_EVERY_MS`
 - `credible.assertion_da_rpc_url` -> `SIDECAR_ASSERTION_DA_RPC_URL`
-- `credible.event_source_url` -> `SIDECAR_EVENT_SOURCE_URL`
+- `credible.event_source_url` -> `SIDECAR_EVENT_SOURCE_URL` (HTTP GraphQL endpoint polled by `GraphqlEventSource`, not a websocket RPC URL)
 - `credible.assertion_store_db_path` -> `SIDECAR_ASSERTION_STORE_DB_PATH`
 - `credible.transaction_observer_db_path` -> `SIDECAR_TRANSACTION_OBSERVER_DB_PATH`
 - `credible.transaction_observer_endpoint` -> `SIDECAR_TRANSACTION_OBSERVER_ENDPOINT`
@@ -618,6 +618,8 @@ The configuration file is a JSON file with the following schema:
 ```
 
 A representative integrated-topology configuration looks like:
+
+Set `credible.event_source_url` to the HTTP GraphQL endpoint exposed by your assertion indexer. Do not point it at a websocket RPC URL.
 
 ```json
 {
