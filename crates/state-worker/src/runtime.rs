@@ -26,7 +26,6 @@ use futures_util::FutureExt;
 use mdbx::{
     Reader,
     StateWriter,
-    Writer,
     common::CircularBufferConfig,
 };
 use std::{
@@ -162,12 +161,16 @@ pub struct CommitPermitGate {
 
 impl Default for CommitPermitGate {
     fn default() -> Self {
-        let (permitted_head_tx, _) = watch::channel(None);
-        Self { permitted_head_tx }
+        Self::new(None)
     }
 }
 
 impl CommitPermitGate {
+    fn new(permitted_head: Option<u64>) -> Self {
+        let (permitted_head_tx, _) = watch::channel(permitted_head);
+        Self { permitted_head_tx }
+    }
+
     #[must_use]
     pub fn subscribe(&self) -> watch::Receiver<Option<u64>> {
         self.permitted_head_tx.subscribe()
@@ -186,7 +189,7 @@ impl CommitPermitGate {
             return;
         }
 
-        let _ = self.permitted_head_tx.send(Some(block_number));
+        let _ = self.permitted_head_tx.send_replace(Some(block_number));
     }
 }
 
@@ -201,9 +204,7 @@ pub fn ensure_commit_permit_gate() -> Arc<CommitPermitGate> {
         return Arc::clone(gate);
     }
 
-    let gate = Arc::new(CommitPermitGate::default());
-    *slot = Some(Arc::clone(&gate));
-    gate
+    install_commit_permit_gate(&mut slot, None)
 }
 
 pub fn grant_flush_permission(block_number: u64) {
@@ -226,11 +227,49 @@ fn current_commit_permit_gate() -> Option<Arc<CommitPermitGate>> {
         .map(Arc::clone)
 }
 
+fn install_commit_permit_gate(
+    slot: &mut Option<Arc<CommitPermitGate>>,
+    permitted_head: Option<u64>,
+) -> Arc<CommitPermitGate> {
+    let gate = Arc::new(CommitPermitGate::new(permitted_head));
+    *slot = Some(Arc::clone(&gate));
+    gate
+}
+
+pub fn seed_commit_permit_gate(permitted_head: Option<u64>) {
+    let mut slot = commit_permit_gate_slot()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    let _ = install_commit_permit_gate(&mut slot, permitted_head);
+}
+
+fn reseed_current_commit_permit_gate(permitted_head: Option<u64>) {
+    let mut slot = commit_permit_gate_slot()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+
+    if slot.is_some() {
+        let _ = install_commit_permit_gate(&mut slot, permitted_head);
+    }
+}
+
 fn commit_permit_gate_slot() -> &'static Mutex<Option<Arc<CommitPermitGate>>> {
     COMMIT_PERMIT_GATE.get_or_init(|| Mutex::new(None))
 }
 
-#[cfg(test)]
+fn reset_commit_permit_gate_for_observer(observer: &dyn RuntimeObserver) {
+    let mut slot = commit_permit_gate_slot()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+
+    if observer.type_id() == TypeId::of::<NoopRuntimeObserver>() {
+        *slot = None;
+        return;
+    }
+
+    let _ = install_commit_permit_gate(&mut slot, None);
+}
+
 pub fn reset_commit_permit_gate() {
     *commit_permit_gate_slot()
         .lock()
@@ -257,6 +296,7 @@ pub async fn run_supervisor(
             return Ok(());
         }
 
+        reset_commit_permit_gate_for_observer(observer.as_ref());
         let result = AssertUnwindSafe(run_once(
             config,
             shutdown_rx.resubscribe(),
@@ -459,7 +499,7 @@ fn load_genesis_state(path: &str) -> Result<GenesisState> {
 
 fn publish_existing_durable_head<WR>(writer_reader: &WR) -> Result<()>
 where
-    WR: Reader + Writer,
+    WR: Reader,
     <WR as Reader>::Error: std::error::Error + Send + Sync + 'static,
 {
     let durable_head = writer_reader
@@ -467,8 +507,9 @@ where
         .map_err(anyhow::Error::new)
         .context("failed to read current block from the database")?;
 
+    reseed_current_commit_permit_gate(durable_head);
+
     if let Some(block_number) = durable_head {
-        grant_flush_permission(block_number);
         metrics::set_durable_head(block_number);
     }
 
@@ -485,11 +526,16 @@ mod tests {
         Writer,
         common::CircularBufferConfig,
     };
-    use std::sync::atomic::{
-        AtomicUsize,
-        Ordering,
+    use std::sync::{
+        Mutex,
+        atomic::{
+            AtomicUsize,
+            Ordering,
+        },
     };
     use uuid::Uuid;
+
+    static COMMIT_PERMIT_GATE_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[derive(Debug)]
     struct TestObserver;
@@ -516,6 +562,7 @@ mod tests {
 
     #[test]
     fn noop_observer_does_not_install_commit_gate() {
+        let _guard = COMMIT_PERMIT_GATE_TEST_LOCK.lock().unwrap();
         reset_commit_permit_gate();
 
         assert!(commit_permit_gate_for_observer(&NoopRuntimeObserver).is_none());
@@ -524,6 +571,7 @@ mod tests {
 
     #[test]
     fn flush_permissions_advance_monotonically() {
+        let _guard = COMMIT_PERMIT_GATE_TEST_LOCK.lock().unwrap();
         reset_commit_permit_gate();
 
         let gate =
@@ -539,6 +587,45 @@ mod tests {
 
         grant_flush_permission(9);
         assert_eq!(*permission_rx.borrow(), Some(9));
+    }
+
+    #[test]
+    fn supervisor_restart_clears_stale_flush_permission_before_durable_seed() {
+        let _guard = COMMIT_PERMIT_GATE_TEST_LOCK.lock().unwrap();
+        reset_commit_permit_gate();
+
+        let stale_gate =
+            commit_permit_gate_for_observer(&TestObserver).expect("test observer should install");
+        stale_gate.grant_flush_permission(43);
+        assert_eq!(stale_gate.current_permitted_head(), Some(43));
+
+        reset_commit_permit_gate_for_observer(&TestObserver);
+        let restarted_gate =
+            current_commit_permit_gate().expect("restart should install a fresh commit gate");
+        assert!(!Arc::ptr_eq(&stale_gate, &restarted_gate));
+        assert_eq!(restarted_gate.current_permitted_head(), None);
+
+        let temp_dir =
+            std::env::temp_dir().join(format!("state-worker-runtime-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).expect("create temp runtime dir");
+        let writer_reader = StateWriter::new(
+            &temp_dir,
+            CircularBufferConfig::new(4).expect("buffer config"),
+        )
+        .expect("state writer");
+        writer_reader
+            .bootstrap_from_snapshot(Vec::<AccountState>::new(), 42, B256::ZERO, B256::ZERO)
+            .expect("bootstrap snapshot");
+
+        publish_existing_durable_head(&writer_reader).expect("bootstrap should succeed");
+
+        assert_eq!(
+            current_commit_permit_gate()
+                .expect("commit gate should remain installed")
+                .current_permitted_head(),
+            Some(42)
+        );
+        std::fs::remove_dir_all(&temp_dir).expect("remove temp runtime dir");
     }
 
     #[test]
@@ -559,6 +646,7 @@ mod tests {
 
     #[test]
     fn publish_existing_durable_head_does_not_notify_observer() {
+        let _guard = COMMIT_PERMIT_GATE_TEST_LOCK.lock().unwrap();
         reset_commit_permit_gate();
         let temp_dir =
             std::env::temp_dir().join(format!("state-worker-runtime-{}", Uuid::new_v4()));
@@ -576,6 +664,37 @@ mod tests {
         publish_existing_durable_head(&writer_reader).expect("bootstrap should succeed");
 
         assert_eq!(observer.durable_head_notifications(), 0);
+        std::fs::remove_dir_all(&temp_dir).expect("remove temp runtime dir");
+    }
+
+    #[test]
+    fn publish_existing_durable_head_resets_flush_permission_to_durable_head() {
+        let _guard = COMMIT_PERMIT_GATE_TEST_LOCK.lock().unwrap();
+        reset_commit_permit_gate();
+        let _existing_gate =
+            commit_permit_gate_for_observer(&TestObserver).expect("test observer should install");
+        grant_flush_permission(99);
+
+        let temp_dir =
+            std::env::temp_dir().join(format!("state-worker-runtime-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).expect("create temp runtime dir");
+        let writer_reader = StateWriter::new(
+            &temp_dir,
+            CircularBufferConfig::new(4).expect("buffer config"),
+        )
+        .expect("state writer");
+        writer_reader
+            .bootstrap_from_snapshot(Vec::<AccountState>::new(), 42, B256::ZERO, B256::ZERO)
+            .expect("bootstrap snapshot");
+
+        publish_existing_durable_head(&writer_reader).expect("bootstrap should succeed");
+
+        assert_eq!(
+            current_commit_permit_gate()
+                .expect("commit gate should remain installed")
+                .current_permitted_head(),
+            Some(42)
+        );
         std::fs::remove_dir_all(&temp_dir).expect("remove temp runtime dir");
     }
 }
