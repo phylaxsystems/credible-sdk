@@ -32,7 +32,14 @@ use crate::{
                     get_state_changes,
                 },
             },
-            reshiram::tx_object::load_tx_object,
+            reshiram::{
+                load_state_at::{
+                    LoadStateAtError,
+                    load_state_at_default_target,
+                    load_state_at_with_target,
+                },
+                tx_object::load_tx_object,
+            },
         },
         sol_primitives::{
             PhEvm,
@@ -145,7 +152,7 @@ impl<'a> PhEvmContext<'a> {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum PrecompileError<ExtDb: DatabaseRef> {
+pub enum PrecompileError<ExtDb: DatabaseRef<Error: std::fmt::Debug>> {
     #[error("Precompile selector not found: {0:#?}")]
     SelectorNotFound(FixedBytes<4>),
     #[error("Precompile selector {selector:#?} not allowed under {spec:?} spec")]
@@ -165,6 +172,8 @@ pub enum PrecompileError<ExtDb: DatabaseRef> {
     ConsoleLogError(#[source] ConsoleLogError),
     #[error("Error loading external slot: {0}")]
     LoadExternalSlotError(#[source] LoadExternalSlotError<ExtDb>),
+    #[error("Error loading state at fork: {0}")]
+    LoadStateAtError(#[source] LoadStateAtError<ExtDb>),
 }
 
 /// `PhEvmInspector` is an inspector for supporting the `PhEvm` precompiles.
@@ -389,6 +398,29 @@ impl<'a> PhEvmInspector<'a> {
                 get_assertion_adopter(&self.context).map_err(PrecompileError::UnexpectedError)?
             }
             PhEvm::getTxObjectCall::SELECTOR => load_tx_object(&self.context, inputs.gas_limit),
+            PhEvm::loadStateAt_0Call::SELECTOR => {
+                match load_state_at_default_target(
+                    context,
+                    &self.context,
+                    self.context.logs_and_traces.call_traces,
+                    &input_bytes,
+                    inputs.gas_limit,
+                ) {
+                    Ok(rax) | Err(LoadStateAtError::OutOfGas(rax)) => rax,
+                    Err(err) => return Err(PrecompileError::LoadStateAtError(err)),
+                }
+            }
+            PhEvm::loadStateAt_1Call::SELECTOR => {
+                match load_state_at_with_target(
+                    context,
+                    self.context.logs_and_traces.call_traces,
+                    &input_bytes,
+                    inputs.gas_limit,
+                ) {
+                    Ok(rax) | Err(LoadStateAtError::OutOfGas(rax)) => rax,
+                    Err(err) => return Err(PrecompileError::LoadStateAtError(err)),
+                }
+            }
             console::logCall::SELECTOR => {
                 #[cfg(feature = "phoundry")]
                 return Ok(Some(
@@ -558,11 +590,11 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_reshiram_spec_allows_legacy_precompiles() {
+    async fn test_reshiram_spec_forbids_legacy_fork_precompiles() {
         let result = run_precompile_test_with_spec("TestSpecLegacy", AssertionSpec::Reshiram);
         assert!(
-            result.is_valid(),
-            "Legacy precompiles should work under Reshiram spec"
+            !result.is_valid(),
+            "Legacy fork precompiles should be forbidden under Reshiram spec"
         );
     }
 
@@ -577,12 +609,12 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_reshiram_spec_allows_mixed_precompiles() {
+    async fn test_reshiram_spec_forbids_mixed_legacy_precompiles() {
         let result =
             run_precompile_test_with_spec("TestSpecReshiramWithLegacy", AssertionSpec::Reshiram);
         assert!(
-            result.is_valid(),
-            "Both Legacy and Reshiram precompiles should work under Reshiram spec"
+            !result.is_valid(),
+            "Legacy fork precompiles should be forbidden under Reshiram spec"
         );
     }
 

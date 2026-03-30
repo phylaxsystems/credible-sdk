@@ -126,6 +126,22 @@ sol! {
 
         // Returns the original transaction object that triggered the assertion.
         function getTxObject() external view returns (TxObject memory txObject);
+
+        /// @notice Identifies which fork snapshot to read from.
+        /// forkType: 0 = PreTx, 1 = PostTx, 2 = PreCall, 3 = PostCall
+        /// callIndex: only used for PreCall/PostCall (ignored otherwise)
+        struct ForkId {
+            uint8 forkType;
+            uint256 callIndex;
+        }
+
+        /// @notice Reads a storage slot from the assertion adopter at a specific fork.
+        function loadStateAt(bytes32 slot, ForkId fork)
+            external view returns (bytes32 data);
+
+        /// @notice Reads a storage slot from any account at a specific fork.
+        function loadStateAt(address target, bytes32 slot, ForkId fork)
+            external view returns (bytes32 data);
     }
 
     interface Console {

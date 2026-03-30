@@ -4,4 +4,5 @@
 
 pub(crate) use super::BASE_COST;
 
+pub mod load_state_at;
 pub mod tx_object;

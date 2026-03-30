@@ -65,7 +65,9 @@ impl AssertionSpec {
     pub fn allows_selector(&self, selector: [u8; 4]) -> bool {
         match self {
             Self::Experimental => true,
-            Self::Reshiram => !Self::is_experimental_only(selector),
+            Self::Reshiram => {
+                !Self::is_experimental_only(selector) && !Self::is_legacy_only(selector)
+            }
             Self::Legacy => {
                 !Self::is_reshiram_only(selector) && !Self::is_experimental_only(selector)
             }
@@ -75,7 +77,25 @@ impl AssertionSpec {
     fn is_reshiram_only(selector: [u8; 4]) -> bool {
         use crate::inspectors::sol_primitives::PhEvm;
         use alloy_sol_types::SolCall;
-        matches!(selector, PhEvm::getTxObjectCall::SELECTOR)
+        matches!(
+            selector,
+            PhEvm::getTxObjectCall::SELECTOR
+                | PhEvm::loadStateAt_0Call::SELECTOR
+                | PhEvm::loadStateAt_1Call::SELECTOR
+        )
+    }
+
+    fn is_legacy_only(selector: [u8; 4]) -> bool {
+        use crate::inspectors::sol_primitives::PhEvm;
+        use alloy_sol_types::SolCall;
+        matches!(
+            selector,
+            PhEvm::forkPreTxCall::SELECTOR
+                | PhEvm::forkPostTxCall::SELECTOR
+                | PhEvm::forkPreCallCall::SELECTOR
+                | PhEvm::forkPostCallCall::SELECTOR
+                | PhEvm::loadCall::SELECTOR
+        )
     }
 
     fn is_experimental_only(_selector: [u8; 4]) -> bool {
