@@ -388,7 +388,6 @@ impl Default for StateSourceConfig {
     }
 }
 
-
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
 pub struct LegacyStateConfig {
     /// Eth RPC source websocket bind address and port
