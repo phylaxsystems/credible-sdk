@@ -9,7 +9,16 @@ use metrics::{
     gauge,
     histogram,
 };
-use std::time::Duration;
+use std::{
+    sync::atomic::{
+        AtomicU64,
+        Ordering,
+    },
+    time::Duration,
+};
+
+const UNKNOWN_HEAD: u64 = u64::MAX;
+static DURABLE_HEAD_FLOOR: AtomicU64 = AtomicU64::new(UNKNOWN_HEAD);
 
 /// Record metrics from a block commit operation.
 ///
@@ -105,7 +114,17 @@ pub fn set_head_block(block_number: u64) {
 /// Committed as a `Gauge`: `state_worker_traced_head`
 #[allow(dead_code)]
 pub fn set_traced_head(block_number: u64) {
+    if !should_publish_transient_head(block_number) {
+        return;
+    }
     gauge!("state_worker_traced_head").set(u64_to_f64(block_number));
+}
+
+/// Clear the latest traced head when no in-memory traced block survives.
+///
+/// Committed as a `Gauge`: `state_worker_traced_head`
+pub fn clear_traced_head() {
+    gauge!("state_worker_traced_head").set(f64::NAN);
 }
 
 /// Record the latest block currently permitted to flush into MDBX.
@@ -113,7 +132,30 @@ pub fn set_traced_head(block_number: u64) {
 /// Committed as a `Gauge`: `state_worker_flush_permitted_head`
 #[allow(dead_code)]
 pub fn set_flush_permitted_head(block_number: u64) {
+    if !should_publish_transient_head(block_number) {
+        return;
+    }
     gauge!("state_worker_flush_permitted_head").set(u64_to_f64(block_number));
+}
+
+/// Clear the latest flush-permitted head when restart discards transient state.
+///
+/// Committed as a `Gauge`: `state_worker_flush_permitted_head`
+pub fn clear_flush_permitted_head() {
+    gauge!("state_worker_flush_permitted_head").set(f64::NAN);
+}
+
+/// Publish the durable head known at runtime bootstrap without seeding
+/// transient in-memory progress.
+pub fn initialize_runtime_heads(durable_head: Option<u64>) {
+    DURABLE_HEAD_FLOOR.store(durable_head.unwrap_or(UNKNOWN_HEAD), Ordering::Relaxed);
+    gauge!("state_worker_durable_head").set(optional_u64_to_f64(durable_head));
+}
+
+/// Clear transient runtime progress that is discarded across supervisor restarts.
+pub fn clear_runtime_transient_heads() {
+    clear_traced_head();
+    clear_flush_permitted_head();
 }
 
 /// Record the latest block durably visible through MDBX.
@@ -121,6 +163,7 @@ pub fn set_flush_permitted_head(block_number: u64) {
 /// Committed as a `Gauge`: `state_worker_durable_head`
 #[allow(dead_code)]
 pub fn set_durable_head(block_number: u64) {
+    DURABLE_HEAD_FLOOR.store(block_number, Ordering::Relaxed);
     gauge!("state_worker_durable_head").set(u64_to_f64(block_number));
 }
 
@@ -180,6 +223,17 @@ fn u64_to_f64(value: u64) -> f64 {
     f64::from(capped)
 }
 
+fn optional_u64_to_f64(value: Option<u64>) -> f64 {
+    value.map_or(f64::NAN, u64_to_f64)
+}
+
 fn bool_to_f64(value: bool) -> f64 {
     if value { 1.0 } else { 0.0 }
+}
+
+fn should_publish_transient_head(block_number: u64) -> bool {
+    match DURABLE_HEAD_FLOOR.load(Ordering::Relaxed) {
+        UNKNOWN_HEAD => true,
+        durable_head => block_number > durable_head,
+    }
 }

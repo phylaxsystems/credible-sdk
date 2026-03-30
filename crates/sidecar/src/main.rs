@@ -72,10 +72,18 @@ use sidecar::{
     },
     utils::ErrorRecoverability,
 };
-use state_worker::runtime::{
-    RuntimeObserver,
-    StateWorkerRuntimeConfig,
-    run_supervisor,
+use state_worker::{
+    metrics::{
+        clear_flush_permitted_head,
+        clear_runtime_transient_heads,
+        clear_traced_head,
+        initialize_runtime_heads,
+    },
+    runtime::{
+        RuntimeObserver,
+        StateWorkerRuntimeConfig,
+        run_supervisor,
+    },
 };
 use std::{
     env,
@@ -991,11 +999,14 @@ async fn shutdown_sidecar_runtime(
 }
 
 fn initialize_state_worker_runtime(config: &Config) {
+    let durable_head = state_worker_available_head(config);
     state_worker_runtime_state().replace(state_worker_runtime_snapshot(
         0,
         Duration::ZERO,
-        state_worker_available_head(config),
+        durable_head,
     ));
+    initialize_runtime_heads(durable_head);
+    clear_runtime_transient_heads();
 }
 
 fn integrated_state_worker_config(
@@ -1095,15 +1106,38 @@ struct SidecarStateWorkerObserver;
 
 impl RuntimeObserver for SidecarStateWorkerObserver {
     fn on_restart_state(&self, restart_count: u64, restart_backoff: Duration) {
-        state_worker_runtime_state().set_restart_state(restart_count, restart_backoff);
+        let runtime_state = state_worker_runtime_state();
+        runtime_state.set_restart_state(restart_count, restart_backoff);
+        runtime_state.clear_transient_heads();
+        clear_runtime_transient_heads();
     }
 
     fn on_traced_head(&self, block_number: u64) {
-        state_worker_runtime_state().set_traced_head(Some(block_number));
+        let runtime_state = state_worker_runtime_state();
+        if runtime_state
+            .snapshot()
+            .durable_head
+            .is_some_and(|durable_head| block_number <= durable_head)
+        {
+            clear_traced_head();
+            return;
+        }
+
+        runtime_state.set_traced_head(Some(block_number));
     }
 
     fn on_flush_permitted_head(&self, block_number: u64) {
-        state_worker_runtime_state().set_flush_permitted_head(Some(block_number));
+        let runtime_state = state_worker_runtime_state();
+        if runtime_state
+            .snapshot()
+            .durable_head
+            .is_some_and(|durable_head| block_number <= durable_head)
+        {
+            clear_flush_permitted_head();
+            return;
+        }
+
+        runtime_state.set_flush_permitted_head(Some(block_number));
     }
 
     fn on_durable_head(&self, block_number: u64) {
@@ -1144,20 +1178,77 @@ fn spawn_state_worker_supervisor(
 #[cfg(test)]
 mod tests {
     use super::{
+        SidecarStateWorkerObserver,
         integrated_state_worker_genesis_path,
         state_worker_runtime_snapshot,
     };
-    use std::time::Duration;
+    use sidecar::metrics::state_worker_runtime_state;
+    use state_worker::runtime::RuntimeObserver;
+    use std::{
+        sync::Mutex,
+        time::Duration,
+    };
+
+    static STATE_WORKER_RUNTIME_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
-    fn state_worker_runtime_snapshot_publishes_supervisor_restart_state() {
+    fn state_worker_runtime_snapshot_keeps_transient_heads_unknown_until_runtime_events() {
         let snapshot = state_worker_runtime_snapshot(3, Duration::from_secs(2), Some(42));
 
         assert_eq!(snapshot.restart_count, 3);
         assert_eq!(snapshot.restart_backoff, Duration::from_secs(2));
-        assert_eq!(snapshot.traced_head, Some(42));
-        assert_eq!(snapshot.flush_permitted_head, Some(42));
+        assert_eq!(snapshot.traced_head, None);
+        assert_eq!(snapshot.flush_permitted_head, None);
         assert_eq!(snapshot.durable_head, Some(42));
+    }
+
+    #[test]
+    fn state_worker_observer_ignores_bootstrap_transient_heads_at_durable_head() {
+        let _guard = STATE_WORKER_RUNTIME_TEST_LOCK.lock().unwrap();
+        let runtime_state = state_worker_runtime_state();
+        runtime_state.reset();
+        runtime_state.replace(state_worker_runtime_snapshot(0, Duration::ZERO, Some(42)));
+
+        let observer = SidecarStateWorkerObserver;
+        observer.on_traced_head(42);
+        observer.on_flush_permitted_head(42);
+
+        let snapshot = runtime_state.snapshot();
+        assert_eq!(snapshot.traced_head, None);
+        assert_eq!(snapshot.flush_permitted_head, None);
+        assert_eq!(snapshot.durable_head, Some(42));
+
+        observer.on_traced_head(43);
+        observer.on_flush_permitted_head(43);
+
+        let snapshot = runtime_state.snapshot();
+        assert_eq!(snapshot.traced_head, Some(43));
+        assert_eq!(snapshot.flush_permitted_head, Some(43));
+        assert_eq!(snapshot.durable_head, Some(42));
+
+        runtime_state.reset();
+    }
+
+    #[test]
+    fn state_worker_observer_clears_transient_heads_on_restart() {
+        let _guard = STATE_WORKER_RUNTIME_TEST_LOCK.lock().unwrap();
+        let runtime_state = state_worker_runtime_state();
+        runtime_state.reset();
+        runtime_state.set_durable_head(Some(42));
+        runtime_state.set_traced_head(Some(43));
+        runtime_state.set_flush_permitted_head(Some(43));
+
+        let observer = SidecarStateWorkerObserver;
+        observer.on_restart_state(2, Duration::from_secs(1));
+
+        let snapshot = runtime_state.snapshot();
+        assert_eq!(snapshot.restart_count, 2);
+        assert_eq!(snapshot.restart_backoff, Duration::from_secs(1));
+        assert_eq!(snapshot.traced_head, None);
+        assert_eq!(snapshot.flush_permitted_head, None);
+        assert_eq!(snapshot.durable_head, Some(42));
+
+        runtime_state.reset();
     }
 
     #[test]

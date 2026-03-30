@@ -503,8 +503,8 @@ impl StateWorkerRuntimeSnapshot {
         Self {
             restart_count,
             restart_backoff,
-            traced_head: durable_head,
-            flush_permitted_head: durable_head,
+            traced_head: None,
+            flush_permitted_head: None,
             durable_head,
         }
     }
@@ -532,6 +532,12 @@ impl StateWorkerRuntimeState {
         let mut snapshot = self.snapshot.write();
         snapshot.restart_count = restart_count;
         snapshot.restart_backoff = restart_backoff;
+    }
+
+    pub fn clear_transient_heads(&self) {
+        let mut snapshot = self.snapshot.write();
+        snapshot.traced_head = None;
+        snapshot.flush_permitted_head = None;
     }
 
     pub fn set_traced_head(&self, traced_head: Option<u64>) {
