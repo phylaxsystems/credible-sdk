@@ -9,6 +9,7 @@ use assertion_executor::{
 use credible_utils::shutdown::wait_for_sigterm;
 use flume::unbounded;
 use mdbx::{
+    Reader,
     StateReader,
     common::CircularBufferConfig,
 };
@@ -41,11 +42,17 @@ use sidecar::{
     event_sequencing::EventSequencing,
     graphql_event_source::GraphqlEventSource,
     health::{
+        AssertionDaReadiness,
         HealthServer,
         HealthState,
+        TransactionObserverReadiness,
     },
     indexer,
     indexer::IndexerCfg,
+    metrics::{
+        StateWorkerRuntimeSnapshot,
+        state_worker_runtime_state,
+    },
     transaction_observer::{
         TransactionObserver,
         TransactionObserverConfig,
@@ -441,8 +448,12 @@ fn record_error_recoverability(recoverable: bool) {
     }
 }
 
-fn handle_transport_exit(result: Result<(), sidecar::transport::grpc::GrpcTransportError>) {
+fn handle_transport_exit(
+    health_state: &HealthState,
+    result: Result<(), sidecar::transport::grpc::GrpcTransportError>,
+) {
     if let Err(e) = result {
+        health_state.record_component_failure("transport");
         let recoverable = ErrorRecoverability::from(&e).is_recoverable();
         record_error_recoverability(recoverable);
         if recoverable {
@@ -454,14 +465,19 @@ fn handle_transport_exit(result: Result<(), sidecar::transport::grpc::GrpcTransp
 }
 
 fn handle_engine_exit(
+    health_state: &HealthState,
     result: Result<
         Result<(), sidecar::engine::EngineError>,
         tokio::sync::oneshot::error::RecvError,
     >,
 ) {
     match result {
-        Ok(Ok(())) => tracing::warn!("Engine exited unexpectedly"),
+        Ok(Ok(())) => {
+            health_state.record_component_failure("engine");
+            tracing::warn!("Engine exited unexpectedly");
+        }
         Ok(Err(e)) => {
+            health_state.record_component_failure("engine");
             let recoverable = ErrorRecoverability::from(&e).is_recoverable();
             record_error_recoverability(recoverable);
             if recoverable {
@@ -470,19 +486,27 @@ fn handle_engine_exit(
                 critical!(error = ?e, "Engine exited with unrecoverable error");
             }
         }
-        Err(_) => tracing::error!("Engine notification channel dropped"),
+        Err(_) => {
+            health_state.record_component_failure("engine");
+            tracing::error!("Engine notification channel dropped");
+        }
     }
 }
 
 fn handle_event_sequencing_exit(
+    health_state: &HealthState,
     result: Result<
         Result<(), sidecar::event_sequencing::EventSequencingError>,
         tokio::sync::oneshot::error::RecvError,
     >,
 ) {
     match result {
-        Ok(Ok(())) => tracing::warn!("Event sequencing exited unexpectedly"),
+        Ok(Ok(())) => {
+            health_state.record_component_failure("event_sequencing");
+            tracing::warn!("Event sequencing exited unexpectedly");
+        }
         Ok(Err(e)) => {
+            health_state.record_component_failure("event_sequencing");
             let recoverable = ErrorRecoverability::from(&e).is_recoverable();
             record_error_recoverability(recoverable);
             if recoverable {
@@ -491,13 +515,19 @@ fn handle_event_sequencing_exit(
                 critical!(error = ?e, "Event sequencing exited with unrecoverable error");
             }
         }
-        Err(_) => tracing::error!("Event sequencing notification channel dropped"),
+        Err(_) => {
+            health_state.record_component_failure("event_sequencing");
+            tracing::error!("Event sequencing notification channel dropped");
+        }
     }
 }
 
 fn handle_observer_exit(
+    health_state: &HealthState,
     result: Result<(), sidecar::transaction_observer::TransactionObserverError>,
 ) {
+    health_state.record_component_failure("transaction_observer");
+    health_state.set_transaction_observer_readiness(TransactionObserverReadiness::Failed);
     match result {
         Ok(()) => tracing::warn!("Transaction observer exited unexpectedly"),
         Err(e) => {
@@ -512,8 +542,9 @@ fn handle_observer_exit(
     }
 }
 
-fn handle_indexer_exit(result: Result<(), indexer::IndexerError>) {
+fn handle_indexer_exit(health_state: &HealthState, result: Result<(), indexer::IndexerError>) {
     if let Err(e) = result {
+        health_state.record_component_failure("assertion_indexer");
         let recoverable = ErrorRecoverability::from(&e).is_recoverable();
         record_error_recoverability(recoverable);
         if recoverable {
@@ -527,6 +558,7 @@ fn handle_indexer_exit(result: Result<(), indexer::IndexerError>) {
 async fn run_async_components(
     transport: &mut GrpcTransport,
     health_server: &mut HealthServer,
+    health_state: Arc<HealthState>,
     indexer_cfg: IndexerCfg<GraphqlEventSource>,
     engine_exited: tokio::sync::oneshot::Receiver<Result<(), sidecar::engine::EngineError>>,
     seq_exited: tokio::sync::oneshot::Receiver<
@@ -551,16 +583,16 @@ async fn run_async_components(
             should_shutdown = true;
         }
         result = transport.run() => {
-            handle_transport_exit(result);
+            handle_transport_exit(&health_state, result);
         }
         result = engine_exited => {
-            handle_engine_exit(result);
+            handle_engine_exit(&health_state, result);
         }
         result = seq_exited => {
-            handle_event_sequencing_exit(result);
+            handle_event_sequencing_exit(&health_state, result);
         }
         result = observer_exited => {
-            handle_observer_exit(result);
+            handle_observer_exit(&health_state, result);
         }
         result = health_server.run() => {
             if let Err(e) = result {
@@ -568,7 +600,7 @@ async fn run_async_components(
             }
         }
         result = indexer::run_indexer(indexer_cfg) => {
-            handle_indexer_exit(result);
+            handle_indexer_exit(&health_state, result);
         }
     }
 
@@ -578,18 +610,24 @@ async fn run_async_components(
 fn spawn_da_reachability_monitor(
     config: &Config,
     da_client: DaClient,
+    health_state: Arc<HealthState>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(run_da_reachability_monitor(
         da_client,
         config.credible.assertion_da_rpc_url.clone(),
+        health_state,
     ))
 }
 
-async fn stop_da_reachability_monitor(da_reachability_handle: tokio::task::JoinHandle<()>) {
+async fn stop_da_reachability_monitor(
+    da_reachability_handle: tokio::task::JoinHandle<()>,
+    health_state: &HealthState,
+) {
     da_reachability_handle.abort();
     if let Err(join_err) = da_reachability_handle.await
         && !join_err.is_cancelled()
     {
+        health_state.record_component_failure("assertion_da_monitor");
         tracing::error!(
             error = ?join_err,
             "Assertion DA reachability monitor exited unexpectedly"
@@ -605,16 +643,23 @@ async fn run_sidecar_once(
     health_bind_addr: SocketAddr,
 ) -> anyhow::Result<bool> {
     let mut thread_handles = ThreadHandles::new();
+    let health_state = Arc::new(HealthState::default());
 
     // Shared shutdown flag for this iteration
     let shutdown_flag = Arc::new(AtomicBool::new(false));
 
+    initialize_state_worker_runtime(config);
     let sources = build_sources_from_config(config).await?;
     let state = Arc::new(Sources::new(sources, config.state.minimum_state_diff));
-    let health_state = Arc::new(HealthState::default());
     let cache: OverlayDb<Sources> = OverlayDb::new(Some(state.clone()));
 
     let transaction_observer_config = transaction_observer_config_from(config);
+    health_state.set_transaction_observer_readiness(if transaction_observer_config.is_some() {
+        TransactionObserverReadiness::Healthy
+    } else {
+        TransactionObserverReadiness::Disabled
+    });
+    health_state.set_assertion_da_readiness(AssertionDaReadiness::Unknown);
 
     // Channel: Transport -> EventSequencing
     let (transport_tx_sender, event_sequencing_rx) = unbounded();
@@ -686,7 +731,7 @@ async fn run_sidecar_once(
         None
     };
 
-    let mut health_server = HealthServer::new(health_bind_addr, health_state);
+    let mut health_server = HealthServer::new(health_bind_addr, health_state.clone());
 
     let da_client = DaClient::new(&config.credible.assertion_da_rpc_url)?;
     let indexer_cfg = init_indexer_config(
@@ -696,11 +741,13 @@ async fn run_sidecar_once(
         da_client.clone(),
     )
     .await?;
-    let da_reachability_handle = spawn_da_reachability_monitor(config, da_client);
+    let da_reachability_handle =
+        spawn_da_reachability_monitor(config, da_client, health_state.clone());
 
     let should_shutdown = Box::pin(run_async_components(
         &mut transport,
         &mut health_server,
+        health_state.clone(),
         indexer_cfg,
         engine_exited,
         seq_exited,
@@ -708,7 +755,7 @@ async fn run_sidecar_once(
     ))
     .await;
 
-    stop_da_reachability_monitor(da_reachability_handle).await;
+    stop_da_reachability_monitor(da_reachability_handle, &health_state).await;
 
     // Signal threads to stop
     tracing::info!("Signaling threads to shutdown...");
@@ -724,4 +771,47 @@ async fn run_sidecar_once(
     thread_handles.join_all();
 
     Ok(should_shutdown)
+}
+
+fn initialize_state_worker_runtime(config: &Config) {
+    let runtime_state = state_worker_runtime_state();
+    runtime_state.reset();
+    runtime_state.set_restart_state(0, Duration::ZERO);
+
+    let durable_head = state_worker_available_head(config);
+    let snapshot = StateWorkerRuntimeSnapshot {
+        restart_count: 0,
+        restart_backoff: Duration::ZERO,
+        traced_head: durable_head,
+        flush_permitted_head: durable_head,
+        durable_head,
+    };
+    runtime_state.replace(snapshot);
+}
+
+fn state_worker_available_head(config: &Config) -> Option<u64> {
+    let (path, depth) = state_worker_mdbx_config(config)?;
+    let backend = StateReader::new(path.as_str(), CircularBufferConfig::new(depth).ok()?).ok()?;
+    backend
+        .get_available_block_range()
+        .ok()
+        .flatten()
+        .map(|(_, head)| head)
+}
+
+fn state_worker_mdbx_config(config: &Config) -> Option<(String, u8)> {
+    if config.state.sources.is_empty() {
+        let path = config.state.legacy.state_worker_mdbx_path.clone()?;
+        let depth = u8::try_from(config.state.legacy.state_worker_depth?).ok()?;
+        return Some((path, depth));
+    }
+
+    config.state.sources.iter().find_map(|source| {
+        match source {
+            StateSourceConfig::Mdbx { mdbx_path, depth } => {
+                Some((mdbx_path.clone(), u8::try_from(*depth).ok()?))
+            }
+            StateSourceConfig::EthRpc { .. } => None,
+        }
+    })
 }

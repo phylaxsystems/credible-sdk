@@ -18,11 +18,17 @@ use metrics::{
     histogram,
 };
 use parking_lot::RwLock;
-use std::sync::atomic::{
-    AtomicBool,
-    AtomicU64,
-    AtomicUsize,
-    Ordering,
+use std::{
+    sync::{
+        OnceLock,
+        atomic::{
+            AtomicBool,
+            AtomicU64,
+            AtomicUsize,
+            Ordering,
+        },
+    },
+    time::Duration,
 };
 
 /// Individual block metrics we commit to the prometheus exporter.
@@ -472,6 +478,57 @@ fn u64_to_f64(value: u64) -> f64 {
 #[inline]
 fn bool_to_f64(value: bool) -> f64 {
     if value { 1.0 } else { 0.0 }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StateWorkerRuntimeSnapshot {
+    pub restart_count: u64,
+    pub restart_backoff: Duration,
+    pub traced_head: Option<u64>,
+    pub flush_permitted_head: Option<u64>,
+    pub durable_head: Option<u64>,
+}
+
+#[derive(Debug, Default)]
+pub struct StateWorkerRuntimeState {
+    snapshot: RwLock<StateWorkerRuntimeSnapshot>,
+}
+
+impl StateWorkerRuntimeState {
+    pub fn snapshot(&self) -> StateWorkerRuntimeSnapshot {
+        *self.snapshot.read()
+    }
+
+    pub fn reset(&self) {
+        *self.snapshot.write() = StateWorkerRuntimeSnapshot::default();
+    }
+
+    pub fn replace(&self, snapshot: StateWorkerRuntimeSnapshot) {
+        *self.snapshot.write() = snapshot;
+    }
+
+    pub fn set_restart_state(&self, restart_count: u64, restart_backoff: Duration) {
+        let mut snapshot = self.snapshot.write();
+        snapshot.restart_count = restart_count;
+        snapshot.restart_backoff = restart_backoff;
+    }
+
+    pub fn set_traced_head(&self, traced_head: Option<u64>) {
+        self.snapshot.write().traced_head = traced_head;
+    }
+
+    pub fn set_flush_permitted_head(&self, flush_permitted_head: Option<u64>) {
+        self.snapshot.write().flush_permitted_head = flush_permitted_head;
+    }
+
+    pub fn set_durable_head(&self, durable_head: Option<u64>) {
+        self.snapshot.write().durable_head = durable_head;
+    }
+}
+
+pub fn state_worker_runtime_state() -> &'static StateWorkerRuntimeState {
+    static STATE: OnceLock<StateWorkerRuntimeState> = OnceLock::new();
+    STATE.get_or_init(StateWorkerRuntimeState::default)
 }
 
 /// Runtime readiness and degraded-mode metrics emitted by the sidecar.

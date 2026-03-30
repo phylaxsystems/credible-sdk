@@ -10,6 +10,8 @@ use crate::{
     metrics::{
         RuntimeHealthMetrics,
         SourceMetrics,
+        StateWorkerRuntimeSnapshot,
+        state_worker_runtime_state,
     },
 };
 use alloy::primitives::U256;
@@ -215,6 +217,7 @@ impl SourcesInner {
 
     fn log_transitions(&self, snapshot: &ReadinessSnapshot) {
         let previous = self.latest_snapshot.read().clone();
+        let worker_runtime = state_worker_runtime_state().snapshot();
 
         let previous_sources: HashMap<&str, bool> = previous
             .sources
@@ -242,8 +245,8 @@ impl SourcesInner {
             if snapshot.fallback_active {
                 warn!(
                     ready_sources = %ready_sources.join(","),
-                    worker_restart_count = 0_u64,
-                    worker_restart_backoff_seconds = 0_u64,
+                    worker_restart_count = worker_runtime.restart_count,
+                    worker_restart_backoff_seconds = worker_runtime.restart_backoff.as_secs_f64(),
                     "Primary state source is unavailable; serving from fallback source"
                 );
             } else {
@@ -266,8 +269,8 @@ impl SourcesInner {
                 error!(
                     required_head = snapshot.required_head,
                     minimum_synced_block = snapshot.minimum_synced_block,
-                    worker_restart_count = 0_u64,
-                    worker_restart_backoff_seconds = 0_u64,
+                    worker_restart_count = worker_runtime.restart_count,
+                    worker_restart_backoff_seconds = worker_runtime.restart_backoff.as_secs_f64(),
                     "No state source can satisfy the required range"
                 );
             }
@@ -286,9 +289,6 @@ impl SourcesInner {
             .set_worker_degraded(snapshot.worker == WorkerReadiness::Degraded);
         self.runtime_metrics
             .set_worker_unavailable(snapshot.worker == WorkerReadiness::Unavailable);
-        self.runtime_metrics.set_state_worker_restart_count(0);
-        self.runtime_metrics
-            .set_state_worker_restart_backoff_seconds(Duration::ZERO);
         self.runtime_metrics
             .set_state_worker_degraded(snapshot.worker != WorkerReadiness::Healthy);
 
@@ -304,26 +304,76 @@ impl SourcesInner {
         }
 
         let last_ready_head = self.state_worker_last_ready_head.load(Ordering::Acquire);
-        let sync_lag = snapshot.required_head.saturating_sub(last_ready_head);
+        let worker_runtime = state_worker_runtime_state().snapshot();
+        let worker_metric_state = worker_metric_state(
+            snapshot,
+            worker_runtime,
+            last_ready_head,
+            state_worker_ready,
+        );
 
         self.runtime_metrics
-            .set_legacy_state_worker_db_healthy(state_worker_ready);
+            .set_legacy_state_worker_db_healthy(worker_metric_state.legacy_db_healthy);
         self.runtime_metrics
-            .set_legacy_state_worker_head_block(snapshot.required_head);
+            .set_legacy_state_worker_head_block(worker_metric_state.legacy_head_block);
         self.runtime_metrics
-            .set_legacy_state_worker_current_block(last_ready_head);
+            .set_legacy_state_worker_current_block(worker_metric_state.legacy_current_block);
         self.runtime_metrics
-            .set_legacy_state_worker_sync_lag_blocks(sync_lag);
+            .set_legacy_state_worker_sync_lag_blocks(worker_metric_state.legacy_sync_lag);
         self.runtime_metrics
-            .set_legacy_state_worker_syncing(!state_worker_ready && snapshot.ready);
+            .set_legacy_state_worker_syncing(worker_metric_state.legacy_syncing);
         self.runtime_metrics
-            .set_legacy_state_worker_following_head(state_worker_ready);
+            .set_legacy_state_worker_following_head(worker_metric_state.legacy_following_head);
         self.runtime_metrics
-            .set_state_worker_traced_head(last_ready_head);
+            .set_state_worker_restart_count(worker_metric_state.restart_count);
         self.runtime_metrics
-            .set_state_worker_flush_permitted_head(last_ready_head);
+            .set_state_worker_restart_backoff_seconds(worker_metric_state.restart_backoff);
         self.runtime_metrics
-            .set_state_worker_durable_head(last_ready_head);
+            .set_state_worker_traced_head(worker_metric_state.traced_head);
+        self.runtime_metrics
+            .set_state_worker_flush_permitted_head(worker_metric_state.flush_permitted_head);
+        self.runtime_metrics
+            .set_state_worker_durable_head(worker_metric_state.durable_head);
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct WorkerMetricState {
+    restart_count: u64,
+    restart_backoff: Duration,
+    traced_head: u64,
+    flush_permitted_head: u64,
+    durable_head: u64,
+    legacy_db_healthy: bool,
+    legacy_head_block: u64,
+    legacy_current_block: u64,
+    legacy_sync_lag: u64,
+    legacy_syncing: bool,
+    legacy_following_head: bool,
+}
+
+fn worker_metric_state(
+    snapshot: &ReadinessSnapshot,
+    runtime: StateWorkerRuntimeSnapshot,
+    last_ready_head: u64,
+    state_worker_ready: bool,
+) -> WorkerMetricState {
+    let durable_head = runtime.durable_head.unwrap_or(last_ready_head);
+    let traced_head = runtime.traced_head.unwrap_or(durable_head);
+    let flush_permitted_head = runtime.flush_permitted_head.unwrap_or(durable_head);
+
+    WorkerMetricState {
+        restart_count: runtime.restart_count,
+        restart_backoff: runtime.restart_backoff,
+        traced_head,
+        flush_permitted_head,
+        durable_head,
+        legacy_db_healthy: state_worker_ready,
+        legacy_head_block: snapshot.required_head,
+        legacy_current_block: durable_head,
+        legacy_sync_lag: snapshot.required_head.saturating_sub(durable_head),
+        legacy_syncing: !state_worker_ready && snapshot.ready,
+        legacy_following_head: state_worker_ready,
     }
 }
 
@@ -345,6 +395,7 @@ mod tests {
     use super::{
         SourcesInner,
         ready_source_names,
+        worker_metric_state,
     };
     use crate::{
         SourceError,
@@ -355,8 +406,11 @@ mod tests {
         },
         health::{
             HealthState,
+            ReadinessSnapshot,
+            SourceReadinessSnapshot,
             WorkerReadiness,
         },
+        metrics::StateWorkerRuntimeSnapshot,
     };
     use alloy::primitives::U256;
     use assertion_executor::primitives::{
@@ -483,5 +537,64 @@ mod tests {
         assert!(!snapshot.fallback_active);
         assert_eq!(snapshot.worker, WorkerReadiness::Unavailable);
         assert!(ready_source_names(&snapshot).is_empty());
+    }
+
+    #[test]
+    fn worker_metric_state_prefers_runtime_snapshot_over_last_ready_head() {
+        let readiness = ReadinessSnapshot {
+            ready: true,
+            fallback_active: true,
+            worker: WorkerReadiness::Degraded,
+            required_head: 128,
+            minimum_synced_block: 120,
+            sources: vec![
+                SourceReadinessSnapshot::new("StateWorker", false),
+                SourceReadinessSnapshot::new("EthRpcSource", true),
+            ],
+        };
+        let runtime = StateWorkerRuntimeSnapshot {
+            restart_count: 3,
+            restart_backoff: Duration::from_secs(7),
+            traced_head: Some(140),
+            flush_permitted_head: Some(136),
+            durable_head: Some(132),
+        };
+
+        let metrics = worker_metric_state(&readiness, runtime, 96, false);
+
+        assert_eq!(metrics.restart_count, 3);
+        assert_eq!(metrics.restart_backoff, Duration::from_secs(7));
+        assert_eq!(metrics.traced_head, 140);
+        assert_eq!(metrics.flush_permitted_head, 136);
+        assert_eq!(metrics.durable_head, 132);
+        assert_eq!(metrics.legacy_current_block, 132);
+        assert_eq!(metrics.legacy_sync_lag, 128_u64.saturating_sub(132));
+        assert!(metrics.legacy_syncing);
+        assert!(!metrics.legacy_following_head);
+    }
+
+    #[test]
+    fn worker_metric_state_falls_back_to_last_ready_head_without_runtime_snapshot() {
+        let readiness = ReadinessSnapshot {
+            ready: true,
+            fallback_active: false,
+            worker: WorkerReadiness::Healthy,
+            required_head: 64,
+            minimum_synced_block: 60,
+            sources: vec![SourceReadinessSnapshot::new("StateWorker", true)],
+        };
+
+        let metrics =
+            worker_metric_state(&readiness, StateWorkerRuntimeSnapshot::default(), 61, true);
+
+        assert_eq!(metrics.restart_count, 0);
+        assert_eq!(metrics.restart_backoff, Duration::ZERO);
+        assert_eq!(metrics.traced_head, 61);
+        assert_eq!(metrics.flush_permitted_head, 61);
+        assert_eq!(metrics.durable_head, 61);
+        assert_eq!(metrics.legacy_current_block, 61);
+        assert_eq!(metrics.legacy_sync_lag, 3);
+        assert!(!metrics.legacy_syncing);
+        assert!(metrics.legacy_following_head);
     }
 }
