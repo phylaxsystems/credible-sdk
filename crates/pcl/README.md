@@ -148,11 +148,14 @@ Arguments:
                Verifies all assertions from credible.toml when omitted.
 
 Options:
-      --root <ROOT>    Project root directory [default: .]
-      --args <ARGS>    Constructor arguments for the assertion
-      --json           Emit machine-readable JSON output
-  -h, --help           Print help
+      --root <ROOT>      Project root directory [default: .]
+  -c, --config <CONFIG>  Path to credible.toml, relative to root or absolute [default: assertions/credible.toml]
+      --args <ARGS>      Constructor arguments for the assertion
+      --json             Emit machine-readable JSON output
+  -h, --help             Print help
 ```
+
+By default, `pcl verify` reads `credible.toml` from the same location as `pcl apply` (`assertions/credible.toml`). Use `-c` to override.
 
 ```bash
 # Verify all assertions from credible.toml
@@ -164,8 +167,8 @@ pcl verify MyAssertion
 # Verify with constructor arguments
 pcl verify MyAssertion --args 0x1234567890abcdef1234567890abcdef12345678
 
-# Qualified file:contract name
-pcl verify MyAssertion.a.sol:MyAssertion
+# Custom config path (same as apply)
+pcl verify -c path/to/credible.toml
 ```
 
 ### Apply
