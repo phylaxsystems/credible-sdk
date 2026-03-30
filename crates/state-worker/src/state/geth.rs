@@ -25,6 +25,12 @@ use mdbx::{
 };
 use std::collections::HashMap;
 
+/// Collapse a block's per-transaction Geth traces into block-level account updates.
+///
+/// # Errors
+///
+/// Returns an error when a trace entry failed or when the tracer returned an
+/// unexpected result type instead of `prestateTracer` output.
 pub fn process_geth_traces(traces: Vec<TraceResult>) -> anyhow::Result<Vec<AccountState>> {
     let mut accounts: HashMap<AddressHash, AccountSnapshot> = HashMap::new();
 

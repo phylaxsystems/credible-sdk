@@ -19,7 +19,9 @@
 //! The trace provider (Geth) already implements EIP-6780 correctly,
 //! so we just need to interpret the traces accurately.
 
+/// Geth trace-collapse helpers.
 pub mod geth;
+/// Geth-backed trace provider implementation.
 pub mod geth_provider;
 #[cfg(test)]
 mod tests;
@@ -48,9 +50,15 @@ use std::{
     time::Duration,
 };
 
-/// Trait for fetching block state from different trace providers
+/// Fetch block state from a tracing backend.
 #[async_trait]
 pub trait TraceProvider: Send + Sync {
+    /// Fetch the account-level state update for a single block.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backing trace provider cannot fetch the block
+    /// or when the trace response cannot be converted into a block update.
     async fn fetch_block_state(&self, block_number: u64) -> Result<BlockStateUpdate>;
 }
 
@@ -114,6 +122,12 @@ impl AccountSnapshot {
 pub struct BlockStateUpdateBuilder;
 
 impl BlockStateUpdateBuilder {
+    /// Build a block state update from the raw Geth trace payloads for a block.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the trace payload contains failed or unexpected
+    /// tracer output and the block-level account updates cannot be derived.
     pub fn from_geth_traces(
         block_number: u64,
         block_hash: B256,
@@ -131,6 +145,8 @@ impl BlockStateUpdateBuilder {
         })
     }
 
+    /// Build a block state update from precomputed account updates.
+    #[must_use]
     pub fn from_accounts(
         block_number: u64,
         block_hash: B256,
@@ -147,6 +163,7 @@ impl BlockStateUpdateBuilder {
 }
 
 /// Create a trace provider.
+#[must_use]
 pub fn create_trace_provider(
     provider: Arc<RootProvider>,
     trace_timeout: Duration,

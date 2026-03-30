@@ -27,12 +27,15 @@ use std::{
     time::Duration,
 };
 
+/// Trace provider backed by Geth's `debug_trace_block_by_number` API.
 pub struct GethTraceProvider {
     provider: Arc<RootProvider>,
     trace_timeout: Duration,
 }
 
 impl GethTraceProvider {
+    /// Construct a Geth-backed trace provider with the configured RPC timeout.
+    #[must_use]
     pub fn new(provider: Arc<RootProvider>, trace_timeout: Duration) -> Self {
         Self {
             provider,
