@@ -15,6 +15,7 @@ The Phylax Credible CLI (PCL) is a command-line interface for interacting with t
     - [Authentication](#authentication)
     - [Configuration](#configuration)
     - [Testing](#testing)
+    - [Verify](#verify)
     - [Apply](#apply)
   - [Examples](#examples)
     - [Complete Workflow](#complete-workflow)
@@ -135,6 +136,38 @@ Display options:
 ... // rest of the `forge test` help output
 ```
 
+### Verify
+
+Verify assertions locally before deployment. This compiles each assertion and runs it through the assertion verification pipeline to check that deployment succeeds and triggers are correctly registered.
+
+```bash
+pcl verify [OPTIONS] [ASSERTION]
+
+Arguments:
+  [ASSERTION]  Assertion to verify (contract name or file:contract).
+               Verifies all assertions from credible.toml when omitted.
+
+Options:
+      --root <ROOT>    Project root directory [default: .]
+      --args <ARGS>    Constructor arguments for the assertion
+      --json           Emit machine-readable JSON output
+  -h, --help           Print help
+```
+
+```bash
+# Verify all assertions from credible.toml
+pcl verify
+
+# Verify a single assertion by name
+pcl verify MyAssertion
+
+# Verify with constructor arguments
+pcl verify MyAssertion --args 0x1234567890abcdef1234567890abcdef12345678
+
+# Qualified file:contract name
+pcl verify MyAssertion.a.sol:MyAssertion
+```
+
 ### Apply
 
 Preview and apply declarative deployment changes from `credible.toml`. This command builds assertions, then creates a release on the platform.
@@ -190,6 +223,9 @@ pcl auth status
 # Build and test assertions
 pcl build
 pcl test
+
+# Verify assertions pass the verification pipeline
+pcl verify
 
 # Deploy assertions via credible.toml
 pcl apply --root ./my-project

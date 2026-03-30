@@ -1,6 +1,10 @@
 use crate::{
     DEFAULT_PLATFORM_URL,
     config::CliConfig,
+    credible_config::{
+        CredibleToml,
+        assertion_contract_name,
+    },
     error::ApplyError,
 };
 use chrono::{
@@ -76,64 +80,6 @@ pub struct ApplyArgs {
         help = "Base URL for the platform API"
     )]
     pub api_url: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct CredibleToml {
-    environment: String,
-    #[serde(default)]
-    project_id: Option<Uuid>,
-    contracts: BTreeMap<String, CredibleContract>,
-}
-
-impl CredibleToml {
-    /// Reads and validates a `credible.toml` file at the given path.
-    fn from_path(path: &Path) -> Result<Self, ApplyError> {
-        let contents = std::fs::read_to_string(path).map_err(|e| {
-            ApplyError::Io {
-                message: format!("credible.toml not found at {}", path.display()),
-                source: e,
-            }
-        })?;
-        let credible: Self = toml::from_str(&contents).map_err(ApplyError::Toml)?;
-        credible.validate()?;
-        Ok(credible)
-    }
-
-    /// Runs all config validations.
-    fn validate(&self) -> Result<(), ApplyError> {
-        self.validate_unique_addresses()?;
-        Ok(())
-    }
-
-    /// Ensures no two contracts share the same address.
-    fn validate_unique_addresses(&self) -> Result<(), ApplyError> {
-        let mut seen: HashMap<&str, &str> = HashMap::new();
-        for (key, contract) in &self.contracts {
-            if let Some(existing_key) = seen.get(contract.address.as_str()) {
-                return Err(ApplyError::InvalidConfig(format!(
-                    "duplicate contract address {}: used by both `{}` and `{}`",
-                    contract.address, existing_key, key
-                )));
-            }
-            seen.insert(&contract.address, key);
-        }
-        Ok(())
-    }
-}
-
-#[derive(Debug, Deserialize)]
-struct CredibleContract {
-    address: String,
-    name: String,
-    assertions: Vec<CredibleAssertion>,
-}
-
-#[derive(Debug, Deserialize)]
-struct CredibleAssertion {
-    file: String,
-    #[serde(default, deserialize_with = "deserialize_args")]
-    args: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -480,25 +426,6 @@ impl ApplyArgs {
     }
 }
 
-fn deserialize_args<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let value = Value::deserialize(deserializer)?;
-    match value {
-        Value::Array(values) => Ok(values.into_iter().map(value_to_string).collect()),
-        Value::Null => Ok(vec![]),
-        other => Ok(vec![value_to_string(other)]),
-    }
-}
-
-fn value_to_string(value: Value) -> String {
-    match value {
-        Value::String(value) => value,
-        other => other.to_string(),
-    }
-}
-
 fn canonicalize_root(root: &Path) -> Result<PathBuf, ApplyError> {
     std::fs::canonicalize(root).map_err(|e| {
         ApplyError::Io {
@@ -506,27 +433,6 @@ fn canonicalize_root(root: &Path) -> Result<PathBuf, ApplyError> {
             source: e,
         }
     })
-}
-
-fn assertion_contract_name(file: &str) -> Result<String, ApplyError> {
-    if let Some((_, contract_name)) = file.rsplit_once(':') {
-        return Ok(contract_name.to_string());
-    }
-
-    let file_name = Path::new(file)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| ApplyError::InvalidConfig(format!("Invalid assertion file path: {file}")))?;
-
-    for suffix in [".a.sol", ".sol"] {
-        if let Some(contract_name) = file_name.strip_suffix(suffix) {
-            return Ok(contract_name.to_string());
-        }
-    }
-
-    Err(ApplyError::InvalidConfig(format!(
-        "Could not infer assertion contract from file {file}"
-    )))
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -620,29 +526,6 @@ fn confirm_apply() -> Result<bool, ApplyError> {
 mod tests {
     use super::*;
     use serde_json::json;
-    use std::fs;
-    use tempfile::TempDir;
-
-    const VALID_CREDIBLE_TOML: &str = r#"
-        environment = "production"
-        [contracts.my_contract]
-        address = "0x1234567890abcdef1234567890abcdef12345678"
-        name = "MockProtocol"
-        [[contracts.my_contract.assertions]]
-        file = "src/NoArgsAssertion.a.sol"
-    "#;
-
-    #[test]
-    fn infers_assertion_contract_name_from_solidity_path() {
-        assert_eq!(
-            assertion_contract_name("assertions/src/MockAssertion.a.sol").unwrap(),
-            "MockAssertion"
-        );
-        assert_eq!(
-            assertion_contract_name("assertions/src/Other.sol:NamedAssertion").unwrap(),
-            "NamedAssertion"
-        );
-    }
 
     #[test]
     fn detects_preview_noop_from_summary() {
@@ -657,108 +540,5 @@ mod tests {
         });
 
         assert!(!preview_has_changes(&preview));
-    }
-
-    #[test]
-    fn toml_rejects_duplicate_contract_keys() {
-        let toml_str = r#"
-            environment = "production"
-            [contracts.ownable]
-            address = "0xD1f444eA1D2d9fA567F8fD73b15199F90e630074"
-            name = "Ownable"
-            [[contracts.ownable.assertions]]
-            file = "src/OwnableAssertion.a.sol"
-
-            [contracts.ownable]
-            address = "0xC9734723aAD51626dC9244fed32668ccb280856A"
-            name = "Ownable2"
-            [[contracts.ownable.assertions]]
-            file = "src/OwnableAssertion.a.sol"
-        "#;
-        let result: Result<CredibleToml, toml::de::Error> =
-            toml::from_str::<CredibleToml>(toml_str);
-        assert!(result.is_err(), "TOML should reject duplicate keys");
-    }
-
-    #[test]
-    fn rejects_duplicate_contract_addresses() {
-        let toml_str = r#"
-            environment = "production"
-            [contracts.ownable]
-            address = "0xD1f444eA1D2d9fA567F8fD73b15199F90e630074"
-            name = "Ownable"
-            [[contracts.ownable.assertions]]
-            file = "src/OwnableAssertion.a.sol"
-
-            [contracts.ownable2]
-            address = "0xD1f444eA1D2d9fA567F8fD73b15199F90e630074"
-            name = "Ownable2"
-            [[contracts.ownable2.assertions]]
-            file = "src/OwnableAssertion.a.sol"
-        "#;
-        let credible: CredibleToml = toml::from_str(toml_str).unwrap();
-        let err = credible.validate_unique_addresses().unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("duplicate contract address"),
-            "expected duplicate address error, got: {msg}"
-        );
-        assert!(msg.contains("0xD1f444eA1D2d9fA567F8fD73b15199F90e630074"));
-    }
-
-    #[test]
-    fn accepts_distinct_contract_addresses() {
-        let toml_str = r#"
-            environment = "production"
-            [contracts.ownable]
-            address = "0xD1f444eA1D2d9fA567F8fD73b15199F90e630074"
-            name = "Ownable"
-            [[contracts.ownable.assertions]]
-            file = "src/OwnableAssertion.a.sol"
-
-            [contracts.ownable2]
-            address = "0xC9734723aAD51626dC9244fed32668ccb280856A"
-            name = "Ownable2"
-            [[contracts.ownable2.assertions]]
-            file = "src/OwnableAssertion.a.sol"
-        "#;
-        let credible: CredibleToml = toml::from_str(toml_str).unwrap();
-        credible.validate_unique_addresses().unwrap();
-    }
-
-    #[test]
-    fn read_credible_toml_resolves_config_path() {
-        let tmp = TempDir::new().unwrap();
-        let root = tmp.path();
-
-        // default — assertions/credible.toml
-        let assertions_dir = root.join("assertions");
-        fs::create_dir_all(&assertions_dir).unwrap();
-        fs::write(assertions_dir.join("credible.toml"), VALID_CREDIBLE_TOML).unwrap();
-
-        let credible = CredibleToml::from_path(&root.join("assertions/credible.toml")).unwrap();
-        assert_eq!(credible.environment, "production");
-        assert_eq!(
-            credible.contracts.get("my_contract").unwrap().name,
-            "MockProtocol"
-        );
-
-        // backward compat, credible.toml at project root
-        fs::write(root.join("credible.toml"), VALID_CREDIBLE_TOML).unwrap();
-
-        let credible = CredibleToml::from_path(&root.join("credible.toml")).unwrap();
-        assert_eq!(credible.environment, "production");
-
-        // arbitrary path — custom/path/credible.toml
-        let custom_dir = root.join("custom").join("path");
-        fs::create_dir_all(&custom_dir).unwrap();
-        fs::write(custom_dir.join("credible.toml"), VALID_CREDIBLE_TOML).unwrap();
-
-        let credible = CredibleToml::from_path(&root.join("custom/path/credible.toml")).unwrap();
-        assert_eq!(credible.environment, "production");
-
-        // missing config yields ConfigNotFound
-        let err = CredibleToml::from_path(&root.join("nonexistent/credible.toml")).unwrap_err();
-        assert!(matches!(err, ApplyError::Io { .. }));
     }
 }
