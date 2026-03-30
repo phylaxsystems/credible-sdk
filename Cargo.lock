@@ -8582,7 +8582,6 @@ dependencies = [
  "open",
  "pcl-common",
  "pcl-phoundry",
- "progenitor-client",
  "reqwest",
  "serde",
  "serde_json",
