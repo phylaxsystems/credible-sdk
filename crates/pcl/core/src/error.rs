@@ -112,29 +112,17 @@ pub enum ConfigError {
 /// Errors that can occur during authentication operations
 #[derive(Error, Debug)]
 pub enum AuthError {
-    /// Error when HTTP request to the auth service fails
+    /// Error when the auth code request fails
     #[error(
         "Authentication request failed. Please check your connection and try again.\nError: {0}"
     )]
-    AuthRequestFailed(#[source] reqwest::Error),
+    AuthRequestFailed(String),
 
-    /// Error when HTTP request to the auth service fails
-    #[error(
-        "Invalid authentication response. Please check your connection and try again.\nError: {0}"
-    )]
-    AuthRequestInvalidResponse(#[source] reqwest::Error),
-
-    /// Error when HTTP request to the auth service fails
+    /// Error when the auth status check fails
     #[error(
         "Authentication status request failed. Please check your connection and try again.\nError: {0}"
     )]
-    StatusRequestFailed(#[source] reqwest::Error),
-
-    /// Error when HTTP request to the auth service fails
-    #[error(
-        "Invalid authentication status response. Please check your connection and try again.\nError: {0}"
-    )]
-    StatusRequestInvalidResponse(#[source] reqwest::Error),
+    StatusRequestFailed(String),
 
     /// Error when authentication times out
     #[error(

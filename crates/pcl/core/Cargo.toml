@@ -20,6 +20,10 @@ alloy-primitives = { workspace = true }
 alloy-json-abi = { workspace = true }
 alloy-dyn-abi = { workspace = true }
 
+# dapp API client (generated from OpenAPI spec)
+dapp-api-client = { workspace = true }
+progenitor-client = "0.11.2"
+
 # other workspace deps
 clap = { workspace = true }
 thiserror = { workspace = true }
