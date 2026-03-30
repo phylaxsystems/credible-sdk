@@ -9,10 +9,15 @@ use std::{
         HashMap,
         HashSet,
     },
-    path::Path,
+    path::{
+        Path,
+        PathBuf,
+    },
 };
 use thiserror::Error;
 use uuid::Uuid;
+
+const DEFAULT_ASSERTIONS_DIR: &str = "assertions/src";
 
 /// Errors from reading or validating `credible.toml`.
 #[derive(Error, Debug)]
@@ -33,19 +38,21 @@ pub enum CredibleConfigError {
 
 /// Root structure of a `credible.toml` file.
 #[derive(Debug, Deserialize)]
-pub struct CredibleToml {
+pub struct CredibleConfig {
     pub environment: String,
     #[serde(default)]
     pub project_id: Option<Uuid>,
-    pub contracts: BTreeMap<String, CredibleContract>,
+    #[serde(default)]
+    pub assertions_dir: Option<PathBuf>,
+    pub contracts: BTreeMap<String, ContractConfig>,
 }
 
-impl CredibleToml {
+impl CredibleConfig {
     /// Reads and validates a `credible.toml` file at the given path.
     ///
     /// Performs structural validation (addresses, duplicates, extensions, etc.)
     /// after parsing. Collects all errors before reporting.
-    pub fn from_path(path: &Path) -> Result<Self, CredibleConfigError> {
+    pub fn from_path(path: &Path, root: &Path) -> Result<Self, CredibleConfigError> {
         let contents = std::fs::read_to_string(path).map_err(|e| {
             CredibleConfigError::Io {
                 message: format!("credible.toml not found at {}", path.display()),
@@ -53,16 +60,24 @@ impl CredibleToml {
             }
         })?;
         let credible: Self = toml::from_str(&contents).map_err(CredibleConfigError::Toml)?;
-        credible.validate()?;
+        credible.validate(root)?;
         Ok(credible)
     }
 
-    /// Structural validation of the config contents (no filesystem access).
+    /// Returns the configured assertions directory, or the default `"assertions/src"`.
+    pub fn assertions_dir(&self) -> &Path {
+        self.assertions_dir
+            .as_deref()
+            .unwrap_or(Path::new(DEFAULT_ASSERTIONS_DIR))
+    }
+
+    /// Validates config contents and checks assertion files exist on disk.
     ///
     /// Collects all errors before reporting so the user can fix multiple
     /// problems in one pass.
-    fn validate(&self) -> Result<(), CredibleConfigError> {
+    fn validate(&self, root: &Path) -> Result<(), CredibleConfigError> {
         let mut errors = Vec::new();
+        let assertions_dir = self.assertions_dir();
 
         if self.environment.is_empty() {
             errors.push("'environment' must not be empty".to_string());
@@ -92,6 +107,15 @@ impl CredibleToml {
                         "Contract '{label}': assertion file '{}' \
                          must have .sol or .a.sol extension",
                         entry.file
+                    ));
+                }
+
+                let file_path = root.join(assertions_dir).join(&entry.file);
+                if !file_path.exists() {
+                    errors.push(format!(
+                        "Contract '{label}': assertion file '{}' not found in {}/",
+                        entry.file,
+                        assertions_dir.display()
                     ));
                 }
 
@@ -125,15 +149,15 @@ impl CredibleToml {
 
 /// A contract entry within `credible.toml`.
 #[derive(Debug, Deserialize)]
-pub struct CredibleContract {
+pub struct ContractConfig {
     pub address: String,
     pub name: String,
-    pub assertions: Vec<CredibleAssertion>,
+    pub assertions: Vec<AssertionEntry>,
 }
 
 /// An assertion entry within a contract.
 #[derive(Debug, Deserialize)]
-pub struct CredibleAssertion {
+pub struct AssertionEntry {
     pub file: String,
     #[serde(default, deserialize_with = "deserialize_args")]
     pub args: Vec<String>,
@@ -200,41 +224,68 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
-    const VALID_CREDIBLE_TOML: &str = r#"
+    const VALID_CONFIG: &str = r#"
         environment = "production"
         [contracts.my_contract]
         address = "0x1234567890abcdef1234567890abcdef12345678"
         name = "MockProtocol"
         [[contracts.my_contract.assertions]]
-        file = "src/NoArgsAssertion.a.sol"
+        file = "NoArgsAssertion.a.sol"
     "#;
+
+    fn setup_valid_project() -> TempDir {
+        let tmp = TempDir::new().unwrap();
+        let assertions = tmp.path().join("assertions/src");
+        fs::create_dir_all(&assertions).unwrap();
+        fs::write(assertions.join("NoArgsAssertion.a.sol"), "// sol").unwrap();
+        tmp
+    }
 
     // --- Parsing tests ---
 
     #[test]
     fn infers_assertion_contract_name_from_solidity_path() {
         assert_eq!(
-            assertion_contract_name("assertions/src/MockAssertion.a.sol").unwrap(),
+            assertion_contract_name("MockAssertion.a.sol").unwrap(),
             "MockAssertion"
         );
         assert_eq!(
-            assertion_contract_name("assertions/src/Other.sol:NamedAssertion").unwrap(),
+            assertion_contract_name("Other.sol:NamedAssertion").unwrap(),
             "NamedAssertion"
         );
     }
 
     #[test]
-    fn reads_credible_toml_from_path() {
-        let tmp = TempDir::new().unwrap();
-        let root = tmp.path();
-        let assertions_dir = root.join("assertions");
-        fs::create_dir_all(&assertions_dir).unwrap();
-        fs::write(assertions_dir.join("credible.toml"), VALID_CREDIBLE_TOML).unwrap();
+    fn parses_config_with_assertions_dir() {
+        let toml_str = r#"
+            environment = "staging"
+            assertions_dir = "custom/assertions"
+            [contracts.c]
+            address = "0x0000000000000000000000000000000000000001"
+            name = "C"
+            [[contracts.c.assertions]]
+            file = "Foo.a.sol"
+        "#;
+        let config: CredibleConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.assertions_dir(), Path::new("custom/assertions"));
+    }
 
-        let credible = CredibleToml::from_path(&root.join("assertions/credible.toml")).unwrap();
-        assert_eq!(credible.environment, "production");
+    #[test]
+    fn defaults_assertions_dir() {
+        let config: CredibleConfig = toml::from_str(VALID_CONFIG).unwrap();
+        assert_eq!(config.assertions_dir(), Path::new("assertions/src"));
+    }
+
+    #[test]
+    fn from_path_reads_and_validates() {
+        let tmp = setup_valid_project();
+        let config_path = tmp.path().join("credible.toml");
+        fs::write(&config_path, VALID_CONFIG).unwrap();
+
+        let config = CredibleConfig::from_path(&config_path, tmp.path()).unwrap();
+        assert_eq!(config.environment, "production");
         assert_eq!(
-            credible.contracts.get("my_contract").unwrap().name,
+            config.contracts.get("my_contract").unwrap().name,
             "MockProtocol"
         );
     }
@@ -243,39 +294,41 @@ mod tests {
     fn from_path_returns_error_for_missing_file() {
         let tmp = TempDir::new().unwrap();
         let err =
-            CredibleToml::from_path(&tmp.path().join("nonexistent/credible.toml")).unwrap_err();
+            CredibleConfig::from_path(&tmp.path().join("missing.toml"), tmp.path()).unwrap_err();
         assert!(matches!(err, CredibleConfigError::Io { .. }));
     }
 
-    // --- Structural validation tests ---
+    // --- Validation tests ---
 
     #[test]
     fn validate_catches_empty_environment() {
+        let tmp = setup_valid_project();
         let toml_str = r#"
             environment = ""
             [contracts.my_contract]
             address = "0x1234567890abcdef1234567890abcdef12345678"
             name = "Mock"
             [[contracts.my_contract.assertions]]
-            file = "Mock.a.sol"
+            file = "NoArgsAssertion.a.sol"
         "#;
-        let config: CredibleToml = toml::from_str(toml_str).unwrap();
-        let err = config.validate().unwrap_err();
+        let config: CredibleConfig = toml::from_str(toml_str).unwrap();
+        let err = config.validate(tmp.path()).unwrap_err();
         assert!(err.to_string().contains("'environment' must not be empty"));
     }
 
     #[test]
     fn validate_catches_invalid_address() {
+        let tmp = setup_valid_project();
         let toml_str = r#"
             environment = "production"
             [contracts.my_contract]
             address = "not-an-address"
             name = "Mock"
             [[contracts.my_contract.assertions]]
-            file = "Mock.a.sol"
+            file = "NoArgsAssertion.a.sol"
         "#;
-        let config: CredibleToml = toml::from_str(toml_str).unwrap();
-        let err = config.validate().unwrap_err();
+        let config: CredibleConfig = toml::from_str(toml_str).unwrap();
+        let err = config.validate(tmp.path()).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("invalid Ethereum address"), "got: {msg}");
         assert!(msg.contains("my_contract"), "got: {msg}");
@@ -283,6 +336,8 @@ mod tests {
 
     #[test]
     fn validate_catches_invalid_extension() {
+        let tmp = setup_valid_project();
+        fs::write(tmp.path().join("assertions/src/Bad.txt"), "// nope").unwrap();
         let toml_str = r#"
             environment = "production"
             [contracts.my_contract]
@@ -291,89 +346,92 @@ mod tests {
             [[contracts.my_contract.assertions]]
             file = "Bad.txt"
         "#;
-        let config: CredibleToml = toml::from_str(toml_str).unwrap();
-        let err = config.validate().unwrap_err();
+        let config: CredibleConfig = toml::from_str(toml_str).unwrap();
+        let err = config.validate(tmp.path()).unwrap_err();
         assert!(err.to_string().contains(".sol or .a.sol extension"));
     }
 
     #[test]
-    fn validate_catches_duplicate_assertions() {
+    fn validate_catches_missing_assertion_file() {
+        let tmp = setup_valid_project();
         let toml_str = r#"
             environment = "production"
             [contracts.my_contract]
             address = "0x1234567890abcdef1234567890abcdef12345678"
             name = "Mock"
             [[contracts.my_contract.assertions]]
-            file = "Mock.a.sol"
-            [[contracts.my_contract.assertions]]
-            file = "Mock.a.sol"
+            file = "Missing.a.sol"
         "#;
-        let config: CredibleToml = toml::from_str(toml_str).unwrap();
-        let err = config.validate().unwrap_err();
+        let config: CredibleConfig = toml::from_str(toml_str).unwrap();
+        let err = config.validate(tmp.path()).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("my_contract"), "missing label in: {msg}");
+        assert!(msg.contains("Missing.a.sol"), "missing file in: {msg}");
+        assert!(msg.contains("not found"), "missing 'not found' in: {msg}");
+    }
+
+    #[test]
+    fn validate_catches_duplicate_assertions() {
+        let tmp = setup_valid_project();
+        let toml_str = r#"
+            environment = "production"
+            [contracts.my_contract]
+            address = "0x1234567890abcdef1234567890abcdef12345678"
+            name = "Mock"
+            [[contracts.my_contract.assertions]]
+            file = "NoArgsAssertion.a.sol"
+            [[contracts.my_contract.assertions]]
+            file = "NoArgsAssertion.a.sol"
+        "#;
+        let config: CredibleConfig = toml::from_str(toml_str).unwrap();
+        let err = config.validate(tmp.path()).unwrap_err();
         assert!(err.to_string().contains("duplicate assertion"));
     }
 
     #[test]
     fn validate_allows_same_file_with_different_args() {
+        let tmp = setup_valid_project();
         let toml_str = r#"
             environment = "production"
             [contracts.my_contract]
             address = "0x1234567890abcdef1234567890abcdef12345678"
             name = "Mock"
             [[contracts.my_contract.assertions]]
-            file = "Mock.a.sol"
+            file = "NoArgsAssertion.a.sol"
             args = ["0x01"]
             [[contracts.my_contract.assertions]]
-            file = "Mock.a.sol"
+            file = "NoArgsAssertion.a.sol"
             args = ["0x02"]
         "#;
-        let config: CredibleToml = toml::from_str(toml_str).unwrap();
-        config.validate().unwrap();
+        let config: CredibleConfig = toml::from_str(toml_str).unwrap();
+        config.validate(tmp.path()).unwrap();
     }
 
     #[test]
     fn validate_catches_duplicate_addresses() {
+        let tmp = setup_valid_project();
         let toml_str = r#"
             environment = "production"
             [contracts.ownable]
-            address = "0xD1f444eA1D2d9fA567F8fD73b15199F90e630074"
+            address = "0x1234567890abcdef1234567890abcdef12345678"
             name = "Ownable"
             [[contracts.ownable.assertions]]
-            file = "OwnableAssertion.a.sol"
+            file = "NoArgsAssertion.a.sol"
 
             [contracts.ownable2]
-            address = "0xD1f444eA1D2d9fA567F8fD73b15199F90e630074"
+            address = "0x1234567890abcdef1234567890abcdef12345678"
             name = "Ownable2"
             [[contracts.ownable2.assertions]]
-            file = "OwnableAssertion.a.sol"
+            file = "NoArgsAssertion.a.sol"
         "#;
-        let config: CredibleToml = toml::from_str(toml_str).unwrap();
-        let err = config.validate().unwrap_err();
+        let config: CredibleConfig = toml::from_str(toml_str).unwrap();
+        let err = config.validate(tmp.path()).unwrap_err();
         assert!(err.to_string().contains("duplicate contract address"));
     }
 
     #[test]
-    fn validate_accepts_distinct_addresses() {
-        let toml_str = r#"
-            environment = "production"
-            [contracts.ownable]
-            address = "0xD1f444eA1D2d9fA567F8fD73b15199F90e630074"
-            name = "Ownable"
-            [[contracts.ownable.assertions]]
-            file = "OwnableAssertion.a.sol"
-
-            [contracts.ownable2]
-            address = "0xC9734723aAD51626dC9244fed32668ccb280856A"
-            name = "Ownable2"
-            [[contracts.ownable2.assertions]]
-            file = "OwnableAssertion.a.sol"
-        "#;
-        let config: CredibleToml = toml::from_str(toml_str).unwrap();
-        config.validate().unwrap();
-    }
-
-    #[test]
     fn validate_collects_multiple_errors() {
+        let tmp = setup_valid_project();
         let toml_str = r#"
             environment = ""
             [contracts.my_contract]
@@ -382,8 +440,8 @@ mod tests {
             [[contracts.my_contract.assertions]]
             file = "Missing.txt"
         "#;
-        let config: CredibleToml = toml::from_str(toml_str).unwrap();
-        let err = config.validate().unwrap_err();
+        let config: CredibleConfig = toml::from_str(toml_str).unwrap();
+        let err = config.validate(tmp.path()).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("environment"), "missing env error in: {msg}");
         assert!(msg.contains("address"), "missing address error in: {msg}");
@@ -401,15 +459,15 @@ mod tests {
             address = "0xD1f444eA1D2d9fA567F8fD73b15199F90e630074"
             name = "Ownable"
             [[contracts.ownable.assertions]]
-            file = "src/OwnableAssertion.a.sol"
+            file = "OwnableAssertion.a.sol"
 
             [contracts.ownable]
             address = "0xC9734723aAD51626dC9244fed32668ccb280856A"
             name = "Ownable2"
             [[contracts.ownable.assertions]]
-            file = "src/OwnableAssertion.a.sol"
+            file = "OwnableAssertion.a.sol"
         "#;
-        let result = toml::from_str::<CredibleToml>(toml_str);
+        let result = toml::from_str::<CredibleConfig>(toml_str);
         assert!(result.is_err(), "TOML should reject duplicate keys");
     }
 }

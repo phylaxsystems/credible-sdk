@@ -1,7 +1,7 @@
 use crate::{
     credible_config::{
+        CredibleConfig,
         CredibleConfigError,
-        CredibleToml,
         assertion_contract_name,
     },
     error::VerifyError,
@@ -176,7 +176,7 @@ impl VerifyArgs {
 
     fn build_from_toml(root: &Path) -> Result<Vec<VerifyInput>, VerifyError> {
         let config_path = root.join("assertions/credible.toml");
-        let credible = CredibleToml::from_path(&config_path)?;
+        let credible = CredibleConfig::from_path(&config_path, root)?;
 
         let mut inputs = Vec::new();
         for contract in credible.contracts.values() {

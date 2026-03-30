@@ -2,7 +2,7 @@ use crate::{
     DEFAULT_PLATFORM_URL,
     config::CliConfig,
     credible_config::{
-        CredibleToml,
+        CredibleConfig,
         assertion_contract_name,
     },
     error::ApplyError,
@@ -148,7 +148,7 @@ impl ApplyArgs {
         let json_output = cli_args.json_output() || self.json;
         let root = canonicalize_root(&self.root)?;
         let config_path = root.join(&self.config);
-        let credible = CredibleToml::from_path(&config_path)?;
+        let credible = CredibleConfig::from_path(&config_path, &root)?;
         let project_id = match credible.project_id {
             Some(project_id) => project_id,
             None if json_output => {
@@ -235,7 +235,7 @@ impl ApplyArgs {
         Ok(())
     }
 
-    fn build_payload(credible: &CredibleToml, root: &Path) -> Result<ApplyPayload, ApplyError> {
+    fn build_payload(credible: &CredibleConfig, root: &Path) -> Result<ApplyPayload, ApplyError> {
         let mut built_assertions = HashMap::new();
         let mut payload_contracts = BTreeMap::new();
 
