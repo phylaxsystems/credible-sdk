@@ -339,6 +339,8 @@ pub struct StateConfigFile {
     /// Legacy state source fields (deprecated).
     #[serde(flatten)]
     pub legacy: LegacyStateConfig,
+    /// Genesis file used by the integrated state-worker runtime.
+    pub integrated_worker_genesis_path: Option<String>,
     /// Minimum state diff to consider a cache synced
     pub minimum_state_diff: Option<u64>,
     /// Maximum time (ms) the engine will wait for a state source to report as  synced before
@@ -356,6 +358,8 @@ pub struct StateConfig {
     /// Legacy state source fields (deprecated).
     #[serde(flatten)]
     pub legacy: LegacyStateConfig,
+    /// Genesis file used by the integrated state-worker runtime.
+    pub integrated_worker_genesis_path: Option<String>,
     /// Minimum state diff to consider a cache synced
     pub minimum_state_diff: u64,
     /// Maximum time (ms) the engine will wait for a state source to report as  synced before
@@ -481,6 +485,8 @@ fn resolve_state(state_file: &StateConfigFile) -> Result<StateConfig, ConfigErro
                 .state_worker_depth
                 .or(parse_env("SIDECAR_STATE_WORKER_DEPTH")?),
         },
+        integrated_worker_genesis_path: parse_env("SIDECAR_STATE_INTEGRATED_WORKER_GENESIS_PATH")?
+            .or_else(|| state_file.integrated_worker_genesis_path.clone()),
         minimum_state_diff: required_or_env(
             state_file.minimum_state_diff,
             "SIDECAR_STATE_MINIMUM_STATE_DIFF",
@@ -889,6 +895,7 @@ mod tests {
         "depth": 100
       }
     ],
+    "integrated_worker_genesis_path": "docker/maru-besu-sidecar/config/l2-genesis-initialization/genesis-besu.json",
     "minimum_state_diff": 10,
     "sources_sync_timeout_ms": 30000,
     "sources_monitoring_period_ms": 1000
@@ -966,6 +973,13 @@ mod tests {
         assert_eq!(config.state.minimum_state_diff, 10);
         assert_eq!(config.state.sources_sync_timeout_ms, 30000);
         assert_eq!(config.state.sources_monitoring_period_ms, 1000);
+        assert_eq!(
+            config.state.integrated_worker_genesis_path,
+            Some(
+                "docker/maru-besu-sidecar/config/l2-genesis-initialization/genesis-besu.json"
+                    .to_string()
+            )
+        );
     }
 
     #[test]
@@ -1197,6 +1211,27 @@ mod tests {
                 mdbx_path: "/data/state.mdbx".to_string(),
                 depth: 7,
             }]
+        );
+    }
+
+    #[test]
+    fn test_integrated_worker_genesis_path_from_env() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _guards = clear_required_envs();
+        let _envs = set_required_envs_defaults();
+        let _genesis_path = set_env_var(
+            "SIDECAR_STATE_INTEGRATED_WORKER_GENESIS_PATH",
+            "/data/integrated-worker/genesis.json",
+        );
+
+        let mut temp_file = NamedTempFile::new().unwrap();
+        write!(temp_file, r"{{}}").unwrap();
+        temp_file.flush().unwrap();
+
+        let config = Config::from_file(temp_file.path()).unwrap();
+        assert_eq!(
+            config.state.integrated_worker_genesis_path,
+            Some("/data/integrated-worker/genesis.json".to_string())
         );
     }
 
@@ -1622,6 +1657,21 @@ mod tests {
                     http_url: "http://sequencer:8545".to_string(),
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn test_default_config_advertises_integrated_worker_genesis_path() {
+        let config = ConfigFile::from_str(DEFAULT_CONFIG).unwrap();
+
+        assert_eq!(
+            config
+                .state
+                .and_then(|state| state.integrated_worker_genesis_path),
+            Some(
+                "docker/maru-besu-sidecar/config/l2-genesis-initialization/genesis-besu.json"
+                    .to_string()
+            )
         );
     }
 }

@@ -9,7 +9,6 @@ use assertion_executor::{
 use credible_utils::shutdown::wait_for_sigterm;
 use flume::unbounded;
 use mdbx::{
-    Reader,
     StateReader,
     common::CircularBufferConfig,
 };
@@ -83,13 +82,14 @@ use state_worker::{
         CommittedWindow,
         RuntimeObserver,
         StateWorkerRuntimeConfig,
+        committed_window_from_reader,
         run_supervisor,
+        seed_commit_permit_gate,
     },
 };
 use std::{
     env,
     net::SocketAddr,
-    path::Path,
     sync::{
         Arc,
         atomic::{
@@ -118,9 +118,6 @@ struct SidecarInfo {
 }
 
 const STATE_WORKER_RESTART_BACKOFF: Duration = Duration::from_secs(1);
-const DEFAULT_HOST_GENESIS_PATH: &str =
-    "docker/maru-besu-sidecar/config/l2-genesis-initialization/genesis-besu.json";
-const DEFAULT_CONTAINER_GENESIS_PATH: &str = "/etc/credible-sidecar/genesis-besu.json";
 
 #[cfg(feature = "dhat-heap")]
 #[global_allocator]
@@ -400,7 +397,7 @@ fn transaction_observer_config_from(config: &Config) -> Option<TransactionObserv
 
 async fn build_sources_from_config(
     config: &Config,
-    committed_window_rx: Option<watch::Receiver<Option<CommittedWindow>>>,
+    committed_window_rx: watch::Receiver<Option<CommittedWindow>>,
 ) -> anyhow::Result<Vec<Arc<dyn Source>>> {
     let mut sources: Vec<Arc<dyn Source>> = Vec::new();
 
@@ -815,7 +812,7 @@ async fn initialize_sidecar_runtime(config: &Config) -> anyhow::Result<SidecarRu
     let committed_window = state_worker_committed_window(config);
     initialize_state_worker_runtime(committed_window);
     let (committed_window_tx, committed_window_rx) = watch::channel(committed_window);
-    let sources = build_sources_from_config(config, Some(committed_window_rx)).await?;
+    let sources = build_sources_from_config(config, committed_window_rx).await?;
     let state = Arc::new(Sources::new(sources, config.state.minimum_state_diff));
     let cache = OverlayDb::new(Some(state.clone()));
     let state_worker = integrated_state_worker_config(config)?;
@@ -1018,6 +1015,7 @@ async fn shutdown_sidecar_runtime(
 
 fn initialize_state_worker_runtime(committed_window: Option<CommittedWindow>) {
     let durable_head = committed_window.map(CommittedWindow::durable_head);
+    seed_commit_permit_gate(durable_head);
     state_worker_runtime_state().replace(state_worker_runtime_snapshot(
         0,
         Duration::ZERO,
@@ -1036,8 +1034,10 @@ fn integrated_state_worker_config(
     let Some(ws_url) = state_worker_ws_url(config) else {
         return Ok(None);
     };
-    let Some(genesis_path) = integrated_state_worker_genesis_path() else {
-        warn!("State worker genesis file was not found; integrated worker will stay disabled");
+    let Some(genesis_path) = config.state.integrated_worker_genesis_path.clone() else {
+        warn!(
+            "State worker genesis file is not configured at state.integrated_worker_genesis_path; integrated worker will stay disabled"
+        );
         return Ok(None);
     };
 
@@ -1061,11 +1061,7 @@ fn state_worker_runtime_snapshot(
 fn state_worker_committed_window(config: &Config) -> Option<CommittedWindow> {
     let (path, depth) = state_worker_mdbx_config(config)?;
     let backend = StateReader::new(path.as_str(), CircularBufferConfig::new(depth).ok()?).ok()?;
-    backend
-        .get_available_block_range()
-        .ok()
-        .flatten()
-        .and_then(|(oldest, head)| CommittedWindow::from_range(oldest, head))
+    committed_window_from_reader(&backend).ok().flatten()
 }
 
 fn state_worker_mdbx_config(config: &Config) -> Option<(String, u8)> {
@@ -1096,28 +1092,6 @@ fn state_worker_ws_url(config: &Config) -> Option<String> {
             StateSourceConfig::Mdbx { .. } => None,
         }
     })
-}
-
-fn integrated_state_worker_genesis_path() -> Option<String> {
-    [
-        env::var("SIDECAR_STATE_WORKER_FILE_TO_GENESIS").ok(),
-        env::var("STATE_WORKER_FILE_TO_GENESIS").ok(),
-        existing_path(DEFAULT_CONTAINER_GENESIS_PATH),
-        repo_relative_existing_path(DEFAULT_HOST_GENESIS_PATH),
-    ]
-    .into_iter()
-    .flatten()
-    .find(|path| Path::new(path).exists())
-}
-
-fn existing_path(path: &str) -> Option<String> {
-    Path::new(path).exists().then(|| path.to_string())
-}
-
-fn repo_relative_existing_path(path: &str) -> Option<String> {
-    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let candidate = repo_root.join(path);
-    candidate.exists().then(|| candidate.display().to_string())
 }
 
 struct SidecarStateWorkerObserver {
@@ -1226,21 +1200,62 @@ fn spawn_state_worker_supervisor(
 mod tests {
     use super::{
         SidecarStateWorkerObserver,
-        integrated_state_worker_genesis_path,
+        initialize_state_worker_runtime,
+        integrated_state_worker_config,
         state_worker_runtime_snapshot,
     };
-    use sidecar::metrics::state_worker_runtime_state;
+    use sidecar::{
+        args::ConfigFile,
+        metrics::state_worker_runtime_state,
+    };
     use state_worker::runtime::{
         CommittedWindow,
         RuntimeObserver,
+        ensure_commit_permit_gate,
+        grant_flush_permission,
+        reset_commit_permit_gate,
     };
     use std::{
+        env,
+        str::FromStr,
         sync::Mutex,
         time::Duration,
     };
     use tokio::sync::watch;
 
     static STATE_WORKER_RUNTIME_TEST_LOCK: Mutex<()> = Mutex::new(());
+    static SIDECAR_ENV_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn unset(key: &'static str) -> Self {
+            let previous = env::var(key).ok();
+            unsafe {
+                env::remove_var(key);
+            }
+
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            unsafe {
+                match &self.previous {
+                    Some(value) => env::set_var(self.key, value),
+                    None => env::remove_var(self.key),
+                }
+            }
+        }
+    }
+
+    fn config_from_json(json: &str) -> sidecar::args::Config {
+        ConfigFile::from_str(json).unwrap().resolve().unwrap()
+    }
 
     #[test]
     fn state_worker_runtime_snapshot_keeps_transient_heads_unknown_until_runtime_events() {
@@ -1326,12 +1341,113 @@ mod tests {
     }
 
     #[test]
-    fn integrated_state_worker_genesis_path_falls_back_to_repo_fixture() {
-        let path = integrated_state_worker_genesis_path().expect("missing genesis path");
-        assert!(
-            path.ends_with(
-                "docker/maru-besu-sidecar/config/l2-genesis-initialization/genesis-besu.json"
-            ) || path == "/etc/credible-sidecar/genesis-besu.json"
+    fn integrated_state_worker_config_requires_explicit_genesis_path() {
+        let _guard = SIDECAR_ENV_TEST_LOCK.lock().unwrap();
+        let _sidecar_genesis = EnvVarGuard::unset("SIDECAR_STATE_INTEGRATED_WORKER_GENESIS_PATH");
+        let config = config_from_json(
+            r#"{
+  "chain": {
+    "spec_id": "CANCUN",
+    "chain_id": 1
+  },
+  "credible": {
+    "assertion_gas_limit": 30000000,
+    "assertion_da_rpc_url": "http://localhost:8545",
+    "event_source_url": "http://localhost:4350/graphql",
+    "assertion_store_db_path": "/tmp/store.db",
+    "state_oracle": "0x1234567890123456789012345678901234567890",
+    "state_oracle_deployment_block": 100,
+    "transaction_results_max_capacity": 10000
+  },
+  "transport": {
+    "bind_addr": "127.0.0.1:3000"
+  },
+  "state": {
+    "sources": [
+      {
+        "type": "mdbx",
+        "mdbx_path": "/data/state_worker.mdbx",
+        "depth": 3
+      },
+      {
+        "type": "eth-rpc",
+        "ws_url": "ws://localhost:8546",
+        "http_url": "http://localhost:8545"
+      }
+    ],
+    "minimum_state_diff": 10,
+    "sources_sync_timeout_ms": 30000,
+    "sources_monitoring_period_ms": 1000
+  }
+}"#,
         );
+
+        assert!(integrated_state_worker_config(&config).unwrap().is_none());
+    }
+
+    #[test]
+    fn integrated_state_worker_config_uses_explicit_genesis_path_from_sidecar_config() {
+        let _guard = SIDECAR_ENV_TEST_LOCK.lock().unwrap();
+        let _sidecar_genesis = EnvVarGuard::unset("SIDECAR_STATE_INTEGRATED_WORKER_GENESIS_PATH");
+        let config = config_from_json(
+            r#"{
+  "chain": {
+    "spec_id": "CANCUN",
+    "chain_id": 1
+  },
+  "credible": {
+    "assertion_gas_limit": 30000000,
+    "assertion_da_rpc_url": "http://localhost:8545",
+    "event_source_url": "http://localhost:4350/graphql",
+    "assertion_store_db_path": "/tmp/store.db",
+    "state_oracle": "0x1234567890123456789012345678901234567890",
+    "state_oracle_deployment_block": 100,
+    "transaction_results_max_capacity": 10000
+  },
+  "transport": {
+    "bind_addr": "127.0.0.1:3000"
+  },
+  "state": {
+    "sources": [
+      {
+        "type": "mdbx",
+        "mdbx_path": "/data/state_worker.mdbx",
+        "depth": 3
+      },
+      {
+        "type": "eth-rpc",
+        "ws_url": "ws://localhost:8546",
+        "http_url": "http://localhost:8545"
+      }
+    ],
+    "integrated_worker_genesis_path": "/tmp/explicit-genesis.json",
+    "minimum_state_diff": 10,
+    "sources_sync_timeout_ms": 30000,
+    "sources_monitoring_period_ms": 1000
+  }
+}"#,
+        );
+
+        let runtime_config = integrated_state_worker_config(&config)
+            .unwrap()
+            .expect("integrated state worker should be configured");
+
+        assert_eq!(runtime_config.genesis_path, "/tmp/explicit-genesis.json");
+    }
+
+    #[test]
+    fn initialize_state_worker_runtime_resets_commit_gate_to_durable_head() {
+        reset_commit_permit_gate();
+        let _gate = ensure_commit_permit_gate();
+        grant_flush_permission(99);
+
+        initialize_state_worker_runtime(CommittedWindow::from_range(42, 42));
+
+        assert_eq!(
+            ensure_commit_permit_gate().current_permitted_head(),
+            Some(42)
+        );
+
+        reset_commit_permit_gate();
     }
 }
