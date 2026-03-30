@@ -1729,4 +1729,14 @@ mod tests {
             ]
         );
     }
+
+    #[test]
+    fn test_default_config_parses() {
+        let config = ConfigFile::from_str(DEFAULT_CONFIG)
+            .unwrap()
+            .resolve()
+            .unwrap();
+
+        assert!(config.credible.transaction_observer_endpoint.is_none());
+    }
 }

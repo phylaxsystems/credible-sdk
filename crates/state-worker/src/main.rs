@@ -52,7 +52,17 @@ async fn main() -> Result<()> {
         }
     });
 
-    run_supervisor_loop(WorkerConfig::from(args), None, shutdown).await
+    let config = match WorkerConfig::try_from(args) {
+        Ok(config) => config,
+        Err(err) => {
+            critical!(error = %err, "Failed to build worker config; waiting for restart");
+            loop {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+            }
+        }
+    };
+
+    run_supervisor_loop(config, None, shutdown).await
 }
 
 async fn shutdown_signal() -> Result<()> {

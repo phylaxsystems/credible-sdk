@@ -542,13 +542,17 @@ impl<T: TestTransport> LocalInstance<T> {
     }
 
     /// Create a simple test transaction using the default account.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the fixed test transaction parameters fail `TxEnvBuilder` validation.
     pub fn create_test_transaction(
         &mut self,
         caller: Address,
         value: U256,
         data: Bytes,
         block_execution_id: BlockExecutionId,
-    ) -> Result<TxEnv, String> {
+    ) -> TxEnv {
         let nonce = self.next_nonce(caller, block_execution_id);
         TxEnvBuilder::new()
             .caller(caller)
@@ -559,7 +563,7 @@ impl<T: TestTransport> LocalInstance<T> {
             .data(data)
             .nonce(nonce)
             .build()
-            .map_err(|err| format!("failed to build create test transaction: {err:?}"))
+            .expect("test transaction builder should produce a valid CREATE transaction")
     }
 
     /// Generate a random transaction hash
@@ -732,7 +736,7 @@ impl<T: TestTransport> LocalInstance<T> {
             value,
             data,
             tx_execution_id.as_block_execution_id(),
-        )?;
+        );
 
         self.transport
             .send_transaction(tx_execution_id, tx_env)

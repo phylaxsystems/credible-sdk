@@ -12,7 +12,7 @@
     "poll_interval": 1000,
     "assertion_store_db_path": ".local/sidecar-host/assertion_store_database",
     "transaction_observer_db_path": ".local/sidecar-host/transaction_observer_database",
-    "transaction_observer_endpoint": "",
+    "transaction_observer_endpoint": null,
     "transaction_observer_auth_token": "",
     "transaction_observer_endpoint_rps_max": 60,
     "transaction_observer_poll_interval_ms": 1000,

@@ -167,7 +167,7 @@ fn populate_test_database(underlying_db: &mut CacheDB<Arc<Sources>>) -> Address 
 }
 
 /// Setup assertion store with test assertions pre-loaded
-fn setup_assertion_store() -> Result<Arc<AssertionStore>, String> {
+fn setup_assertion_store() -> Arc<AssertionStore> {
     let assertion_store = Arc::new(AssertionStore::new_ephemeral());
 
     // Insert counter assertion into store
@@ -177,9 +177,9 @@ fn setup_assertion_store() -> Result<Arc<AssertionStore>, String> {
             COUNTER_ADDRESS,
             AssertionState::new_test(&assertion_bytecode),
         )
-        .map_err(|err| format!("failed to insert counter assertion: {err}"))?;
+        .expect("failed to insert counter assertion into the test assertion store");
 
-    Ok(assertion_store)
+    assertion_store
 }
 
 const MAX_HTTP_RETRY_ATTEMPTS: usize = 10;
@@ -234,7 +234,7 @@ impl CommonSetup {
 
         let assertion_store = match assertion_store {
             Some(store) => Arc::new(store),
-            None => setup_assertion_store()?,
+            None => setup_assertion_store(),
         };
 
         // Create state with or without result sender
