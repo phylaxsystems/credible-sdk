@@ -4,9 +4,12 @@
 //! the MDBX database backend for running integration tests.
 
 use crate::{
-    connect_provider,
     genesis::GenesisState,
     integration_tests::mdbx_fixture::MdbxTestDir,
+    runtime::{
+        NoopRuntimeObserver,
+        connect_provider,
+    },
     state,
     system_calls::SystemCalls,
     worker::StateWorker,
@@ -20,7 +23,10 @@ use mdbx::{
     AddressHash,
     Reader,
 };
-use std::time::Duration;
+use std::{
+    sync::Arc,
+    time::Duration,
+};
 use tokio::sync::broadcast;
 use tracing::error;
 
@@ -123,6 +129,7 @@ impl TestInstance {
             writer_reader,
             genesis_state,
             system_calls,
+            Arc::new(NoopRuntimeObserver),
         );
         let (shutdown_tx, _) = broadcast::channel(1);
         let handle_worker = tokio::spawn(async move {

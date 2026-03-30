@@ -31,14 +31,14 @@
   "state": {
     "sources": [
       {
-        "type": "eth-rpc",
-        "ws_url": "ws://127.0.0.1:8546",
-        "http_url": "http://127.0.0.1:8545"
-      },
-      {
         "type": "mdbx",
         "mdbx_path": "/data/state_worker.mdbx",
         "depth": 3
+      },
+      {
+        "type": "eth-rpc",
+        "ws_url": "ws://127.0.0.1:8546",
+        "http_url": "http://127.0.0.1:8545"
       }
     ],
     "minimum_state_diff": 100,

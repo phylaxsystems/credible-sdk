@@ -39,6 +39,7 @@ use std::{
         Arc,
         Mutex,
         OnceLock,
+        PoisonError,
     },
     time::Duration,
 };
@@ -65,12 +66,14 @@ pub struct StateWorkerRuntimeConfig {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use]
 pub struct CommittedWindow {
     oldest_block: u64,
     durable_head: u64,
 }
 
 impl CommittedWindow {
+    #[must_use]
     pub fn from_range(oldest_block: u64, durable_head: u64) -> Option<Self> {
         (oldest_block <= durable_head).then_some(Self {
             oldest_block,
@@ -85,14 +88,17 @@ impl CommittedWindow {
         }
     }
 
+    #[must_use]
     pub fn oldest_block(self) -> u64 {
         self.oldest_block
     }
 
+    #[must_use]
     pub fn durable_head(self) -> u64 {
         self.durable_head
     }
 
+    #[must_use]
     pub fn range(self) -> (u64, u64) {
         (self.oldest_block, self.durable_head)
     }
@@ -112,6 +118,26 @@ impl CommittedWindow {
             durable_head,
         }
     }
+}
+
+/// Read the current durable MDBX availability window from a reader.
+///
+/// # Errors
+///
+/// Returns an error when the reader cannot load the current block range.
+pub fn committed_window_from_reader<DB>(reader: &DB) -> Result<Option<CommittedWindow>>
+where
+    DB: Reader,
+    <DB as Reader>::Error: std::error::Error + Send + Sync + 'static,
+{
+    let range = reader
+        .get_available_block_range()
+        .map_err(anyhow::Error::new)
+        .context("failed to read committed window from the database")?;
+
+    Ok(range.and_then(|(oldest_block, durable_head)| {
+        CommittedWindow::from_range(oldest_block, durable_head)
+    }))
 }
 
 pub trait RuntimeObserver: Any + Send + Sync + 'static {
@@ -142,10 +168,12 @@ impl Default for CommitPermitGate {
 }
 
 impl CommitPermitGate {
+    #[must_use]
     pub fn subscribe(&self) -> watch::Receiver<Option<u64>> {
         self.permitted_head_tx.subscribe()
     }
 
+    #[must_use]
     pub fn current_permitted_head(&self) -> Option<u64> {
         *self.permitted_head_tx.borrow()
     }
@@ -162,10 +190,12 @@ impl CommitPermitGate {
     }
 }
 
+/// Return the shared flush-permission gate used by integrated observers.
+#[must_use]
 pub fn ensure_commit_permit_gate() -> Arc<CommitPermitGate> {
     let mut slot = commit_permit_gate_slot()
         .lock()
-        .expect("commit permit gate mutex poisoned");
+        .unwrap_or_else(PoisonError::into_inner);
 
     if let Some(gate) = slot.as_ref() {
         return Arc::clone(gate);
@@ -191,7 +221,7 @@ pub(crate) fn commit_permit_gate_for_observer(
 fn current_commit_permit_gate() -> Option<Arc<CommitPermitGate>> {
     commit_permit_gate_slot()
         .lock()
-        .expect("commit permit gate mutex poisoned")
+        .unwrap_or_else(PoisonError::into_inner)
         .as_ref()
         .map(Arc::clone)
 }
@@ -204,9 +234,15 @@ fn commit_permit_gate_slot() -> &'static Mutex<Option<Arc<CommitPermitGate>>> {
 pub fn reset_commit_permit_gate() {
     *commit_permit_gate_slot()
         .lock()
-        .expect("commit permit gate mutex poisoned") = None;
+        .unwrap_or_else(PoisonError::into_inner) = None;
 }
 
+/// Run the restartable state-worker supervisor loop until shutdown.
+///
+/// # Errors
+///
+/// Returns an error if the worker cannot be restarted cleanly after a shutdown
+/// signal or if startup repeatedly fails without reaching the worker loop.
 pub async fn run_supervisor(
     config: &StateWorkerRuntimeConfig,
     mut shutdown_rx: broadcast::Receiver<()>,
@@ -265,6 +301,12 @@ pub async fn run_supervisor(
     }
 }
 
+/// Start the state-worker runtime once and drive it until it exits.
+///
+/// # Errors
+///
+/// Returns an error if provider setup, database initialization, genesis loading,
+/// or the worker loop itself fails.
 pub async fn run_once(
     config: &StateWorkerRuntimeConfig,
     shutdown_rx: broadcast::Receiver<()>,
@@ -288,7 +330,7 @@ pub async fn run_once(
         }
     };
 
-    publish_existing_durable_head(&writer_reader, observer.as_ref())?;
+    publish_existing_durable_head(&writer_reader)?;
 
     let genesis_state = load_genesis_state(&config.genesis_path)?;
     let system_calls = SystemCalls::new(
@@ -319,6 +361,11 @@ pub async fn run_once(
         .context("state worker terminated unexpectedly")
 }
 
+/// Connect to the execution node websocket provider used by the worker runtime.
+///
+/// # Errors
+///
+/// Returns an error if the websocket connection cannot be established.
 pub async fn connect_provider(ws_url: &str) -> Result<Arc<RootProvider>> {
     let ws = WsConnect::new(ws_url);
     let provider = ProviderBuilder::new()
@@ -328,6 +375,12 @@ pub async fn connect_provider(ws_url: &str) -> Result<Arc<RootProvider>> {
     Ok(Arc::new(provider.root().clone()))
 }
 
+/// Validate the connected execution client version when it reports Geth.
+///
+/// # Errors
+///
+/// Returns an error if the client version RPC fails or if the reported Geth
+/// version is older than the minimum supported version.
 pub async fn validate_geth_version(provider: &RootProvider) -> Result<()> {
     let client_version = provider
         .get_client_version()
@@ -347,9 +400,7 @@ pub async fn validate_geth_version(provider: &RootProvider) -> Result<()> {
         }
 
         anyhow::bail!(
-            "Geth version {} is too old; minimum supported version is {}",
-            version,
-            MIN_GETH_VERSION
+            "Geth version {version} is too old; minimum supported version is {MIN_GETH_VERSION}"
         );
     }
 
@@ -360,6 +411,11 @@ pub async fn validate_geth_version(provider: &RootProvider) -> Result<()> {
     Ok(())
 }
 
+/// Wait for the process shutdown signal.
+///
+/// # Errors
+///
+/// Returns an error if the OS signal handlers cannot be installed.
 pub async fn shutdown_signal() -> Result<()> {
     use tokio::signal;
 
@@ -401,10 +457,7 @@ fn load_genesis_state(path: &str) -> Result<GenesisState> {
         .with_context(|| format!("failed to parse genesis file: {path}"))
 }
 
-fn publish_existing_durable_head<WR>(
-    writer_reader: &WR,
-    observer: &dyn RuntimeObserver,
-) -> Result<()>
+fn publish_existing_durable_head<WR>(writer_reader: &WR) -> Result<()>
 where
     WR: Reader + Writer,
     <WR as Reader>::Error: std::error::Error + Send + Sync + 'static,
@@ -417,7 +470,6 @@ where
     if let Some(block_number) = durable_head {
         grant_flush_permission(block_number);
         metrics::set_durable_head(block_number);
-        observer.on_durable_head(block_number);
     }
 
     Ok(())
@@ -426,11 +478,41 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy::primitives::B256;
+    use mdbx::{
+        AccountState,
+        StateWriter,
+        Writer,
+        common::CircularBufferConfig,
+    };
+    use std::sync::atomic::{
+        AtomicUsize,
+        Ordering,
+    };
+    use uuid::Uuid;
 
     #[derive(Debug)]
     struct TestObserver;
 
     impl RuntimeObserver for TestObserver {}
+
+    #[derive(Debug, Default)]
+    struct CountingObserver {
+        durable_head_notifications: AtomicUsize,
+    }
+
+    impl CountingObserver {
+        fn durable_head_notifications(&self) -> usize {
+            self.durable_head_notifications.load(Ordering::Acquire)
+        }
+    }
+
+    impl RuntimeObserver for CountingObserver {
+        fn on_durable_head(&self, _block_number: u64) {
+            self.durable_head_notifications
+                .fetch_add(1, Ordering::AcqRel);
+        }
+    }
 
     #[test]
     fn noop_observer_does_not_install_commit_gate() {
@@ -473,5 +555,27 @@ mod tests {
 
         assert_eq!(window.advance(45, 8), window);
         assert_eq!(window.advance(44, 8), window);
+    }
+
+    #[test]
+    fn publish_existing_durable_head_does_not_notify_observer() {
+        reset_commit_permit_gate();
+        let temp_dir =
+            std::env::temp_dir().join(format!("state-worker-runtime-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).expect("create temp runtime dir");
+        let writer_reader = StateWriter::new(
+            &temp_dir,
+            CircularBufferConfig::new(4).expect("buffer config"),
+        )
+        .expect("state writer");
+        writer_reader
+            .bootstrap_from_snapshot(Vec::<AccountState>::new(), 42, B256::ZERO, B256::ZERO)
+            .expect("bootstrap snapshot");
+        let observer = CountingObserver::default();
+
+        publish_existing_durable_head(&writer_reader).expect("bootstrap should succeed");
+
+        assert_eq!(observer.durable_head_notifications(), 0);
+        std::fs::remove_dir_all(&temp_dir).expect("remove temp runtime dir");
     }
 }

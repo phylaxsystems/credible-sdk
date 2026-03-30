@@ -164,19 +164,18 @@ impl SourcesInner {
         timestamp: u64,
     ) -> ReadinessSnapshot {
         let mut any_synced = false;
-        let mut primary_source_synced = false;
-        let mut source_states = Vec::new();
         let mut state_worker_synced = false;
+        let mut rpc_source_synced = false;
+        let mut source_states = Vec::new();
 
-        for (idx, source) in self.cache_sources.iter_all_sources().enumerate() {
+        for source in self.cache_sources.iter_all_sources() {
             let source_name = source.name();
             let is_synced = source.is_synced(min_synced_block, head_block_number);
 
-            if idx == 0 {
-                primary_source_synced = is_synced;
-            }
             if source_name == SourceName::StateWorker {
                 state_worker_synced = is_synced;
+            } else if source_name == SourceName::EthRpcSource {
+                rpc_source_synced = is_synced;
             }
 
             if let Some(source_metric) = self.metrics.get(&source_name) {
@@ -190,9 +189,7 @@ impl SourcesInner {
             ));
         }
 
-        let fallback_active = any_synced
-            && !primary_source_synced
-            && source_states.iter().skip(1).any(|source| source.ready);
+        let fallback_active = rpc_source_synced && !state_worker_synced;
         let worker = if state_worker_synced {
             WorkerReadiness::Healthy
         } else if any_synced {
@@ -495,6 +492,21 @@ mod tests {
         let inner = build_inner(vec![
             Arc::new(MockSource::new(SourceName::StateWorker, false)),
             Arc::new(MockSource::new(SourceName::EthRpcSource, true)),
+        ]);
+
+        let snapshot = inner.collect_snapshot(U256::from(42), U256::from(32), 1);
+
+        assert!(snapshot.ready);
+        assert!(snapshot.fallback_active);
+        assert_eq!(snapshot.worker, WorkerReadiness::Degraded);
+        assert_eq!(ready_source_names(&snapshot), vec!["EthRpcSource"]);
+    }
+
+    #[test]
+    fn collect_snapshot_treats_state_worker_as_primary_even_when_configured_second() {
+        let inner = build_inner(vec![
+            Arc::new(MockSource::new(SourceName::EthRpcSource, true)),
+            Arc::new(MockSource::new(SourceName::StateWorker, false)),
         ]);
 
         let snapshot = inner.collect_snapshot(U256::from(42), U256::from(32), 1);

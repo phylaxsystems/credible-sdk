@@ -216,15 +216,36 @@ impl Sources {
         let min_synced_block = self.get_minimum_synced_block_number();
         let latest_head = *self.latest_head.read();
 
-        let sources = self
+        let state_worker_sources = self
             .sources
             .iter()
-            .filter(move |source| source.is_synced(min_synced_block, latest_head))
+            .filter(move |source| {
+                source.name() == SourceName::StateWorker
+                    && source.is_synced(min_synced_block, latest_head)
+            })
+            .cloned();
+        let rpc_sources = self
+            .sources
+            .iter()
+            .filter(move |source| {
+                source.name() == SourceName::EthRpcSource
+                    && source.is_synced(min_synced_block, latest_head)
+            })
+            .cloned();
+        let other_sources = self
+            .sources
+            .iter()
+            .filter(move |source| {
+                !matches!(
+                    source.name(),
+                    SourceName::StateWorker | SourceName::EthRpcSource
+                ) && source.is_synced(min_synced_block, latest_head)
+            })
             .cloned();
 
         self.metrics.is_sync_duration(instant.elapsed());
 
-        sources
+        state_worker_sources.chain(rpc_sources).chain(other_sources)
     }
 
     pub(crate) fn get_minimum_synced_block_number(&self) -> U256 {
@@ -995,6 +1016,25 @@ mod tests {
             0,
             "Second source should not be called"
         );
+    }
+
+    #[test]
+    fn test_basic_ref_prioritizes_state_worker_over_rpc_regardless_of_config_order() {
+        let rpc_source = Arc::new(
+            MockSource::new(SourceName::EthRpcSource).with_account_info(create_test_account_info()),
+        );
+        let state_worker_source = Arc::new(
+            MockSource::new(SourceName::StateWorker).with_account_info(create_test_account_info()),
+        );
+
+        let cache = Sources::new(vec![rpc_source.clone(), state_worker_source.clone()], 10);
+        cache.set_block_number(U256::from(1));
+
+        let result = cache.basic_ref(create_test_address()).unwrap();
+
+        assert!(result.is_some());
+        assert_eq!(rpc_source.basic_ref_call_count(), 0);
+        assert_eq!(state_worker_source.basic_ref_call_count(), 1);
     }
 
     #[test]

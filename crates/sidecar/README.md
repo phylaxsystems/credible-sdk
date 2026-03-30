@@ -177,11 +177,11 @@ State:
 
 ### Readiness and degraded mode
 
-`/health` should be interpreted as a readiness endpoint for the integrated topology, not a mere process heartbeat:
+The sidecar exposes separate liveness and readiness probes for the integrated topology:
 
-- the sidecar process may stay alive while the embedded worker is restarting or while MDBX is behind;
-- readiness should remain healthy while at least one state source can serve the required block range;
-- readiness should degrade when neither durable MDBX nor RPC fallback can cover the required range.
+- `/health` is a liveness probe. It returns `200 OK` while the sidecar process and supervisor loop are still running, even if the embedded worker is restarting or MDBX is behind.
+- `/ready` is the readiness probe. It returns `200 OK` while at least one state source can serve the cache's required block range, and `503 Service Unavailable` when neither durable MDBX nor RPC fallback can cover that range.
+- `/ready` also reports degraded conditions in its JSON payload. Fallback-active operation, worker degradation, or runtime component failures can leave the process live and ready while still surfacing `"degraded": true` for operators.
 
 Operators should alert on degraded fallback behavior separately from process liveness so a worker restart does not get
 mistaken for a full service outage.
