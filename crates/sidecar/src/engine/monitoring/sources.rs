@@ -23,7 +23,6 @@ use std::{
         Arc,
         atomic::{
             AtomicBool,
-            AtomicU64,
             Ordering,
         },
     },
@@ -71,8 +70,6 @@ pub struct SourcesInner {
     latest_snapshot: RwLock<ReadinessSnapshot>,
     /// Runtime metrics emitted for degraded mode and state-worker continuity
     runtime_metrics: RuntimeHealthMetrics,
-    /// Last head that the state-worker source satisfied
-    state_worker_last_ready_head: AtomicU64,
 }
 
 impl Drop for Sources {
@@ -101,7 +98,6 @@ impl Sources {
             health_state,
             latest_snapshot: RwLock::new(ReadinessSnapshot::default()),
             runtime_metrics: RuntimeHealthMetrics,
-            state_worker_last_ready_head: AtomicU64::new(0),
         });
         let abort_handle = sources_inner.clone().spawn_monitoring();
         Arc::new(Self {
@@ -298,19 +294,8 @@ impl SourcesInner {
             .find(|source| source.name == SourceName::StateWorker.to_string())
             .is_some_and(|source| source.ready);
 
-        if state_worker_ready {
-            self.state_worker_last_ready_head
-                .store(snapshot.required_head, Ordering::Release);
-        }
-
-        let last_ready_head = self.state_worker_last_ready_head.load(Ordering::Acquire);
         let worker_runtime = state_worker_runtime_state().snapshot();
-        let worker_metric_state = worker_metric_state(
-            snapshot,
-            worker_runtime,
-            last_ready_head,
-            state_worker_ready,
-        );
+        let worker_metric_state = worker_metric_state(snapshot, worker_runtime, state_worker_ready);
 
         self.runtime_metrics
             .set_legacy_state_worker_db_healthy(worker_metric_state.legacy_db_healthy);
@@ -341,13 +326,13 @@ impl SourcesInner {
 struct WorkerMetricState {
     restart_count: u64,
     restart_backoff: Duration,
-    traced_head: u64,
-    flush_permitted_head: u64,
-    durable_head: u64,
+    traced_head: Option<u64>,
+    flush_permitted_head: Option<u64>,
+    durable_head: Option<u64>,
     legacy_db_healthy: bool,
     legacy_head_block: u64,
-    legacy_current_block: u64,
-    legacy_sync_lag: u64,
+    legacy_current_block: Option<u64>,
+    legacy_sync_lag: Option<u64>,
     legacy_syncing: bool,
     legacy_following_head: bool,
 }
@@ -355,23 +340,20 @@ struct WorkerMetricState {
 fn worker_metric_state(
     snapshot: &ReadinessSnapshot,
     runtime: StateWorkerRuntimeSnapshot,
-    last_ready_head: u64,
     state_worker_ready: bool,
 ) -> WorkerMetricState {
-    let durable_head = runtime.durable_head.unwrap_or(last_ready_head);
-    let traced_head = runtime.traced_head.unwrap_or(durable_head);
-    let flush_permitted_head = runtime.flush_permitted_head.unwrap_or(durable_head);
+    let durable_head = runtime.durable_head;
 
     WorkerMetricState {
         restart_count: runtime.restart_count,
         restart_backoff: runtime.restart_backoff,
-        traced_head,
-        flush_permitted_head,
+        traced_head: runtime.traced_head,
+        flush_permitted_head: runtime.flush_permitted_head,
         durable_head,
         legacy_db_healthy: state_worker_ready,
         legacy_head_block: snapshot.required_head,
         legacy_current_block: durable_head,
-        legacy_sync_lag: snapshot.required_head.saturating_sub(durable_head),
+        legacy_sync_lag: durable_head.map(|head| snapshot.required_head.saturating_sub(head)),
         legacy_syncing: !state_worker_ready && snapshot.ready,
         legacy_following_head: state_worker_ready,
     }
@@ -505,7 +487,6 @@ mod tests {
             health_state: Arc::new(HealthState::default()),
             latest_snapshot: RwLock::new(crate::health::ReadinessSnapshot::default()),
             runtime_metrics: crate::metrics::RuntimeHealthMetrics,
-            state_worker_last_ready_head: AtomicU64::new(0),
         }
     }
 
@@ -560,21 +541,21 @@ mod tests {
             durable_head: Some(132),
         };
 
-        let metrics = worker_metric_state(&readiness, runtime, 96, false);
+        let metrics = worker_metric_state(&readiness, runtime, false);
 
         assert_eq!(metrics.restart_count, 3);
         assert_eq!(metrics.restart_backoff, Duration::from_secs(7));
-        assert_eq!(metrics.traced_head, 140);
-        assert_eq!(metrics.flush_permitted_head, 136);
-        assert_eq!(metrics.durable_head, 132);
-        assert_eq!(metrics.legacy_current_block, 132);
-        assert_eq!(metrics.legacy_sync_lag, 128_u64.saturating_sub(132));
+        assert_eq!(metrics.traced_head, Some(140));
+        assert_eq!(metrics.flush_permitted_head, Some(136));
+        assert_eq!(metrics.durable_head, Some(132));
+        assert_eq!(metrics.legacy_current_block, Some(132));
+        assert_eq!(metrics.legacy_sync_lag, Some(128_u64.saturating_sub(132)));
         assert!(metrics.legacy_syncing);
         assert!(!metrics.legacy_following_head);
     }
 
     #[test]
-    fn worker_metric_state_falls_back_to_last_ready_head_without_runtime_snapshot() {
+    fn worker_metric_state_leaves_unknown_heads_unset_without_runtime_snapshot() {
         let readiness = ReadinessSnapshot {
             ready: true,
             fallback_active: false,
@@ -584,16 +565,15 @@ mod tests {
             sources: vec![SourceReadinessSnapshot::new("StateWorker", true)],
         };
 
-        let metrics =
-            worker_metric_state(&readiness, StateWorkerRuntimeSnapshot::default(), 61, true);
+        let metrics = worker_metric_state(&readiness, StateWorkerRuntimeSnapshot::default(), true);
 
         assert_eq!(metrics.restart_count, 0);
         assert_eq!(metrics.restart_backoff, Duration::ZERO);
-        assert_eq!(metrics.traced_head, 61);
-        assert_eq!(metrics.flush_permitted_head, 61);
-        assert_eq!(metrics.durable_head, 61);
-        assert_eq!(metrics.legacy_current_block, 61);
-        assert_eq!(metrics.legacy_sync_lag, 3);
+        assert_eq!(metrics.traced_head, None);
+        assert_eq!(metrics.flush_permitted_head, None);
+        assert_eq!(metrics.durable_head, None);
+        assert_eq!(metrics.legacy_current_block, None);
+        assert_eq!(metrics.legacy_sync_lag, None);
         assert!(!metrics.legacy_syncing);
         assert!(metrics.legacy_following_head);
     }

@@ -476,6 +476,11 @@ fn u64_to_f64(value: u64) -> f64 {
 }
 
 #[inline]
+fn optional_u64_to_f64(value: Option<u64>) -> f64 {
+    value.map_or(f64::NAN, u64_to_f64)
+}
+
+#[inline]
 fn bool_to_f64(value: bool) -> f64 {
     if value { 1.0 } else { 0.0 }
 }
@@ -568,16 +573,16 @@ impl RuntimeHealthMetrics {
         gauge!("sidecar_state_worker_unavailable").set(bool_to_f64(unavailable));
     }
 
-    pub fn set_state_worker_traced_head(&self, block_number: u64) {
-        gauge!("state_worker_traced_head").set(u64_to_f64(block_number));
+    pub fn set_state_worker_traced_head(&self, block_number: Option<u64>) {
+        gauge!("state_worker_traced_head").set(optional_u64_to_f64(block_number));
     }
 
-    pub fn set_state_worker_flush_permitted_head(&self, block_number: u64) {
-        gauge!("state_worker_flush_permitted_head").set(u64_to_f64(block_number));
+    pub fn set_state_worker_flush_permitted_head(&self, block_number: Option<u64>) {
+        gauge!("state_worker_flush_permitted_head").set(optional_u64_to_f64(block_number));
     }
 
-    pub fn set_state_worker_durable_head(&self, block_number: u64) {
-        gauge!("state_worker_durable_head").set(u64_to_f64(block_number));
+    pub fn set_state_worker_durable_head(&self, block_number: Option<u64>) {
+        gauge!("state_worker_durable_head").set(optional_u64_to_f64(block_number));
     }
 
     pub fn set_state_worker_restart_count(&self, restart_count: u64) {
@@ -600,12 +605,12 @@ impl RuntimeHealthMetrics {
         gauge!("state_worker_head_block").set(u64_to_f64(block_number));
     }
 
-    pub fn set_legacy_state_worker_current_block(&self, block_number: u64) {
-        gauge!("state_worker_current_block").set(u64_to_f64(block_number));
+    pub fn set_legacy_state_worker_current_block(&self, block_number: Option<u64>) {
+        gauge!("state_worker_current_block").set(optional_u64_to_f64(block_number));
     }
 
-    pub fn set_legacy_state_worker_sync_lag_blocks(&self, lag_blocks: u64) {
-        gauge!("state_worker_sync_lag_blocks").set(u64_to_f64(lag_blocks));
+    pub fn set_legacy_state_worker_sync_lag_blocks(&self, lag_blocks: Option<u64>) {
+        gauge!("state_worker_sync_lag_blocks").set(optional_u64_to_f64(lag_blocks));
     }
 
     pub fn set_legacy_state_worker_syncing(&self, is_syncing: bool) {

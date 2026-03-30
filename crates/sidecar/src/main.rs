@@ -774,19 +774,19 @@ async fn run_sidecar_once(
 }
 
 fn initialize_state_worker_runtime(config: &Config) {
-    let runtime_state = state_worker_runtime_state();
-    runtime_state.reset();
-    runtime_state.set_restart_state(0, Duration::ZERO);
+    state_worker_runtime_state().replace(initial_state_worker_runtime_snapshot(
+        state_worker_available_head(config),
+    ));
+}
 
-    let durable_head = state_worker_available_head(config);
-    let snapshot = StateWorkerRuntimeSnapshot {
+fn initial_state_worker_runtime_snapshot(durable_head: Option<u64>) -> StateWorkerRuntimeSnapshot {
+    StateWorkerRuntimeSnapshot {
         restart_count: 0,
         restart_backoff: Duration::ZERO,
-        traced_head: durable_head,
-        flush_permitted_head: durable_head,
+        traced_head: None,
+        flush_permitted_head: None,
         durable_head,
-    };
-    runtime_state.replace(snapshot);
+    }
 }
 
 fn state_worker_available_head(config: &Config) -> Option<u64> {
@@ -814,4 +814,21 @@ fn state_worker_mdbx_config(config: &Config) -> Option<(String, u8)> {
             StateSourceConfig::EthRpc { .. } => None,
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::initial_state_worker_runtime_snapshot;
+    use std::time::Duration;
+
+    #[test]
+    fn initial_state_worker_runtime_snapshot_only_seeds_durable_head() {
+        let snapshot = initial_state_worker_runtime_snapshot(Some(42));
+
+        assert_eq!(snapshot.restart_count, 0);
+        assert_eq!(snapshot.restart_backoff, Duration::ZERO);
+        assert_eq!(snapshot.traced_head, None);
+        assert_eq!(snapshot.flush_permitted_head, None);
+        assert_eq!(snapshot.durable_head, Some(42));
+    }
 }
