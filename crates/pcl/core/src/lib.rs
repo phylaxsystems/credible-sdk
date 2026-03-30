@@ -6,7 +6,9 @@
 pub mod apply;
 pub mod auth;
 pub mod config;
+pub mod credible_config;
 pub mod error;
+pub mod verify;
 
 /// Default platform url. URL suffixes added on demand.
 pub const DEFAULT_PLATFORM_URL: &str = "https://app.phylax.systems";
