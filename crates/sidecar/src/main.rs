@@ -1,5 +1,6 @@
 //! # The credible layer sidecar
 #![doc = include_str!("../README.md")]
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 use anyhow::Context;
 use assertion_da_client::DaClient;
@@ -69,6 +70,7 @@ use state_worker::{
 };
 use std::{
     net::SocketAddr,
+    path::Path,
     sync::{
         Arc,
         atomic::{
@@ -84,6 +86,7 @@ use tracing::{
     error,
     warn,
 };
+use url::Url;
 
 struct SidecarInfo {
     version: &'static str,
@@ -357,8 +360,8 @@ fn transaction_observer_config_from(config: &Config) -> Option<TransactionObserv
             Some(poll_interval_ms),
         ) => {
             Some(TransactionObserverConfig {
-                db_path: db_path.clone(),
-                endpoint: endpoint.clone(),
+                db_path: db_path.to_string_lossy().into_owned(),
+                endpoint: endpoint.to_string(),
                 auth_token: auth_token.expose().to_string(),
                 endpoint_rps_max,
                 poll_interval: Duration::from_millis(poll_interval_ms),
@@ -386,7 +389,7 @@ fn spawn_integrated_state_worker(
 
 fn connect_mdbx_source(
     sources: &mut Vec<Arc<dyn Source>>,
-    mdbx_path: &str,
+    mdbx_path: &Path,
     depth: u8,
 ) -> anyhow::Result<()> {
     match StateReader::new(mdbx_path, CircularBufferConfig::new(depth)?) {
@@ -397,17 +400,17 @@ fn connect_mdbx_source(
     Ok(())
 }
 
-async fn connect_eth_rpc_source(sources: &mut Vec<Arc<dyn Source>>, ws_url: &str, http_url: &str) {
-    if let Ok(eth_rpc_source) = EthRpcSource::try_build(ws_url, http_url).await {
+async fn connect_eth_rpc_source(sources: &mut Vec<Arc<dyn Source>>, ws_url: &Url, http_url: &Url) {
+    if let Ok(eth_rpc_source) = EthRpcSource::try_build(ws_url.as_str(), http_url.as_str()).await {
         sources.push(eth_rpc_source);
     }
 }
 
 fn build_integrated_mdbx_source(
-    mdbx_path: &str,
+    mdbx_path: &Path,
     buffer_capacity: usize,
-    ws_url: &str,
-    genesis_file: &str,
+    ws_url: &Url,
+    genesis_file: &Path,
     start_block: Option<u64>,
 ) -> anyhow::Result<(Arc<dyn Source>, Option<IntegratedStateWorker>)> {
     build_integrated_mdbx_source_with(
@@ -421,10 +424,10 @@ fn build_integrated_mdbx_source(
 }
 
 fn build_integrated_mdbx_source_with<F>(
-    mdbx_path: &str,
+    mdbx_path: &Path,
     buffer_capacity: usize,
-    ws_url: &str,
-    genesis_file: &str,
+    ws_url: &Url,
+    genesis_file: &Path,
     start_block: Option<u64>,
     spawn_worker: F,
 ) -> anyhow::Result<(Arc<dyn Source>, Option<IntegratedStateWorker>)>
@@ -435,15 +438,21 @@ where
         Arc<FlushControl>,
     ) -> anyhow::Result<JoinHandle<anyhow::Result<()>>>,
 {
-    let writer = StateWriter::new(mdbx_path, CircularBufferConfig::new(1)?)
-        .with_context(|| format!("failed to initialize integrated MDBX database at {mdbx_path}"))?;
+    let writer = StateWriter::new(mdbx_path, CircularBufferConfig::new(1)?).with_context(|| {
+        format!(
+            "failed to initialize integrated MDBX database at {}",
+            mdbx_path.display()
+        )
+    })?;
     let reader = writer.reader().clone();
 
     let commit_control = FlushControl::new();
-    if let Some(block_number) = writer
-        .latest_block_number()
-        .with_context(|| format!("failed to read integrated MDBX head at {mdbx_path}"))?
-    {
+    if let Some(block_number) = writer.latest_block_number().with_context(|| {
+        format!(
+            "failed to read integrated MDBX head at {}",
+            mdbx_path.display()
+        )
+    })? {
         commit_control.record_committed_block(block_number);
     }
     drop(writer);
@@ -454,12 +463,12 @@ where
 
     let shutdown = CancellationToken::new();
     let worker_config = StateWorkerConfig {
-        ws_url: ws_url.to_owned(),
-        mdbx_path: mdbx_path.to_owned(),
+        ws_url: ws_url.to_string(),
+        mdbx_path: mdbx_path.to_string_lossy().into_owned(),
         start_block,
         mdbx_depth: 1,
         buffer_capacity,
-        genesis_file: genesis_file.to_owned(),
+        genesis_file: genesis_file.to_string_lossy().into_owned(),
         trace_timeout: STATE_WORKER_DEFAULT_TRACE_TIMEOUT,
     };
     let worker = match spawn_worker(worker_config, shutdown.clone(), commit_control.clone()) {
@@ -473,7 +482,7 @@ where
         Err(err) => {
             error!(
                 error = ?err,
-                mdbx_path,
+                ?mdbx_path,
                 "failed to start integrated state worker; continuing with existing MDBX state"
             );
             None
@@ -486,10 +495,10 @@ where
 fn try_add_integrated_mdbx_source(
     sources: &mut Vec<Arc<dyn Source>>,
     source_index: usize,
-    mdbx_path: &str,
+    mdbx_path: &Path,
     buffer_capacity: usize,
-    ws_url: &str,
-    genesis_file: &str,
+    ws_url: &Url,
+    genesis_file: &Path,
     start_block: Option<u64>,
 ) -> Option<IntegratedStateWorker> {
     match build_integrated_mdbx_source(
@@ -507,7 +516,7 @@ fn try_add_integrated_mdbx_source(
             error!(
                 error = ?err,
                 source_index,
-                mdbx_path,
+                ?mdbx_path,
                 "failed to initialize integrated MDBX source"
             );
             None
@@ -539,12 +548,8 @@ async fn build_sources_from_config(config: &Config) -> anyhow::Result<BuiltSourc
             &config.state.legacy.eth_rpc_source_ws_url,
             &config.state.legacy.eth_rpc_source_http_url,
         ) {
-            connect_eth_rpc_source(
-                &mut sources,
-                eth_rpc_source_ws_url.as_str(),
-                eth_rpc_source_http_url.as_str(),
-            )
-            .await;
+            connect_eth_rpc_source(&mut sources, eth_rpc_source_ws_url, eth_rpc_source_http_url)
+                .await;
         }
     } else {
         if config.state.legacy.has_any() {
@@ -579,7 +584,7 @@ async fn build_sources_from_config(config: &Config) -> anyhow::Result<BuiltSourc
                     );
                 }
                 StateSourceConfig::EthRpc { ws_url, http_url } => {
-                    connect_eth_rpc_source(&mut sources, ws_url.as_str(), http_url.as_str()).await;
+                    connect_eth_rpc_source(&mut sources, ws_url, http_url).await;
                 }
             }
         }
@@ -763,7 +768,7 @@ fn spawn_da_reachability_monitor(
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(run_da_reachability_monitor(
         da_client,
-        config.credible.assertion_da_rpc_url.clone(),
+        config.credible.assertion_da_rpc_url.to_string(),
     ))
 }
 
@@ -871,7 +876,7 @@ async fn run_sidecar_once(
         incident_sender: incident_report_tx,
         state_worker_flush_control: state_worker_commit_control,
         #[cfg(feature = "cache_validation")]
-        provider_ws_url: Some(config.credible.cache_checker_ws_url.clone()),
+        provider_ws_url: Some(config.credible.cache_checker_ws_url.to_string()),
     };
     let engine = CoreEngine::new(
         cache,
@@ -901,7 +906,7 @@ async fn run_sidecar_once(
 
     let mut health_server = HealthServer::new(health_bind_addr);
 
-    let da_client = DaClient::new(&config.credible.assertion_da_rpc_url)?;
+    let da_client = DaClient::new(config.credible.assertion_da_rpc_url.as_str())?;
     let indexer_cfg = init_indexer_config(
         config,
         assertion_store.clone(),
@@ -956,7 +961,9 @@ mod tests {
         Writer,
         common::CircularBufferConfig,
     };
+    use std::path::Path;
     use tempfile::tempdir;
+    use url::Url;
 
     fn commit_empty_block(writer: &StateWriter, block_number: u64) -> anyhow::Result<()> {
         let block_hash_byte = u8::try_from(block_number).unwrap_or(u8::MAX);
@@ -977,12 +984,13 @@ mod tests {
         commit_empty_block(&writer, 5)?;
         drop(writer);
 
-        let path_str = path.to_string_lossy().into_owned();
+        let ws_url = Url::parse("ws://127.0.0.1:8546").unwrap();
+        let genesis = Path::new("/tmp/genesis.json");
         let (source, worker) = build_integrated_mdbx_source_with(
-            &path_str,
+            &path,
             3,
-            "ws://127.0.0.1:8546",
-            "/tmp/genesis.json",
+            &ws_url,
+            genesis,
             None,
             |_config, _shutdown, _commit_control| Err(anyhow!("spawn failed")),
         )?;
@@ -997,13 +1005,14 @@ mod tests {
     -> anyhow::Result<()> {
         let dir = tempdir()?;
         let path = dir.path().join("fresh-state");
-        let path_str = path.to_string_lossy().into_owned();
+        let ws_url = Url::parse("ws://127.0.0.1:8546").unwrap();
+        let genesis = Path::new("/tmp/genesis.json");
 
         let (source, worker) = build_integrated_mdbx_source_with(
-            &path_str,
+            &path,
             3,
-            "ws://127.0.0.1:8546",
-            "/tmp/genesis.json",
+            &ws_url,
+            genesis,
             None,
             |_config, _shutdown, _commit_control| Err(anyhow!("spawn failed")),
         )?;
