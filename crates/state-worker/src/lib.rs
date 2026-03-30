@@ -57,7 +57,8 @@ use tracing::{
 };
 
 pub const DEFAULT_TRACE_TIMEOUT: Duration = Duration::from_secs(30);
-const RESTART_DELAY: Duration = Duration::from_secs(1);
+const INITIAL_RESTART_DELAY: Duration = Duration::from_secs(1);
+const MAX_RESTART_DELAY: Duration = Duration::from_secs(300);
 
 #[derive(Debug, Clone)]
 pub struct WorkerConfig {
@@ -133,17 +134,24 @@ pub async fn run_supervisor_loop(
         }
 
         restart_count = restart_count.saturating_add(1);
+        let restart_delay = restart_delay_for_attempt(restart_count);
         info!(
             restart_count,
-            restart_delay_secs = RESTART_DELAY.as_secs(),
+            restart_delay_secs = restart_delay.as_secs(),
             "restarting state worker"
         );
 
         tokio::select! {
             () = shutdown.cancelled() => return Ok(()),
-            () = time::sleep(RESTART_DELAY) => {}
+            () = time::sleep(restart_delay) => {}
         }
     }
+}
+
+fn restart_delay_for_attempt(restart_count: u64) -> Duration {
+    let shift = restart_count.saturating_sub(1).min(63);
+    let multiplier = 1_u32.checked_shl(shift as u32).unwrap_or(u32::MAX);
+    (INITIAL_RESTART_DELAY * multiplier).min(MAX_RESTART_DELAY)
 }
 
 /// Build a worker instance from runtime config and optional flush coordination.
@@ -280,4 +288,31 @@ pub async fn validate_geth_version(provider: &RootProvider) -> Result<()> {
         "non-Geth execution client detected; skipping version validation"
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        INITIAL_RESTART_DELAY,
+        MAX_RESTART_DELAY,
+        restart_delay_for_attempt,
+    };
+    use std::time::Duration;
+
+    #[test]
+    fn restart_delay_starts_at_one_second() {
+        assert_eq!(restart_delay_for_attempt(1), INITIAL_RESTART_DELAY);
+    }
+
+    #[test]
+    fn restart_delay_grows_exponentially() {
+        assert_eq!(restart_delay_for_attempt(2), Duration::from_secs(2));
+        assert_eq!(restart_delay_for_attempt(3), Duration::from_secs(4));
+        assert_eq!(restart_delay_for_attempt(4), Duration::from_secs(8));
+    }
+
+    #[test]
+    fn restart_delay_is_capped() {
+        assert_eq!(restart_delay_for_attempt(100), MAX_RESTART_DELAY);
+    }
 }

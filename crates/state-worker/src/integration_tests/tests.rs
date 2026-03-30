@@ -1,4 +1,5 @@
 use crate::{
+    FlushControl,
     genesis,
     integration_tests::setup::TestInstance,
 };
@@ -434,6 +435,60 @@ async fn test_state_worker_processes_multiple_state_changes() -> Result<()> {
     let storage_value = reader_get_storage(&*reader, address_hash.into(), slot_one_hash, 3)?
         .context("Storage slot should exist")?;
     assert_eq!(storage_value, U256::from(3));
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_state_worker_flushes_buffered_block_when_permit_arrives_while_idle() -> Result<()> {
+    let flush_control = FlushControl::new();
+    let instance =
+        TestInstance::new_mdbx_with_flush_control(|_| {}, flush_control.clone(), 1, Some(1))
+            .await
+            .map_err(anyhow::Error::msg)?;
+
+    let test_address = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let address_hash = address_hash_from_hex(test_address)?;
+    let slot_one_hash = keccak256(U256::from(1).to_be_bytes::<32>());
+
+    instance.http_server_mock.add_response(
+        "debug_traceBlockByNumber",
+        trace_state_changes_block_1(test_address),
+    );
+    instance.http_server_mock.send_new_head();
+
+    sleep(Duration::from_millis(250)).await;
+
+    let reader = instance.create_reader();
+    assert_eq!(
+        reader_latest_block(&*reader)?,
+        None,
+        "buffered block should not be visible before a flush permit arrives",
+    );
+
+    flush_control.allow_flush_to(1);
+
+    let mut latest_block = None;
+    for _ in 0..30 {
+        latest_block = reader_latest_block(&*reader)?;
+        if latest_block == Some(1) {
+            break;
+        }
+        sleep(Duration::from_millis(50)).await;
+    }
+
+    assert_eq!(
+        latest_block,
+        Some(1),
+        "worker should flush the buffered block immediately after the permit wake",
+    );
+
+    let account =
+        reader_get_account(&*reader, address_hash.into(), 1)?.context("Account should exist")?;
+    assert_eq!(account.balance, U256::from(1));
+
+    let storage_value = reader_get_storage(&*reader, address_hash.into(), slot_one_hash, 1)?
+        .context("Storage slot should exist")?;
+    assert_eq!(storage_value, U256::from(2));
     Ok(())
 }
 
