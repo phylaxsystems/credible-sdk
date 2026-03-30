@@ -46,6 +46,15 @@ pub struct VerifyArgs {
     )]
     pub root: PathBuf,
 
+    #[arg(
+        short = 'c',
+        long = "config",
+        value_hint = ValueHint::FilePath,
+        default_value = "assertions/credible.toml",
+        help = "Path to credible.toml, relative to root or absolute"
+    )]
+    pub config: PathBuf,
+
     #[arg(long, num_args = 1.., help = "Constructor arguments for the assertion")]
     pub args: Vec<String>,
 
@@ -93,7 +102,7 @@ impl VerifyArgs {
 
         let inputs = match &self.assertion {
             Some(assertion) => self.build_single(assertion, &root)?,
-            None => Self::build_from_toml(&root)?,
+            None => Self::build_from_toml(&root, &self.config)?,
         };
 
         let executor_config = ExecutorConfig::default();
@@ -174,8 +183,8 @@ impl VerifyArgs {
         }])
     }
 
-    fn build_from_toml(root: &Path) -> Result<Vec<VerifyInput>, VerifyError> {
-        let config_path = root.join("assertions/credible.toml");
+    fn build_from_toml(root: &Path, config: &Path) -> Result<Vec<VerifyInput>, VerifyError> {
+        let config_path = root.join(config);
         let credible = CredibleToml::from_path(&config_path)?;
 
         let mut inputs = Vec::new();
