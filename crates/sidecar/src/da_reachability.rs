@@ -1,5 +1,9 @@
 //! Periodic monitoring of Assertion DA reachability.
 
+use crate::health::{
+    AssertionDaReadiness,
+    HealthState,
+};
 use alloy::primitives::B256;
 use assertion_da_client::{
     DaClient,
@@ -12,6 +16,7 @@ use metrics::{
 };
 use std::{
     future::Future,
+    sync::Arc,
     time::{
         Duration,
         Instant,
@@ -39,7 +44,11 @@ const REACHABILITY_PROBE_ASSERTION_ID: B256 = B256::ZERO;
 
 /// Run a background loop that periodically checks Assertion DA reachability and
 /// emits Prometheus metrics.
-pub async fn run_da_reachability_monitor(da_client: DaClient, assertion_da_rpc_url: String) {
+pub async fn run_da_reachability_monitor(
+    da_client: DaClient,
+    assertion_da_rpc_url: String,
+    health_state: Arc<HealthState>,
+) {
     let mut ticker = tokio::time::interval(DA_REACHABILITY_CHECK_INTERVAL);
     ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut last_reachable: Option<bool> = None;
@@ -55,6 +64,11 @@ pub async fn run_da_reachability_monitor(da_client: DaClient, assertion_da_rpc_u
             .record(check_duration);
 
         let is_reachable = check_result.is_ok();
+        health_state.set_assertion_da_readiness(if is_reachable {
+            AssertionDaReadiness::Reachable
+        } else {
+            AssertionDaReadiness::Unreachable
+        });
         gauge!("sidecar_assertion_da_reachable").set(if is_reachable { 1.0 } else { 0.0 });
 
         let status = if is_reachable { "success" } else { "failure" };

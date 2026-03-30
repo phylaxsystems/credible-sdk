@@ -48,6 +48,25 @@ pub enum WorkerReadiness {
     Unavailable,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssertionDaReadiness {
+    #[default]
+    Unknown,
+    Reachable,
+    Unreachable,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TransactionObserverReadiness {
+    #[default]
+    Unknown,
+    Healthy,
+    Disabled,
+    Failed,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct SourceReadinessSnapshot {
     pub name: String,
@@ -73,9 +92,26 @@ pub struct ReadinessSnapshot {
     pub sources: Vec<SourceReadinessSnapshot>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct RuntimeReadinessSnapshot {
+    pub assertion_da: AssertionDaReadiness,
+    pub transaction_observer: TransactionObserverReadiness,
+    pub failed_components: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct ReadySnapshot {
+    #[serde(flatten)]
+    pub readiness: ReadinessSnapshot,
+    pub degraded: bool,
+    #[serde(flatten)]
+    pub runtime: RuntimeReadinessSnapshot,
+}
+
 #[derive(Debug, Default)]
 pub struct HealthState {
     readiness: RwLock<ReadinessSnapshot>,
+    runtime: RwLock<RuntimeReadinessSnapshot>,
 }
 
 impl HealthState {
@@ -86,10 +122,51 @@ impl HealthState {
     pub fn readiness_snapshot(&self) -> ReadinessSnapshot {
         self.readiness.read().clone()
     }
+
+    pub fn set_assertion_da_readiness(&self, readiness: AssertionDaReadiness) {
+        self.runtime.write().assertion_da = readiness;
+    }
+
+    pub fn set_transaction_observer_readiness(&self, readiness: TransactionObserverReadiness) {
+        self.runtime.write().transaction_observer = readiness;
+    }
+
+    pub fn record_component_failure(&self, component: impl Into<String>) {
+        let component = component.into();
+        let runtime = &mut *self.runtime.write();
+        if !runtime
+            .failed_components
+            .iter()
+            .any(|existing| existing == &component)
+        {
+            runtime.failed_components.push(component);
+            runtime.failed_components.sort_unstable();
+        }
+    }
+
+    pub fn ready_snapshot(&self) -> ReadySnapshot {
+        let readiness = self.readiness_snapshot();
+        let runtime = self.runtime.read().clone();
+        let runtime_degraded = matches!(runtime.assertion_da, AssertionDaReadiness::Unreachable)
+            || matches!(
+                runtime.transaction_observer,
+                TransactionObserverReadiness::Disabled | TransactionObserverReadiness::Failed
+            )
+            || !runtime.failed_components.is_empty();
+
+        ReadySnapshot {
+            degraded: !readiness.ready
+                || readiness.fallback_active
+                || readiness.worker != WorkerReadiness::Healthy
+                || runtime_degraded,
+            readiness,
+            runtime,
+        }
+    }
 }
 
-fn readiness_status(snapshot: &ReadinessSnapshot) -> StatusCode {
-    if snapshot.ready {
+fn readiness_status(snapshot: &ReadySnapshot) -> StatusCode {
+    if snapshot.readiness.ready {
         StatusCode::OK
     } else {
         StatusCode::SERVICE_UNAVAILABLE
@@ -163,15 +240,13 @@ impl HealthServer {
 
 #[instrument(name = "health_server::health", skip(health_state), level = "trace")]
 async fn health(State(health_state): State<Arc<HealthState>>) -> (StatusCode, &'static str) {
-    let snapshot = health_state.readiness_snapshot();
+    let snapshot = health_state.ready_snapshot();
     (readiness_status(&snapshot), HEALTH_RESPONSE_BODY)
 }
 
 #[instrument(name = "health_server::ready", skip(health_state), level = "trace")]
-async fn ready(
-    State(health_state): State<Arc<HealthState>>,
-) -> (StatusCode, Json<ReadinessSnapshot>) {
-    let snapshot = health_state.readiness_snapshot();
+async fn ready(State(health_state): State<Arc<HealthState>>) -> (StatusCode, Json<ReadySnapshot>) {
+    let snapshot = health_state.ready_snapshot();
     (readiness_status(&snapshot), Json(snapshot))
 }
 
@@ -185,12 +260,14 @@ pub fn health_router(health_state: Arc<HealthState>) -> Router {
 #[cfg(test)]
 mod tests {
     use super::{
+        AssertionDaReadiness,
+        HEALTH_RESPONSE_BODY,
         HealthState,
         ReadinessSnapshot,
         SourceReadinessSnapshot,
+        TransactionObserverReadiness,
         WorkerReadiness,
         health,
-        HEALTH_RESPONSE_BODY,
         readiness_status,
     };
     use axum::{
@@ -214,16 +291,17 @@ mod tests {
             ],
         });
 
-        let snapshot = state.readiness_snapshot();
+        let snapshot = state.ready_snapshot();
 
         assert_eq!(readiness_status(&snapshot), StatusCode::OK);
-        assert!(snapshot.ready);
-        assert!(snapshot.fallback_active);
-        assert_eq!(snapshot.worker, WorkerReadiness::Degraded);
-        assert_eq!(snapshot.sources[0].name, "StateWorker");
-        assert!(!snapshot.sources[0].ready);
-        assert_eq!(snapshot.sources[1].name, "EthRpcSource");
-        assert!(snapshot.sources[1].ready);
+        assert!(snapshot.readiness.ready);
+        assert!(snapshot.degraded);
+        assert!(snapshot.readiness.fallback_active);
+        assert_eq!(snapshot.readiness.worker, WorkerReadiness::Degraded);
+        assert_eq!(snapshot.readiness.sources[0].name, "StateWorker");
+        assert!(!snapshot.readiness.sources[0].ready);
+        assert_eq!(snapshot.readiness.sources[1].name, "EthRpcSource");
+        assert!(snapshot.readiness.sources[1].ready);
     }
 
     #[test]
@@ -241,12 +319,69 @@ mod tests {
             ],
         });
 
-        let snapshot = state.readiness_snapshot();
+        let snapshot = state.ready_snapshot();
 
         assert_eq!(readiness_status(&snapshot), StatusCode::SERVICE_UNAVAILABLE);
-        assert!(!snapshot.ready);
-        assert!(!snapshot.fallback_active);
-        assert_eq!(snapshot.worker, WorkerReadiness::Unavailable);
+        assert!(snapshot.degraded);
+        assert!(!snapshot.readiness.ready);
+        assert!(!snapshot.readiness.fallback_active);
+        assert_eq!(snapshot.readiness.worker, WorkerReadiness::Unavailable);
+    }
+
+    #[test]
+    fn ready_snapshot_marks_runtime_degraded_when_da_is_unreachable_and_observer_disabled() {
+        let state = HealthState::default();
+        state.update_readiness(ReadinessSnapshot {
+            ready: true,
+            fallback_active: false,
+            worker: WorkerReadiness::Healthy,
+            required_head: 128,
+            minimum_synced_block: 120,
+            sources: vec![
+                SourceReadinessSnapshot::new("StateWorker", true),
+                SourceReadinessSnapshot::new("EthRpcSource", true),
+            ],
+        });
+        state.set_assertion_da_readiness(AssertionDaReadiness::Unreachable);
+        state.set_transaction_observer_readiness(TransactionObserverReadiness::Disabled);
+
+        let snapshot = state.ready_snapshot();
+
+        assert_eq!(readiness_status(&snapshot), StatusCode::OK);
+        assert!(snapshot.readiness.ready);
+        assert!(snapshot.degraded);
+        assert_eq!(
+            snapshot.runtime.assertion_da,
+            AssertionDaReadiness::Unreachable
+        );
+        assert_eq!(
+            snapshot.runtime.transaction_observer,
+            TransactionObserverReadiness::Disabled
+        );
+    }
+
+    #[test]
+    fn ready_snapshot_tracks_runtime_component_failures() {
+        let state = HealthState::default();
+        state.update_readiness(ReadinessSnapshot {
+            ready: true,
+            fallback_active: false,
+            worker: WorkerReadiness::Healthy,
+            required_head: 128,
+            minimum_synced_block: 120,
+            sources: vec![SourceReadinessSnapshot::new("StateWorker", true)],
+        });
+        state.record_component_failure("engine");
+        state.record_component_failure("engine");
+        state.record_component_failure("indexer");
+
+        let snapshot = state.ready_snapshot();
+
+        assert_eq!(
+            snapshot.runtime.failed_components,
+            vec!["engine".to_string(), "indexer".to_string()]
+        );
+        assert!(snapshot.degraded);
     }
 
     #[tokio::test]
