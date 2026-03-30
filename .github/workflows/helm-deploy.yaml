@@ -1,12 +1,9 @@
-name: Deploy Sidecar (Helm)
+name: Deploy Sidecar Runtime (Helm)
 
 on:
   workflow_call:
     inputs:
       sidecar-image-repo:
-        type: string
-        required: false
-      state-worker-image-repo:
         type: string
         required: false
       image-tag:
@@ -25,15 +22,10 @@ on:
   workflow_dispatch:
     inputs:
       sidecar-image-repo:
-        description: Image repository for the sidecar
+        description: Image repository for the supported sidecar runtime
         type: string
         required: false
         default: 'ghcr.io/phylaxsystems/credible-sdk/sidecar'
-      state-worker-image-repo:
-        description: Image repository for the state worker
-        type: string
-        required: false
-        default: 'ghcr.io/phylaxsystems/credible-sdk/state-worker'
       image-tag:
         description: Image tag (e.g. git SHA, tag)
         type: string
@@ -53,7 +45,6 @@ permissions:
 
 env:
   SIDECAR_IMAGE_REPO: ${{ inputs['sidecar-image-repo'] || 'ghcr.io/phylaxsystems/credible-sdk/sidecar' }}
-  STATE_WORKER_IMAGE_REPO: ${{ inputs['state-worker-image-repo'] || 'ghcr.io/phylaxsystems/credible-sdk/state-worker' }}
   IMAGE_TAG: ${{ inputs['image-tag'] }}
   CHART_REPO: ${{ vars.SIDECAR_CHART_REPO || 'phylaxsystems/credible-sidecar-helm-chart' }}
   CONFIG_REPO: ${{ vars.SIDECAR_CONFIG_REPO || 'phylaxsystems/credible-layer-env-config' }}
@@ -113,6 +104,7 @@ jobs:
           RELEASE_NAME="${{ secrets.RELEASE_NAME }}"
           NAMESPACE="${{ secrets.NAMESPACE }}"
 
+          # Production Helm deploys now target the supported integrated sidecar runtime only.
           helm upgrade "$RELEASE_NAME" ./chart \
             --namespace "$NAMESPACE" \
             --cleanup-on-fail \
@@ -120,8 +112,6 @@ jobs:
             -f "./config/${VALUES_FILE}" \
             --set-string sidecar.image.repository="${SIDECAR_IMAGE_REPO}" \
             --set-string sidecar.image.tag="${IMAGE_TAG}" \
-            --set-string stateWorker.image.repository="${STATE_WORKER_IMAGE_REPO}" \
-            --set-string stateWorker.image.tag="${IMAGE_TAG}" \
             --wait \
             --timeout 5m 2>&1 | tee /tmp/helm-upgrade.log
 
@@ -160,7 +150,5 @@ jobs:
             echo "### Recent Kubernetes events"
             echo '```'
             kubectl -n "$NAMESPACE" get events --sort-by=.metadata.creationTimestamp 2>&1 | tail -n 20 || true
-            fi
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-

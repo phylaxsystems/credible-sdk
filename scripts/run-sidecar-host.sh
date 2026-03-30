@@ -3,18 +3,43 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 COMPOSE_FILE="${ROOT_DIR}/docker/maru-besu-sidecar/docker-compose.yml"
+STACK_CONFIG_FILE="${ROOT_DIR}/docker/maru-besu-sidecar/config/credible-sidecar/grpc.config.json"
+STACK_GENESIS_FILE="${ROOT_DIR}/docker/maru-besu-sidecar/config/l2-genesis-initialization/genesis-besu.json"
 
 SHOULD_CLEANUP=false
+
+run_smoke_check() {
+  if command -v jq >/dev/null 2>&1; then
+    jq empty "${STACK_CONFIG_FILE}" >/dev/null
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 -m json.tool "${STACK_CONFIG_FILE}" >/dev/null
+  else
+    printf '%s\n' "error: smoke check requires either jq or python3 to validate JSON" >&2
+    return 1
+  fi
+
+  docker compose -f "${COMPOSE_FILE}" config >/dev/null
+  printf '%s\n' "Smoke check passed: sidecar config is valid JSON and docker compose renders cleanly."
+}
+
+if [[ "${1:-}" == "--smoke-check" ]]; then
+  shift
+  run_smoke_check "$@"
+  exit 0
+fi
 
 if [[ "${SIDECAR_SKIP_COMPOSE:-false}" != "true" ]]; then
   docker compose -f "${COMPOSE_FILE}" up -d --scale credible-sidecar=0
 fi
 
 DEFAULT_ASSERTION_STORE_DB_PATH=".local/sidecar-host/assertion_store_database"
-DEFAULT_INDEXER_DB_PATH=".local/sidecar-host/indexer_database"
+DEFAULT_TRANSACTION_OBSERVER_DB_PATH=".local/sidecar-host/transaction_observer_database"
+DEFAULT_STATE_WORKER_MDBX_PATH=".local/sidecar-host/state_worker.mdbx"
 
 ASSERTION_STORE_DB_PATH="${SIDECAR_ASSERTION_STORE_DB_PATH:-${CREDIBLE_ASSERTION_STORE_DB_PATH:-${DEFAULT_ASSERTION_STORE_DB_PATH}}}"
-INDEXER_DB_PATH="${SIDECAR_INDEXER_DB_PATH:-${CREDIBLE_INDEXER_DB_PATH:-${DEFAULT_INDEXER_DB_PATH}}}"
+TRANSACTION_OBSERVER_DB_PATH="${SIDECAR_TRANSACTION_OBSERVER_DB_PATH:-${DEFAULT_TRANSACTION_OBSERVER_DB_PATH}}"
+STATE_WORKER_MDBX_PATH="${SIDECAR_STATE_INTEGRATED_WORKER_MDBX_PATH:-${SIDECAR_STATE_WORKER_MDBX_PATH:-${DEFAULT_STATE_WORKER_MDBX_PATH}}}"
+GENESIS_FILE_PATH="${SIDECAR_STATE_INTEGRATED_WORKER_GENESIS_FILE_PATH:-${STACK_GENESIS_FILE}}"
 
 ensure_parent_dir() {
   local raw_path="$1"
@@ -29,10 +54,8 @@ ensure_parent_dir() {
 }
 
 ensure_parent_dir "${ASSERTION_STORE_DB_PATH}"
-ensure_parent_dir "${INDEXER_DB_PATH}"
-
-export CREDIBLE_ASSERTION_STORE_DB_PATH="${ASSERTION_STORE_DB_PATH}"
-export CREDIBLE_INDEXER_DB_PATH="${INDEXER_DB_PATH}"
+ensure_parent_dir "${TRANSACTION_OBSERVER_DB_PATH}"
+ensure_parent_dir "${STATE_WORKER_MDBX_PATH}"
 
 resolve_path() {
   local raw_path="$1"
@@ -57,19 +80,17 @@ resolve_path() {
 }
 
 DEFAULT_ASSERTION_STORE_DB_ABS="$(resolve_path "${DEFAULT_ASSERTION_STORE_DB_PATH}")"
-DEFAULT_INDEXER_DB_ABS="$(resolve_path "${DEFAULT_INDEXER_DB_PATH}")"
+DEFAULT_TRANSACTION_OBSERVER_DB_ABS="$(resolve_path "${DEFAULT_TRANSACTION_OBSERVER_DB_PATH}")"
+DEFAULT_STATE_WORKER_MDBX_ABS="$(resolve_path "${DEFAULT_STATE_WORKER_MDBX_PATH}")"
 ASSERTION_STORE_DB_ABS="$(resolve_path "${ASSERTION_STORE_DB_PATH}")"
-INDEXER_DB_ABS="$(resolve_path "${INDEXER_DB_PATH}")"
+TRANSACTION_OBSERVER_DB_ABS="$(resolve_path "${TRANSACTION_OBSERVER_DB_PATH}")"
+STATE_WORKER_MDBX_ABS="$(resolve_path "${STATE_WORKER_MDBX_PATH}")"
+GENESIS_FILE_ABS="$(resolve_path "${GENESIS_FILE_PATH}")"
 
-maybe_export() {
-  local source="$1"
-  local target="$2"
-  local value="${!source:-}"
-
-  if [[ -n "${value}" ]]; then
-    export "${target}=${value}"
-  fi
-}
+if [[ ! -f "${GENESIS_FILE_ABS}" ]]; then
+  printf 'error: integrated worker genesis file not found: %s\n' "${GENESIS_FILE_ABS}" >&2
+  exit 1
+fi
 
 if [[ -n "${SIDECAR_RUST_LOG:-}" ]]; then
   export RUST_LOG="${SIDECAR_RUST_LOG}"
@@ -105,15 +126,30 @@ export OTEL_EXPORTER_OTLP_PROTOCOL="${OTEL_EXPORTER_OTLP_PROTOCOL:-http/protobuf
 export OTEL_EXPORTER_OTLP_TRACES_PROTOCOL="${OTEL_EXPORTER_OTLP_TRACES_PROTOCOL:-http/protobuf}"
 export TRACING_METRICS_PORT="${TRACING_METRICS_PORT:-9000}"
 
-maybe_export SIDECAR_TRANSPORT_PROTOCOL TRANSPORT_PROTOCOL
-maybe_export SIDECAR_BIND_ADDR TRANSPORT_BIND_ADDR
-maybe_export SIDECAR_CHAIN_SPEC_ID CHAIN_SPEC_ID
-maybe_export SIDECAR_CHAIN_ID CHAIN_CHAIN_ID
-maybe_export SIDECAR_ASSERTION_DA_RPC_URL CREDIBLE_ASSERTION_DA_RPC_URL
-maybe_export SIDECAR_ASSERTION_GAS_LIMIT CREDIBLE_ASSERTION_GAS_LIMIT
-maybe_export SIDECAR_BLOCK_TAG CREDIBLE_BLOCK_TAG
-maybe_export SIDECAR_EVENT_SOURCE_URL CREDIBLE_EVENT_SOURCE_URL
-maybe_export SIDECAR_BESU_CLIENT_WS_URL STATE_BESU_CLIENT_WS_URL
+if [[ -n "${SIDECAR_BIND_ADDR:-}" && -z "${SIDECAR_TRANSPORT_BIND_ADDR:-}" ]]; then
+  export SIDECAR_TRANSPORT_BIND_ADDR="${SIDECAR_BIND_ADDR}"
+fi
+
+BESU_WS_URL="${SIDECAR_BESU_CLIENT_WS_URL:-${SIDECAR_STATE_INTEGRATED_WORKER_EXECUTION_WS_URL:-${SIDECAR_STATE_ETH_RPC_SOURCE_WS_URL:-ws://127.0.0.1:8546}}}"
+BESU_HTTP_URL="${SIDECAR_BESU_CLIENT_HTTP_URL:-${SIDECAR_STATE_ETH_RPC_SOURCE_HTTP_URL:-http://127.0.0.1:8545}}"
+STATE_WORKER_DEPTH_VALUE="${SIDECAR_STATE_INTEGRATED_WORKER_DEPTH:-${SIDECAR_STATE_WORKER_DEPTH:-3}}"
+
+export SIDECAR_ASSERTION_STORE_DB_PATH="${SIDECAR_ASSERTION_STORE_DB_PATH:-${ASSERTION_STORE_DB_ABS}}"
+export CREDIBLE_ASSERTION_STORE_DB_PATH="${SIDECAR_ASSERTION_STORE_DB_PATH}"
+export SIDECAR_TRANSACTION_OBSERVER_DB_PATH="${SIDECAR_TRANSACTION_OBSERVER_DB_PATH:-${TRANSACTION_OBSERVER_DB_ABS}}"
+export SIDECAR_ASSERTION_DA_RPC_URL="${SIDECAR_ASSERTION_DA_RPC_URL:-http://127.0.0.1:5001}"
+export SIDECAR_EVENT_SOURCE_URL="${SIDECAR_EVENT_SOURCE_URL:-http://127.0.0.1:8080/graphql}"
+export SIDECAR_AEGES_URL="${SIDECAR_AEGES_URL:-http://127.0.0.1:8080}"
+
+export SIDECAR_STATE_ETH_RPC_SOURCE_WS_URL="${SIDECAR_STATE_ETH_RPC_SOURCE_WS_URL:-${BESU_WS_URL}}"
+export SIDECAR_STATE_ETH_RPC_SOURCE_HTTP_URL="${SIDECAR_STATE_ETH_RPC_SOURCE_HTTP_URL:-${BESU_HTTP_URL}}"
+export SIDECAR_STATE_WORKER_MDBX_PATH="${SIDECAR_STATE_WORKER_MDBX_PATH:-${STATE_WORKER_MDBX_ABS}}"
+export SIDECAR_STATE_WORKER_DEPTH="${SIDECAR_STATE_WORKER_DEPTH:-${STATE_WORKER_DEPTH_VALUE}}"
+export SIDECAR_STATE_INTEGRATED_WORKER_EXECUTION_WS_URL="${SIDECAR_STATE_INTEGRATED_WORKER_EXECUTION_WS_URL:-${BESU_WS_URL}}"
+export SIDECAR_STATE_INTEGRATED_WORKER_GENESIS_FILE_PATH="${SIDECAR_STATE_INTEGRATED_WORKER_GENESIS_FILE_PATH:-${GENESIS_FILE_ABS}}"
+export SIDECAR_STATE_INTEGRATED_WORKER_MDBX_PATH="${SIDECAR_STATE_INTEGRATED_WORKER_MDBX_PATH:-${STATE_WORKER_MDBX_ABS}}"
+export SIDECAR_STATE_INTEGRATED_WORKER_DEPTH="${SIDECAR_STATE_INTEGRATED_WORKER_DEPTH:-${STATE_WORKER_DEPTH_VALUE}}"
+export SIDECAR_STATE_SOURCES="${SIDECAR_STATE_SOURCES:-$(printf '[{"type":"eth-rpc","ws_url":"%s","http_url":"%s"},{"type":"mdbx","mdbx_path":"%s","depth":%s}]' "${SIDECAR_STATE_ETH_RPC_SOURCE_WS_URL}" "${SIDECAR_STATE_ETH_RPC_SOURCE_HTTP_URL}" "${SIDECAR_STATE_INTEGRATED_WORKER_MDBX_PATH}" "${SIDECAR_STATE_INTEGRATED_WORKER_DEPTH}")}"
 
 if [[ -n "${SIDECAR_EXTRA_ARGS:-}" ]]; then
   IFS=' ' read -r -a EXTRA_ARGS <<< "${SIDECAR_EXTRA_ARGS}"
@@ -127,6 +163,7 @@ chain_id_cli_present=false
 
 SPEC_ID_VALUE="${SIDECAR_CHAIN_SPEC_ID:-${CHAIN_SPEC_ID:-Cancun}}"
 spec_id_cli_present=false
+config_file_cli_present=false
 
 check_chain_id_args() {
   local awaiting_value="false"
@@ -168,10 +205,32 @@ check_spec_id_args() {
   done
 }
 
+check_config_file_args() {
+  local awaiting_value="false"
+  for arg in "$@"; do
+    if [[ "${awaiting_value}" == "true" ]]; then
+      config_file_cli_present=true
+      awaiting_value="false"
+      continue
+    fi
+
+    case "${arg}" in
+      --config-file-path)
+        awaiting_value="true"
+        ;;
+      --config-file-path=*)
+        config_file_cli_present=true
+        ;;
+    esac
+  done
+}
+
 check_chain_id_args "${EXTRA_ARGS[@]}"
 check_chain_id_args "${POSITIONAL_ARGS[@]}"
 check_spec_id_args "${EXTRA_ARGS[@]}"
 check_spec_id_args "${POSITIONAL_ARGS[@]}"
+check_config_file_args "${EXTRA_ARGS[@]}"
+check_config_file_args "${POSITIONAL_ARGS[@]}"
 
 CARGO_RUN_ARGS=(
   cargo
@@ -186,8 +245,14 @@ CARGO_RUN_ARGS=(
 
 cd "${ROOT_DIR}"
 
-SIDECAR_ARGS=(
-)
+SIDECAR_ARGS=()
+
+if [[ "${config_file_cli_present}" != "true" ]]; then
+  SIDECAR_ARGS+=(
+    --config-file-path
+    "${STACK_CONFIG_FILE}"
+  )
+fi
 
 if [[ "${spec_id_cli_present}" != "true" ]]; then
   SIDECAR_ARGS+=(
@@ -231,7 +296,8 @@ cleanup() {
   fi
 
   cleanup_db_path "${ASSERTION_STORE_DB_ABS}" "${DEFAULT_ASSERTION_STORE_DB_ABS}"
-  cleanup_db_path "${INDEXER_DB_ABS}" "${DEFAULT_INDEXER_DB_ABS}"
+  cleanup_db_path "${TRANSACTION_OBSERVER_DB_ABS}" "${DEFAULT_TRANSACTION_OBSERVER_DB_ABS}"
+  cleanup_db_path "${STATE_WORKER_MDBX_ABS}" "${DEFAULT_STATE_WORKER_MDBX_ABS}"
 
   local sidecar_host_dir="${ROOT_DIR}/.local/sidecar-host"
   if [[ -d "${sidecar_host_dir}" ]]; then

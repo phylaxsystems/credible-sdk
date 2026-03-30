@@ -24,6 +24,7 @@ env:
 
 jobs:
   criterion:
+    name: Integrated Sidecar Benchmarks
     uses: phylaxsystems/actions/.github/workflows/benchmark.yaml@main
     with:
       rust-channel: stable
@@ -48,3 +49,21 @@ jobs:
       baseline-artifact-name: "criterion-baseline"
     # secrets:
     #   COMMENT_TOKEN: ${{ secrets.BENCHMARKS_COMMENT_TOKEN }}
+
+  latency-threshold-note:
+    name: Sidecar Latency Threshold Status
+    if: ${{ always() }}
+    needs: criterion
+    runs-on: ubuntu-latest
+    steps:
+      - name: Record missing latency threshold follow-up
+        run: |
+          {
+            echo "## Sidecar latency threshold status"
+            echo ""
+            echo "- This workflow exercises the integrated sidecar benchmark path, including the published \`event_sequencing_latency\` results."
+            echo "- ENG-2233 still does not have an approved authoritative latency/SLO threshold for those measurements."
+            echo "- CI intentionally publishes the benchmark data without inventing a pass/fail gate."
+            echo "- External coordination is still required before these numbers become a deployment-blocking threshold."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::notice::Integrated sidecar benchmarks ran without a pass/fail latency threshold because ENG-2233 still needs an approved authoritative SLO."

@@ -197,6 +197,7 @@ pub struct CoreEngineConfig {
     pub transaction_results_max_capacity: usize,
     pub state_sources_sync_timeout: Duration,
     pub source_monitoring_period: Duration,
+    pub health_state: Arc<crate::health::HealthState>,
     pub overlay_cache_invalidation_every_block: bool,
     pub incident_sender: Option<IncidentReportSender>,
     #[cfg(feature = "cache_validation")]
@@ -637,6 +638,7 @@ impl<DB: DatabaseRef + Send + Sync + 'static> CoreEngine<DB> {
             sources_monitoring: monitoring::sources::Sources::new(
                 sources,
                 config.source_monitoring_period,
+                config.health_state.clone(),
             ),
             overlay_cache_invalidation_every_block: config.overlay_cache_invalidation_every_block,
             system_calls: SystemCalls::new(),

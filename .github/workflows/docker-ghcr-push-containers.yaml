@@ -95,6 +95,7 @@ jobs:
       dockerfile-path: dockerfile/Dockerfile.shadow-driver
       version-tag: ${{ needs.get-version.outputs.version }}
 
+  # Standalone state-worker images remain available for bootstrap/recovery utility flows only.
   docker-ghcr-push-state-worker:
     needs: get-version
     uses: phylaxsystems/actions/.github/workflows/release-docker-ghcr.yaml@main
@@ -117,7 +118,6 @@ jobs:
     if: github.ref == 'refs/heads/main'
     needs:
       - docker-ghcr-push-sidecar
-      - docker-ghcr-push-state-worker
       - get-version
     strategy:
       fail-fast: false
@@ -153,4 +153,3 @@ jobs:
           railway redeploy \
             --service "${{ secrets.RAILWAY_VERIFIER_SERVICE_ID }}" \
             --yes
-

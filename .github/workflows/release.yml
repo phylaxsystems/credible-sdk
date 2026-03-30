@@ -1,4 +1,4 @@
-name: Tag, Release and Publish
+name: Tag, Release and Publish Supported Artifacts
 
 on:
   push:
@@ -177,6 +177,7 @@ jobs:
       package: "assertion-da-server"
       enable-sccache: true
 
+  # Sidecar is the supported production runtime artifact for deployments.
   build-sidecar:
     needs: create-tag
     if: needs.create-tag.outputs.tag_created == 'true'
@@ -189,6 +190,8 @@ jobs:
       package: "sidecar"
       enable-sccache: true
 
+  # Standalone state-worker artifacts are intentionally excluded from the primary release bundle.
+  # If published through another channel, treat them as bootstrap/recovery utilities only.
   combine-artifacts:
     needs: [create-tag, build-pcl, build-assertion-da, build-sidecar]
     if: needs.create-tag.outputs.tag_created == 'true'

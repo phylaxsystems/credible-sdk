@@ -140,6 +140,7 @@ impl<DB> CoreEngine<DB> {
             sources_monitoring: monitoring::sources::Sources::new(
                 sources,
                 Duration::from_millis(20),
+                Arc::new(crate::health::HealthState::default()),
             ),
             current_head: U256::from(0),
             first_commit_head_processed: false,
@@ -252,6 +253,7 @@ async fn create_test_engine_with_timeout(
             transaction_results_max_capacity: 10,
             state_sources_sync_timeout: timeout,
             source_monitoring_period: timeout / 2,
+            health_state: Arc::new(crate::health::HealthState::default()),
             overlay_cache_invalidation_every_block: false,
             incident_sender: None,
             #[cfg(feature = "cache_validation")]
@@ -1940,6 +1942,7 @@ async fn build_canonical_setup(caller: Address) -> CanonicalSetup {
             transaction_results_max_capacity: 10,
             state_sources_sync_timeout: Duration::from_millis(100),
             source_monitoring_period: Duration::from_millis(20),
+            health_state: Arc::new(crate::health::HealthState::default()),
             overlay_cache_invalidation_every_block: false,
             incident_sender: None,
             #[cfg(feature = "cache_validation")]

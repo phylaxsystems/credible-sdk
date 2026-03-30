@@ -12,42 +12,39 @@ This file covers `crates/sidecar`.
 - validates those transactions against registered assertions,
 - exposes transaction results and health endpoints,
 - indexes assertions from external sources,
-- optionally reports invalidating transactions to external services.
+- optionally reports invalidating transactions to external services,
+- supervises the integrated state-worker runtime that traces blocks and advances durable MDBX visibility.
 
 It runs in a restart loop in `src/main.rs`. `run_sidecar_once` starts a full sidecar instance; if a recoverable component exits, the outer loop restarts the process and increments `sidecar_restarts_total`.
+
+`sidecar` is now the only supported production topology for state ingestion. The standalone `state-worker` binary remains available only for bootstrap, manual catch-up, and recovery workflows.
 
 ## Runtime schema
 
 ```text
-driver
-  |
-  v
-gRPC transport
-  |
-  v
-EventSequencing
-  |
-  +-----------------------> CommitHead / NewIteration / Tx / Reorg
-  |                                                   |
-  v                                                   v
-TransactionsState <----------------------------- CoreEngine ------------------> IncidentObserver
-  ^                                                   |
-  |                                                   |
-  +---------------- SubscribeResults -----------------+
-                                                      |
-                                                      v
-                                            AssertionExecutor
-                                                      |
-                                                      v
-                                           OverlayDb + Sources
-                                                      |
-                            +-------------------------+----------------------+
-                            |                                                |
-                            v                                                v
-                       MdbxSource                                       EthRpcSource
-                            |                                                |
-                            v                                                v
-                           MDBX                                       execution RPC
+execution node ---> integrated state worker ---> traced block buffer
+       ^                        |                         |
+       |                        |                         v
+       |                        |                flush permission from CommitHead
+       |                        |                         |
+       |                        v                         v
+       |                     MDBX <---------------- CoreEngine <--- EventSequencing <--- gRPC transport <--- driver
+       |                        ^                         |                                      |
+       |                        |                         +--> TransactionsState <---------------+
+       |                        |                         |
+       |                        |                         +--> IncidentObserver
+       |                        |                         |
+       |                        |                         +--> AssertionExecutor
+       |                        |                                   |
+       |                        |                                   v
+       |                        +--------------------------- OverlayDb + Sources
+       |                                                            |
+       |                                  +-------------------------+----------------------+
+       |                                  |                                                |
+       |                                  v                                                v
+       |                             MdbxSource                                       EthRpcSource
+       |                                  |                                                |
+       +----------------------------------+------------------------------------------------+
 
 side tasks:
 GraphQL event source -> sidecar indexer -> AssertionStore
@@ -62,6 +59,7 @@ Axum health server   -> /health
 - gRPC transport,
 - event sequencing thread,
 - core engine thread,
+- integrated state-worker supervisor thread,
 - optional transaction observer thread,
 - health server,
 - assertion indexer task,
@@ -181,17 +179,33 @@ On `CommitHead` the engine first validates cache coherence:
 - the last tx hash must match,
 - valid tx count must match.
 
-If validation fails, the engine invalidates all in-memory iteration state and clears the overlay cache instead of committing the block.
+If validation fails, the engine invalidates all in-memory iteration state and clears the overlay cache instead of committing the block. It also must not advance flush permission for the integrated worker, so MDBX visibility stays pinned at the previous durable head.
 
 If validation succeeds:
 
 1. the selected iteration's fork is merged into the underlying overlay cache,
 2. block hash is cached for `BLOCKHASH`,
-3. metrics are finalized,
-4. current head advances,
-5. all block-iteration data is cleared.
+3. the block becomes `flush-permitted` for the integrated worker,
+4. metrics are finalized,
+5. current head advances,
+6. all block-iteration data is cleared.
 
 Sidecar does not keep multi-block speculative state in memory. Iteration state is only for the next block.
+
+## State lifecycle and durable visibility
+
+The integrated worker and `CoreEngine` share one visibility contract:
+
+1. `traced`: the worker has traced block `N` and built a `BlockStateUpdate`, but it is still in memory only.
+2. `flush-permitted`: `CommitHead` has accepted block `N`, so the worker may now flush that update.
+3. `durably flushed`: `mdbx::Writer::commit_block` for block `N` succeeds, so the committed MDBX window advances and becomes authoritative.
+4. `worker-behind`: sidecar needs a block range that the durable MDBX window no longer covers, even if the worker has already traced farther ahead in memory.
+5. `fallback/return`: `Sources` serves from `EthRpcSource` while MDBX is behind, then returns to `MdbxSource` once the durable committed window covers the required range again.
+
+Two rules follow from that contract:
+
+- durable MDBX visibility is authoritative; traced-but-unflushed state must never become readable through `MdbxSource`;
+- restart resumes from the last durable MDBX block already stored in `crates/mdbx`, and any unflushed traced updates are discarded.
 
 ## Reorg behavior
 
@@ -214,7 +228,7 @@ Important limitation:
 
 The relevant source types are:
 
-- `MdbxSource`: reads from the `state-worker` MDBX database,
+- `MdbxSource`: reads from the durable MDBX database owned by the integrated runtime,
 - `EthRpcSource`: falls back to JSON-RPC and WS-backed reads.
 
 Selection policy:
@@ -223,12 +237,15 @@ Selection policy:
 - only sources considered synced for the relevant block range are eligible,
 - the first successful response wins.
 
-`MdbxSource` continuously polls the MDBX available block range and computes a target block as the intersection of:
+`MdbxSource` should be driven by an in-process committed-visibility window:
 
-- cache-required range `[min_synced_block, latest_head]`,
-- state-worker-available range `[oldest, observed_head]`.
+- initialize that window once from MDBX metadata at startup,
+- advance it only after successful durable flushes,
+- report unsynced whenever the durable window does not cover the cache-required range.
 
 `EthRpcSource` tracks latest head from WS subscriptions and uses HTTP for reads.
+
+This means fallback is based on durable coverage, not worker liveness alone. A healthy worker that has only traced ahead in memory does not make MDBX eligible until the corresponding blocks are durably flushed.
 
 ## Assertion indexer
 
@@ -279,3 +296,25 @@ Typical recoverable cases:
 - certain transport or client failures.
 
 Recoverable engine errors usually trigger cache invalidation and let the outer supervisor restart the process.
+
+Worker failure is also a recoverable degraded-mode condition: the sidecar process stays live, but MDBX can fall behind and `EthRpcSource` may become the only serving source until the worker restarts or catches back up.
+
+## Readiness and observability
+
+The health contract is no longer "process is running". Operators should treat the runtime as:
+
+- live while the sidecar process and supervisor loop are still running,
+- ready only while at least one state source can satisfy the cache's required block range.
+
+This means:
+
+- worker failure alone should not crash sidecar;
+- readiness should degrade when neither durable MDBX nor `EthRpcSource` can serve the required range;
+- metrics should continue to expose the existing `state_worker_*` series for continuity, alongside sidecar-owned metrics for supervisor state, restart count, traced head, flush-permitted head, durable flushed head, and fallback activation.
+
+## Open rollout questions
+
+Two rollout questions remain intentionally unresolved in the docs because this repository snapshot does not answer them:
+
+- the benchmark or SLO threshold that should trigger rollout acceptance for the integrated topology is still open;
+- the repository does not identify any remaining external standalone-`state-worker` consumers, so operators must explicitly confirm whether any out-of-repo deployments still depend on the utility binary before removing dual-process runbooks.

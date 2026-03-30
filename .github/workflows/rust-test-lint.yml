@@ -42,8 +42,10 @@ jobs:
       - id: vars
         run: echo "rust-nightly=${{ env.RUST_NIGHTLY_VERSION }}" >> $GITHUB_OUTPUT
 
+  # The reusable workspace job covers sidecar as the supported production runtime.
+  # Standalone state-worker verification is kept separate below for bootstrap/recovery use.
   rust-base:
-    name: Rust Test & Lint
+    name: Integrated Sidecar Runtime Test & Lint
     needs: setup
     uses: phylaxsystems/actions/.github/workflows/rust-base.yaml@main
     with:
@@ -66,9 +68,9 @@ jobs:
   # FIXME: State worker tests need special handling (single-threaded execution).
   # Ideally, rust-base.yaml should support a test-matrix input with clean package selection
   # (e.g., packages: ["mdbx", "state-worker"]) to avoid this duplication.
-  # For now, we run these tests inline to avoid duplicate lint jobs.
-  state-worker-tests:
-    name: State Worker Tests (single-threaded)
+  # For now, we run these utility/bootstrap checks inline to avoid duplicate lint jobs.
+  state-worker-utility-tests:
+    name: State Worker Utility/Bootstrap Tests (single-threaded)
     needs: setup
     runs-on:
       group: big-bois-x86
@@ -96,5 +98,5 @@ jobs:
       - name: Build Foundry contracts
         run: forge clean --root testdata/mock-protocol && forge build --root testdata/mock-protocol && FOUNDRY_PROFILE=assertions forge build --root testdata/mock-protocol
 
-      - name: Run state-worker tests
+      - name: Run state-worker utility/bootstrap tests
         run: cargo nextest run --package mdbx --package state-worker --locked --cargo-profile release --test-threads=2

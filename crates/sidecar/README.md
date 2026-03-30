@@ -2,12 +2,47 @@
 
 The sidecar is driven by a rollup sequencer(or driver) that validates transactions against credible layer assertions.
 The sequencer sends transactions either in bulk or transaction-by-transaction, and the sidecar approves or denies
-transactions for inclusion. See the associated sidecar spec for more info.
+transactions for inclusion. In the integrated ENG-2233 topology, `sidecar` is also the only supported production
+runtime for state ingestion: it supervises the internal state-worker runtime, owns the durable MDBX visibility window,
+and falls back to execution-node RPC when the durable window is behind. The standalone `state-worker` binary remains
+for bootstrap and recovery only. See the associated sidecar spec for more info.
+
+## Production topology
+
+Production deployments should run a single `sidecar` process, not a sidecar-plus-worker pair. The sidecar owns:
+
+- driver transport and event sequencing,
+- assertion execution and block commit decisions,
+- the internal worker that traces state updates,
+- durable MDBX flushes after `CommitHead`,
+- fallback and return between durable MDBX reads and `EthRpcSource`.
+
+The state lifecycle is:
+
+1. `traced` in the integrated worker,
+2. `flush-permitted` only after `CommitHead` accepts the block,
+3. `durably flushed` after `mdbx::Writer::commit_block`,
+4. `worker-behind` when the durable MDBX window no longer covers the sidecar cache's required range,
+5. `fallback/return` between MDBX and RPC based on that durable window.
+
+Durable MDBX visibility is authoritative. Traced-but-unflushed state is ephemeral and is discarded on restart.
 
 ## Configuring the sidecar
 
 The sidecar can be configured either via env vars or via cli flags. **Distributed tracing/metrics endpoints must be
 configured via env vars!**
+
+The integrated worker configuration belongs to the sidecar deployment surface. Operators should expect to configure, in
+one place:
+
+- execution-node connectivity for tracing and RPC fallback,
+- the durable MDBX path and circular-buffer depth shared by the integrated worker and `MdbxSource`,
+- cache/source-selection thresholds and timeouts,
+- health and telemetry endpoints,
+- optional assertion-indexer and observer settings.
+
+This repository snapshot still exposes legacy `state_worker_*`/MDBX reader aliases in the config parser. Treat those as
+transition compatibility fields, not as guidance to keep running a separate worker process in production.
 
 ### Tracing and metrics
 
@@ -45,6 +80,7 @@ All durations are reported in seconds to the configured metrics backend.
 - `sidecar_recoverable_errors_total` - Count of recoverable runtime errors
 - `sidecar_irrecoverable_errors_total` - Count of irrecoverable runtime errors
 - `sidecar_restarts_total` - Count of sidecar restarts within the main loop
+- existing `state_worker_*` metrics remain relevant because sidecar now hosts that runtime internally
 
 #### Assertion DA reachability metrics
 
@@ -65,6 +101,12 @@ All configuration follows a structured naming pattern with the following prefixe
 - `transport.*` - Transport layer configuration
 - `telemetry.*` - Telemetry and monitoring settings
 - `state.*` - State source configuration
+
+Operationally, `state.*` now describes the durable visibility contract and fallback policy for the integrated runtime:
+
+- MDBX settings define the durable store that sidecar both writes and reads,
+- RPC settings define the automatic fallback source,
+- sync thresholds determine when readiness can rely on MDBX versus RPC.
 
 Currently the binary only exposes the configuration file selector. Run `cargo run -p sidecar -- --help` to confirm the
 supported flags. To override individual settings, update the JSON configuration (either the embedded default or a custom
@@ -124,14 +166,25 @@ Transport:
 - `transport.event_id_buffer_capacity` -> `SIDECAR_EVENT_ID_BUFFER_CAPACITY`
 
 State:
-- `state.sources` -> `SIDECAR_STATE_SOURCES` (JSON array)
+- `state.sources` -> `SIDECAR_STATE_SOURCES` (JSON array describing durable MDBX plus RPC fallback sources)
 - `state.minimum_state_diff` -> `SIDECAR_STATE_MINIMUM_STATE_DIFF`
 - `state.sources_sync_timeout_ms` -> `SIDECAR_STATE_SOURCES_SYNC_TIMEOUT_MS`
 - `state.sources_monitoring_period_ms` -> `SIDECAR_STATE_SOURCES_MONITORING_PERIOD_MS`
 - `state.eth_rpc_source_ws_url` -> `SIDECAR_STATE_ETH_RPC_SOURCE_WS_URL`
 - `state.eth_rpc_source_http_url` -> `SIDECAR_STATE_ETH_RPC_SOURCE_HTTP_URL`
-- `state.state_worker_mdbx_path` -> `SIDECAR_STATE_WORKER_MDBX_PATH`
-- `state.state_worker_depth` -> `SIDECAR_STATE_WORKER_DEPTH`
+- `state.state_worker_mdbx_path` -> `SIDECAR_STATE_WORKER_MDBX_PATH` (legacy compatibility alias)
+- `state.state_worker_depth` -> `SIDECAR_STATE_WORKER_DEPTH` (legacy compatibility alias)
+
+### Readiness and degraded mode
+
+`/health` should be interpreted as a readiness endpoint for the integrated topology, not a mere process heartbeat:
+
+- the sidecar process may stay alive while the embedded worker is restarting or while MDBX is behind;
+- readiness should remain healthy while at least one state source can serve the required block range;
+- readiness should degrade when neither durable MDBX nor RPC fallback can cover the required range.
+
+Operators should alert on degraded fallback behavior separately from process liveness so a worker restart does not get
+mistaken for a full service outage.
 
 The configuration file is a JSON file with the following schema:
 
@@ -564,7 +617,7 @@ The configuration file is a JSON file with the following schema:
 }
 ```
 
-The default configuration can be found in [default_config.json](default_config.json):
+A representative integrated-topology configuration looks like:
 
 ```json
 {
@@ -598,23 +651,25 @@ The default configuration can be found in [default_config.json](default_config.j
   "state": {
     "sources": [
       {
+        "type": "mdbx",
+        "mdbx_path": "/data/sidecar-state.mdbx",
+        "depth": 3
+      },
+      {
         "type": "eth-rpc",
         "ws_url": "ws://127.0.0.1:8546",
         "http_url": "http://127.0.0.1:8545"
-      },
-      {
-        "type": "mdbx",
-        "mdbx_path": "/data/state_worker.mdbx",
-        "depth": 3
       }
     ],
     "minimum_state_diff": 100,
     "sources_sync_timeout_ms": 1000,
-    "sources_monitoring_period_ms": 500,
-    "enable_parallel_sources": false
+    "sources_monitoring_period_ms": 500
   }
 }
 ```
+
+Use [default_config.json](default_config.json) for the current checked-in defaults, but do not interpret the MDBX path
+or any legacy `state_worker_*` aliases as a reason to deploy a second production worker process.
 
 ## Running the sidecar
 
@@ -640,6 +695,16 @@ docker compose -f docker/maru-besu-sidecar/docker-compose.yml down -v
 Alternatively, you can run a sidecar locally with all services needed to get it running + an observability stack via:
 
 ```make run-sidecar-host```
+
+These local helper flows are transition tooling. They should converge on the same single-process production topology
+rather than reintroducing a permanent sidecar-plus-worker deployment contract.
+
+## Open rollout questions
+
+Two operator-facing items are still open at the time of this documentation update:
+
+- the benchmark or SLO threshold required to declare the integrated topology production-ready is not yet documented in this repo;
+- the repository does not identify any remaining external consumers of the standalone `state-worker` binary, so operators need explicit confirmation before removing any out-of-repo dual-process runbooks.
 
 #### Linux
 

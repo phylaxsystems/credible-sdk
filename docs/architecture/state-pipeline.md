@@ -7,24 +7,28 @@ This file covers `crates/state-worker`, `crates/mdbx`, and `scripts/geth_snapsho
 ```text
 execution node
   |
-  +--> newHeads subscription ------------------------------+
-  |                                                        |
-  +--> debug_trace_block_by_number(prestateTracer diff)    |
-                                                           v
-                                                   state-worker
-                                                           |
-                                                           +--> trace collapse
-                                                           |
-                                                           +--> system call merge
-                                                           |
-                                                           v
-                                                  BlockStateUpdate
-                                                           |
-                                                           v
-                                                    mdbx::StateWriter
-                                                           |
-                                                           v
-                                                         MDBX
+  +--> newHeads subscription ------------------------------------------+
+  |                                                                    |
+  +--> debug_trace_block_by_number(prestateTracer diff)                |
+                                                                       v
+                                            sidecar-hosted state-worker runtime
+                                                                       |
+                                                                       +--> trace collapse
+                                                                       |
+                                                                       +--> system call merge
+                                                                       |
+                                                                       v
+                                                              BlockStateUpdate
+                                                                       |
+                                                                       +--> traced (in-memory only)
+                                                                       |
+                                                                       +--> flush-permitted after CommitHead
+                                                                       |
+                                                                       v
+                                                                mdbx::StateWriter
+                                                                       |
+                                                                       v
+                                                                     MDBX
 ```
 
 ## `crates/mdbx`
@@ -109,6 +113,8 @@ Important details:
 - `BlockMetadata` and `StateDiffs` are pruned once older than the buffer horizon,
 - namespace contents are overwritten through rotation rather than separately pruned.
 
+For the integrated sidecar runtime, MDBX durability is also the visibility boundary. A traced block is not considered readable state until `StateWriter::commit_block` has succeeded. This task does not change schema, namespaces, or prune behavior.
+
 ### Bootstrap behavior
 
 MDBX supports snapshot bootstrap through:
@@ -135,9 +141,11 @@ This is used by `geth_snapshot` when snapshot hydration started with placeholder
 
 ### What it is
 
-`state-worker` is the continuous chain-state ingestor that produces the MDBX state that `sidecar` can consume.
+`state-worker` contains the tracing, genesis, and system-call logic that produces MDBX state updates from execution-node data.
 
-It is designed for:
+In the integrated architecture, that runtime is hosted inside `sidecar` as an internal supervised thread. The standalone `state-worker` binary remains available only for bootstrap, manual recovery, and other transition workflows that need to populate MDBX outside the main sidecar process.
+
+The worker logic is designed for:
 
 - replay from the persisted latest block,
 - catch-up to head,
@@ -147,7 +155,7 @@ It assumes a Geth-like execution node with debug APIs.
 
 ### Startup behavior
 
-On startup it:
+When hosted inside sidecar, the worker startup path still:
 
 1. installs tracing and rustls provider,
 2. parses CLI and env config,
@@ -157,7 +165,7 @@ On startup it:
 6. reads and parses a genesis JSON file,
 7. builds `SystemCalls` from genesis fork timestamps,
 8. constructs a `GethTraceProvider`,
-9. enters a restart-on-failure loop.
+9. enters the supervised run loop.
 
 Geth version must be at least `1.16.6` if the client is Geth. Earlier versions incorrectly report post-Cancun `SELFDESTRUCT` in `prestateTracer` diff mode.
 
@@ -180,8 +188,9 @@ For each block:
 
 1. fetch block state via the trace provider,
 2. apply EIP-2935 and EIP-4788 state updates,
-3. commit the block to MDBX,
-4. update metrics.
+3. buffer the resulting `BlockStateUpdate` until sidecar marks the block flush-permitted,
+4. commit the block to MDBX,
+5. update metrics.
 
 Block `0` is special:
 
@@ -201,6 +210,18 @@ Trace conversion logic in `state::geth`:
 - correctly treats post-Cancun `SELFDESTRUCT` as balance-only semantics.
 
 The final output is a block-level `BlockStateUpdate` keyed by address hash and slot hash.
+
+### Visibility lifecycle
+
+State moves through five runtime states:
+
+1. `traced`: the block update exists only in worker memory;
+2. `flush-permitted`: sidecar has accepted the block through `CommitHead`;
+3. `durably flushed`: MDBX has committed the block and the durable window advances;
+4. `worker-behind`: the durable window no longer covers the range sidecar requires;
+5. `fallback/return`: reads fall back to RPC until the durable window catches up, then return to MDBX.
+
+Durable MDBX visibility is authoritative across this lifecycle. Restart resumes from the last durable MDBX block and drops any unflushed traced updates.
 
 ### System calls
 
@@ -228,6 +249,8 @@ It can:
 - write JSONL output,
 - stream state into MDBX using `StateWriter::begin_bootstrap`,
 - fix block metadata on an existing MDBX database.
+
+That makes `geth_snapshot` and the standalone `state-worker` binary complementary recovery/bootstrap tools. They are not the default steady-state production topology once sidecar hosts the worker internally.
 
 ### Input modes
 

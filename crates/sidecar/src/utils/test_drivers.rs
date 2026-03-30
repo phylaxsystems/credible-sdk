@@ -277,6 +277,7 @@ impl CommonSetup {
                 transaction_results_max_capacity: 10,
                 state_sources_sync_timeout: Duration::from_millis(100),
                 source_monitoring_period: Duration::from_millis(20),
+                health_state: Arc::new(crate::health::HealthState::default()),
                 overlay_cache_invalidation_every_block: false,
                 incident_sender,
                 #[cfg(feature = "cache_validation")]

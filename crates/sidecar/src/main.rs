@@ -40,7 +40,10 @@ use sidecar::{
     },
     event_sequencing::EventSequencing,
     graphql_event_source::GraphqlEventSource,
-    health::HealthServer,
+    health::{
+        HealthServer,
+        HealthState,
+    },
     indexer,
     indexer::IndexerCfg,
     transaction_observer::{
@@ -608,6 +611,7 @@ async fn run_sidecar_once(
 
     let sources = build_sources_from_config(config).await?;
     let state = Arc::new(Sources::new(sources, config.state.minimum_state_diff));
+    let health_state = Arc::new(HealthState::default());
     let cache: OverlayDb<Sources> = OverlayDb::new(Some(state.clone()));
 
     let transaction_observer_config = transaction_observer_config_from(config);
@@ -647,6 +651,7 @@ async fn run_sidecar_once(
         transaction_results_max_capacity: config.credible.transaction_results_max_capacity,
         state_sources_sync_timeout: Duration::from_millis(config.state.sources_sync_timeout_ms),
         source_monitoring_period: Duration::from_millis(config.state.sources_monitoring_period_ms),
+        health_state: health_state.clone(),
         overlay_cache_invalidation_every_block: config
             .credible
             .overlay_cache_invalidation_every_block
@@ -681,7 +686,7 @@ async fn run_sidecar_once(
         None
     };
 
-    let mut health_server = HealthServer::new(health_bind_addr);
+    let mut health_server = HealthServer::new(health_bind_addr, health_state);
 
     let da_client = DaClient::new(&config.credible.assertion_da_rpc_url)?;
     let indexer_cfg = init_indexer_config(

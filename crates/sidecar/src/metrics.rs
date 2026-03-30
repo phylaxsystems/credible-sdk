@@ -463,6 +463,103 @@ fn u256_to_f64(value: U256) -> f64 {
     }
 }
 
+#[inline]
+fn u64_to_f64(value: u64) -> f64 {
+    let capped = u32::try_from(value).unwrap_or(u32::MAX);
+    f64::from(capped)
+}
+
+#[inline]
+fn bool_to_f64(value: bool) -> f64 {
+    if value { 1.0 } else { 0.0 }
+}
+
+/// Runtime readiness and degraded-mode metrics emitted by the sidecar.
+#[derive(Debug, Default)]
+pub struct RuntimeHealthMetrics;
+
+impl RuntimeHealthMetrics {
+    pub fn set_readiness(&self, ready: bool) {
+        gauge!("sidecar_readiness_ready").set(bool_to_f64(ready));
+    }
+
+    pub fn increment_readiness_transition(&self) {
+        counter!("sidecar_readiness_transitions_total").increment(1);
+    }
+
+    pub fn set_fallback_active(&self, active: bool) {
+        gauge!("sidecar_state_fallback_active").set(bool_to_f64(active));
+    }
+
+    pub fn increment_fallback_transition(&self) {
+        counter!("sidecar_state_fallback_transitions_total").increment(1);
+    }
+
+    pub fn set_required_head(&self, block_number: u64) {
+        gauge!("sidecar_state_required_head").set(u64_to_f64(block_number));
+    }
+
+    pub fn set_required_minimum_block(&self, block_number: u64) {
+        gauge!("sidecar_state_required_minimum_block").set(u64_to_f64(block_number));
+    }
+
+    pub fn set_worker_degraded(&self, degraded: bool) {
+        gauge!("sidecar_state_worker_degraded").set(bool_to_f64(degraded));
+    }
+
+    pub fn set_worker_unavailable(&self, unavailable: bool) {
+        gauge!("sidecar_state_worker_unavailable").set(bool_to_f64(unavailable));
+    }
+
+    pub fn set_state_worker_traced_head(&self, block_number: u64) {
+        gauge!("state_worker_traced_head").set(u64_to_f64(block_number));
+    }
+
+    pub fn set_state_worker_flush_permitted_head(&self, block_number: u64) {
+        gauge!("state_worker_flush_permitted_head").set(u64_to_f64(block_number));
+    }
+
+    pub fn set_state_worker_durable_head(&self, block_number: u64) {
+        gauge!("state_worker_durable_head").set(u64_to_f64(block_number));
+    }
+
+    pub fn set_state_worker_restart_count(&self, restart_count: u64) {
+        gauge!("state_worker_restart_count").set(u64_to_f64(restart_count));
+    }
+
+    pub fn set_state_worker_restart_backoff_seconds(&self, backoff: std::time::Duration) {
+        gauge!("state_worker_restart_backoff_seconds").set(backoff.as_secs_f64());
+    }
+
+    pub fn set_state_worker_degraded(&self, degraded: bool) {
+        gauge!("state_worker_degraded").set(bool_to_f64(degraded));
+    }
+
+    pub fn set_legacy_state_worker_db_healthy(&self, is_healthy: bool) {
+        gauge!("state_worker_db_healthy").set(bool_to_f64(is_healthy));
+    }
+
+    pub fn set_legacy_state_worker_head_block(&self, block_number: u64) {
+        gauge!("state_worker_head_block").set(u64_to_f64(block_number));
+    }
+
+    pub fn set_legacy_state_worker_current_block(&self, block_number: u64) {
+        gauge!("state_worker_current_block").set(u64_to_f64(block_number));
+    }
+
+    pub fn set_legacy_state_worker_sync_lag_blocks(&self, lag_blocks: u64) {
+        gauge!("state_worker_sync_lag_blocks").set(u64_to_f64(lag_blocks));
+    }
+
+    pub fn set_legacy_state_worker_syncing(&self, is_syncing: bool) {
+        gauge!("state_worker_is_syncing").set(bool_to_f64(is_syncing));
+    }
+
+    pub fn set_legacy_state_worker_following_head(&self, is_following_head: bool) {
+        gauge!("state_worker_is_following_head").set(bool_to_f64(is_following_head));
+    }
+}
+
 /// Metrics for an individual source
 ///
 /// Tracks per-source synchronization status and statistics including

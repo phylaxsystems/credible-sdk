@@ -9,6 +9,7 @@ use metrics::{
     gauge,
     histogram,
 };
+use std::time::Duration;
 
 /// Record metrics from a block commit operation.
 ///
@@ -41,9 +42,15 @@ use metrics::{
 /// ### Health / sync gauges
 /// - `state_worker_db_healthy`: Whether DB access is healthy (`1` healthy, `0` unhealthy)
 /// - `state_worker_head_block`: Latest chain head observed by the worker
+/// - `state_worker_traced_head`: Latest block fully traced by the worker runtime
+/// - `state_worker_flush_permitted_head`: Latest block permitted to flush into MDBX
+/// - `state_worker_durable_head`: Latest block durably visible through MDBX
 /// - `state_worker_sync_lag_blocks`: Number of blocks the worker is behind head
 /// - `state_worker_is_syncing`: Whether the worker is catching up to head
 /// - `state_worker_is_following_head`: Whether the worker is tailing the head in steady-state
+/// - `state_worker_restart_count`: Number of supervisor restarts
+/// - `state_worker_restart_backoff_seconds`: Current supervisor restart backoff
+/// - `state_worker_degraded`: Whether the worker is running in degraded mode
 pub fn record_commit(block_number: u64, stats: &CommitStats) {
     // Gauges for current block stats
     gauge!("state_worker_accounts_written").set(usize_to_f64(stats.accounts_written));
@@ -93,6 +100,30 @@ pub fn set_head_block(block_number: u64) {
     gauge!("state_worker_head_block").set(u64_to_f64(block_number));
 }
 
+/// Record the latest block fully traced by the worker runtime.
+///
+/// Committed as a `Gauge`: `state_worker_traced_head`
+#[allow(dead_code)]
+pub fn set_traced_head(block_number: u64) {
+    gauge!("state_worker_traced_head").set(u64_to_f64(block_number));
+}
+
+/// Record the latest block currently permitted to flush into MDBX.
+///
+/// Committed as a `Gauge`: `state_worker_flush_permitted_head`
+#[allow(dead_code)]
+pub fn set_flush_permitted_head(block_number: u64) {
+    gauge!("state_worker_flush_permitted_head").set(u64_to_f64(block_number));
+}
+
+/// Record the latest block durably visible through MDBX.
+///
+/// Committed as a `Gauge`: `state_worker_durable_head`
+#[allow(dead_code)]
+pub fn set_durable_head(block_number: u64) {
+    gauge!("state_worker_durable_head").set(u64_to_f64(block_number));
+}
+
 /// Record how far the worker is behind the observed chain head.
 ///
 /// Committed as a `Gauge`: `state_worker_sync_lag_blocks`
@@ -113,6 +144,30 @@ pub fn set_syncing(is_syncing: bool) {
 /// Committed as a `Gauge`: `state_worker_is_following_head`
 pub fn set_following_head(is_following_head: bool) {
     gauge!("state_worker_is_following_head").set(bool_to_f64(is_following_head));
+}
+
+/// Record the number of times the worker supervisor has restarted.
+///
+/// Committed as a `Gauge`: `state_worker_restart_count`
+#[allow(dead_code)]
+pub fn set_restart_count(restart_count: u64) {
+    gauge!("state_worker_restart_count").set(u64_to_f64(restart_count));
+}
+
+/// Record the current restart backoff applied by the worker supervisor.
+///
+/// Committed as a `Gauge`: `state_worker_restart_backoff_seconds`
+#[allow(dead_code)]
+pub fn set_restart_backoff(backoff: Duration) {
+    gauge!("state_worker_restart_backoff_seconds").set(backoff.as_secs_f64());
+}
+
+/// Record whether the worker is currently degraded.
+///
+/// Committed as a `Gauge`: `state_worker_degraded`
+#[allow(dead_code)]
+pub fn set_degraded(is_degraded: bool) {
+    gauge!("state_worker_degraded").set(bool_to_f64(is_degraded));
 }
 
 fn usize_to_f64(value: usize) -> f64 {
