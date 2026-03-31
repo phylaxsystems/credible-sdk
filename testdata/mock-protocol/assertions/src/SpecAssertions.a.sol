@@ -48,7 +48,7 @@ contract ReshiramSpecAssertion is Assertion {
         require(txObj.from != address(0), "TxObject from should not be zero");
     }
 
-    /// @notice Verifies Legacy precompiles still work under Reshiram spec.
+    /// @notice Uses deprecated Legacy precompiles under Reshiram spec and should fail.
     function assertionLegacyStillWorks() external {
         address adopter = ph.getAssertionAdopter();
         ph.forkPostTx();

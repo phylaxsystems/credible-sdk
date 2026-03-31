@@ -56,8 +56,9 @@ pub enum ForkId {
 /// Each active fork moves its journal into the EVM and its own variable remains None.
 /// Upon switching, old journals are moved back into the `MultiForkDb`.
 ///
-/// Persistent accounts are committed to the underlying DB hence they are available throughout all forks.
-/// Persistent account changes are copied from fork journal to fork journal -> hence the name persistent.
+/// Assertion execution keeps its own ephemeral journal. Snapshot forks hold immutable transaction
+/// state in their backing DBs, while synthetic persistent accounts remain managed outside those
+/// snapshots so assertion execution state is not overwritten by tx journals.
 #[derive(Debug, Clone)]
 pub struct MultiForkDb<ExtDb> {
     /// All forks including active one. The key is the fork id.
@@ -83,11 +84,19 @@ pub enum MultiForkError {
     CallIdOutOfBounds { call_id: usize },
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum StorageRefFromForkError<ExtDb: DatabaseRef> {
+    #[error("Requested fork {0:?} has not been materialized")]
+    TargetForkNotFound(ForkId),
+    #[error("Error reading fork storage: {0}")]
+    Db(#[source] ExtDb::Error),
+}
+
 impl<ExtDb: Clone + DatabaseCommit> MultiForkDb<ExtDb> {
     /// Creates a new `MultiForkDb`. Default to the post-tx state is expected.
     pub fn new(pre_tx_db: ExtDb, post_tx_journal: &JournalInner<JournalEntry>) -> Self {
         let mut post_tx_db = pre_tx_db.clone();
-        post_tx_db.commit(filtered_journal_state(post_tx_journal));
+        post_tx_db.commit(snapshot_journal_state(post_tx_journal));
 
         let mut forks = HashMap::new();
         forks.insert(
@@ -247,14 +256,12 @@ impl<ExtDb: DatabaseRef> MultiForkDb<ExtDb> {
     ) -> Result<u64, MultiForkError> {
         let fork_journal = self.fork_journal_for_creation(fork_id, active_journal, call_tracer)?;
 
-        // `create_fork` commits the filtered journal state into the fork DB.
-        let changes = filtered_journal_state(&fork_journal);
+        // `create_fork` commits the snapshot journal state into the fork DB.
+        let changes = snapshot_journal_state(&fork_journal);
         Ok(estimate_forkdb_commit_bytes(&changes))
     }
 
-    /// Ensure a fork exists, creating it lazily if needed.
-    /// Does NOT switch the active fork.
-    /// Returns `true` if the fork was newly created.
+    /// Ensure a fork exists without switching.
     pub fn ensure_fork_exists(
         &mut self,
         fork_id: ForkId,
@@ -268,21 +275,35 @@ impl<ExtDb: DatabaseRef> MultiForkDb<ExtDb> {
             return Ok(false);
         }
 
+        match fork_id {
+            ForkId::PreCall(call_id) | ForkId::PostCall(call_id) => {
+                if !call_tracer.is_call_forkable(call_id) {
+                    return Err(MultiForkError::CallIdOutOfBounds { call_id });
+                }
+            }
+            _ => {}
+        }
+
         let fork_journal = self.fork_journal_for_creation(fork_id, active_journal, call_tracer)?;
         let new_fork = self.create_fork(&fork_journal);
         self.forks.insert(fork_id, new_fork);
+
         Ok(true)
     }
 
-    /// Read a storage slot from a specific fork without switching.
-    /// The fork MUST already exist (call `ensure_fork_exists` first).
+    /// Read a storage slot from a materialized fork without switching.
     pub fn storage_ref_from_fork(
         &self,
         fork_id: ForkId,
         address: Address,
         slot: U256,
-    ) -> Result<U256, <ExtDb as DatabaseRef>::Error> {
-        self.forks[&fork_id].db.storage_ref(address, slot)
+    ) -> Result<U256, StorageRefFromForkError<ExtDb>> {
+        self.forks
+            .get(&fork_id)
+            .ok_or(StorageRefFromForkError::TargetForkNotFound(fork_id))?
+            .db
+            .storage_ref(address, slot)
+            .map_err(StorageRefFromForkError::Db)
     }
 
     fn create_fork(&mut self, journal: &JournalInner<JournalEntry>) -> InternalFork<ExtDb>
@@ -290,7 +311,7 @@ impl<ExtDb: DatabaseRef> MultiForkDb<ExtDb> {
         ExtDb: Clone + DatabaseCommit,
     {
         let mut fork_db = self.underlying_db.clone();
-        fork_db.commit(filtered_journal_state(journal));
+        fork_db.commit(snapshot_journal_state(journal));
 
         InternalFork {
             db: fork_db,
@@ -302,7 +323,7 @@ impl<ExtDb: DatabaseRef> MultiForkDb<ExtDb> {
     }
 }
 
-fn filtered_journal_state(journal: &JournalInner<JournalEntry>) -> EvmState {
+fn snapshot_journal_state(journal: &JournalInner<JournalEntry>) -> EvmState {
     let mut state = journal.state.clone();
 
     for addr in DEFAULT_PERSISTENT_ACCOUNTS {
@@ -838,88 +859,65 @@ mod test_multi_fork {
     }
 
     #[test]
-    fn test_ensure_fork_exists_creates_fork() {
+    fn test_ensure_fork_exists_is_noop_for_existing_fork() {
         let sender: Address = random_bytes::<20>().into();
         let pre_tx_fork_db = setup_fork_db(sender);
         let active_journal = JournalInner::new();
 
         let mut db = MultiForkDb::new(pre_tx_fork_db, &active_journal);
 
-        assert!(!db.forks.contains_key(&ForkId::PreTx));
+        let created = db
+            .ensure_fork_exists(ForkId::PostTx, &active_journal, &CallTracer::default())
+            .unwrap();
+        assert!(!created);
+        assert_eq!(db.active_fork_id, ForkId::PostTx);
+    }
+
+    #[test]
+    fn test_ensure_fork_exists_materializes_inactive_fork_without_switching() {
+        let sender: Address = random_bytes::<20>().into();
+        let pre_tx_fork_db = setup_fork_db(sender);
+        let active_journal = JournalInner::new();
+
+        let mut db = MultiForkDb::new(pre_tx_fork_db, &active_journal);
 
         let created = db
             .ensure_fork_exists(ForkId::PreTx, &active_journal, &CallTracer::default())
             .unwrap();
         assert!(created);
-        assert!(db.forks.contains_key(&ForkId::PreTx));
+        assert!(db.fork_exists(&ForkId::PreTx));
+        assert_eq!(db.active_fork_id, ForkId::PostTx);
     }
 
     #[test]
-    fn test_ensure_fork_exists_idempotent() {
+    fn test_storage_ref_from_fork_reads_materialized_snapshot_without_switching() {
         let sender: Address = random_bytes::<20>().into();
-        let pre_tx_fork_db = setup_fork_db(sender);
-        let active_journal = JournalInner::new();
-
-        let mut db = MultiForkDb::new(pre_tx_fork_db, &active_journal);
-
-        let created1 = db
-            .ensure_fork_exists(ForkId::PreTx, &active_journal, &CallTracer::default())
-            .unwrap();
-        assert!(created1);
-
-        let created2 = db
-            .ensure_fork_exists(ForkId::PreTx, &active_journal, &CallTracer::default())
-            .unwrap();
-        assert!(!created2);
-    }
-
-    #[test]
-    fn test_storage_ref_from_fork_reads_correct_data() {
-        let sender: Address = random_bytes::<20>().into();
-        let receiver: Address = random_bytes::<20>().into();
         let mut pre_tx_fork_db = setup_fork_db(sender);
         let mut active_journal = JournalInner::new();
+        let slot = U256::ZERO;
+        let post_value = uint!(7_U256);
 
         active_journal
             .load_account(&mut pre_tx_fork_db, sender)
             .unwrap();
         active_journal
-            .transfer(&mut pre_tx_fork_db, sender, receiver, uint!(1000_U256))
+            .sstore(&mut pre_tx_fork_db, sender, slot, post_value, false)
             .unwrap();
-
-        let db = MultiForkDb::new(pre_tx_fork_db, &active_journal);
-
-        // PostTx should show sender=0, receiver=1000
-        let sender_balance = db
-            .storage_ref_from_fork(ForkId::PostTx, sender, U256::ZERO)
-            .unwrap();
-        // storage_ref reads raw storage, not balance. Balance is not storage.
-        // Use basic_ref pattern instead — but for this test let's just verify it doesn't panic
-        // and returns a valid result.
-        assert_eq!(sender_balance, U256::ZERO); // slot 0 is empty storage
-    }
-
-    #[test]
-    fn test_storage_ref_from_fork_does_not_switch_active() {
-        let sender: Address = random_bytes::<20>().into();
-        let pre_tx_fork_db = setup_fork_db(sender);
-        let active_journal = JournalInner::new();
+        active_journal.touch(sender);
 
         let mut db = MultiForkDb::new(pre_tx_fork_db, &active_journal);
-
-        // Active fork is PostTx
-        assert_eq!(db.active_fork_id, ForkId::PostTx);
-
-        // Ensure PreTx exists
         db.ensure_fork_exists(ForkId::PreTx, &active_journal, &CallTracer::default())
             .unwrap();
 
-        // Read from PreTx fork
-        let _val = db
-            .storage_ref_from_fork(ForkId::PreTx, sender, U256::ZERO)
+        let pre_value = db
+            .storage_ref_from_fork(ForkId::PreTx, sender, slot)
+            .unwrap();
+        let post_value_read = db
+            .storage_ref_from_fork(ForkId::PostTx, sender, slot)
             .unwrap();
 
-        // Active fork should still be PostTx
+        assert_eq!(pre_value, U256::ZERO);
+        assert_eq!(post_value_read, post_value);
         assert_eq!(db.active_fork_id, ForkId::PostTx);
     }
 }
