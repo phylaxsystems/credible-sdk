@@ -262,6 +262,11 @@ impl<ExtDb: DatabaseRef> MultiForkDb<ExtDb> {
     }
 
     /// Ensure a fork exists without switching.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `fork_id` references a non-forkable call or the fork journal cannot be
+    /// materialized from the active journal state.
     pub fn ensure_fork_exists(
         &mut self,
         fork_id: ForkId,
@@ -292,6 +297,11 @@ impl<ExtDb: DatabaseRef> MultiForkDb<ExtDb> {
     }
 
     /// Read a storage slot from a materialized fork without switching.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the requested fork has not been materialized or the underlying fork DB
+    /// read fails.
     pub fn storage_ref_from_fork(
         &self,
         fork_id: ForkId,

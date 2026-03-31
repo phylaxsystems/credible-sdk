@@ -64,7 +64,7 @@ pub enum LoadStateAtError<ExtDb: DatabaseRef> {
 }
 
 fn decode_fork_id<ExtDb: DatabaseRef>(
-    fork: SolForkId,
+    fork: &SolForkId,
     call_tracer: &CallTracer,
 ) -> Result<ForkId, LoadStateAtError<ExtDb>> {
     match fork.forkType {
@@ -164,14 +164,15 @@ where
     let journal = context.journal_mut();
     price_fork_creation_if_needed(journal, fork_id, call_tracer, &mut gas_left, gas_limit)?;
 
+    // Charge the storage read before materializing the snapshot fork so OOG cannot mutate state.
+    if let Some(rax) = deduct_gas_and_check(&mut gas_left, COLD_SLOAD_COST, gas_limit) {
+        return Err(LoadStateAtError::OutOfGas(rax));
+    }
+
     journal
         .database
         .ensure_fork_exists(fork_id, &journal.inner, call_tracer)
         .map_err(LoadStateAtError::MultiForkDb)?;
-
-    if let Some(rax) = deduct_gas_and_check(&mut gas_left, COLD_SLOAD_COST, gas_limit) {
-        return Err(LoadStateAtError::OutOfGas(rax));
-    }
 
     let value = journal
         .database
@@ -201,7 +202,7 @@ where
         ContextTr<Db = &'db mut MultiForkDb<ExtDb>, Journal = Journal<&'db mut MultiForkDb<ExtDb>>>,
 {
     let call = loadStateAt_0Call::abi_decode(input_bytes).map_err(LoadStateAtError::DecodeError)?;
-    let fork_id = decode_fork_id::<ExtDb>(call.fork, call_tracer)?;
+    let fork_id = decode_fork_id::<ExtDb>(&call.fork, call_tracer)?;
 
     load_state_at(
         context,
@@ -231,7 +232,7 @@ where
         ContextTr<Db = &'db mut MultiForkDb<ExtDb>, Journal = Journal<&'db mut MultiForkDb<ExtDb>>>,
 {
     let call = loadStateAt_1Call::abi_decode(input_bytes).map_err(LoadStateAtError::DecodeError)?;
-    let fork_id = decode_fork_id::<ExtDb>(call.fork, call_tracer)?;
+    let fork_id = decode_fork_id::<ExtDb>(&call.fork, call_tracer)?;
 
     load_state_at(
         context,
@@ -445,6 +446,42 @@ mod test {
             err,
             LoadStateAtError::InvalidForkType { fork_type: 9 }
         ));
+    }
+
+    #[test]
+    fn test_load_state_at_oog_does_not_materialize_fork() {
+        let address = random_address();
+        let slot = random_u256();
+        let (mut multi_fork_db, journal) = create_test_context_with_mock_db(
+            vec![(address, slot, U256::from(1))],
+            vec![(address, slot, U256::from(2))],
+        );
+
+        let mut context = EthEvmContext::new(&mut multi_fork_db, SpecId::default());
+        context.journal_mut().inner = journal;
+
+        let calldata: Bytes = loadStateAt_1Call {
+            target: address,
+            slot: slot.into(),
+            fork: SolForkId {
+                forkType: 0,
+                callIndex: U256::ZERO,
+            },
+        }
+        .abi_encode()
+        .into();
+
+        let err = load_state_at_with_target(
+            &mut context,
+            &CallTracer::default(),
+            &calldata,
+            RESHIRAM_BASE_COST + COLD_SLOAD_COST - 1,
+        )
+        .unwrap_err();
+
+        assert!(matches!(err, LoadStateAtError::OutOfGas(_)));
+        drop(context);
+        assert!(!multi_fork_db.fork_exists(&ForkId::PreTx));
     }
 
     #[tokio::test]

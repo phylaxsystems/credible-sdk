@@ -403,7 +403,7 @@ impl<'a> PhEvmInspector<'a> {
                     context,
                     &self.context,
                     self.context.logs_and_traces.call_traces,
-                    &input_bytes,
+                    input_bytes,
                     inputs.gas_limit,
                 ) {
                     Ok(rax) | Err(LoadStateAtError::OutOfGas(rax)) => rax,
@@ -414,7 +414,7 @@ impl<'a> PhEvmInspector<'a> {
                 match load_state_at_with_target(
                     context,
                     self.context.logs_and_traces.call_traces,
-                    &input_bytes,
+                    input_bytes,
                     inputs.gas_limit,
                 ) {
                     Ok(rax) | Err(LoadStateAtError::OutOfGas(rax)) => rax,
