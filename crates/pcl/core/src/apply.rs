@@ -7,24 +7,24 @@ use crate::{
     },
     error::ApplyError,
 };
-use chrono::{
-    DateTime,
-    Utc,
-};
 use clap::ValueHint;
+use dapp_api_client::generated::client::{
+    Client as GeneratedClient,
+    types::{
+        GetProjectsResponseItem,
+        PostProjectsProjectIdReleasesBody,
+        PostProjectsProjectIdReleasesBodyContractsValue,
+        PostProjectsProjectIdReleasesBodyContractsValueAssertionsItem,
+        PostProjectsProjectIdReleasesResponse,
+    },
+};
 use inquire::Select;
 use pcl_common::args::CliArgs;
 use pcl_phoundry::build_and_flatten::BuildAndFlattenArgs;
-use serde::{
-    Deserialize,
-    Serialize,
-};
+use serde::Serialize;
 use serde_json::Value;
 use std::{
-    collections::{
-        BTreeMap,
-        HashMap,
-    },
+    collections::HashMap,
     io::{
         Write,
         stderr,
@@ -79,45 +79,7 @@ pub struct ApplyArgs {
         default_value = DEFAULT_PLATFORM_URL,
         help = "Base URL for the platform API"
     )]
-    pub api_url: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct Project {
-    project_id: Uuid,
-    project_name: String,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ApplyPayload {
-    environment: String,
-    assertions_dir: String,
-    contracts: BTreeMap<String, ApplyContractPayload>,
-}
-
-#[derive(Debug, Serialize)]
-struct ApplyContractPayload {
-    address: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    name: Option<String>,
-    assertions: Vec<ApplyAssertionPayload>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ApplyAssertionPayload {
-    file: String,
-    args: Vec<String>,
-    bytecode: String,
-    flattened_source: String,
-    compiler_version: String,
-    contract_name: String,
-    evm_version: String,
-    optimizer_runs: u64,
-    optimizer_enabled: bool,
-    metadata_bytecode_hash: String,
-    libraries: HashMap<String, String>,
+    pub api_url: url::Url,
 }
 
 #[derive(Debug, Serialize)]
@@ -126,21 +88,7 @@ struct ApplyJsonOutput {
     project_id: Uuid,
     preview: Value,
     applied: bool,
-    release: Option<ReleaseResponse>,
-}
-
-/// Response from `POST /projects/{id}/releases`
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ReleaseResponse {
-    id: Uuid,
-    release_number: u64,
-    status: String,
-    previously_deployed: bool,
-    diff: Option<Value>,
-    diffed_against_release_id: Option<Uuid>,
-    created_at: DateTime<Utc>,
-    review_url: Option<Url>,
+    release: Option<PostProjectsProjectIdReleasesResponse>,
 }
 
 impl ApplyArgs {
@@ -162,60 +110,21 @@ impl ApplyArgs {
 
         // TODO(ENG-2129): Uncomment the preview request and the preview/no-op handling block
         // below once the preview endpoint and diff rendering flow are finalized in follow-up PRs.
-        // let preview = self
-        //     .post_authenticated(
-        //         config,
-        //         &format!(
-        //             "{}/api/v1/projects/{project_id}/deployments/preview",
-        //             self.api_url.trim_end_matches('/')
-        //         ),
-        //         &payload,
-        //     )
-        //     .await?;
-        //
-        // let has_changes = preview_has_changes(&preview);
-        // if json_output {
-        //     if !has_changes {
-        //         println!(
-        //             "{}",
-        //             serde_json::to_string_pretty(&ApplyJsonOutput {
-        //                 status: "success",
-        //                 project_id,
-        //                 preview,
-        //                 applied: false,
-        //                 deployment: None,
-        //             })?
-        //         );
-        //         return Ok(());
-        //     }
-        // } else {
-        //     render_preview(&preview);
-        //     if !has_changes {
-        //         println!("No changes. Infrastructure is up-to-date.");
-        //         return Ok(());
-        //     }
-        // }
         let preview = Value::Null;
 
-        // TODO: Re-enable confirmation prompt once preview is implemented
-        // if json_output && !self.yes {
-        //     return Err(ApplyError::JsonConfirmationRequiresYes);
-        // }
-        //
-        // if !self.yes && !confirm_apply()? {
-        //     return Err(ApplyError::ApplyCancelled);
-        // }
+        let client = self.authenticated_client(config)?;
 
-        let release: ReleaseResponse = self
-            .post_authenticated(
-                config,
-                &format!(
-                    "{}/api/v1/projects/{project_id}/releases",
-                    self.api_url.trim_end_matches('/')
-                ),
-                &payload,
-            )
-            .await?;
+        let release = client
+            .post_projects_project_id_releases(&project_id, None, &payload)
+            .await
+            .map(dapp_api_client::generated::client::ResponseValue::into_inner)
+            .map_err(|e| {
+                ApplyError::Api {
+                    endpoint: format!("/projects/{project_id}/releases"),
+                    status: e.status().map(|s| s.as_u16()),
+                    body: e.to_string(),
+                }
+            })?;
 
         if json_output {
             println!(
@@ -231,13 +140,37 @@ impl ApplyArgs {
             return Ok(());
         }
 
-        Self::print_release_success(&self.api_url, &project_id, &release);
+        Self::print_release_success(self.api_url.as_str(), &project_id, &release);
         Ok(())
     }
 
-    fn build_payload(credible: &CredibleToml, root: &Path) -> Result<ApplyPayload, ApplyError> {
+    // Build an authenticated generated API client
+    fn authenticated_client(&self, config: &CliConfig) -> Result<GeneratedClient, ApplyError> {
+        let auth = config.auth.as_ref().ok_or(ApplyError::NoAuthToken)?;
+        let mut base = self.api_url.clone();
+        base.set_path("/api/v1");
+        let base_url = base.to_string();
+
+        let mut headers = reqwest::header::HeaderMap::new();
+        let auth_value = format!("Bearer {}", auth.access_token);
+        let header_val = reqwest::header::HeaderValue::from_str(&auth_value)
+            .map_err(|e| ApplyError::InvalidConfig(format!("Invalid auth token: {e}")))?;
+        headers.insert(reqwest::header::AUTHORIZATION, header_val);
+
+        let http_client = reqwest::Client::builder()
+            .default_headers(headers)
+            .build()
+            .map_err(|e| ApplyError::InvalidConfig(format!("Failed to build HTTP client: {e}")))?;
+
+        Ok(GeneratedClient::new_with_client(&base_url, http_client))
+    }
+
+    fn build_payload(
+        credible: &CredibleToml,
+        root: &Path,
+    ) -> Result<PostProjectsProjectIdReleasesBody, ApplyError> {
         let mut built_assertions = HashMap::new();
-        let mut payload_contracts = BTreeMap::new();
+        let mut payload_contracts = HashMap::new();
 
         for (contract_key, contract) in &credible.contracts {
             let mut assertions = Vec::with_capacity(contract.assertions.len());
@@ -262,35 +195,21 @@ impl ApplyArgs {
                 })?;
 
                 let contract_name = assertion_contract_name(&assertion.file)?;
-                assertions.push(ApplyAssertionPayload {
-                    file: assertion.file.clone(),
-                    args: assertion.args.clone(),
-                    flattened_source: built.flattened_source.clone(),
-                    bytecode: built.bytecode.clone(),
-                    compiler_version: built.compiler_version.clone(),
-                    contract_name,
-                    evm_version: built.evm_version.clone(),
-                    optimizer_runs: built.optimizer_runs,
-                    optimizer_enabled: built.optimizer_enabled,
-                    metadata_bytecode_hash: built.metadata_bytecode_hash.to_string(),
-                    libraries: built.libraries.clone(),
-                });
+                assertions.push(build_assertion_item(assertion, built, &contract_name)?);
             }
 
-            payload_contracts.insert(
-                contract_key.clone(),
-                ApplyContractPayload {
-                    address: contract.address.clone(),
-                    name: Some(contract.name.clone()),
-                    assertions,
-                },
-            );
+            let contract_value = build_contract_value(contract, assertions)?;
+            payload_contracts.insert(contract_key.clone(), contract_value);
         }
 
-        Ok(ApplyPayload {
-            environment: credible.environment.clone(),
-            assertions_dir: "assertions".to_string(),
+        let environment = parse_field(&credible.environment, "environment")?;
+        let assertions_dir = parse_field("assertions", "assertions dir")?;
+
+        Ok(PostProjectsProjectIdReleasesBody {
+            environment,
+            assertions_dir,
             contracts: payload_contracts,
+            compiler_args: vec![],
         })
     }
 
@@ -302,50 +221,27 @@ impl ApplyArgs {
                     .to_string(),
             )
         })?;
-        let url = format!(
-            "{}/api/v1/projects?user={}",
-            self.api_url.trim_end_matches('/'),
-            user_id
-        );
-        let client = reqwest::Client::new();
-        let response = client
-            .get(&url)
-            .header("Authorization", format!("Bearer {}", auth.access_token))
-            .send()
+
+        let client = self.authenticated_client(config)?;
+        let projects: Vec<GetProjectsResponseItem> = client
+            .get_projects(None, Some(user_id), None)
             .await
-            .map_err(|source| {
-                ApplyError::Network {
-                    endpoint: url.clone(),
-                    source,
+            .map(dapp_api_client::generated::client::ResponseValue::into_inner)
+            .map_err(|e| {
+                ApplyError::Api {
+                    endpoint: "/projects".to_string(),
+                    status: e.status().map(|s| s.as_u16()),
+                    body: e.to_string(),
                 }
             })?;
 
-        if response.status().as_u16() == 401 {
-            return Err(ApplyError::NoAuthToken);
-        }
-        if !response.status().is_success() {
-            let status = response.status().as_u16();
-            let body = response.text().await.unwrap_or_default();
-            return Err(ApplyError::Api {
-                endpoint: url,
-                status,
-                body,
-            });
-        }
-
-        let projects: Vec<Project> = response.json().await.map_err(|source| {
-            ApplyError::Network {
-                endpoint: "project selection response".to_string(),
-                source,
-            }
-        })?;
         if projects.is_empty() {
             return Err(ApplyError::NoProjectsFound);
         }
 
         let options: Vec<String> = projects
             .iter()
-            .map(|project| format!("{} ({})", project.project_name, project.project_id))
+            .map(|project| format!("{} ({})", *project.project_name, project.project_id))
             .collect();
         let selected = Select::new("Select a project to apply to:", options)
             .prompt()
@@ -358,50 +254,11 @@ impl ApplyArgs {
             .ok_or_else(|| ApplyError::InvalidConfig("Selected project was not found".to_string()))
     }
 
-    async fn post_authenticated<T: Serialize, R: serde::de::DeserializeOwned>(
-        &self,
-        config: &CliConfig,
-        endpoint: &str,
-        body: &T,
-    ) -> Result<R, ApplyError> {
-        let auth = config.auth.as_ref().ok_or(ApplyError::NoAuthToken)?;
-        let client = reqwest::Client::new();
-        let response = client
-            .post(endpoint)
-            .header("Authorization", format!("Bearer {}", auth.access_token))
-            .header("Content-Type", "application/json")
-            .json(body)
-            .send()
-            .await
-            .map_err(|source| {
-                ApplyError::Network {
-                    endpoint: endpoint.to_string(),
-                    source,
-                }
-            })?;
-
-        if response.status().as_u16() == 401 {
-            return Err(ApplyError::NoAuthToken);
-        }
-        if !response.status().is_success() {
-            let status = response.status().as_u16();
-            let body = response.text().await.unwrap_or_default();
-            return Err(ApplyError::Api {
-                endpoint: endpoint.to_string(),
-                status,
-                body,
-            });
-        }
-
-        response.json().await.map_err(|source| {
-            ApplyError::Network {
-                endpoint: endpoint.to_string(),
-                source,
-            }
-        })
-    }
-
-    fn print_release_success(platform_url: &str, project_id: &Uuid, release: &ReleaseResponse) {
+    fn print_release_success(
+        platform_url: &str,
+        project_id: &Uuid,
+        release: &PostProjectsProjectIdReleasesResponse,
+    ) {
         let review_url = Url::parse(platform_url).map(|mut url| {
             url.set_path(&format!(
                 "/dashboard/projects/{project_id}/releases/{}",
@@ -424,6 +281,53 @@ impl ApplyArgs {
             )
         );
     }
+}
+
+/// Parse a string into a generated newtype, mapping the error to `ApplyError`.
+fn parse_field<T>(value: &str, field: &str) -> Result<T, ApplyError>
+where
+    T: std::str::FromStr,
+    T::Err: std::fmt::Display,
+{
+    value
+        .parse()
+        .map_err(|e| ApplyError::InvalidConfig(format!("Invalid {field}: {e}")))
+}
+
+fn build_assertion_item(
+    assertion: &crate::credible_config::CredibleAssertion,
+    built: &pcl_phoundry::build_and_flatten::BuildAndFlatOutput,
+    contract_name: &str,
+) -> Result<PostProjectsProjectIdReleasesBodyContractsValueAssertionsItem, ApplyError> {
+    Ok(
+        PostProjectsProjectIdReleasesBodyContractsValueAssertionsItem {
+            file: parse_field(&assertion.file, "assertion file")?,
+            args: assertion.args.clone(),
+            bytecode: parse_field(&built.bytecode, "bytecode")?,
+            flattened_source: parse_field(&built.flattened_source, "flattened source")?,
+            compiler_version: parse_field(&built.compiler_version, "compiler version")?,
+            contract_name: parse_field(contract_name, "contract name")?,
+            evm_version: parse_field(&built.evm_version, "evm version")?,
+            optimizer_runs: built.optimizer_runs,
+            optimizer_enabled: built.optimizer_enabled,
+            metadata_bytecode_hash: parse_field(
+                &built.metadata_bytecode_hash.to_string(),
+                "metadata bytecode hash",
+            )?,
+            libraries: built.libraries.clone(),
+        },
+    )
+}
+
+fn build_contract_value(
+    contract: &crate::credible_config::CredibleContract,
+    assertions: Vec<PostProjectsProjectIdReleasesBodyContractsValueAssertionsItem>,
+) -> Result<PostProjectsProjectIdReleasesBodyContractsValue, ApplyError> {
+    Ok(PostProjectsProjectIdReleasesBodyContractsValue {
+        address: parse_field(&contract.address, "contract address")?,
+        name: Some(parse_field(&contract.name, "contract name")?),
+        assertions,
+    })
 }
 
 fn canonicalize_root(root: &Path) -> Result<PathBuf, ApplyError> {

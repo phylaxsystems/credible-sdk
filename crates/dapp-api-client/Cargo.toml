@@ -18,11 +18,11 @@ serde_json = { workspace = true }
 
 # Error handling
 thiserror = { workspace = true }
-progenitor-client = "0.8"
+progenitor-client = "0.11.2"
 
 # Dependencies for generated code
 regress = "0.10"
-uuid = { version = "1.11", features = ["serde", "v4"] }
+uuid = { version = "1.23", features = ["serde", "v4"] }
 chrono = { workspace = true, features = ["serde"] }
 
 [features]
@@ -38,7 +38,7 @@ serde_json = { workspace = true }
 chrono = { workspace = true }
 anyhow = { workspace = true }
 openapiv3 = "2.2"
-progenitor = "0.8"
+progenitor = "0.11.2"
 
 [dev-dependencies]
 tokio = { workspace = true }

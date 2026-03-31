@@ -1,6 +1,5 @@
 use crate::credible_config::CredibleConfigError;
 use pcl_phoundry::error::PhoundryError;
-use reqwest::Error as ReqwestError;
 use thiserror::Error;
 
 /// Errors that can occur during declarative apply.
@@ -31,17 +30,10 @@ pub enum ApplyError {
     #[error("Build failed: {0}")]
     BuildFailed(#[source] Box<PhoundryError>),
 
-    #[error("Request to {endpoint} failed: {source}")]
-    Network {
-        endpoint: String,
-        #[source]
-        source: ReqwestError,
-    },
-
-    #[error("API request to {endpoint} failed with status {status}: {body}")]
+    #[error("API request to {endpoint} failed{}: {body}", status.map_or(String::new(), |s| format!(" with status {s}")))]
     Api {
         endpoint: String,
-        status: u16,
+        status: Option<u16>,
         body: String,
     },
 
@@ -112,29 +104,17 @@ pub enum ConfigError {
 /// Errors that can occur during authentication operations
 #[derive(Error, Debug)]
 pub enum AuthError {
-    /// Error when HTTP request to the auth service fails
+    /// Error when the auth code request fails
     #[error(
         "Authentication request failed. Please check your connection and try again.\nError: {0}"
     )]
-    AuthRequestFailed(#[source] reqwest::Error),
+    AuthRequestFailed(String),
 
-    /// Error when HTTP request to the auth service fails
-    #[error(
-        "Invalid authentication response. Please check your connection and try again.\nError: {0}"
-    )]
-    AuthRequestInvalidResponse(#[source] reqwest::Error),
-
-    /// Error when HTTP request to the auth service fails
+    /// Error when the auth status check fails
     #[error(
         "Authentication status request failed. Please check your connection and try again.\nError: {0}"
     )]
-    StatusRequestFailed(#[source] reqwest::Error),
-
-    /// Error when HTTP request to the auth service fails
-    #[error(
-        "Invalid authentication status response. Please check your connection and try again.\nError: {0}"
-    )]
-    StatusRequestInvalidResponse(#[source] reqwest::Error),
+    StatusRequestFailed(String),
 
     /// Error when authentication times out
     #[error(

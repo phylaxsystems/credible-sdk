@@ -30,8 +30,8 @@ async fn test_public_endpoint_without_auth() {
                 {
                     "project_id": "f22a0a2f-bde9-49b3-bd70-67599e1f178d",
                     "project_name": "Test Project",
-                    "project_networks": [1],
-                    "project_manager": "0x1234567890123456789012345678901234567890",
+                    "project_networks": ["1"],
+                    "project_manager": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
                     "created_at": "2025-01-01T00:00:00Z",
                     "updated_at": "2025-01-01T00:00:00Z",
                     "saved_count": 0
@@ -78,8 +78,8 @@ async fn test_public_endpoint_with_auth() {
                 {
                     "project_id": "f22a0a2f-bde9-49b3-bd70-67599e1f178d",
                     "project_name": "Test Project",
-                    "project_networks": [1],
-                    "project_manager": "0x1234567890123456789012345678901234567890",
+                    "project_networks": ["1"],
+                    "project_manager": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
                     "created_at": "2025-01-01T00:00:00Z",
                     "updated_at": "2025-01-01T00:00:00Z",
                     "saved_count": 0
@@ -110,12 +110,13 @@ async fn test_public_endpoint_with_auth() {
 async fn test_private_endpoint_without_auth() {
     let server = try_start_mock_server();
 
+    let test_uuid = uuid::Uuid::parse_str("c1e794ce-4030-487c-a4e6-917caeeb4875").unwrap();
+
     // Mock a private endpoint that requires auth (e.g., saved projects)
     let mock = server.mock(|when, then| {
-        when.method(GET).path("/api/v1/projects/saved").query_param(
-            "wallet_address",
-            "0x1234567890123456789012345678901234567890",
-        );
+        when.method(GET)
+            .path("/api/v1/projects/saved")
+            .query_param("wallet_address", "c1e794ce-4030-487c-a4e6-917caeeb4875");
         then.status(401)
             .header("content-type", "application/json")
             .json_body(json!({
@@ -130,9 +131,7 @@ async fn test_private_endpoint_without_auth() {
 
     // Call private endpoint without auth
     let api = client.inner();
-    let result = api
-        .get_projects_saved("0x1234567890123456789012345678901234567890")
-        .await;
+    let result = api.get_projects_saved(&test_uuid).await;
 
     // Should fail with 401
     assert!(result.is_err(), "Private endpoint should fail without auth");
@@ -153,14 +152,13 @@ async fn test_private_endpoint_without_auth() {
 async fn test_private_endpoint_with_auth() {
     let server = try_start_mock_server();
 
+    let test_uuid = uuid::Uuid::parse_str("c1e794ce-4030-487c-a4e6-917caeeb4875").unwrap();
+
     // Mock a private endpoint with valid auth
     let mock = server.mock(|when, then| {
         when.method(GET)
             .path("/api/v1/projects/saved")
-            .query_param(
-                "wallet_address",
-                "0x1234567890123456789012345678901234567890",
-            )
+            .query_param("wallet_address", "c1e794ce-4030-487c-a4e6-917caeeb4875")
             .header("authorization", "Bearer test-token");
         then.status(200)
             .header("content-type", "application/json")
@@ -168,8 +166,8 @@ async fn test_private_endpoint_with_auth() {
                 {
                     "project_id": "c1e794ce-4030-487c-a4e6-917caeeb4875",
                     "project_name": "Saved Project",
-                    "project_networks": [1],
-                    "project_manager": "0x1234567890123456789012345678901234567890",
+                    "project_networks": ["1"],
+                    "project_manager": "c1e794ce-4030-487c-a4e6-917caeeb4875",
                     "created_at": "2025-01-01T00:00:00Z",
                     "updated_at": "2025-01-01T00:00:00Z",
                     "saved_count": 1,
@@ -186,9 +184,7 @@ async fn test_private_endpoint_with_auth() {
 
     // Call private endpoint with auth
     let api = client.inner();
-    let result = api
-        .get_projects_saved("0x1234567890123456789012345678901234567890")
-        .await;
+    let result = api.get_projects_saved(&test_uuid).await;
 
     // Should succeed
     assert!(result.is_ok(), "Private endpoint should work with auth");
