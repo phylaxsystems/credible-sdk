@@ -39,6 +39,9 @@ const MAX_RETRIES: u32 = 150;
 /// The generated `GetCliAuthStatusResponse` untagged enum always deserializes as
 /// Variant0 because typify ignores `enum:[true/false]` constraints. We
 /// deserialize here then convert via `From<AuthStatusRaw>`.
+// TODO(typify): Revisit with a newer typify version — this workaround can be
+// removed once typify handles untagged enums with boolean discriminants.
+// Ref: https://github.com/oxidecomputer/typify/issues/498
 #[derive(Deserialize)]
 struct AuthStatusRaw {
     verified: bool,
