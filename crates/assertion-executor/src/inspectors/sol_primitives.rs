@@ -126,6 +126,34 @@ sol! {
 
         // Returns the original transaction object that triggered the assertion.
         function getTxObject() external view returns (TxObject memory txObject);
+
+        /// @notice Identifies which immutable transaction snapshot `loadStateAt` should read.
+        ///
+        /// This ABI-facing struct is generated into the Rust type aliased as `SolForkId` and is
+        /// decoded by the Reshiram `loadStateAt` precompile. The precompile resolves this tagged
+        /// selector into the executor's internal `ForkId` and uses it to read snapshot state
+        /// without switching the assertion's active execution context.
+        ///
+        /// `forkType` selects the snapshot family:
+        /// - `0`: `PreTx`, the state immediately before the triggering transaction executes
+        /// - `1`: `PostTx`, the state immediately after the triggering transaction executes
+        /// - `2`: `PreCall`, the state immediately before the traced call at `callIndex`
+        /// - `3`: `PostCall`, the state immediately after the traced call at `callIndex`
+        ///
+        /// `callIndex` is only used for `PreCall` and `PostCall` snapshots. It is ignored for
+        /// `PreTx` and `PostTx`.
+        struct ForkId {
+            uint8 forkType;
+            uint256 callIndex;
+        }
+
+        /// @notice Reads a storage slot from the assertion adopter at a specific fork.
+        function loadStateAt(bytes32 slot, ForkId fork)
+            external view returns (bytes32 data);
+
+        /// @notice Reads a storage slot from any account at a specific fork.
+        function loadStateAt(address target, bytes32 slot, ForkId fork)
+            external view returns (bytes32 data);
     }
 
     interface Console {

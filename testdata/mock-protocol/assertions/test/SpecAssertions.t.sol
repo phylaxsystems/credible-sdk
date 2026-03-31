@@ -57,7 +57,7 @@ contract TestSpecAssertions is CredibleTest, Test {
         adopter.setInvalidate(false);
     }
 
-    /// @notice Reshiram spec assertion can still use Legacy-tier precompiles
+    /// @notice Reshiram spec assertion using Legacy-tier precompiles should fail
     function test_reshiramSpec_legacyPrecompiles() public {
         cl.assertion({
             adopter: address(adopter),
