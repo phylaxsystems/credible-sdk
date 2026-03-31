@@ -22,7 +22,10 @@ use crate::{
         parse_geth_version,
     },
     system_calls::SystemCalls,
-    worker::StateWorker,
+    worker::{
+        StateWorker,
+        WorkerExit,
+    },
 };
 
 use futures_util::FutureExt;
@@ -82,7 +85,11 @@ async fn main() -> Result<()> {
         let result = AssertUnwindSafe(run_once(&args)).catch_unwind().await;
 
         match result {
-            Ok(Ok(())) => {
+            Ok(Ok(WorkerExit::CompletedRange)) => {
+                info!("state worker completed requested block range");
+                return Ok(());
+            }
+            Ok(Ok(WorkerExit::Shutdown)) => {
                 warn!("state worker exited; restarting");
             }
             Ok(Err(err)) => {
@@ -110,7 +117,7 @@ async fn main() -> Result<()> {
     }
 }
 
-async fn run_once(args: &Args) -> Result<()> {
+async fn run_once(args: &Args) -> Result<WorkerExit> {
     let provider = connect_provider(&args.ws_url).await?;
 
     // Validate Geth version for prestateTracer diffMode EIP-6780 correctness
@@ -177,10 +184,16 @@ async fn run_once(args: &Args) -> Result<()> {
         system_calls,
     );
 
-    match worker.run(args.start_block, shutdown_rx).await {
-        Ok(()) => {
-            info!("State worker shutdown gracefully");
-            Ok(())
+    match worker
+        .run(args.start_block, args.end_block, shutdown_rx)
+        .await
+    {
+        Ok(exit) => {
+            match exit {
+                WorkerExit::Shutdown => info!("State worker shutdown gracefully"),
+                WorkerExit::CompletedRange => info!("State worker reached configured ending block"),
+            }
+            Ok(exit)
         }
         Err(e) => Err(e).context("state worker terminated unexpectedly"),
     }

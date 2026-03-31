@@ -126,7 +126,7 @@ impl TestInstance {
         );
         let (shutdown_tx, _) = broadcast::channel(1);
         let handle_worker = tokio::spawn(async move {
-            if let Err(e) = worker.run(Some(0), shutdown_tx.subscribe()).await {
+            if let Err(e) = worker.run(Some(0), None, shutdown_tx.subscribe()).await {
                 error!("worker server error: {}", e);
             }
         });
