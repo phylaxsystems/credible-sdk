@@ -113,11 +113,9 @@ impl ApplyArgs {
         let preview = Value::Null;
 
         let client = self.authenticated_client(config)?;
-        let auth = config.auth.as_ref().ok_or(ApplyError::NoAuthToken)?;
-        let auth_header = format!("Bearer {}", auth.access_token);
 
         let release = client
-            .post_projects_project_id_releases(&project_id, Some(&auth_header), &payload)
+            .post_projects_project_id_releases(&project_id, None, &payload)
             .await
             .map(dapp_api_client::generated::client::ResponseValue::into_inner)
             .map_err(|e| {

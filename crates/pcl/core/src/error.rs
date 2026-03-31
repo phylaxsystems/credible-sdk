@@ -1,6 +1,5 @@
 use crate::credible_config::CredibleConfigError;
 use pcl_phoundry::error::PhoundryError;
-use reqwest::Error as ReqwestError;
 use thiserror::Error;
 
 /// Errors that can occur during declarative apply.
@@ -30,13 +29,6 @@ pub enum ApplyError {
 
     #[error("Build failed: {0}")]
     BuildFailed(#[source] Box<PhoundryError>),
-
-    #[error("Request to {endpoint} failed: {source}")]
-    Network {
-        endpoint: String,
-        #[source]
-        source: ReqwestError,
-    },
 
     #[error("API request to {endpoint} failed with status {status}: {body}")]
     Api {
