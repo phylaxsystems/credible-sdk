@@ -44,6 +44,7 @@ use dashmap::{
     mapref::entry::Entry,
 };
 use enum_as_inner::EnumAsInner;
+use eviction_tracker::EvictionTracker;
 use metrics::{
     counter,
     gauge,
@@ -51,15 +52,8 @@ use metrics::{
 use rapidhash::fast::RandomState;
 use std::{
     cell::UnsafeCell,
-    collections::{
-        HashMap,
-        VecDeque,
-    },
-    sync::{
-        Arc,
-        Mutex,
-        MutexGuard,
-    },
+    collections::HashMap,
+    sync::Arc,
     time::Duration,
 };
 use thiserror::Error;
@@ -67,6 +61,7 @@ use tokio::task::JoinHandle;
 use tracing::error;
 
 pub mod active_overlay;
+pub(crate) mod eviction_tracker;
 #[cfg(any(test, feature = "test"))]
 pub mod test_utils;
 
@@ -97,14 +92,6 @@ struct BlockDelta {
     keys: Vec<TableKey>,
 }
 
-#[derive(Debug, Default)]
-struct OverlayEvictionState {
-    current_block: Option<BlockNum>,
-    current_keys: Vec<TableKey>,
-    deltas: VecDeque<BlockDelta>,
-    max_committed_blocks: Option<usize>,
-}
-
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct OverlayEvictionOutcome {
     pub min_required_synced_block: Option<U256>,
@@ -128,8 +115,7 @@ pub enum OverlayEvictionError {
 pub struct OverlayDb<Db> {
     underlying_db: Option<Arc<Db>>,
     pub overlay: Arc<DashMap<TableKey, TableValue>>,
-    last_touched: Arc<DashMap<TableKey, BlockNum>>,
-    eviction_state: Arc<Mutex<OverlayEvictionState>>,
+    eviction: EvictionTracker,
 }
 
 impl<Db> Clone for OverlayDb<Db> {
@@ -137,19 +123,19 @@ impl<Db> Clone for OverlayDb<Db> {
         Self {
             underlying_db: self.underlying_db.clone(),
             overlay: self.overlay.clone(),
-            last_touched: self.last_touched.clone(),
-            eviction_state: self.eviction_state.clone(),
+            eviction: self.eviction.clone(),
         }
     }
 }
 
 impl<Db> Default for OverlayDb<Db> {
     fn default() -> Self {
+        let overlay = Arc::new(DashMap::new());
+        let last_touched = Arc::new(DashMap::new());
         Self {
             underlying_db: None,
-            overlay: Arc::new(DashMap::new()),
-            last_touched: Arc::new(DashMap::new()),
-            eviction_state: Arc::new(Mutex::new(OverlayEvictionState::default())),
+            eviction: EvictionTracker::new(overlay.clone(), last_touched),
+            overlay,
         }
     }
 }
@@ -158,11 +144,12 @@ impl<Db> OverlayDb<Db> {
     /// Creates a new `OverlayDB` with the max cache size in bytes.
     #[must_use]
     pub fn new(underlying_db: Option<Arc<Db>>) -> Self {
+        let overlay = Arc::new(DashMap::new());
+        let last_touched = Arc::new(DashMap::new());
         Self {
             underlying_db,
-            overlay: Arc::new(DashMap::new()),
-            last_touched: Arc::new(DashMap::new()),
-            eviction_state: Arc::new(Mutex::new(OverlayEvictionState::default())),
+            eviction: EvictionTracker::new(overlay.clone(), last_touched),
+            overlay,
         }
     }
 
@@ -170,11 +157,12 @@ impl<Db> OverlayDb<Db> {
     /// of elements inside of the cache instead of the size.
     #[must_use]
     pub fn new_with_len(underlying_db: Option<Arc<Db>>) -> Self {
+        let overlay = Arc::new(DashMap::new());
+        let last_touched = Arc::new(DashMap::new());
         Self {
             underlying_db,
-            overlay: Arc::new(DashMap::new()),
-            last_touched: Arc::new(DashMap::new()),
-            eviction_state: Arc::new(Mutex::new(OverlayEvictionState::default())),
+            eviction: EvictionTracker::new(overlay.clone(), last_touched),
+            overlay,
         }
     }
 
@@ -196,26 +184,12 @@ impl<Db> OverlayDb<Db> {
     /// Returns [`OverlayEvictionError::LockPoisoned`] if the eviction-state mutex is poisoned.
     pub fn try_invalidate_all(&self) -> Result<(), OverlayEvictionError> {
         self.overlay.clear();
-        self.last_touched.clear();
-        let mut eviction_state = self.lock_eviction_state()?;
-        let max_committed_blocks = eviction_state.max_committed_blocks;
-        *eviction_state = OverlayEvictionState {
-            max_committed_blocks,
-            ..OverlayEvictionState::default()
-        };
-        Ok(())
+        self.eviction.invalidate_all()
     }
 
     /// Sets the current block used for touch tracking.
     pub fn set_current_block(&self, block: U256) {
-        if let Err(error) = self.try_set_current_block(block) {
-            error!(
-                target = "overlay",
-                ?error,
-                %block,
-                "failed to set current block for overlay eviction tracking"
-            );
-        }
+        self.eviction.set_current_block(block);
     }
 
     /// Sets the current block used for touch tracking.
@@ -224,36 +198,12 @@ impl<Db> OverlayDb<Db> {
     ///
     /// Returns [`OverlayEvictionError::LockPoisoned`] if the eviction-state mutex is poisoned.
     pub fn try_set_current_block(&self, block: U256) -> Result<(), OverlayEvictionError> {
-        let block = block.saturating_to::<u64>();
-        let mut eviction_state = self.lock_eviction_state()?;
-        if eviction_state.current_block != Some(block)
-            && let Some(previous_block) = eviction_state.current_block
-        {
-            // If we switch blocks without an explicit commit for the previous one,
-            // carry over the touched set as a committed delta so entries remain evictable
-            // without destructively dropping valid cache data.
-            if !eviction_state.current_keys.is_empty() {
-                let previous_keys = std::mem::take(&mut eviction_state.current_keys);
-                eviction_state.deltas.push_back(BlockDelta {
-                    block: previous_block,
-                    keys: previous_keys,
-                });
-            }
-        }
-        eviction_state.current_block = Some(block);
-        Ok(())
+        self.eviction.try_set_current_block(block)
     }
 
     /// Sets the number of committed blocks to retain before evicting oldest entries.
     pub fn set_max_committed_blocks(&self, window: usize) {
-        if let Err(error) = self.try_set_max_committed_blocks(window) {
-            error!(
-                target = "overlay",
-                ?error,
-                window,
-                "failed to set max committed overlay blocks"
-            );
-        }
+        self.eviction.set_max_committed_blocks(window);
     }
 
     /// Sets the number of committed blocks to retain before evicting oldest entries.
@@ -262,26 +212,13 @@ impl<Db> OverlayDb<Db> {
     ///
     /// Returns [`OverlayEvictionError::LockPoisoned`] if the eviction-state mutex is poisoned.
     pub fn try_set_max_committed_blocks(&self, window: usize) -> Result<(), OverlayEvictionError> {
-        let mut eviction_state = self.lock_eviction_state()?;
-        eviction_state.max_committed_blocks = Some(window);
-        Ok(())
+        self.eviction.try_set_max_committed_blocks(window)
     }
 
     /// Commits the current block boundary and evicts old committed blocks in FIFO order.
     #[must_use]
     pub fn commit_block(&self, block: U256) -> OverlayEvictionOutcome {
-        match self.try_commit_block(block) {
-            Ok(outcome) => outcome,
-            Err(error) => {
-                error!(
-                    target = "overlay",
-                    ?error,
-                    %block,
-                    "failed to commit overlay block eviction boundary"
-                );
-                OverlayEvictionOutcome::default()
-            }
-        }
+        self.eviction.commit_block(block)
     }
 
     /// Commits the current block boundary and evicts old committed blocks in FIFO order.
@@ -293,57 +230,7 @@ impl<Db> OverlayDb<Db> {
         &self,
         block: U256,
     ) -> Result<OverlayEvictionOutcome, OverlayEvictionError> {
-        let block = block.saturating_to::<u64>();
-        let mut eviction_state = self.lock_eviction_state()?;
-        debug_assert!(
-            eviction_state.current_block.is_none() || eviction_state.current_block == Some(block),
-            "commit_block called for a different block than current touch-tracking block"
-        );
-
-        let committed_keys = if eviction_state.current_block == Some(block) {
-            let keys = std::mem::take(&mut eviction_state.current_keys);
-            eviction_state.current_block = None;
-            keys
-        } else {
-            Vec::new()
-        };
-
-        let Some(window) = eviction_state.max_committed_blocks else {
-            eviction_state.deltas.clear();
-            return Ok(OverlayEvictionOutcome::default());
-        };
-        eviction_state.deltas.push_back(BlockDelta {
-            block,
-            keys: committed_keys,
-        });
-
-        let mut latest_evicted_block = None;
-        while eviction_state.deltas.len() > window {
-            let Some(delta) = eviction_state.deltas.pop_front() else {
-                break;
-            };
-            let mut removed_at_least_one = false;
-            for key in delta.keys {
-                let should_remove = self
-                    .last_touched
-                    .get(&key)
-                    .is_some_and(|last_touched| *last_touched == delta.block);
-
-                if should_remove {
-                    self.overlay.remove(&key);
-                    self.last_touched.remove(&key);
-                    removed_at_least_one = true;
-                }
-            }
-
-            if removed_at_least_one {
-                latest_evicted_block = Some(delta.block);
-            }
-        }
-
-        Ok(OverlayEvictionOutcome {
-            min_required_synced_block: latest_evicted_block.map(U256::from),
-        })
+        self.eviction.try_commit_block(block)
     }
 
     /// Replaces underlying database refrance with a new one.
@@ -384,12 +271,7 @@ impl<Db> OverlayDb<Db> {
         &self,
         active_db: Arc<UnsafeCell<ActiveDbT>>,
     ) -> ActiveOverlay<ActiveDbT> {
-        ActiveOverlay::new_with_tracking(
-            active_db,
-            self.overlay.clone(),
-            self.last_touched.clone(),
-            self.eviction_state.clone(),
-        )
+        ActiveOverlay::new_with_tracking(active_db, self.overlay.clone(), self.eviction.clone())
     }
 
     /// Check if a value is present inside of the cache.
@@ -443,43 +325,11 @@ impl<Db> OverlayDb<Db> {
     }
 
     fn touch_key(&self, key: &TableKey) {
-        let mut eviction_state = match self.lock_eviction_state() {
-            Ok(state) => state,
-            Err(error) => {
-                error!(
-                    target = "overlay",
-                    ?error,
-                    ?key,
-                    "failed to lock overlay eviction state while touching key"
-                );
-                return;
-            }
-        };
-        let Some(current_block) = eviction_state.current_block else {
-            return;
-        };
-
-        if self
-            .last_touched
-            .get(key)
-            .is_none_or(|last_touched| *last_touched != current_block)
-        {
-            eviction_state.current_keys.push(key.clone());
-        }
-        self.last_touched.insert(key.clone(), current_block);
+        self.eviction.touch_key(key);
     }
 
     fn insert_with_touch(&self, key: &TableKey, value: TableValue) {
-        self.overlay.insert(key.clone(), value);
-        self.touch_key(key);
-    }
-
-    fn lock_eviction_state(
-        &self,
-    ) -> Result<MutexGuard<'_, OverlayEvictionState>, OverlayEvictionError> {
-        self.eviction_state
-            .lock()
-            .map_err(|_| OverlayEvictionError::LockPoisoned)
+        self.eviction.insert_with_touch(key, value);
     }
 }
 

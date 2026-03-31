@@ -5,13 +5,11 @@ use crate::{
         DatabaseRef,
         NotFoundError,
         overlay::{
-            BlockNum,
             ForkDb,
             ForkStorageMap,
-            OverlayEvictionError,
-            OverlayEvictionState,
             TableKey,
             TableValue,
+            eviction_tracker::EvictionTracker,
         },
     },
     primitives::{
@@ -32,15 +30,10 @@ use rapidhash::fast::RandomState;
 use std::{
     cell::UnsafeCell,
     collections::HashMap,
-    sync::{
-        Arc,
-        Mutex,
-        MutexGuard,
-    },
+    sync::Arc,
 };
 
 use metrics::counter;
-use tracing::error;
 
 #[derive(Debug)]
 /// An active overlay is a wrapper around the `overlaydb` meant to be used
@@ -55,8 +48,7 @@ use tracing::error;
 pub struct ActiveOverlay<Db> {
     active_db: Arc<UnsafeCell<Db>>,
     overlay: Arc<DashMap<TableKey, TableValue>>,
-    last_touched: Arc<DashMap<TableKey, BlockNum>>,
-    eviction_state: Arc<Mutex<OverlayEvictionState>>,
+    eviction: EvictionTracker,
 }
 
 unsafe impl<Db> Send for ActiveOverlay<Db> {}
@@ -67,8 +59,7 @@ impl<Db> Clone for ActiveOverlay<Db> {
         Self {
             active_db: self.active_db.clone(),
             overlay: self.overlay.clone(),
-            last_touched: self.last_touched.clone(),
-            eviction_state: self.eviction_state.clone(),
+            eviction: self.eviction.clone(),
         }
     }
 }
@@ -79,25 +70,23 @@ impl<Db> ActiveOverlay<Db> {
         active_db: Arc<UnsafeCell<Db>>,
         overlay: Arc<DashMap<TableKey, TableValue>>,
     ) -> Self {
+        let last_touched = Arc::new(DashMap::new());
         Self {
             active_db,
+            eviction: EvictionTracker::new(overlay.clone(), last_touched),
             overlay,
-            last_touched: Arc::new(DashMap::new()),
-            eviction_state: Arc::new(Mutex::new(OverlayEvictionState::default())),
         }
     }
 
     pub(super) fn new_with_tracking(
         active_db: Arc<UnsafeCell<Db>>,
         overlay: Arc<DashMap<TableKey, TableValue>>,
-        last_touched: Arc<DashMap<TableKey, BlockNum>>,
-        eviction_state: Arc<Mutex<OverlayEvictionState>>,
+        eviction: EvictionTracker,
     ) -> Self {
         Self {
             active_db,
             overlay,
-            last_touched,
-            eviction_state,
+            eviction,
         }
     }
 
@@ -114,43 +103,11 @@ impl<Db> ActiveOverlay<Db> {
     }
 
     fn touch_key(&self, key: &TableKey) {
-        let mut eviction_state = match self.lock_eviction_state() {
-            Ok(state) => state,
-            Err(error) => {
-                error!(
-                    target = "overlay",
-                    ?error,
-                    ?key,
-                    "failed to lock overlay eviction state while touching active key"
-                );
-                return;
-            }
-        };
-        let Some(current_block) = eviction_state.current_block else {
-            return;
-        };
-
-        if self
-            .last_touched
-            .get(key)
-            .is_none_or(|last_touched| *last_touched != current_block)
-        {
-            eviction_state.current_keys.push(key.clone());
-        }
-        self.last_touched.insert(key.clone(), current_block);
+        self.eviction.touch_key(key);
     }
 
     fn insert_with_touch(&self, key: &TableKey, value: TableValue) {
-        self.overlay.insert(key.clone(), value);
-        self.touch_key(key);
-    }
-
-    fn lock_eviction_state(
-        &self,
-    ) -> Result<MutexGuard<'_, OverlayEvictionState>, OverlayEvictionError> {
-        self.eviction_state
-            .lock()
-            .map_err(|_| OverlayEvictionError::LockPoisoned)
+        self.eviction.insert_with_touch(key, value);
     }
 }
 
