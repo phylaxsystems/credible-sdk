@@ -113,7 +113,10 @@ impl AssertionExecutor {
     /// Returns an error if transaction execution fails internally or if assertion
     /// execution fails after the transaction succeeds.
     #[instrument(level = "debug", skip_all, target = "executor::validate_tx")]
-    #[allow(clippy::needless_pass_by_value)]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "This public API preserves the existing ownership-taking signature for external callers"
+    )]
     pub fn validate_transaction_with_inspector<ExtDb, Active, I>(
         &mut self,
         block_env: BlockEnv,

@@ -94,7 +94,7 @@ use tracing::{
     warn,
 };
 
-/// Minimum number of items before rayon parallel execution is worthwhile.
+/// Minimum number of assertions before rayon parallel execution is worthwhile.
 /// Below this threshold, sequential execution avoids scheduling overhead.
 const PARALLEL_THRESHOLD: usize = 2;
 
@@ -349,8 +349,8 @@ impl AssertionExecutor {
         );
 
         if assertion_count < PARALLEL_THRESHOLD {
-            // Most txs hit zero or one assertion contract. Stay sequential in that regime so
-            // we do not spend more time scheduling rayon work than executing the assertion.
+            // Below the parallel threshold, sequential execution avoids rayon scheduling
+            // overhead that can exceed the assertion execution time itself.
             let mut results = Vec::with_capacity(assertion_count);
             for assertion_for_execution in assertions {
                 let phevm_context = PhEvmContext::new(
