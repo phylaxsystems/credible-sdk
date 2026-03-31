@@ -6,7 +6,15 @@ use crate::{
         assertion_contract_name,
     },
     error::ApplyError,
+    verify::{
+        VerificationSummary,
+        build_deployment_bytecode,
+        format_display_name,
+        print_verification_summary,
+        run_verification,
+    },
 };
+use alloy_primitives::Bytes;
 use clap::ValueHint;
 use dapp_api_client::generated::client::{
     Client as GeneratedClient,
@@ -86,6 +94,7 @@ pub struct ApplyArgs {
 struct ApplyJsonOutput {
     status: &'static str,
     project_id: Uuid,
+    verification: VerificationSummary,
     preview: Value,
     applied: bool,
     release: Option<PostProjectsProjectIdReleasesResponse>,
@@ -106,7 +115,8 @@ impl ApplyArgs {
             }
             None => self.select_project(config).await?,
         };
-        let payload = Self::build_payload(&credible, &root)?;
+        let (payload, verification_inputs) = Self::build_payload(&credible, &root)?;
+        let verification = Self::verify_all_assertions(&verification_inputs, json_output)?;
 
         // TODO(ENG-2129): Uncomment the preview request and the preview/no-op handling block
         // below once the preview endpoint and diff rendering flow are finalized in follow-up PRs.
@@ -132,6 +142,7 @@ impl ApplyArgs {
                 serde_json::to_string_pretty(&ApplyJsonOutput {
                     status: "success",
                     project_id,
+                    verification,
                     preview,
                     applied: true,
                     release: Some(release),
@@ -168,9 +179,10 @@ impl ApplyArgs {
     fn build_payload(
         credible: &CredibleToml,
         root: &Path,
-    ) -> Result<PostProjectsProjectIdReleasesBody, ApplyError> {
+    ) -> Result<(PostProjectsProjectIdReleasesBody, Vec<(String, Bytes)>), ApplyError> {
         let mut built_assertions = HashMap::new();
         let mut payload_contracts = HashMap::new();
+        let mut verification_inputs = Vec::new();
 
         for (contract_key, contract) in &credible.contracts {
             let mut assertions = Vec::with_capacity(contract.assertions.len());
@@ -195,6 +207,13 @@ impl ApplyArgs {
                 })?;
 
                 let contract_name = assertion_contract_name(&assertion.file)?;
+
+                let deployment_bytecode =
+                    build_deployment_bytecode(&built.bytecode, &built.abi, &assertion.args)
+                        .map_err(|e| ApplyError::InvalidConfig(e.to_string()))?;
+                let display_name = format_display_name(&contract_name, &assertion.args);
+                verification_inputs.push((display_name, deployment_bytecode));
+
                 assertions.push(build_assertion_item(assertion, built, &contract_name)?);
             }
 
@@ -205,12 +224,46 @@ impl ApplyArgs {
         let environment = parse_field(&credible.environment, "environment")?;
         let assertions_dir = parse_field("assertions", "assertions dir")?;
 
-        Ok(PostProjectsProjectIdReleasesBody {
-            environment,
-            assertions_dir,
-            contracts: payload_contracts,
-            compiler_args: vec![],
-        })
+        Ok((
+            PostProjectsProjectIdReleasesBody {
+                environment,
+                assertions_dir,
+                contracts: payload_contracts,
+                compiler_args: vec![],
+            },
+            verification_inputs,
+        ))
+    }
+
+    fn verify_all_assertions(
+        inputs: &[(String, Bytes)],
+        json_output: bool,
+    ) -> Result<VerificationSummary, ApplyError> {
+        let refs: Vec<(&str, Bytes)> = inputs
+            .iter()
+            .map(|(name, bytecode)| (name.as_str(), bytecode.clone()))
+            .collect();
+
+        let summary = run_verification(&refs);
+
+        if !json_output {
+            println!("pcl apply \u{2014} Verifying assertions...\n");
+            print_verification_summary(&summary);
+        }
+
+        if summary.failed > 0 {
+            if json_output {
+                println!("{}", serde_json::to_string_pretty(&summary)?);
+            }
+            return Err(ApplyError::VerificationFailed(format!(
+                "{} of {} assertion{} failed verification. Fix errors before applying.",
+                summary.failed,
+                summary.total,
+                if summary.total == 1 { "" } else { "s" }
+            )));
+        }
+
+        Ok(summary)
     }
 
     async fn select_project(&self, config: &CliConfig) -> Result<Uuid, ApplyError> {
