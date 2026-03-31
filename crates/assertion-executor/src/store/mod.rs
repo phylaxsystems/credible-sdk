@@ -19,6 +19,11 @@ pub use assertion_store::{
     PruneConfig,
 };
 
+// Benchmarks need to hold onto matched assertions between phases, and executor
+// internals also thread this type through their shared execution helpers.
+// Production callers should still prefer the store read API.
+pub use assertion_store::AssertionsForExecution;
+
 pub mod models;
 pub use models::AssertionState;
 

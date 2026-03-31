@@ -14,15 +14,6 @@ use assertion_executor::{
     ExecutorError,
     TxExecutionError,
     db::NotFoundError,
-    evm::build_evm::{
-        build_eth_evm,
-        evm_env,
-    },
-};
-use revm::{
-    ExecuteEvm,
-    inspector::NoOpInspector,
-    primitives::hardfork::SpecId,
 };
 use std::{
     collections::HashMap,
@@ -55,6 +46,7 @@ use assertion_executor::{
     store::{
         AssertionState,
         AssertionStore,
+        AssertionStoreError,
     },
     test_utils::{
         bytecode,
@@ -63,7 +55,19 @@ use assertion_executor::{
 };
 
 mod erc20;
+mod perf;
 mod uniswap_v3;
+// Re-export the perf helpers from the crate root so benches and the standalone
+// profiling driver can share the same presets and phase-isolated entrypoints.
+pub use perf::{
+    BenchmarkMode,
+    BenchmarkPhaseStats,
+    BenchmarkPreset,
+    PreparedAssertionPhasePackage,
+    PreparedStoreReadPackage,
+    SyntheticAssertionSetupCase,
+    synthetic_assertion_setup_case,
+};
 
 pub use erc20::{
     ERC20_AA_CONTRACT,
@@ -88,6 +92,7 @@ pub use uniswap_v3::{
 pub enum BenchmarkPackageError {
     EvmError(TxExecutionError<NotFoundError>),
     ExecutorError(ExecutorError<NotFoundError>),
+    AssertionReadError(AssertionStoreError),
     BenchmarkError,
 }
 
@@ -304,6 +309,10 @@ pub struct BenchmarkPackage<Db> {
     pub block_env: BlockEnv,
 }
 
+// Most perf helpers operate on the same in-memory benchmark fork stack, so keep a
+// concrete alias for the common case and the bench APIs stay readable.
+pub type BenchmarkDb = ForkDb<OverlayDb<InMemoryDB>>;
+
 /// `AverageAssertion` artifact path
 const AVERAGE_ASSERTION_ARTIFACT: &str = "AverageAssertion.sol:AverageAssertion";
 
@@ -336,7 +345,7 @@ fn insert_payable_receiver(evm_state: &mut EvmState) {
     );
 }
 
-impl BenchmarkPackage<ForkDb<OverlayDb<InMemoryDB>>> {
+impl BenchmarkPackage<BenchmarkDb> {
     /// Creates a new benchmark package with the given load definition.
     ///
     /// # Panics
@@ -446,27 +455,7 @@ impl BenchmarkPackage<ForkDb<OverlayDb<InMemoryDB>>> {
     /// Returns `BenchmarkPackageError::ExecutorError` if transaction/assertion execution fails,
     /// or `BenchmarkPackageError::BenchmarkError` if a transaction does not succeed.
     pub fn run(&mut self) -> Result<(), BenchmarkPackageError> {
-        use assertion_executor::primitives::ExecutionResult;
-        use revm::context_interface::result::SuccessReason;
-
-        for tx in self.bundle.clone() {
-            let result = self
-                .executor
-                .validate_transaction(self.block_env.clone(), &tx, &mut self.db, true)
-                .map_err(BenchmarkPackageError::ExecutorError)?;
-
-            match result.result_and_state.result {
-                ExecutionResult::Success {
-                    reason: SuccessReason::Stop | SuccessReason::Return,
-                    ..
-                } => {}
-                _ => return Err(BenchmarkPackageError::BenchmarkError),
-            }
-
-            // Note: validate_transaction with commit=true already commits the state
-        }
-
-        Ok(())
+        self.run_full_phase().map(|_| ())
     }
 
     /// Executes all transactions using vanilla revm without any assertion executor infrastructure.
@@ -477,34 +466,7 @@ impl BenchmarkPackage<ForkDb<OverlayDb<InMemoryDB>>> {
     ///
     /// Returns `BenchmarkPackageError::BenchmarkError` if a transaction does not succeed.
     pub fn run_vanilla(&mut self) -> Result<(), BenchmarkPackageError> {
-        use assertion_executor::primitives::ExecutionResult;
-        use revm::context_interface::result::SuccessReason;
-
-        let env = evm_env(
-            self.executor.config.chain_id,
-            SpecId::CANCUN,
-            self.block_env.clone(),
-        );
-
-        for tx in self.bundle.clone() {
-            let mut evm = build_eth_evm(&mut self.db, &env, NoOpInspector);
-
-            let result = evm
-                .transact(tx)
-                .map_err(|_| BenchmarkPackageError::BenchmarkError)?;
-
-            match result.result {
-                ExecutionResult::Success {
-                    reason: SuccessReason::Stop | SuccessReason::Return,
-                    ..
-                } => {}
-                _ => return Err(BenchmarkPackageError::BenchmarkError),
-            }
-
-            self.db.commit(result.state);
-        }
-
-        Ok(())
+        self.run_vanilla_phase().map(|_| ())
     }
 }
 

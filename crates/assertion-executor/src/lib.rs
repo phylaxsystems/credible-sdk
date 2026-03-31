@@ -14,6 +14,14 @@ pub use executor::{
     config::ExecutorConfig,
 };
 
+#[cfg(any(test, feature = "test"))]
+// Perf benches reuse the executor's internal tx/setup artifacts, but those types
+// should not be part of the production public API.
+pub use executor::{
+    BenchmarkAssertionSetupStats,
+    ExecuteForkedTxResult,
+};
+
 mod arena;
 
 pub mod constants;

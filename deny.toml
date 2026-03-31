@@ -96,6 +96,10 @@ ignore = [
     # astral-tokio-tar PAX extension validation — via testcontainers
     # TODO: remove once https://github.com/testcontainers/testcontainers-rs/pull/927 is released
     "RUSTSEC-2026-0066",
+    # https://rustsec.org/advisories/RUSTSEC-2026-0002.html, lru soundness issue
+    # This comes from ratatui 0.29 via phoundry's foundry-debugger stack, and is not
+    # patch-updatable within the current dependency constraints on this branch.
+    { id = "RUSTSEC-2026-0002", reason = "Pinned behind ratatui 0.29 in the current phoundry/foundry-debugger dependency graph" },
 ]
 # If this is true, then cargo deny will use the git executable to fetch advisory database.
 # If this is false, then it uses a built-in git library.

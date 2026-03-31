@@ -5,8 +5,10 @@ on:
     types: [opened, synchronize, reopened]
     paths:
       - ".github/workflows/benchmarks.yml"
+      - "Makefile"
       - "crates/sidecar/**"
       - "crates/assertion-executor/**"
+      - "crates/benchmark-utils/**"
   push:
     branches: [main]
   workflow_dispatch:
