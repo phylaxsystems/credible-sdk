@@ -549,4 +549,69 @@ mod tests {
             )
         );
     }
+
+    #[tokio::test]
+    async fn test_check_auth_status_verified_missing_required_fields_falls_back() {
+        let mut server = Server::new_async().await;
+
+        // Expect 2 hits: generated client sees Variant0{verified:true}, triggers raw fallback.
+        // Raw fallback also sees verified:true but missing required fields → Variant0.
+        let mock = server
+            .mock("GET", "/api/v1/cli/auth/status")
+            .match_query(mockito::Matcher::AllOf(vec![
+                mockito::Matcher::UrlEncoded(
+                    "session_id".into(),
+                    "550e8400-e29b-41d4-a716-446655440000".into(),
+                ),
+                mockito::Matcher::UrlEncoded("device_secret".into(), "test_secret".into()),
+            ]))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"verified":true}"#)
+            .expect(2)
+            .create();
+
+        let cmd = AuthCommand::try_parse_from(vec!["auth", "--auth-url", &server.url(), "login"])
+            .unwrap();
+        let client = cmd.api_client();
+        let auth_response: GetCliAuthCodeResponse =
+            serde_json::from_str(test_auth_response_json()).unwrap();
+
+        let result = AuthCommand::check_auth_status(&client, &auth_response).await;
+        assert!(result.is_ok());
+        assert!(matches!(
+            result.unwrap(),
+            GetCliAuthStatusResponse::Variant0 { verified: true }
+        ));
+        mock.assert();
+    }
+
+    #[tokio::test]
+    async fn test_check_auth_status_invalid_json() {
+        let mut server = Server::new_async().await;
+
+        let mock = server
+            .mock("GET", "/api/v1/cli/auth/status")
+            .match_query(mockito::Matcher::AllOf(vec![
+                mockito::Matcher::UrlEncoded(
+                    "session_id".into(),
+                    "550e8400-e29b-41d4-a716-446655440000".into(),
+                ),
+                mockito::Matcher::UrlEncoded("device_secret".into(), "test_secret".into()),
+            ]))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"not valid json"#)
+            .create();
+
+        let cmd = AuthCommand::try_parse_from(vec!["auth", "--auth-url", &server.url(), "login"])
+            .unwrap();
+        let client = cmd.api_client();
+        let auth_response: GetCliAuthCodeResponse =
+            serde_json::from_str(test_auth_response_json()).unwrap();
+
+        let result = AuthCommand::check_auth_status(&client, &auth_response).await;
+        assert!(result.is_err());
+        mock.assert();
+    }
 }

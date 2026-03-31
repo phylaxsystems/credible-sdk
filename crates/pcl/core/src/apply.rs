@@ -123,7 +123,7 @@ impl ApplyArgs {
             .map_err(|e| {
                 ApplyError::Api {
                     endpoint: format!("/projects/{project_id}/releases"),
-                    status: 0,
+                    status: e.status().map_or(0, |s| s.as_u16()),
                     body: e.to_string(),
                 }
             })?;
@@ -232,7 +232,7 @@ impl ApplyArgs {
             .map_err(|e| {
                 ApplyError::Api {
                     endpoint: "/projects".to_string(),
-                    status: 0,
+                    status: e.status().map_or(0, |s| s.as_u16()),
                     body: e.to_string(),
                 }
             })?;
@@ -448,3 +448,4 @@ mod tests {
         assert!(!preview_has_changes(&preview));
     }
 }
+
