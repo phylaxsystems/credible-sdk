@@ -92,6 +92,12 @@ pub enum StorageRefFromForkError<ExtDb: DatabaseRef> {
     Db(#[source] ExtDb::Error),
 }
 
+#[derive(Debug, Clone, Copy, thiserror::Error)]
+pub enum ForkDbFromForkError {
+    #[error("Requested fork {0:?} has not been materialized")]
+    TargetForkNotFound(ForkId),
+}
+
 impl<ExtDb: Clone + DatabaseCommit> MultiForkDb<ExtDb> {
     /// Creates a new `MultiForkDb`. Default to the post-tx state is expected.
     pub fn new(pre_tx_db: ExtDb, post_tx_journal: &JournalInner<JournalEntry>) -> Self {
@@ -314,6 +320,21 @@ impl<ExtDb: DatabaseRef> MultiForkDb<ExtDb> {
             .db
             .storage_ref(address, slot)
             .map_err(StorageRefFromForkError::Db)
+    }
+
+    /// Clone the backing DB for a materialized fork without switching the active fork.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the requested fork has not been materialized.
+    pub fn clone_fork_db(&self, fork_id: ForkId) -> Result<ExtDb, ForkDbFromForkError>
+    where
+        ExtDb: Clone,
+    {
+        self.forks
+            .get(&fork_id)
+            .map(|fork| fork.db.clone())
+            .ok_or(ForkDbFromForkError::TargetForkNotFound(fork_id))
     }
 
     fn create_fork(&mut self, journal: &JournalInner<JournalEntry>) -> InternalFork<ExtDb>

@@ -60,6 +60,14 @@ sol! {
 
         }
 
+        // Result of a nested static call executed by the Reshiram precompile.
+        struct StaticCallResult {
+            // Whether the nested call completed successfully.
+            bool ok;
+            // Raw return data on success, revert data on REVERT, empty on halting failures.
+            bytes data;
+        }
+
         //Forks to the state prior to the assertion triggering transaction.
         function forkPreTx() external;
 
@@ -154,6 +162,12 @@ sol! {
         /// @notice Reads a storage slot from any account at a specific fork.
         function loadStateAt(address target, bytes32 slot, ForkId fork)
             external view returns (bytes32 data);
+
+        /// @notice Executes a static call against an immutable transaction snapshot.
+        function staticcallAt(address target, bytes calldata data, uint64 gas_limit, ForkId fork)
+            external
+            view
+            returns (StaticCallResult memory result);
     }
 
     interface Console {

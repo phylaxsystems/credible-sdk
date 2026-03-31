@@ -1,6 +1,7 @@
 use crate::{
     constants::PRECOMPILE_ADDRESS,
     db::{
+        Database,
         DatabaseCommit,
         DatabaseRef,
         multi_fork_db::MultiForkDb,
@@ -37,6 +38,11 @@ use crate::{
                     LoadStateAtError,
                     load_state_at_default_target,
                     load_state_at_with_target,
+                },
+                staticcall_at::{
+                    NestedStaticCallRunner,
+                    StaticCallAtError,
+                    staticcall_at,
                 },
                 tx_object::load_tx_object,
             },
@@ -174,6 +180,8 @@ pub enum PrecompileError<ExtDb: DatabaseRef<Error: std::fmt::Debug>> {
     LoadExternalSlotError(#[source] LoadExternalSlotError<ExtDb>),
     #[error("Error loading state at fork: {0}")]
     LoadStateAtError(#[source] LoadStateAtError<ExtDb>),
+    #[error("Error executing staticcallAt: {0}")]
+    StaticCallAtError(#[source] StaticCallAtError<ExtDb>),
 }
 
 /// `PhEvmInspector` is an inspector for supporting the `PhEvm` precompiles.
@@ -194,7 +202,15 @@ impl<'a> PhEvmInspector<'a> {
     /// # Errors
     ///
     /// Returns an error if the precompile selector is unknown or a precompile execution fails.
-    pub fn execute_precompile<'db, ExtDb: DatabaseRef + Clone + DatabaseCommit + 'db, CTX>(
+    fn execute_precompile<
+        'db,
+        ExtDb: DatabaseRef
+            + Database<Error = <ExtDb as DatabaseRef>::Error>
+            + Clone
+            + DatabaseCommit
+            + 'db,
+        CTX,
+    >(
         &mut self,
         context: &mut CTX,
         inputs: &mut CallInputs,
@@ -203,7 +219,7 @@ impl<'a> PhEvmInspector<'a> {
         CTX: ContextTr<
                 Db = &'db mut MultiForkDb<ExtDb>,
                 Journal = Journal<&'db mut MultiForkDb<ExtDb>>,
-            >,
+            > + NestedStaticCallRunner<ExtDb>,
     {
         let input_bytes = inputs.input.bytes(context);
         let selector: [u8; 4] = input_bytes
@@ -251,7 +267,11 @@ impl<'a> PhEvmInspector<'a> {
         input_bytes: &Bytes,
     ) -> Result<Option<PhevmOutcome>, PrecompileError<ExtDb>>
     where
-        ExtDb: DatabaseRef + Clone + DatabaseCommit + 'db,
+        ExtDb: DatabaseRef
+            + Database<Error = <ExtDb as DatabaseRef>::Error>
+            + Clone
+            + DatabaseCommit
+            + 'db,
         CTX: ContextTr<
                 Db = &'db mut MultiForkDb<ExtDb>,
                 Journal = Journal<&'db mut MultiForkDb<ExtDb>>,
@@ -306,7 +326,11 @@ impl<'a> PhEvmInspector<'a> {
         input_bytes: &Bytes,
     ) -> Result<Option<PhevmOutcome>, PrecompileError<ExtDb>>
     where
-        ExtDb: DatabaseRef + Clone + DatabaseCommit + 'db,
+        ExtDb: DatabaseRef
+            + Database<Error = <ExtDb as DatabaseRef>::Error>
+            + Clone
+            + DatabaseCommit
+            + 'db,
         CTX: ContextTr<
                 Db = &'db mut MultiForkDb<ExtDb>,
                 Journal = Journal<&'db mut MultiForkDb<ExtDb>>,
@@ -376,11 +400,15 @@ impl<'a> PhEvmInspector<'a> {
         input_bytes: &Bytes,
     ) -> Result<Option<PhevmOutcome>, PrecompileError<ExtDb>>
     where
-        ExtDb: DatabaseRef + Clone + DatabaseCommit + 'db,
+        ExtDb: DatabaseRef
+            + Database<Error = <ExtDb as DatabaseRef>::Error>
+            + Clone
+            + DatabaseCommit
+            + 'db,
         CTX: ContextTr<
                 Db = &'db mut MultiForkDb<ExtDb>,
                 Journal = Journal<&'db mut MultiForkDb<ExtDb>>,
-            >,
+            > + NestedStaticCallRunner<ExtDb>,
     {
         let outcome = match selector {
             PhEvm::loadCall::SELECTOR => {
@@ -419,6 +447,18 @@ impl<'a> PhEvmInspector<'a> {
                 ) {
                     Ok(rax) | Err(LoadStateAtError::OutOfGas(rax)) => rax,
                     Err(err) => return Err(PrecompileError::LoadStateAtError(err)),
+                }
+            }
+            PhEvm::staticcallAtCall::SELECTOR => {
+                match staticcall_at(
+                    context,
+                    &self.context,
+                    self.context.logs_and_traces.call_traces,
+                    input_bytes,
+                    inputs.gas_limit,
+                ) {
+                    Ok(rax) | Err(StaticCallAtError::OutOfGas(rax)) => rax,
+                    Err(err) => return Err(PrecompileError::StaticCallAtError(err)),
                 }
             }
             console::logCall::SELECTOR => {
@@ -484,7 +524,12 @@ impl<'a> PhEvmInspector<'a> {
 macro_rules! impl_phevm_inspector {
     ($($context_type:ty),* $(,)?) => {
         $(
-            impl<ExtDb: DatabaseRef + Clone + DatabaseCommit> Inspector<$context_type> for PhEvmInspector<'_> {
+            impl<
+                ExtDb: DatabaseRef
+                    + Database<Error = <ExtDb as DatabaseRef>::Error>
+                    + Clone
+                    + DatabaseCommit,
+            > Inspector<$context_type> for PhEvmInspector<'_> {
                 fn call(&mut self, context: &mut $context_type, inputs: &mut CallInputs) -> Option<CallOutcome> {
                     if inputs.target_address == PRECOMPILE_ADDRESS {
                         let call_outcome = inspector_result_to_call_outcome(
