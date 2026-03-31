@@ -448,4 +448,3 @@ mod tests {
         assert!(!preview_has_changes(&preview));
     }
 }
-

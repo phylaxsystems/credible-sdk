@@ -601,7 +601,7 @@ mod tests {
             ]))
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(r#"not valid json"#)
+            .with_body(r"not valid json")
             .create();
 
         let cmd = AuthCommand::try_parse_from(vec!["auth", "--auth-url", &server.url(), "login"])
