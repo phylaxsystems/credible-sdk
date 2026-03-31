@@ -30,10 +30,10 @@ pub enum ApplyError {
     #[error("Build failed: {0}")]
     BuildFailed(#[source] Box<PhoundryError>),
 
-    #[error("API request to {endpoint} failed with status {status}: {body}")]
+    #[error("API request to {endpoint} failed{}: {body}", status.map_or(String::new(), |s| format!(" with status {s}")))]
     Api {
         endpoint: String,
-        status: u16,
+        status: Option<u16>,
         body: String,
     },
 
