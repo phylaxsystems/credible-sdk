@@ -1,5 +1,4 @@
 #![feature(unsafe_cell_access)]
-#![feature(test)]
 #![feature(allocator_api)]
 mod error;
 pub use error::{

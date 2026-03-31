@@ -119,6 +119,10 @@ pub enum AuthError {
     )]
     StatusRequestFailed(String),
 
+    /// Error when the auth session is no longer valid
+    #[error("Invalid session: {0}. Please run `pcl auth login` again.")]
+    InvalidSession(String),
+
     /// Error when authentication times out
     #[error(
         "Authentication timed out after {0} attempts. Please try again and approve the wallet connection promptly."
