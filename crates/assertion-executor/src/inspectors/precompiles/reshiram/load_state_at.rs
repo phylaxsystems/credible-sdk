@@ -119,6 +119,28 @@ where
     Ok(())
 }
 
+/// Reads `slot` from `target` at the immutable transaction snapshot identified by `fork_id`.
+///
+/// This is the shared implementation behind both `loadStateAt` overloads. Callers are expected to
+/// decode the ABI input first, resolve the user-facing `SolForkId` into the internal [`ForkId`],
+/// and then delegate here with the final `target`.
+///
+/// Unlike the legacy fork precompiles, this helper never switches the active assertion execution
+/// context. It lazily materializes the requested snapshot in [`MultiForkDb`] when needed, prices
+/// that creation using the same byte-based estimate as legacy fork creation, and then performs a
+/// read-only storage lookup against the snapshot fork's backing database. Any journaled writes made
+/// by the currently running assertion stay local to the active execution context and are not
+/// surfaced through this read path.
+///
+/// Gas accounting is:
+/// - `BASE_COST` for selector dispatch
+/// - snapshot creation cost when the requested fork has not been materialized yet
+/// - `COLD_SLOAD_COST` for the storage read itself
+///
+/// # Errors
+///
+/// Returns an error if the requested snapshot cannot be materialized, the storage read fails, or
+/// gas is insufficient.
 fn load_state_at<'db, ExtDb, CTX>(
     context: &mut CTX,
     target: Address,
