@@ -11771,7 +11771,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-test",
- "uuid 0.8.2",
+ "uuid 1.23.0",
 ]
 
 [[package]]

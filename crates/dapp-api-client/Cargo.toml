@@ -22,7 +22,7 @@ progenitor-client = "0.11.2"
 
 # Dependencies for generated code
 regress = "0.10"
-uuid = { version = "1.23", features = ["serde", "v4"] }
+uuid.workspace = true
 chrono = { workspace = true, features = ["serde"] }
 
 [features]
