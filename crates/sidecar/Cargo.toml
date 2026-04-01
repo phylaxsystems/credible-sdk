@@ -20,6 +20,7 @@ mdbx = { workspace = true, features = ["reader"] }
 int-test-utils = { workspace = true, optional = true }
 
 clap = { workspace = true }
+figment = { version = "0.10", features = ["json", "env"] }
 dashmap = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
