@@ -1,3 +1,10 @@
+//! Flow-control primitive between the core engine and the state worker.
+//!
+//! The engine grants flush permission via [`FlushControl::allow_flush_to`] and
+//! the worker persists up to that block, recording progress with
+//! [`FlushControl::record_committed_block`]. Both counters are monotonic
+//! (`fetch_max`) so concurrent or out-of-order calls are safe.
+
 use std::sync::{
     Arc,
     atomic::{
@@ -7,6 +14,9 @@ use std::sync::{
 };
 use tokio::sync::Notify;
 
+/// Lock-free coordination between the engine (writer of permissions) and
+/// the state worker (writer of committed blocks). Both sides share an
+/// `Arc<FlushControl>` and communicate through atomics + a [`Notify`].
 #[derive(Debug)]
 pub struct FlushControl {
     permitted_flush_block: AtomicU64,
@@ -24,23 +34,27 @@ impl FlushControl {
         })
     }
 
+    /// Grant the state worker permission to persist up to `block_number` (inclusive).
     pub fn allow_flush_to(&self, block_number: u64) {
         self.permitted_flush_block
             .fetch_max(Self::encode(block_number), Ordering::AcqRel);
         self.notify.notify_one();
     }
 
+    /// Highest block the worker is allowed to flush, or `None` if never set.
     #[must_use]
     pub fn permitted_flush_block(&self) -> Option<u64> {
         Self::decode(self.permitted_flush_block.load(Ordering::Acquire))
     }
 
+    /// Record that `block_number` has been persisted to MDBX.
     pub fn record_committed_block(&self, block_number: u64) {
         self.committed_block
             .fetch_max(Self::encode(block_number), Ordering::AcqRel);
         self.notify.notify_one();
     }
 
+    /// Highest block confirmed persisted, or `None` if nothing committed yet.
     #[must_use]
     pub fn committed_block(&self) -> Option<u64> {
         Self::decode(self.committed_block.load(Ordering::Acquire))
