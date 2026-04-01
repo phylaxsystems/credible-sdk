@@ -31,10 +31,14 @@ COPY scripts ./scripts
 COPY Cargo.* .
 RUN cargo build --release --locked --bin sidecar $BUILD_FLAGS
 
-FROM ubuntu:24.04
-WORKDIR /usr/local/bin
+FROM debian:trixie-slim
 
-RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN groupadd -g 1000 appuser && useradd -u 1000 -g 1000 -r -s /sbin/nologin appuser
+RUN mkdir -p /data /store && chown 1000:1000 /data /store
 COPY --from=builder /sidecar/target/release/sidecar /usr/local/bin/sidecar
+
+WORKDIR /app
+USER 1000:1000
 
 ENTRYPOINT ["/usr/local/bin/sidecar"]
