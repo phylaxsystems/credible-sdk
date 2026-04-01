@@ -10,23 +10,15 @@ use dirs::home_dir;
 use pcl_common::args::CliArgs;
 use serde::{
     Deserialize,
-    Deserializer,
     Serialize,
-    Serializer,
-    de::{
-        self,
-        Visitor,
-    },
 };
 
 use std::{
-    collections::HashMap,
     fmt,
     path::{
         Path,
         PathBuf,
     },
-    str::FromStr,
 };
 use uuid::Uuid;
 
@@ -40,178 +32,11 @@ pub const CONFIG_FILE: &str = "config.toml";
 /// Main configuration structure for PCL
 ///
 /// This struct holds all the configuration data for the PCL tool,
-/// including authentication details and pending assertions.
+/// including authentication details.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct CliConfig {
     /// Optional authentication details
     pub auth: Option<UserAuth>,
-    /// Map of assertions pending submission, keyed by contract name
-    pub assertions_for_submission: HashMap<AssertionKey, AssertionForSubmission>,
-}
-
-/// Key structure for assertions, used in the configuration map for storing assertions
-#[derive(Clone, Debug, Default, Hash, Eq, PartialEq)]
-pub struct AssertionKey {
-    pub assertion_name: String,
-    pub constructor_args: Vec<String>,
-}
-impl AssertionKey {
-    /// Create a new assertion key
-    ///
-    /// # Arguments
-    /// * `assertion_name` - The name of the assertion
-    /// * `constructor_args` - The constructor arguments for the assertion
-    pub fn new(assertion_name: String, constructor_args: Vec<String>) -> Self {
-        Self {
-            assertion_name,
-            constructor_args,
-        }
-    }
-}
-
-impl fmt::Display for AssertionKey {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.assertion_name)?;
-
-        if !self.constructor_args.is_empty() {
-            write!(f, "(")?;
-            write!(f, "{}", self.constructor_args.join(","))?;
-            write!(f, ")")?;
-        }
-
-        Ok(())
-    }
-}
-
-impl From<String> for AssertionKey {
-    fn from(assertion_key: String) -> Self {
-        let trimmed = assertion_key.trim();
-
-        if !trimmed.contains('(') {
-            return Self {
-                assertion_name: trimmed.to_string(),
-                constructor_args: vec![],
-            };
-        }
-
-        let (assertion_name, args_with_paren) =
-            trimmed.split_once('(').expect("Invalid assertion key");
-
-        let cleaned_name = assertion_name.trim().to_string();
-        let args = args_with_paren.trim();
-        let args = args.trim_end_matches(')');
-        let args = args.trim();
-
-        if args.trim().is_empty() {
-            return Self {
-                assertion_name: cleaned_name,
-                constructor_args: vec![],
-            };
-        }
-
-        let constructor_args = split_args_respecting_brackets(args);
-
-        Self {
-            assertion_name: cleaned_name,
-            constructor_args,
-        }
-    }
-}
-
-/// Splits a string by commas, but respects square brackets `[]` so that
-/// commas inside arrays are not treated as separators.
-///
-/// # Arguments
-/// * `input` - The string to split (e.g., "arg1,[addr1,addr2],arg3")
-///
-/// # Returns
-/// A vector of trimmed argument strings
-fn split_args_respecting_brackets(input: &str) -> Vec<String> {
-    let mut args = Vec::new();
-    let mut current = String::new();
-    let mut bracket_depth: i32 = 0;
-
-    for ch in input.chars() {
-        match ch {
-            '[' => {
-                bracket_depth += 1;
-                current.push(ch);
-            }
-            ']' => {
-                if bracket_depth > 0 {
-                    bracket_depth -= 1;
-                }
-                current.push(ch);
-            }
-            ',' if bracket_depth == 0 => {
-                args.push(current.trim().to_string());
-                current.clear();
-            }
-            _ => current.push(ch),
-        }
-    }
-
-    // Always push the remaining content (handles trailing commas producing empty args)
-    args.push(current.trim().to_string());
-
-    args
-}
-impl FromStr for AssertionKey {
-    type Err = String;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(AssertionKey::from(s.to_string()))
-    }
-}
-impl From<&str> for AssertionKey {
-    fn from(s: &str) -> Self {
-        AssertionKey::from(s.to_string())
-    }
-}
-// Custom Serialize implementation
-impl Serialize for AssertionKey {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        // Convert AssertionKey to string using Display implementation
-        let s = self.to_string();
-        serializer.serialize_str(&s)
-    }
-}
-
-// Custom Deserialize implementation
-impl<'de> Deserialize<'de> for AssertionKey {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        // Use a visitor to deserialize the string
-        struct AssertionKeyVisitor;
-
-        impl Visitor<'_> for AssertionKeyVisitor {
-            type Value = AssertionKey;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-                formatter.write_str("a string in format 'name' or 'name(arg1,arg2,...)'")
-            }
-
-            fn visit_str<E>(self, value: &str) -> Result<AssertionKey, E>
-            where
-                E: de::Error,
-            {
-                Ok(AssertionKey::from(value.to_string()))
-            }
-
-            fn visit_string<E>(self, value: String) -> Result<AssertionKey, E>
-            where
-                E: de::Error,
-            {
-                Ok(AssertionKey::from(value))
-            }
-        }
-
-        deserializer.deserialize_string(AssertionKeyVisitor)
-    }
 }
 
 /// Command-line arguments for configuration management
@@ -472,22 +297,6 @@ impl CliConfig {
                 .unwrap_or(Self::get_config_dir()),
         )
     }
-
-    /// Adds an assertion to the pending submissions
-    ///
-    /// # Arguments
-    /// * `assertion_for_submission` - The assertion to add
-    pub fn add_assertion_for_submission(
-        &mut self,
-        assertion_for_submission: AssertionForSubmission,
-    ) {
-        let assertion_key = AssertionKey {
-            assertion_name: assertion_for_submission.assertion_contract.clone(),
-            constructor_args: assertion_for_submission.constructor_args.clone(),
-        };
-        self.assertions_for_submission
-            .insert(assertion_key, assertion_for_submission);
-    }
 }
 
 impl fmt::Display for CliConfig {
@@ -503,16 +312,6 @@ impl fmt::Display for CliConfig {
             None => writeln!(f, "Authentication: Not authenticated")?,
         }
 
-        if self.assertions_for_submission.is_empty() {
-            writeln!(f, "\nNo pending assertions for submission")?;
-        } else {
-            writeln!(f, "\nPending Assertions for Submission")?;
-            writeln!(f, "--------------------------------")?;
-            for (i, assertion) in self.assertions_for_submission.values().enumerate() {
-                writeln!(f, "Assertion #{}:\n{}", i + 1, assertion)?;
-            }
-        }
-
         Ok(())
     }
 }
@@ -524,14 +323,15 @@ pub struct UserAuth {
     pub access_token: String,
     /// Refresh token for obtaining new access tokens
     pub refresh_token: String,
-    /// Ethereum address of the user, there is no address for email-only auth
-    pub user_address: Address,
     /// Token expiration timestamp
     #[serde(with = "chrono::serde::ts_seconds")]
     pub expires_at: DateTime<Utc>,
     /// Platform user ID (UUID), used for API calls that require it
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_id: Option<Uuid>,
+    /// Ethereum address of the user (only present for wallet-based auth)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wallet_address: Option<Address>,
     /// Email address of the user (for email-based auth)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
@@ -540,8 +340,10 @@ pub struct UserAuth {
 impl UserAuth {
     /// Returns the best available display name for this user.
     pub fn display_name(&self) -> String {
-        if self.user_address != Address::ZERO {
-            return self.user_address.to_string();
+        if let Some(addr) = &self.wallet_address
+            && *addr != Address::ZERO
+        {
+            return addr.to_string();
         }
         if let Some(email) = &self.email {
             return email.clone();
@@ -570,32 +372,6 @@ impl fmt::Display for UserAuth {
         writeln!(f, "  Access Token: [Set]")?;
         writeln!(f, "  Refresh Token: [Set]")?;
         Ok(())
-    }
-}
-
-/// An assertion that is pending submission to the DA layer
-#[derive(Debug, Default, Serialize, Deserialize, Hash, Eq, PartialEq, Clone)]
-pub struct AssertionForSubmission {
-    /// Name of the assertion contract
-    pub assertion_contract: String,
-    /// Unique identifier for the assertion
-    pub assertion_id: String,
-    /// Cryptographic signature of the assertion
-    pub signature: String,
-    /// Constructor arguments for the assertion
-    pub constructor_args: Vec<String>,
-}
-
-impl fmt::Display for AssertionForSubmission {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "Contract: {}", self.assertion_contract)?;
-        writeln!(f, "  ID: {}", self.assertion_id)?;
-        writeln!(f, "  Constructor Args: {}", self.constructor_args.join(","))?;
-        write!(
-            f,
-            "  DA Signature: {}...",
-            &self.signature.chars().take(10).collect::<String>()
-        )
     }
 }
 
@@ -650,22 +426,11 @@ mod tests {
             auth: Some(UserAuth {
                 access_token: "test_access".to_string(),
                 refresh_token: "test_refresh".to_string(),
-                user_address: Address::from_slice(&[0; 20]),
                 expires_at: fixed_timestamp,
                 user_id: None,
+                wallet_address: None,
                 email: None,
             }),
-            assertions_for_submission: vec![(
-                "contract1".into(),
-                AssertionForSubmission {
-                    assertion_contract: "contract1".to_string(),
-                    assertion_id: "id1".to_string(),
-                    signature: "sig1".to_string(),
-                    constructor_args: vec!["arg1".to_string(), "arg2".to_string()],
-                },
-            )]
-            .into_iter()
-            .collect(),
         };
 
         // Test writing
@@ -681,19 +446,7 @@ mod tests {
             read_config.auth.as_ref().unwrap().refresh_token,
             "test_refresh"
         );
-        assert_eq!(
-            read_config.auth.as_ref().unwrap().user_address,
-            Address::from_slice(&[0; 20])
-        );
-        assert_eq!(read_config.assertions_for_submission.len(), 1);
-        assert_eq!(
-            read_config
-                .assertions_for_submission
-                .get(&("contract1".to_string().into()))
-                .unwrap()
-                .assertion_contract,
-            "contract1"
-        );
+        assert!(read_config.auth.as_ref().unwrap().wallet_address.is_none());
 
         // Test display format - check for key content rather than exact match due to color codes
         let formatted_cfg = format!("{read_config}");
@@ -706,11 +459,6 @@ mod tests {
         assert!(formatted_cfg.contains("2022-12-31 16:00:00 UTC"));
         assert!(formatted_cfg.contains("Access Token: [Set]"));
         assert!(formatted_cfg.contains("Refresh Token: [Set]"));
-        assert!(formatted_cfg.contains("Pending Assertions for Submission"));
-        assert!(formatted_cfg.contains("Contract: contract1"));
-        assert!(formatted_cfg.contains("ID: id1"));
-        assert!(formatted_cfg.contains("Constructor Args: arg1,arg2"));
-        assert!(formatted_cfg.contains("DA Signature: sig1..."));
     }
 
     #[test]
@@ -720,28 +468,6 @@ mod tests {
         // Try reading without creating a file
         let config = CliConfig::read_from_file_at_dir(&config_dir).unwrap();
         assert!(config.auth.is_none());
-        assert!(config.assertions_for_submission.is_empty());
-    }
-
-    #[test]
-    fn test_add_assertion_for_submission() {
-        let mut config = CliConfig::default();
-        let assertion = AssertionForSubmission {
-            assertion_contract: "test_contract".to_string(),
-            assertion_id: "test_id".to_string(),
-            signature: "test_signature".to_string(),
-            constructor_args: vec!["arg1".to_string(), "arg2".to_string()],
-        };
-
-        config.add_assertion_for_submission(assertion.clone());
-        assert_eq!(config.assertions_for_submission.len(), 1);
-        assert_eq!(
-            config
-                .assertions_for_submission
-                .get(&("test_contract(arg1,arg2)".to_string().into()))
-                .unwrap(),
-            &assertion
-        );
     }
 
     #[test]
@@ -749,9 +475,9 @@ mod tests {
         let auth = UserAuth {
             access_token: "test_access".to_string(),
             refresh_token: "test_refresh".to_string(),
-            user_address: Address::from_slice(&[0; 20]),
             expires_at: DateTime::from_timestamp(1672502400, 0).unwrap(), // 2022-12-31 16:00:00 UTC
             user_id: None,
+            wallet_address: None,
             email: Some("test@example.com".to_string()),
         };
 
@@ -766,12 +492,12 @@ mod tests {
     fn test_display_name_priority() {
         let expires = DateTime::from_timestamp(0, 0).unwrap();
 
-        // Non-zero address takes priority over everything
+        // Non-zero wallet address takes priority over everything
         let with_addr = UserAuth {
             access_token: String::new(),
             refresh_token: String::new(),
-            user_address: Address::from_slice(&[1; 20]),
             expires_at: expires,
+            wallet_address: Some(Address::from_slice(&[1; 20])),
             email: Some("test@example.com".to_string()),
             user_id: Some(Uuid::nil()),
         };
@@ -780,12 +506,12 @@ mod tests {
             "0x0101010101010101010101010101010101010101"
         );
 
-        // Email is next priority when address is zero
+        // Email is next priority when no wallet address
         let with_email = UserAuth {
             access_token: String::new(),
             refresh_token: String::new(),
-            user_address: Address::ZERO,
             expires_at: expires,
+            wallet_address: None,
             email: Some("test@example.com".to_string()),
             user_id: Some(Uuid::nil()),
         };
@@ -795,8 +521,8 @@ mod tests {
         let with_id = UserAuth {
             access_token: String::new(),
             refresh_token: String::new(),
-            user_address: Address::ZERO,
             expires_at: expires,
+            wallet_address: None,
             email: None,
             user_id: Some(Uuid::nil()),
         };
@@ -809,27 +535,12 @@ mod tests {
         let bare = UserAuth {
             access_token: String::new(),
             refresh_token: String::new(),
-            user_address: Address::ZERO,
             expires_at: expires,
+            wallet_address: None,
             email: None,
             user_id: None,
         };
         assert_eq!(bare.display_name(), "unknown");
-    }
-
-    #[test]
-    fn test_assertion_for_submission_display() {
-        let assertion = AssertionForSubmission {
-            assertion_contract: "test_contract".to_string(),
-            assertion_id: "test_id".to_string(),
-            signature: "test_signature".to_string(),
-            constructor_args: vec!["arg1".to_string(), "arg2".to_string()],
-        };
-
-        let display = format!("{assertion}");
-        assert!(display.contains("Contract: test_contract"));
-        assert!(display.contains("ID: test_id"));
-        assert!(display.contains("Signature: test_signa..."));
     }
 
     #[test]
@@ -847,19 +558,17 @@ mod tests {
             auth: Some(UserAuth {
                 access_token: "test".to_string(),
                 refresh_token: "test".to_string(),
-                user_address: Address::from_slice(&[0; 20]),
                 expires_at: DateTime::from_timestamp(1672502400, 0).unwrap(),
                 user_id: None,
+                wallet_address: None,
                 email: None,
             }),
-            assertions_for_submission: HashMap::new(),
         };
         let args = ConfigArgs {
             command: ConfigCommand::Delete,
         };
         assert!(args.run(&mut config).is_ok());
         assert!(config.auth.is_none());
-        assert!(config.assertions_for_submission.is_empty());
     }
 
     #[test]
@@ -899,30 +608,6 @@ mod tests {
         let config = CliConfig::default();
         let display = format!("{config}");
         assert!(display.contains("Not authenticated"));
-        assert!(display.contains("No pending assertions for submission"));
-    }
-
-    #[test]
-    fn test_display_config_with_multiple_assertions() {
-        let mut config = CliConfig::default();
-        config.add_assertion_for_submission(AssertionForSubmission {
-            assertion_contract: "contract1".to_string(),
-            assertion_id: "id1".to_string(),
-            signature: "sig1".to_string(),
-            constructor_args: vec!["arg1".to_string(), "arg2".to_string()],
-        });
-        config.add_assertion_for_submission(AssertionForSubmission {
-            assertion_contract: "contract2".to_string(),
-            assertion_id: "id2".to_string(),
-            signature: "sig2".to_string(),
-            constructor_args: vec!["arg3".to_string(), "arg4".to_string()],
-        });
-
-        let display = format!("{config}");
-        assert!(display.contains("Assertion #1"));
-        assert!(display.contains("Assertion #2"));
-        assert!(display.contains("contract1"));
-        assert!(display.contains("contract2"));
     }
 
     #[test]
@@ -930,9 +615,9 @@ mod tests {
         let auth = UserAuth {
             access_token: "test_access".to_string(),
             refresh_token: "test_refresh".to_string(),
-            user_address: Address::from_slice(&[0; 20]),
             expires_at: DateTime::from_timestamp(1672502400, 0).unwrap(),
             user_id: Some(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap()),
+            wallet_address: Some(Address::from_slice(&[0; 20])),
             email: Some("test@example.com".to_string()),
         };
 
@@ -941,28 +626,8 @@ mod tests {
 
         assert_eq!(auth.access_token, deserialized.access_token);
         assert_eq!(auth.refresh_token, deserialized.refresh_token);
-        assert_eq!(auth.user_address, deserialized.user_address);
+        assert_eq!(auth.wallet_address, deserialized.wallet_address);
         assert_eq!(auth.expires_at, deserialized.expires_at);
-    }
-
-    #[test]
-    fn test_assertion_for_submission_serialization() {
-        let assertion = AssertionForSubmission {
-            assertion_contract: "test_contract".to_string(),
-            assertion_id: "test_id".to_string(),
-            signature: "test_signature".to_string(),
-            constructor_args: vec!["arg1".to_string(), "arg2".to_string()],
-        };
-
-        let serialized = toml::to_string(&assertion).unwrap();
-        let deserialized: AssertionForSubmission = toml::from_str(&serialized).unwrap();
-
-        assert_eq!(
-            assertion.assertion_contract,
-            deserialized.assertion_contract
-        );
-        assert_eq!(assertion.assertion_id, deserialized.assertion_id);
-        assert_eq!(assertion.signature, deserialized.signature);
     }
 
     #[test]
@@ -1050,110 +715,5 @@ mod tests {
         let (config_dir, _temp_dir) = setup_config_dir();
         let config = CliConfig::default();
         assert!(config.write_to_file_at_dir(&config_dir).is_ok());
-    }
-
-    #[test]
-    fn test_assertion_key_from_string() {
-        let assertion_key_str = "assertion_name(arg1,arg2)".to_string();
-        let assertion_key = AssertionKey::from(assertion_key_str.clone());
-
-        assert_eq!(assertion_key.assertion_name, "assertion_name");
-        println!("{:?}", assertion_key.constructor_args);
-        assert_eq!(
-            assertion_key.constructor_args,
-            vec!["arg1".to_string(), "arg2".to_string()]
-        );
-        assert_eq!(assertion_key.to_string(), assertion_key_str);
-
-        let assertion_key_str = "assertion_name()".to_string();
-        let assertion_key = AssertionKey::from(assertion_key_str);
-        assert_eq!(assertion_key.assertion_name, "assertion_name");
-        assert_eq!(assertion_key.constructor_args, <Vec<String>>::new());
-
-        let assertion_key_str = "assertion_name".to_string();
-
-        let assertion_key = AssertionKey::from(assertion_key_str.clone());
-        assert_eq!(assertion_key.assertion_name, "assertion_name");
-        assert_eq!(assertion_key.constructor_args, <Vec<String>>::new());
-        assert_eq!(assertion_key.to_string(), assertion_key_str);
-    }
-
-    #[test]
-    fn test_assertion_key_from_string_with_array_arg() {
-        // Single array argument
-        let assertion_key_str = "assertion_name([addr1,addr2])".to_string();
-        let assertion_key = AssertionKey::from(assertion_key_str);
-
-        assert_eq!(assertion_key.assertion_name, "assertion_name");
-        assert_eq!(assertion_key.constructor_args, vec!["[addr1,addr2]"]);
-    }
-
-    #[test]
-    fn test_assertion_key_from_string_with_array_and_other_args() {
-        // Array with other arguments
-        let assertion_key_str = "assertion_name(arg1,[addr1,addr2],arg3)".to_string();
-        let assertion_key = AssertionKey::from(assertion_key_str);
-
-        assert_eq!(assertion_key.assertion_name, "assertion_name");
-        assert_eq!(
-            assertion_key.constructor_args,
-            vec!["arg1", "[addr1,addr2]", "arg3"]
-        );
-    }
-
-    #[test]
-    fn test_assertion_key_from_string_with_multiple_arrays() {
-        // Multiple array arguments
-        let assertion_key_str = "assertion_name([a,b],[c,d])".to_string();
-        let assertion_key = AssertionKey::from(assertion_key_str);
-
-        assert_eq!(assertion_key.assertion_name, "assertion_name");
-        assert_eq!(assertion_key.constructor_args, vec!["[a,b]", "[c,d]"]);
-    }
-
-    #[test]
-    fn test_assertion_key_from_string_with_ethereum_addresses_array() {
-        // Array of Ethereum addresses (realistic use case)
-        let assertion_key_str =
-            "TokenAssertion([0x1234567890123456789012345678901234567890,0xabcdefabcdefabcdefabcdefabcdefabcdefabcd])"
-                .to_string();
-        let assertion_key = AssertionKey::from(assertion_key_str);
-
-        assert_eq!(assertion_key.assertion_name, "TokenAssertion");
-        assert_eq!(
-            assertion_key.constructor_args,
-            vec![
-                "[0x1234567890123456789012345678901234567890,0xabcdefabcdefabcdefabcdefabcdefabcdefabcd]"
-            ]
-        );
-    }
-
-    #[test]
-    fn test_assertion_key_from_string_with_uint_array() {
-        // Array of uints (like in Solidity: [uint(1), 2, 3])
-        let assertion_key_str = "NumberAssertion([1,2,3])".to_string();
-        let assertion_key = AssertionKey::from(assertion_key_str);
-
-        assert_eq!(assertion_key.assertion_name, "NumberAssertion");
-        assert_eq!(assertion_key.constructor_args, vec!["[1,2,3]"]);
-    }
-
-    #[test]
-    fn test_assertion_key_roundtrip_with_array() {
-        // Test that Display and From are consistent for arrays
-        let original = AssertionKey::new(
-            "TestAssertion".to_string(),
-            vec![
-                "arg1".to_string(),
-                "[addr1,addr2]".to_string(),
-                "arg3".to_string(),
-            ],
-        );
-        let displayed = original.to_string();
-        let parsed = AssertionKey::from(displayed.clone());
-
-        assert_eq!(original.assertion_name, parsed.assertion_name);
-        assert_eq!(original.constructor_args, parsed.constructor_args);
-        assert_eq!(displayed, "TestAssertion(arg1,[addr1,addr2],arg3)");
     }
 }

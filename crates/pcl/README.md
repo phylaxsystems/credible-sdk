@@ -15,15 +15,12 @@ The Phylax Credible CLI (PCL) is a command-line interface for interacting with t
     - [Authentication](#authentication)
     - [Configuration](#configuration)
     - [Testing](#testing)
-    - [Assertion Submission](#assertion-submission)
-      - [Store Assertions in Data Availability Layer](#store-assertions-in-data-availability-layer)
-      - [Submit Assertions to Platform](#submit-assertions-to-platform)
+    - [Verify](#verify)
+    - [Apply](#apply)
   - [Examples](#examples)
-    - [Complete Authentication Flow](#complete-authentication-flow)
-    - [Development Workflow](#development-workflow)
+    - [Complete Workflow](#complete-workflow)
   - [Troubleshooting](#troubleshooting)
     - [Authentication Issues](#authentication-issues)
-    - [Submission Issues](#submission-issues)
   - [Contributing](#contributing)
     - [Development Setup](#development-setup)
 
@@ -67,7 +64,7 @@ Before using most commands, you need to authenticate:
 pcl auth [OPTIONS] <COMMAND>
 
 Commands:
-  login   Login to PCL using your wallet
+  login   Login to PCL
   logout  Logout from PCL
   status  Check current authentication status
 
@@ -80,7 +77,7 @@ When logging in:
 
 1. A URL and authentication code will be displayed
 2. Visit the URL in your browser
-3. Connect your wallet and approve the authentication
+3. Approve the authentication (via wallet, email, or OAuth)
 4. CLI will automatically detect successful authentication
 
 ### Configuration
@@ -97,9 +94,7 @@ Commands:
 
 Configuration is stored in `$XDG_CONFIG_HOME/pcl/config.toml` (defaults to `~/.config/pcl/config.toml`) and includes:
 
-- Authentication token
-- Pending assertions for submission
-- Project settings
+- Authentication tokens and identity
 
 ### Building
 
@@ -139,6 +134,41 @@ Display options:
       --detailed                    Print detailed test summary table
 
 ... // rest of the `forge test` help output
+```
+
+### Verify
+
+Verify assertions locally before deployment. This compiles each assertion and runs it through the assertion verification pipeline to check that deployment succeeds and triggers are correctly registered.
+
+```bash
+pcl verify [OPTIONS] [ASSERTION]
+
+Arguments:
+  [ASSERTION]  Assertion to verify (contract name or file:contract).
+               Verifies all assertions from credible.toml when omitted.
+
+Options:
+      --root <ROOT>      Project root directory [default: .]
+  -c, --config <CONFIG>  Path to credible.toml, relative to root or absolute [default: assertions/credible.toml]
+      --args <ARGS>      Constructor arguments for the assertion
+      --json             Emit machine-readable JSON output
+  -h, --help             Print help
+```
+
+By default, `pcl verify` reads `credible.toml` from the same location as `pcl apply` (`assertions/credible.toml`). Use `-c` to override.
+
+```bash
+# Verify all assertions from credible.toml
+pcl verify
+
+# Verify a single assertion by name
+pcl verify MyAssertion
+
+# Verify with constructor arguments
+pcl verify MyAssertion --args 0x1234567890abcdef1234567890abcdef12345678
+
+# Custom config path (same as apply)
+pcl verify -c path/to/credible.toml
 ```
 
 ### Apply
@@ -182,74 +212,9 @@ pcl apply --root ./my-project -c credible.toml
 pcl apply --root ./my-project -c path/to/credible.toml
 ```
 
-### Assertion Submission
-
-`pcl store` uploads the assertion bytecode and flattened source to the Credible Assertion Data Availability (DA) service. Once the DA has the assertion, `pcl submit` (or the Platform) can link it to a project so that it can be enforced. The full workflow is documented at https://docs.phylax.systems/credible/store-submit-assertions.
-
-#### Store Assertions in Data Availability Layer
-
-```bash
-pcl store [OPTIONS] [ASSERTION]...
-
-Arguments:
-  [ASSERTION]...  Assertion specs in the format 'Name' or 'Name(arg1,arg2)'. Multiple specs can be separated by whitespace or commas.
-
-Options:
-  -a, --assertion <ASSERTION>
-          Assertion contract in the format 'Name(arg1,arg2)'. Example: `-a OwnableAssertion(0xabc...,86400)`.
-          Repeat the flag or use positional specs to store multiple assertions in one run.
-  -u, --da-url <DA_URL>  URL of the assertion-DA server [env: PCL_DA_URL=] [default: https://demo-21-assertion-da.phylax.systems]
-      --root <ROOT>      Root directory of the project
-  -h, --help             Print help (see a summary with '-h')
-```
-
-Examples:
-
-```bash
-# Store a single assertion without constructor args
-pcl store OwnableAssertion
-
-# Store a single assertion with constructor args inline
-pcl store "OwnableAssertion(0x0f6c13A04D358A5FEB9d073Da585bF6a2aF8d3d9, 3600)"
-
-# Store multiple assertions (whitespace or comma-separated)
-pcl store --root ./assertions \
-  NoArgsAssertion \
-  "MockAssertion(0x0f6c13A04D358A5FEB9d073Da585bF6a2aF8d3d9)"
-
-# Store multiple assertions (CSV)
-pcl store "NoArgsAssertion(),MockAssertion(0x0f6c13A04D358A5FEB9d073Da585bF6a2aF8d3d9)"
-```
-
-#### Submit Assertions to Platform
-
-```bash
-pcl submit [OPTIONS] [ASSERTION_CONTRACT] [CONSTRUCTOR_ARGS]...
-
-Arguments:
-  [ASSERTION_CONTRACT]   Name of the assertion to submit (when submitting a single assertion)
-  [CONSTRUCTOR_ARGS]...  Constructor arguments for the assertion
-
-Options:
-  -u, --api-url <API_URL>           Base URL for the Credible Layer Platform API [env: PCL_API_URL=] [default: https://app.phylax.systems/api/v1]
-  -p, --project-name <PROJECT_NAME> Optional project name to skip interactive selection
-  -a, --assertion <ASSERTION>       Assertion in format 'Name(arg1,arg2)'. Use multiple -a flags for multiple assertions.
-  -h, --help                        Print help
-
-EXAMPLES:
-    Submit a single assertion (positional args):
-        pcl submit AssertionName arg1 arg2 arg3
-
-    Submit multiple assertions (with -a flag):
-        pcl submit -a "AssertionName1(arg1,arg2,arg3)" -a "AssertionName2(arg1,arg2,arg3)"
-
-    Note: Positional arguments are for single assertions only.
-    The -a flag with parentheses format is for specifying assertions with arguments.
-```
-
 ## Examples
 
-### Complete Authentication Flow
+### Complete Workflow
 
 ```bash
 # Login
@@ -258,32 +223,21 @@ pcl auth login
 # Verify status
 pcl auth status
 
-# Store assertion
-pcl store my_assertion
+# Build and test assertions
+pcl build
+pcl test
 
-# Submit single assertion (positional args)
-pcl submit my_assertion -p my_project
-pcl submit my_assertion arg1 arg2 -p my_project
+# Verify assertions pass the verification pipeline
+pcl verify
 
-# Submit multiple assertions (with -a flag)
-pcl submit -a "my_assertion(arg1,arg2)" -a "other_assertion()" -p my_project
+# Deploy assertions via credible.toml
+pcl apply --root ./my-project
+
+# Auto-approve without interactive confirmation
+pcl apply --root ./my-project --yes
 
 # Logout when done
 pcl auth logout
-```
-
-### Development Workflow
-
-```bash
-# Run tests
-pcl test
-
-# Store and submit assertion with constructor args
-pcl store "my_assertion(arg1,arg2)"
-pcl submit my_assertion arg1 arg2 -p my_project
-
-# Or submit multiple assertions at once
-pcl submit -a "my_assertion(arg1,arg2)" -a "another_assertion()" -p my_project
 ```
 
 ## Troubleshooting
@@ -293,12 +247,6 @@ pcl submit -a "my_assertion(arg1,arg2)" -a "another_assertion()" -p my_project
 - **Error: Not authenticated**: Run `pcl auth login` to authenticate
 - **Error: Authentication expired**: Run `pcl auth login` to refresh your authentication
 - **Browser doesn't open**: Manually visit the URL displayed in the terminal
-
-### Submission Issues
-
-- **Error: Failed to submit**: Ensure you're authenticated and have network connectivity
-- **Error: Project not found**: Create a project in the Credible Layer Platform first
-- **Error: Assertion not found**: Ensure the assertion name is correct and exists in your project
 
 ## Contributing
 

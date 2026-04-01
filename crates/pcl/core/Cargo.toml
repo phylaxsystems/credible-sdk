@@ -11,11 +11,17 @@ repository.workspace = true
 pcl-common = { workspace = true }
 pcl-phoundry = { workspace = true }
 
+# assertion deps
+assertion-verification = { workspace = true }
+assertion-executor = { workspace = true }
+
 # alloy deps
 alloy-primitives = { workspace = true }
+alloy-json-abi = { workspace = true }
+alloy-dyn-abi = { workspace = true }
 
-# assertion-da deps
-assertion-da-client = { workspace = true }
+# dapp API client (generated from OpenAPI spec)
+dapp-api-client = { workspace = true }
 
 # other workspace deps
 clap = { workspace = true }
@@ -35,7 +41,7 @@ dirs = "6.0.0"
 indicatif = "0.18"
 open = "5"
 url.workspace = true
-uuid = { version = "1", features = ["serde"] }
+uuid.workspace = true
 
 [features]
 default = ["full-test"]
@@ -44,6 +50,3 @@ full-test = []
 [dev-dependencies]
 mockito = "1.2"
 tempfile = "3.6.0"
-alloy = { workspace = true, features = ["signer-local"] }
-int-test-utils = { workspace = true }
-anyhow = { version = "1.0.98" }

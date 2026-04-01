@@ -5,7 +5,7 @@ This file covers `crates/assertion-da/da-client`, `crates/assertion-da/da-core`,
 ## Assertion DA schema
 
 ```text
-pcl store / sidecar indexer
+sidecar indexer
   |
   v
 assertion-da-client

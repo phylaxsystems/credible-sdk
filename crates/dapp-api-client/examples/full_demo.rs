@@ -143,9 +143,9 @@ fn print_authenticated_project_details(projects: &[GetProjectsResponseItem]) {
             "      Created: {}",
             project.created_at.format("%Y-%m-%d %H:%M:%S")
         );
-        println!("      Manager: {}", project.project_manager.as_str());
+        println!("      Manager: {}", project.project_manager);
         println!("      Networks: {:?}", project.project_networks);
-        println!("      Saved Count: {}", project.saved_count);
+        println!("      Saved Count: {:?}", project.saved_count);
         println!();
     }
 
