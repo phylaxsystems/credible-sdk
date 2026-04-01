@@ -1,12 +1,12 @@
 use clap::Parser;
 use pcl_common::args::CliArgs;
 use pcl_core::{
+    DEFAULT_PLATFORM_URL,
     apply::ApplyArgs,
     auth::AuthCommand,
     config::ConfigArgs,
     download::DownloadArgs,
     verify::VerifyArgs,
-    DEFAULT_PLATFORM_URL,
 };
 use pcl_phoundry::{
     build::BuildArgs,
