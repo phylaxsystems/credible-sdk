@@ -204,6 +204,14 @@ impl BufferedCommitState {
     }
 }
 
+/// Terminal outcomes for the worker's top-level run loop.
+pub enum WorkerExit {
+    /// The worker stopped because it received a shutdown signal.
+    Shutdown,
+    /// The worker finished processing the configured inclusive block range.
+    CompletedRange,
+}
+
 /// Coordinates block ingestion, tracing, and persistence.
 pub struct StateWorker<WR>
 where
@@ -259,6 +267,22 @@ where
         metrics::set_following_head(!is_syncing);
     }
 
+    fn validate_block_bounds(start_block: Option<u64>, end_block: Option<u64>) -> Result<()> {
+        if let (Some(start_block), Some(end_block)) = (start_block, end_block)
+            && end_block < start_block
+        {
+            return Err(anyhow!(
+                "end block ({end_block}) must be greater than or equal to start block ({start_block})"
+            ));
+        }
+
+        Ok(())
+    }
+
+    fn has_reached_ending_block(next_block: u64, ending_block: Option<u64>) -> bool {
+        ending_block.is_some_and(|ending_block| next_block > ending_block)
+    }
+
     /// Run the worker until shutdown, retrying subscriptions as needed.
     ///
     /// # Errors
@@ -268,26 +292,62 @@ where
     pub async fn run(
         &mut self,
         start_override: Option<u64>,
+        end_override: Option<u64>,
         shutdown: CancellationToken,
-    ) -> Result<()> {
+    ) -> Result<WorkerExit> {
+        Self::validate_block_bounds(start_override, end_override)?;
+
         let mut next_block = self.compute_start_block(start_override)?;
         let mut missing_block_retries: u32 = 0;
+
+        if Self::has_reached_ending_block(next_block, end_override) {
+            info!(
+                next_block,
+                ending_block = end_override,
+                "ending block already satisfied before startup"
+            );
+            return Ok(WorkerExit::CompletedRange);
+        }
 
         loop {
             if shutdown.is_cancelled() {
                 info!("Shutdown signal received");
-                return Ok(());
+                return Ok(WorkerExit::Shutdown);
             }
 
-            if self.catch_up(&mut next_block, &shutdown).await? {
-                info!("Shutdown signal received during catch-up");
-                return Ok(());
+            if let Some(exit) = self
+                .catch_up(&mut next_block, end_override, &shutdown)
+                .await?
+            {
+                match exit {
+                    WorkerExit::Shutdown => info!("Shutdown signal received during catch-up"),
+                    WorkerExit::CompletedRange => {
+                        info!(
+                            ending_block = end_override,
+                            "Reached ending block during catch-up"
+                        );
+                    }
+                }
+                return Ok(exit);
             }
 
-            match self.stream_blocks(&mut next_block, &shutdown).await {
-                Ok(()) => {
-                    info!("Shutdown signal received during streaming");
-                    return Ok(());
+            match self
+                .stream_blocks(&mut next_block, end_override, &shutdown)
+                .await
+            {
+                Ok(exit) => {
+                    match exit {
+                        WorkerExit::Shutdown => {
+                            info!("Shutdown signal received during streaming");
+                        }
+                        WorkerExit::CompletedRange => {
+                            info!(
+                                ending_block = end_override,
+                                "Reached ending block during streaming"
+                            );
+                        }
+                    }
+                    return Ok(exit);
                 }
                 Err(err) => {
                     let err_str = err.to_string();
@@ -311,7 +371,7 @@ where
                     tokio::select! {
                         () = shutdown.cancelled() => {
                             info!("Shutdown signal received during retry sleep");
-                            return Ok(());
+                            return Ok(WorkerExit::Shutdown);
                         }
                         () = time::sleep(Duration::from_secs(SUBSCRIPTION_RETRY_DELAY_SECS)) => {}
                     }
@@ -343,16 +403,21 @@ where
     async fn catch_up(
         &mut self,
         next_block: &mut u64,
+        ending_block: Option<u64>,
         shutdown: &CancellationToken,
-    ) -> Result<bool> {
+    ) -> Result<Option<WorkerExit>> {
         loop {
+            if Self::has_reached_ending_block(*next_block, ending_block) {
+                return Ok(Some(WorkerExit::CompletedRange));
+            }
+
             let head = self.provider.get_block_number().await?;
             Self::update_sync_metrics(*next_block, head);
 
             if *next_block > head {
                 self.buffered_commits
                     .flush_ready_updates(&self.writer_reader)?;
-                return Ok(false);
+                return Ok(None);
             }
 
             // Catch up deterministically to the last observed head before returning to live
@@ -363,15 +428,19 @@ where
                     .wait_for_capacity(&self.writer_reader, shutdown)
                     .await?
                 {
-                    return Ok(true);
+                    return Ok(Some(WorkerExit::Shutdown));
                 }
 
                 self.process_block(*next_block).await?;
                 *next_block += 1;
                 Self::update_sync_metrics(*next_block, head);
 
+                if Self::has_reached_ending_block(*next_block, ending_block) {
+                    return Ok(Some(WorkerExit::CompletedRange));
+                }
+
                 if shutdown.is_cancelled() {
-                    return Ok(true);
+                    return Ok(Some(WorkerExit::Shutdown));
                 }
             }
         }
@@ -380,8 +449,13 @@ where
     async fn stream_blocks(
         &mut self,
         next_block: &mut u64,
+        ending_block: Option<u64>,
         shutdown: &CancellationToken,
-    ) -> Result<()> {
+    ) -> Result<WorkerExit> {
+        if Self::has_reached_ending_block(*next_block, ending_block) {
+            return Ok(WorkerExit::CompletedRange);
+        }
+
         let subscription = self.provider.subscribe_blocks().await?;
         let mut stream = subscription.into_stream();
         metrics::set_syncing(false);
@@ -391,7 +465,7 @@ where
             tokio::select! {
                 () = shutdown.cancelled() => {
                     info!("Shutdown signal received during block streaming");
-                    return Ok(());
+                    return Ok(WorkerExit::Shutdown);
                 }
                 // `persist_update` also records the committed head, so this can wake on our own
                 // writes. That is intentional: spurious wakes are harmless, but missed flush
@@ -425,12 +499,16 @@ where
                                     .wait_for_capacity(&self.writer_reader, shutdown)
                                     .await?
                                 {
-                                    return Ok(());
+                                    return Ok(WorkerExit::Shutdown);
                                 }
 
                                 self.process_block(*next_block).await?;
                                 *next_block += 1;
                                 Self::update_sync_metrics(*next_block, block_number);
+
+                                if Self::has_reached_ending_block(*next_block, ending_block) {
+                                    return Ok(WorkerExit::CompletedRange);
+                                }
                             }
                         }
                         None => {
@@ -567,7 +645,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::BufferedCommitState;
+    use super::{
+        BufferedCommitState,
+        StateWorker,
+    };
     use crate::coordination::FlushControl;
     use alloy::primitives::{
         B256,
@@ -795,5 +876,30 @@ mod tests {
         assert_eq!(control.committed_block(), Some(1));
         assert_eq!(*writer_reader.committed_blocks(), vec![1]);
         Ok(())
+    }
+
+    #[test]
+    fn rejects_end_block_before_start_block() {
+        let result = StateWorker::<mdbx::StateWriter>::validate_block_bounds(Some(12), Some(11));
+        assert!(result.is_err());
+
+        if let Err(error) = result {
+            assert_eq!(
+                error.to_string(),
+                "end block (11) must be greater than or equal to start block (12)"
+            );
+        }
+    }
+
+    #[test]
+    fn ending_block_is_inclusive() {
+        assert!(!StateWorker::<mdbx::StateWriter>::has_reached_ending_block(
+            12,
+            Some(12)
+        ));
+        assert!(StateWorker::<mdbx::StateWriter>::has_reached_ending_block(
+            13,
+            Some(12)
+        ));
     }
 }

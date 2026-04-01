@@ -13,6 +13,9 @@ pub struct Args {
     #[arg(long, env = "STATE_WORKER_START_BLOCK")]
     pub start_block: Option<u64>,
 
+    #[arg(long, env = "STATE_WORKER_END_BLOCK")]
+    pub end_block: Option<u64>,
+
     #[arg(long, env = "STATE_WORKER_STATE_DEPTH", default_value = "3")]
     pub state_depth: u8,
 

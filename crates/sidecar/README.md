@@ -15,8 +15,8 @@ Tracing and metrics are configured via the rust-tracing crate. These are the env
 tracing/metrics collection:
 
 - `OTEL_EXPORTER_OTLP_ENDPOINT` - optional. The endpoint to send traces to,
-  should be some valid URL. If not specified, then [`OtelConfig::load`]
-  will return [`None`].
+  should be some valid URL. If not specified, then `OtelConfig::load`
+  will return `None`.
 - `OTEL_LEVEL` - optional. Specifies the minimum [`tracing::Level`] to
   export. Defaults to [`tracing::Level::DEBUG`].
 - `OTEL_TIMEOUT` - optional. Specifies the timeout for the exporter in

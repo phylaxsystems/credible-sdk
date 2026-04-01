@@ -69,6 +69,8 @@ use crate::evm::build_evm::{
 type InspectorAssertionExecutions<I> = (Vec<AssertionContractExecution>, Vec<I>);
 type InspectorContractExecution<I> = (AssertionContractExecution, Vec<I>);
 type InspectorFnExecution<I> = (AssertionFunctionResult, I);
+type InspectorFnExecutionResults<Active, I> =
+    Vec<Result<InspectorFnExecution<I>, AssertionExecutionError<<Active as DatabaseRef>::Error>>>;
 
 /// Per-contract arguments passed into `run_assertion_contract_with_inspector`.
 #[derive(Debug)]
@@ -111,6 +113,10 @@ impl AssertionExecutor {
     /// Returns an error if transaction execution fails internally or if assertion
     /// execution fails after the transaction succeeds.
     #[instrument(level = "debug", skip_all, target = "executor::validate_tx")]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "This public API preserves the existing ownership-taking signature for external callers"
+    )]
     pub fn validate_transaction_with_inspector<ExtDb, Active, I>(
         &mut self,
         block_env: BlockEnv,
@@ -160,7 +166,7 @@ impl AssertionExecutor {
         let assertion_timer = Instant::now();
         let (results, assertion_inspectors) = self
             .execute_assertions_with_inspector(
-                block_env,
+                &block_env,
                 fork_db,
                 &forked_tx_result,
                 tx_env,
@@ -242,7 +248,7 @@ impl AssertionExecutor {
     /// Returns the assertion results and a vector of inspectors (one per assertion function).
     fn execute_assertions_with_inspector<Active, I>(
         &self,
-        block_env: BlockEnv,
+        block_env: &BlockEnv,
         tx_fork_db: &ForkDb<Active>,
         forked_tx_result: &ExecuteForkedTxResult,
         tx_env: &TxEnv,
@@ -259,12 +265,25 @@ impl AssertionExecutor {
         for<'db> I: Inspector<EthCtx<'db, MultiForkDb<ForkDb<Active>>>>,
         for<'db> I: Inspector<OpCtx<'db, MultiForkDb<ForkDb<Active>>>>,
     {
-        let results = self.execute_triggered_assertions(
-            block_env,
-            tx_fork_db,
-            forked_tx_result,
-            tx_env,
-            tx_arena_epoch,
+        // Keep the inspector path on the same assertion-selection flow as the
+        // default executor so phase-isolated benches exercise identical store reads.
+        let assertions = self
+            .store
+            .read(
+                &forked_tx_result.call_tracer,
+                crate::primitives::U256::from(block_env.number),
+            )
+            .map_err(AssertionExecutionError::AssertionReadError)?;
+
+        let results = Self::execute_selected_assertions(
+            super::SelectedAssertionsExecutionParams {
+                block_env,
+                tx_fork_db,
+                assertions,
+                forked_tx_result,
+                tx_env,
+                tx_arena_epoch,
+            },
             |assertion_contract, fn_selectors, block_env, tx_fork_db, context, tx_arena_epoch| {
                 self.run_assertion_contract_with_inspector(AssertionContractWithInspectorParams {
                     assertion_contract,
@@ -324,33 +343,83 @@ impl AssertionExecutor {
             inspector,
             tx_arena_epoch,
         } = params;
-
+        // Mirror the non-inspector short-circuit so instrumentation stays semantically aligned
+        // with the regular executor path and does not allocate inspectors for empty work.
+        if fn_selectors.is_empty() {
+            debug!(
+                target: "assertion-executor::execute_assertions",
+                assertion_contract_id = ?assertion_contract.id,
+                "Skipping assertion contract with no matched selectors (inspector path)"
+            );
+            return Ok((
+                AssertionContractExecution {
+                    adopter: context.adopter,
+                    assertion_fns_results: vec![],
+                    total_assertion_gas: 0,
+                    total_assertion_funcs_ran: 0,
+                },
+                vec![],
+            ));
+        }
         let prepared =
             self.prepare_assertion_contract(assertion_contract, fn_selectors, tx_fork_db, context);
 
-        let current_span = tracing::Span::current();
-        let results_vec: Vec<_> = current_span.in_scope(|| {
-            assertion_executor_pool().install(|| {
-                fn_selectors
-                    .into_par_iter()
-                    .map(|fn_selector| {
-                        self.execute_assertion_fn_with_inspector(
-                            AssertionExecutionWithInspectorParams {
-                                assertion_contract,
-                                fn_selector: *fn_selector,
-                                tx_arena_epoch,
-                                block_env: block_env.clone(),
-                                multi_fork_db: prepared.multi_fork_db.clone(),
-                                phevm_inspector: prepared.inspector.clone(),
-                                inspector: inspector.clone(),
-                            },
-                        )
-                    })
-                    .collect()
-            })
-        });
+        if fn_selectors.len() == 1 {
+            // Keep the direct single-selector fast path here as well so the inspector variant
+            // observes the same work partitioning as the non-inspector executor.
+            let fn_selector = fn_selectors[0];
+            let (fn_result, fn_inspector) =
+                self.execute_assertion_fn_with_inspector(AssertionExecutionWithInspectorParams {
+                    assertion_contract,
+                    fn_selector,
+                    tx_arena_epoch,
+                    block_env: block_env.clone(),
+                    multi_fork_db: prepared.multi_fork_db,
+                    phevm_inspector: prepared.inspector,
+                    inspector,
+                })?;
+            let total_assertion_gas = fn_result.as_result().gas_used();
+            return Ok((
+                AssertionContractExecution {
+                    adopter: context.adopter,
+                    assertion_fns_results: vec![fn_result],
+                    total_assertion_gas,
+                    total_assertion_funcs_ran: 1,
+                },
+                vec![fn_inspector],
+            ));
+        }
 
-        trace!(target: "assertion-executor::execute_assertions", result_count=results_vec.len(), "Assertion Execution Results with Inspectors");
+        let execution_count = fn_selectors.len();
+        let parallel_fns = super::should_parallelize_assertion_fns(execution_count);
+        trace!(
+            target: "assertion-executor::execute_assertions",
+            assertion_contract_id = ?assertion_contract.id,
+            selector_count = fn_selectors.len(),
+            execution_count,
+            scheduling = if parallel_fns { "parallel" } else { "sequential" },
+            "Assertion fn scheduling decision"
+        );
+
+        let results_vec = if parallel_fns {
+            self.parallel_assertion_fn_results_with_inspector(
+                assertion_contract,
+                fn_selectors,
+                block_env,
+                &prepared,
+                &inspector,
+                tx_arena_epoch,
+            )
+        } else {
+            self.sequential_assertion_fn_results_with_inspector(
+                assertion_contract,
+                fn_selectors,
+                block_env,
+                &prepared,
+                &inspector,
+                tx_arena_epoch,
+            )?
+        };
 
         let mut valid_results = Vec::with_capacity(results_vec.len());
         let mut inspectors = Vec::with_capacity(results_vec.len());
@@ -372,6 +441,85 @@ impl AssertionExecutor {
             },
             inspectors,
         ))
+    }
+
+    fn sequential_assertion_fn_results_with_inspector<Active, I>(
+        &self,
+        assertion_contract: &AssertionContract,
+        fn_selectors: &[FixedBytes<4>],
+        block_env: &BlockEnv,
+        prepared: &super::PreparedAssertionContract<'_, Active>,
+        inspector: &I,
+        tx_arena_epoch: u64,
+    ) -> Result<
+        InspectorFnExecutionResults<Active, I>,
+        AssertionExecutionError<<Active as DatabaseRef>::Error>,
+    >
+    where
+        Active: DatabaseRef + Sync + Send + Clone,
+        Active::Error: Send,
+        I: Clone + Send + Sync,
+        for<'db> I: Inspector<EthCtx<'db, MultiForkDb<ForkDb<Active>>>>,
+        for<'db> I: Inspector<OpCtx<'db, MultiForkDb<ForkDb<Active>>>>,
+    {
+        let mut results = Vec::with_capacity(fn_selectors.len());
+
+        // Preserve the inspector/result pairing in the same order the selectors were matched
+        // when the batch is too small to justify rayon scheduling.
+        for fn_selector in fn_selectors {
+            results.push(Ok(self.execute_assertion_fn_with_inspector(
+                AssertionExecutionWithInspectorParams {
+                    assertion_contract,
+                    fn_selector: *fn_selector,
+                    tx_arena_epoch,
+                    block_env: block_env.clone(),
+                    multi_fork_db: prepared.multi_fork_db.clone(),
+                    phevm_inspector: prepared.inspector.clone(),
+                    inspector: inspector.clone(),
+                },
+            )?));
+        }
+
+        Ok(results)
+    }
+
+    fn parallel_assertion_fn_results_with_inspector<Active, I>(
+        &self,
+        assertion_contract: &AssertionContract,
+        fn_selectors: &[FixedBytes<4>],
+        block_env: &BlockEnv,
+        prepared: &super::PreparedAssertionContract<'_, Active>,
+        inspector: &I,
+        tx_arena_epoch: u64,
+    ) -> InspectorFnExecutionResults<Active, I>
+    where
+        Active: DatabaseRef + Sync + Send + Clone,
+        Active::Error: Send,
+        I: Clone + Send + Sync,
+        for<'db> I: Inspector<EthCtx<'db, MultiForkDb<ForkDb<Active>>>>,
+        for<'db> I: Inspector<OpCtx<'db, MultiForkDb<ForkDb<Active>>>>,
+    {
+        let current_span = tracing::Span::current();
+        current_span.in_scope(|| {
+            assertion_executor_pool().install(|| {
+                fn_selectors
+                    .into_par_iter()
+                    .map(|fn_selector| {
+                        self.execute_assertion_fn_with_inspector(
+                            AssertionExecutionWithInspectorParams {
+                                assertion_contract,
+                                fn_selector: *fn_selector,
+                                tx_arena_epoch,
+                                block_env: block_env.clone(),
+                                multi_fork_db: prepared.multi_fork_db.clone(),
+                                phevm_inspector: prepared.inspector.clone(),
+                                inspector: inspector.clone(),
+                            },
+                        )
+                    })
+                    .collect()
+            })
+        })
     }
 
     /// Execute a single assertion function with a custom inspector.
@@ -405,7 +553,7 @@ impl AssertionExecutor {
         // Compose inspector: (custom_inspector, phevm_inspector).
         let composed_inspector = (&mut inspector, &mut phevm_inspector);
         let result = self.execute_assertion_fn_call(
-            block_env,
+            &block_env,
             fn_selector,
             &mut multi_fork_db,
             composed_inspector,
@@ -427,7 +575,16 @@ impl AssertionExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::*;
+    use crate::{
+        ExecutorConfig,
+        executor::should_parallelize_assertion_fns,
+        inspectors::{
+            LogsAndTraces,
+            spec_recorder::AssertionSpec,
+        },
+        store::AssertionStore,
+        test_utils::*,
+    };
     use revm::{
         Database,
         Inspector,
@@ -472,6 +629,118 @@ mod tests {
         fn step(&mut self, _interp: &mut revm::interpreter::Interpreter, _ctx: &mut OpCtx<'_, DB>) {
             self.step_count.fetch_add(1, Ordering::Relaxed);
         }
+    }
+
+    #[tokio::test]
+    async fn test_run_assertion_contract_with_inspector_empty_selectors_short_circuits() {
+        let test_db: TestDB = TestDB::new_test();
+        let fork_db: TestForkDB = test_db.fork();
+        let executor =
+            AssertionExecutor::new(ExecutorConfig::default(), AssertionStore::new_ephemeral());
+
+        let call_tracer = CallTracer::default();
+        let logs_and_traces = LogsAndTraces {
+            tx_logs: &[],
+            call_traces: &call_tracer,
+        };
+        let tx_env = TxEnv::default();
+        let context = PhEvmContext::new(
+            &logs_and_traces,
+            COUNTER_ADDRESS,
+            &tx_env,
+            AssertionSpec::Legacy,
+        );
+
+        let (execution, inspectors) = executor
+            .run_assertion_contract_with_inspector(AssertionContractWithInspectorParams {
+                assertion_contract: &counter_assertion(),
+                fn_selectors: &[],
+                block_env: &BlockEnv::default(),
+                tx_fork_db: fork_db,
+                context: &context,
+                inspector: CountingInspector::new(),
+                tx_arena_epoch: crate::arena::next_tx_arena_epoch(),
+            })
+            .expect("empty selector execution should short-circuit");
+
+        assert_eq!(execution.adopter, COUNTER_ADDRESS);
+        assert!(execution.assertion_fns_results.is_empty());
+        assert_eq!(execution.total_assertion_gas, 0);
+        assert_eq!(execution.total_assertion_funcs_ran, 0);
+        assert!(inspectors.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_run_assertion_contract_with_inspector_sequential_path_executes_each_selector_once()
+     {
+        let test_db: TestDB = TestDB::new_test();
+        let fork_db: TestForkDB = test_db.fork();
+        let executor =
+            AssertionExecutor::new(ExecutorConfig::default(), AssertionStore::new_ephemeral());
+
+        let extracted = selector_assertion();
+        let mut fn_selectors: Vec<_> = extracted
+            .trigger_recorder
+            .triggers
+            .values()
+            .flat_map(|selectors| selectors.iter().copied())
+            .collect();
+        fn_selectors.sort();
+        fn_selectors.dedup();
+
+        assert!(fn_selectors.len() > 1);
+        assert!(!should_parallelize_assertion_fns(fn_selectors.len()));
+
+        let call_tracer = CallTracer::default();
+        let logs_and_traces = LogsAndTraces {
+            tx_logs: &[],
+            call_traces: &call_tracer,
+        };
+        let tx_env = TxEnv::default();
+        let context = PhEvmContext::new(
+            &logs_and_traces,
+            COUNTER_ADDRESS,
+            &tx_env,
+            AssertionSpec::Legacy,
+        );
+
+        let (execution, inspectors) = executor
+            .run_assertion_contract_with_inspector(AssertionContractWithInspectorParams {
+                assertion_contract: &extracted.assertion_contract,
+                fn_selectors: &fn_selectors,
+                block_env: &BlockEnv::default(),
+                tx_fork_db: fork_db,
+                context: &context,
+                inspector: CountingInspector::new(),
+                tx_arena_epoch: crate::arena::next_tx_arena_epoch(),
+            })
+            .expect("sequential multi-selector execution should succeed");
+
+        let mut executed_selectors: Vec<_> = execution
+            .assertion_fns_results
+            .iter()
+            .map(|result| result.id.fn_selector)
+            .collect();
+        executed_selectors.sort();
+
+        assert!(
+            execution
+                .assertion_fns_results
+                .iter()
+                .all(AssertionFunctionResult::is_success)
+        );
+        assert_eq!(
+            execution.total_assertion_funcs_ran,
+            fn_selectors.len() as u64
+        );
+        assert_eq!(execution.assertion_fns_results.len(), fn_selectors.len());
+        assert_eq!(executed_selectors, fn_selectors);
+        assert_eq!(inspectors.len(), fn_selectors.len());
+        assert!(
+            inspectors
+                .iter()
+                .all(|inspector| inspector.get_step_count() > 0)
+        );
     }
 
     #[tokio::test]

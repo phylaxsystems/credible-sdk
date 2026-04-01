@@ -16,4 +16,5 @@ The state worker requires `--ws-url` for the Ethereum WebSocket endpoint, `--mdb
 disk path, and `--file-to-genesis` to preload the initial state from a file. Optional flags include:
 
 - `--start-block` to override the resume position derived from `state:meta:latest_block`.
+- `--end-block` to stop after the specified inclusive block is fully processed.
 - `--trace-timeout-secs` to tune the timeout for `debug_traceBlockBy*` calls (default 30 seconds).

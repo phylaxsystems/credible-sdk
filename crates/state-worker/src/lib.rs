@@ -17,7 +17,10 @@ mod worker;
 
 pub use coordination::FlushControl;
 pub use genesis::GenesisState;
-pub use worker::StateWorker;
+pub use worker::{
+    StateWorker,
+    WorkerExit,
+};
 
 use crate::{
     geth_version::{
@@ -80,6 +83,8 @@ pub struct WorkerConfig {
     pub buffer_capacity: usize,
     /// Path to the genesis JSON file used to hydrate block 0.
     pub genesis_file: PathBuf,
+    /// Optional inclusive ending block — the worker stops after processing this block.
+    pub end_block: Option<u64>,
     /// Maximum time the worker will wait for a `prestateTracer` RPC response.
     pub trace_timeout: Duration,
 }
@@ -92,6 +97,7 @@ impl TryFrom<cli::Args> for WorkerConfig {
             ws_url: Url::parse(&args.ws_url).context("invalid STATE_WORKER_WS_URL / --ws-url")?,
             mdbx_path: PathBuf::from(args.mdbx_path),
             start_block: args.start_block,
+            end_block: args.end_block,
             mdbx_depth: args.state_depth,
             buffer_capacity: usize::from(args.state_depth),
             genesis_file: PathBuf::from(args.file_to_genesis),
@@ -119,13 +125,19 @@ pub async fn run_supervisor_loop(
 
         let result = AssertUnwindSafe(async {
             let mut worker = build_state_worker(&config, flush_control.clone()).await?;
-            worker.run(config.start_block, shutdown.clone()).await
+            worker
+                .run(config.start_block, config.end_block, shutdown.clone())
+                .await
         })
         .catch_unwind()
         .await;
 
         match result {
-            Ok(Ok(())) => {
+            Ok(Ok(WorkerExit::CompletedRange)) => {
+                info!("state worker completed requested block range");
+                return Ok(());
+            }
+            Ok(Ok(WorkerExit::Shutdown)) => {
                 if shutdown.is_cancelled() {
                     return Ok(());
                 }
@@ -329,6 +341,7 @@ mod tests {
             ws_url: "not a url".to_string(),
             mdbx_path: "/tmp/state".to_string(),
             start_block: None,
+            end_block: None,
             state_depth: 3,
             file_to_genesis: "/tmp/genesis.json".to_string(),
         });

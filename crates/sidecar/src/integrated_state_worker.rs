@@ -103,6 +103,7 @@ where
         ws_url: ws_url.clone(),
         mdbx_path: mdbx_path.to_path_buf(),
         start_block,
+        end_block: None,
         mdbx_depth: 1,
         buffer_capacity,
         genesis_file: genesis_file.to_path_buf(),

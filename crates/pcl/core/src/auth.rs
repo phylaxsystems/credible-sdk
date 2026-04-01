@@ -33,12 +33,15 @@ use tokio::time::{
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
 /// Maximum number of retry attempts (5 minutes worth of 2-second intervals)
 const MAX_RETRIES: u32 = 150;
+/// Timeout for individual auth status requests
+const AUTH_STATUS_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Flat deserialization target for the auth status endpoint.
 ///
 /// The generated `GetCliAuthStatusResponse` untagged enum always deserializes as
 /// Variant0 because typify ignores `enum:[true/false]` constraints. We
 /// deserialize here then convert via `From<AuthStatusRaw>`.
+
 // TODO(typify): Revisit with a newer typify version — this workaround can be
 // removed once typify handles untagged enums with boolean discriminants.
 // Ref: https://github.com/oxidecomputer/typify/issues/498
@@ -76,6 +79,12 @@ impl From<AuthStatusRaw> for GetCliAuthStatusResponse {
             }
         }
     }
+}
+
+/// Server error response body (used for non-200 status codes).
+#[derive(Deserialize)]
+struct ApiErrorBody {
+    error: String,
 }
 
 /// Authentication commands for the PCL CLI
@@ -251,37 +260,38 @@ impl AuthCommand {
         Err(AuthError::Timeout(MAX_RETRIES))
     }
 
-    /// Fetch auth status, falling back to raw reqwest + `AuthStatusRaw` when
-    /// the untagged enum mis-deserializes `verified: true` as Variant0.
+    /// Fetch auth status via raw request, bypassing the generated client.
+    ///
+    /// NOTE: The generated untagged enum always matches Variant0 (serde ignores extra
+    /// fields), and the server treats verified sessions as single-use — so a
+    /// fallback re-fetch would get 400. Single raw request + `AuthStatusRaw`
+    /// avoids both issues.
     async fn check_auth_status(
         client: &GeneratedClient,
         auth_response: &GetCliAuthCodeResponse,
     ) -> Result<GetCliAuthStatusResponse, AuthError> {
-        let result = client
-            .get_cli_auth_status(&auth_response.device_secret, &auth_response.session_id)
-            .await
-            .map(dapp_api_client::generated::client::ResponseValue::into_inner)
-            .map_err(|e| AuthError::StatusRequestFailed(e.to_string()))?;
-
-        // Only Variant0 { verified: true } is a serde mis-match — re-fetch raw.
-        if !matches!(
-            result,
-            GetCliAuthStatusResponse::Variant0 { verified: true }
-        ) {
-            return Ok(result);
-        }
-
         let url = format!("{}/cli/auth/status", client.baseurl());
-        let raw: AuthStatusRaw = client
+        let response = client
             .client()
             .get(&url)
+            .timeout(AUTH_STATUS_TIMEOUT)
             .query(&[
                 ("session_id", auth_response.session_id.to_string()),
                 ("device_secret", auth_response.device_secret.clone()),
             ])
             .send()
             .await
-            .map_err(|e| AuthError::StatusRequestFailed(e.to_string()))?
+            .map_err(|e| AuthError::StatusRequestFailed(e.to_string()))?;
+
+        if !response.status().is_success() {
+            let msg = response
+                .json::<ApiErrorBody>()
+                .await
+                .map_or_else(|_| "Unknown error".to_string(), |b| b.error);
+            return Err(AuthError::InvalidSession(msg));
+        }
+
+        let raw: AuthStatusRaw = response
             .json()
             .await
             .map_err(|e| AuthError::StatusRequestFailed(e.to_string()))?;
@@ -399,7 +409,6 @@ mod tests {
     async fn test_check_auth_status_verified() {
         let mut server = Server::new_async().await;
 
-        // Expect 2 hits: generated client call + fallback raw call for Variant1
         let mock = server
             .mock("GET", "/api/v1/cli/auth/status")
             .match_query(mockito::Matcher::AllOf(vec![
@@ -409,7 +418,7 @@ mod tests {
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(r#"{"verified":true,"user_id":"550e8400-e29b-41d4-a716-446655440000","address":"0x1234567890123456789012345678901234567890","token":"test_token","refresh_token":"test_refresh"}"#)
-            .expect(2)
+            .expect(1)
             .create();
 
         let cmd = AuthCommand::try_parse_from(vec!["auth", "--auth-url", &server.url(), "login"])
@@ -457,6 +466,7 @@ mod tests {
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(r#"{"verified":false}"#)
+            .expect(1)
             .create();
 
         let cmd = AuthCommand::try_parse_from(vec!["auth", "--auth-url", &server.url(), "login"])
@@ -478,14 +488,13 @@ mod tests {
     async fn test_check_auth_status_verified_without_address() {
         let mut server = Server::new_async().await;
 
-        // Expect 2 hits: generated client call + fallback raw call for Variant1
         let mock = server
             .mock("GET", "/api/v1/cli/auth/status")
             .match_query(mockito::Matcher::AllOf(vec![
                 mockito::Matcher::UrlEncoded("session_id".into(), "550e8400-e29b-41d4-a716-446655440000".into()),
                 mockito::Matcher::UrlEncoded("device_secret".into(), "test_secret".into()),
             ]))
-            .expect(2)
+            .expect(1)
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(r#"{"verified":true,"user_id":"550e8400-e29b-41d4-a716-446655440000","token":"test_token","refresh_token":"test_refresh"}"#)
@@ -557,8 +566,7 @@ mod tests {
     async fn test_check_auth_status_verified_missing_required_fields_falls_back() {
         let mut server = Server::new_async().await;
 
-        // Expect 2 hits: generated client sees Variant0{verified:true}, triggers raw fallback.
-        // Raw fallback also sees verified:true but missing required fields → Variant0.
+        // verified:true but missing required Variant1 fields → AuthStatusRaw → Variant0
         let mock = server
             .mock("GET", "/api/v1/cli/auth/status")
             .match_query(mockito::Matcher::AllOf(vec![
@@ -571,7 +579,7 @@ mod tests {
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(r#"{"verified":true}"#)
-            .expect(2)
+            .expect(1)
             .create();
 
         let cmd = AuthCommand::try_parse_from(vec!["auth", "--auth-url", &server.url(), "login"])

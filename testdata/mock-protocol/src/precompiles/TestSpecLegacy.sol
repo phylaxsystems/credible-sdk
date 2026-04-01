@@ -7,12 +7,12 @@ import {Test} from "forge-std/Test.sol";
 import {TARGET} from "./Target.sol";
 
 /// @notice Assertion that uses only Legacy-tier precompiles.
-/// Should pass when run under Legacy, Reshiram, or Experimental spec.
+/// Should pass when run under Legacy or Experimental spec.
 contract TestSpecLegacy is Assertion, Test {
     constructor() payable {}
 
     function testLegacyPrecompiles() external {
-        // All of these are Legacy-tier and should work under any spec
+        // All of these are Legacy-tier and should only work under Legacy/Experimental
         address adopter = ph.getAssertionAdopter();
         require(adopter != address(0), "adopter should not be zero");
 

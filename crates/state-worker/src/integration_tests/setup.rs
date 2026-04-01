@@ -154,7 +154,7 @@ impl TestInstance {
         );
         let shutdown = CancellationToken::new();
         let handle_worker = tokio::spawn(async move {
-            if let Err(e) = worker.run(start_override, shutdown.clone()).await {
+            if let Err(e) = worker.run(start_override, None, shutdown.clone()).await {
                 error!("worker server error: {}", e);
             }
         });

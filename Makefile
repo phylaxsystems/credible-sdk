@@ -4,6 +4,30 @@ build:
 build-contracts:
 	forge build --root testdata/mock-protocol 
 
+PRESET ?= avg_block_100_aa
+MODE ?= full
+ITERS ?= 1
+FILE ?= artifacts/profiles/$(PRESET)-$(MODE).json.gz
+SYMS_FILE ?= $(patsubst %.json.gz,%.json.syms.json,$(FILE))
+ATTACH_FILE ?= artifacts/profiles/$(PRESET)-$(MODE)-attach.json.gz
+ATTACH_SYMS_FILE ?= $(patsubst %.json.gz,%.json.syms.json,$(ATTACH_FILE))
+READY_FILE ?= artifacts/profiles/.perf-ready-$(PRESET)-$(MODE)
+PERF_LOG ?= artifacts/profiles/$(PRESET)-$(MODE)-attach.log
+WARMUP_ITERS ?= 1
+ATTACH_WAIT_MS ?= 5000
+# Presymbolicate by default so saved profiles can be reviewed later without needing
+# the original local build artifacts in place.
+PERF_PROFILE_FLAGS ?= --unstable-presymbolicate
+UNAME_S := $(shell uname -s)
+
+ifeq ($(UNAME_S),Darwin)
+# `samply record` needs sudo on macOS, but keeping PATH preserves the user's cargo
+# install location for the profiler binary itself.
+SAMPLE_RECORD_PREFIX := sudo env PATH="$(PATH)"
+else
+SAMPLE_RECORD_PREFIX :=
+endif
+
 # Clean up test containers
 test-cleanup:
 	@echo "Cleaning up test containers..."
@@ -27,6 +51,43 @@ test: test-optimism test-default test-state-worker test-cleanup
 # Run tests without full tests (skips Docker-dependent tests and integration tests)
 test-no-full:
 	./scripts/test-no-full.sh
+
+bench-assex: build-contracts
+	cargo bench --manifest-path crates/assertion-executor/Cargo.toml --features test --benches
+
+perf-profile: build-contracts
+	mkdir -p artifacts/profiles
+	cargo build -p benchmark-utils --profile debug-perf --bin benchmark-utils-perf
+	# Warm the fixture setup before the recorded iteration so the captured flamegraph
+	# reflects steady-state executor work instead of one-time artifact loading noise.
+	$(SAMPLE_RECORD_PREFIX) samply record --save-only $(PERF_PROFILE_FLAGS) -o $(FILE) -- ./target/debug-perf/benchmark-utils-perf --preset $(PRESET) --mode $(MODE) --warmup-iters $(WARMUP_ITERS) --pause-after-warmup-ms $(ATTACH_WAIT_MS) --iters $(ITERS)
+	@if [ "$(UNAME_S)" = "Darwin" ]; then \
+		if [ -f "$(FILE)" ]; then sudo chown $$(id -un):$$(id -gn) "$(FILE)"; fi; \
+		if [ -f "$(SYMS_FILE)" ]; then sudo chown $$(id -un):$$(id -gn) "$(SYMS_FILE)"; fi; \
+	fi
+
+perf-profile-attach: build-contracts
+	mkdir -p artifacts/profiles
+	cargo build -p benchmark-utils --profile debug-perf --bin benchmark-utils-perf
+	rm -f $(READY_FILE) $(PERF_LOG)
+	# Launch the warmed workload first, then attach `samply` once the process has
+	# finished its cold setup and is paused at a known synchronization point.
+	@perf_pid_file=$$(mktemp); \
+	trap 'if [ -f "$$perf_pid_file" ]; then perf_pid=$$(cat "$$perf_pid_file"); kill $$perf_pid 2>/dev/null || true; fi; rm -f "$(READY_FILE)" "$$perf_pid_file"' EXIT; \
+	./target/debug-perf/benchmark-utils-perf --preset $(PRESET) --mode $(MODE) --warmup-iters $(WARMUP_ITERS) --pause-after-warmup-ms $(ATTACH_WAIT_MS) --ready-file $(READY_FILE) --iters $(ITERS) > "$(PERF_LOG)" 2>&1 & \
+	perf_pid=$$!; \
+	echo $$perf_pid > "$$perf_pid_file"; \
+	while [ ! -f "$(READY_FILE)" ]; do sleep 0.1; done; \
+	$(SAMPLE_RECORD_PREFIX) samply record --save-only $(PERF_PROFILE_FLAGS) -o $(ATTACH_FILE) -p $$perf_pid; \
+	wait $$perf_pid; \
+	rm -f "$(READY_FILE)" "$$perf_pid_file"
+	@if [ "$(UNAME_S)" = "Darwin" ]; then \
+		if [ -f "$(ATTACH_FILE)" ]; then sudo chown $$(id -un):$$(id -gn) "$(ATTACH_FILE)"; fi; \
+		if [ -f "$(ATTACH_SYMS_FILE)" ]; then sudo chown $$(id -un):$$(id -gn) "$(ATTACH_SYMS_FILE)"; fi; \
+	fi
+
+perf-load:
+	samply load $(FILE)
 
 # Validate formatting
 format:

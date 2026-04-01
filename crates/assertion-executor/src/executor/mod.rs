@@ -57,7 +57,10 @@ use crate::{
         bytes,
     },
     reprice_evm_storage,
-    store::AssertionStore,
+    store::{
+        AssertionStore,
+        AssertionsForExecution,
+    },
 };
 
 use revm::{
@@ -66,6 +69,8 @@ use revm::{
     Inspector,
 };
 
+#[cfg(any(test, feature = "test"))]
+use rayon::prelude::IntoParallelRefIterator;
 use rayon::{
     ThreadPoolBuilder,
     prelude::{
@@ -89,6 +94,14 @@ use tracing::{
     warn,
 };
 
+/// Minimum number of assertions before rayon parallel execution is worthwhile.
+/// Below this threshold, sequential execution avoids scheduling overhead.
+const PARALLEL_THRESHOLD: usize = 2;
+
+/// Function-level assertion invocations are short-lived enough that rayon often
+/// loses on small batches. Keep this threshold conservative.
+const ASSERTION_FN_PARALLEL_MIN_WORK_ITEMS: usize = 8;
+
 static ASSERTION_EXECUTOR_POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
 
 fn assertion_executor_pool() -> &'static rayon::ThreadPool {
@@ -98,6 +111,11 @@ fn assertion_executor_pool() -> &'static rayon::ThreadPool {
             .build()
             .expect("Failed to build assertion executor thread pool")
     })
+}
+
+#[inline]
+fn should_parallelize_assertion_fns(work_items: usize) -> bool {
+    work_items >= ASSERTION_FN_PARALLEL_MIN_WORK_ITEMS
 }
 
 #[derive(Debug, Clone)]
@@ -127,6 +145,20 @@ struct AssertionExecutionParams<'a, Active> {
     inspector: PhEvmInspector<'a>,
 }
 
+/// Shared inputs for executing the already-matched assertion set.
+///
+/// Packaging these arguments keeps the benchmark-only execution path and the
+/// production path on the same helper without adding another long parameter list.
+#[derive(Debug)]
+struct SelectedAssertionsExecutionParams<'a, Active> {
+    block_env: &'a BlockEnv,
+    tx_fork_db: &'a ForkDb<Active>,
+    assertions: Vec<AssertionsForExecution>,
+    forked_tx_result: &'a ExecuteForkedTxResult,
+    tx_env: &'a TxEnv,
+    tx_arena_epoch: u64,
+}
+
 #[derive(Debug, Clone)]
 pub struct ExecuteForkedTxResult {
     pub call_tracer: CallTracer,
@@ -141,12 +173,22 @@ struct AssertionValidationSummary {
     total_assertion_funcs_ran: u64,
 }
 
+#[cfg(any(test, feature = "test"))]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct BenchmarkAssertionSetupStats {
+    // Count contracts and selector fanout separately so the setup bench can tell
+    // whether a change affected contract preparation, selector cloning, or both.
+    pub assertion_contracts_prepared: usize,
+    pub selector_fanouts_prepared: usize,
+}
+
 /// Shared state produced by `prepare_assertion_contract` and consumed
 /// by the rayon parallel loop in each `run_assertion_contract*` variant.
 ///
 /// Separating preparation from parallel execution keeps the per-variant code
 /// (with/without custom inspector) to just a rayon `.map` body, while the
-/// setup (inserting persistent accounts, building the overlay db and phevm
+/// setup (inserting persistent accounts, building the overlay db, and creating
+/// the phevm inspector) remains in one place.
 struct PreparedAssertionContract<'ctx, Active> {
     multi_fork_db: MultiForkDb<ForkDb<Active>>,
     inspector: PhEvmInspector<'ctx>,
@@ -257,14 +299,13 @@ impl AssertionExecutor {
         )
     }
 
-    /// Reads triggered assertions and executes each assertion contract in parallel.
-    fn execute_triggered_assertions<Active, T, F>(
-        &self,
-        block_env: BlockEnv,
-        tx_fork_db: &ForkDb<Active>,
-        forked_tx_result: &ExecuteForkedTxResult,
-        tx_env: &TxEnv,
-        tx_arena_epoch: u64,
+    /// Executes pre-read assertions in parallel.
+    ///
+    /// The benchmark harness pre-reads assertions outside this helper so it can
+    /// isolate store lookup from execution, but production validation still feeds
+    /// this helper from the store immediately before running assertions.
+    fn execute_selected_assertions<Active, T, F>(
+        params: SelectedAssertionsExecutionParams<'_, Active>,
         run_assertion_contract: F,
     ) -> Result<Vec<T>, AssertionExecutionError<<Active as DatabaseRef>::Error>>
     where
@@ -282,52 +323,76 @@ impl AssertionExecutor {
             + Sync
             + Send,
     {
-        let ExecuteForkedTxResult {
-            call_tracer,
-            result_and_state,
-        } = forked_tx_result;
-        let logs_and_traces = LogsAndTraces {
-            tx_logs: result_and_state.result.logs(),
-            call_traces: call_tracer,
-        };
+        let SelectedAssertionsExecutionParams {
+            block_env,
+            tx_fork_db,
+            assertions,
+            forked_tx_result,
+            tx_env,
+            tx_arena_epoch,
+        } = params;
 
-        let assertions = self
-            .store
-            .read(logs_and_traces.call_traces, U256::from(block_env.number))
-            .map_err(AssertionExecutionError::AssertionReadError)?;
+        let logs_and_traces = LogsAndTraces {
+            tx_logs: forked_tx_result.result_and_state.result.logs(),
+            call_traces: &forked_tx_result.call_tracer,
+        };
 
         if assertions.is_empty() {
             return Ok(vec![]);
         }
 
+        let assertion_count = assertions.len();
         debug!(
             target: "assertion-executor::execute_assertions",
-            assertion_contract_count = assertions.len(),
+            assertion_contract_count = assertion_count,
             "Retrieved Assertion contracts from Assertion store"
         );
 
-        assertion_executor_pool().install(|| {
-            assertions
-                .into_par_iter()
-                .map(move |assertion_for_execution| {
-                    let phevm_context = PhEvmContext::new(
-                        &logs_and_traces,
-                        assertion_for_execution.adopter,
-                        tx_env,
-                        assertion_for_execution.assertion_spec,
-                    );
+        if assertion_count < PARALLEL_THRESHOLD {
+            // Below the parallel threshold, sequential execution avoids rayon scheduling
+            // overhead that can exceed the assertion execution time itself.
+            let mut results = Vec::with_capacity(assertion_count);
+            for assertion_for_execution in assertions {
+                let phevm_context = PhEvmContext::new(
+                    &logs_and_traces,
+                    assertion_for_execution.adopter,
+                    tx_env,
+                    assertion_for_execution.assertion_spec,
+                );
+                results.push(run_assertion_contract(
+                    &assertion_for_execution.assertion_contract,
+                    &assertion_for_execution.selectors,
+                    block_env,
+                    tx_fork_db.clone(),
+                    &phevm_context,
+                    tx_arena_epoch,
+                )?);
+            }
+            Ok(results)
+        } else {
+            assertion_executor_pool().install(|| {
+                assertions
+                    .into_par_iter()
+                    .map(move |assertion_for_execution| {
+                        let phevm_context = PhEvmContext::new(
+                            &logs_and_traces,
+                            assertion_for_execution.adopter,
+                            tx_env,
+                            assertion_for_execution.assertion_spec,
+                        );
 
-                    run_assertion_contract(
-                        &assertion_for_execution.assertion_contract,
-                        &assertion_for_execution.selectors,
-                        &block_env,
-                        tx_fork_db.clone(),
-                        &phevm_context,
-                        tx_arena_epoch,
-                    )
-                })
-                .collect()
-        })
+                        run_assertion_contract(
+                            &assertion_for_execution.assertion_contract,
+                            &assertion_for_execution.selectors,
+                            block_env,
+                            tx_fork_db.clone(),
+                            &phevm_context,
+                            tx_arena_epoch,
+                        )
+                    })
+                    .collect()
+            })
+        }
     }
 
     /// Builds the transaction environment for executing a single assertion function.
@@ -347,7 +412,7 @@ impl AssertionExecutor {
     /// Executes a single assertion call with the provided inspector.
     fn execute_assertion_fn_call<'db, Active, I>(
         &self,
-        block_env: BlockEnv,
+        block_env: &BlockEnv,
         fn_selector: FixedBytes<4>,
         multi_fork_db: &'db mut MultiForkDb<ForkDb<Active>>,
         inspector: I,
@@ -360,8 +425,8 @@ impl AssertionExecutor {
         I: Inspector<EthCtx<'db, MultiForkDb<ForkDb<Active>>>>
             + Inspector<OpCtx<'db, MultiForkDb<ForkDb<Active>>>>,
     {
-        let tx_env = self.assertion_fn_tx_env(&block_env, fn_selector);
-        let env = evm_env(self.config.chain_id, self.config.spec_id, block_env);
+        let tx_env = self.assertion_fn_tx_env(block_env, fn_selector);
+        let env = evm_env(self.config.chain_id, self.config.spec_id, block_env.clone());
 
         let mut evm = crate::build_evm_by_features!(multi_fork_db, &env, inspector);
         let tx_env = crate::wrap_tx_env_for_optimism!(tx_env);
@@ -447,6 +512,10 @@ impl AssertionExecutor {
     ///
     /// Returns an error if executing the transaction or assertions fails.
     #[instrument(level = "debug", skip_all, target = "executor::validate_tx")]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "This public API preserves the existing ownership-taking signature for external callers"
+    )]
     pub fn validate_transaction_ext_db<ExtDb, Active>(
         &mut self,
         block_env: BlockEnv,
@@ -482,7 +551,7 @@ impl AssertionExecutor {
         let assertion_timer = Instant::now();
         let results = self
             .execute_assertions(
-                block_env,
+                &block_env,
                 fork_db,
                 &forked_tx_result,
                 tx_env,
@@ -508,7 +577,7 @@ impl AssertionExecutor {
 
     fn execute_assertions<Active>(
         &self,
-        block_env: BlockEnv,
+        block_env: &BlockEnv,
         tx_fork_db: &ForkDb<Active>,
         forked_tx_result: &ExecuteForkedTxResult,
         tx_env: &TxEnv,
@@ -521,12 +590,20 @@ impl AssertionExecutor {
         Active: DatabaseRef + Sync + Send + Clone,
         Active::Error: Send,
     {
-        let results = self.execute_triggered_assertions(
-            block_env,
-            tx_fork_db,
-            forked_tx_result,
-            tx_env,
-            tx_arena_epoch,
+        let assertions = self
+            .store
+            .read(&forked_tx_result.call_tracer, U256::from(block_env.number))
+            .map_err(AssertionExecutionError::AssertionReadError)?;
+
+        let results = Self::execute_selected_assertions(
+            SelectedAssertionsExecutionParams {
+                block_env,
+                tx_fork_db,
+                assertions,
+                forked_tx_result,
+                tx_env,
+                tx_arena_epoch,
+            },
             |assertion_contract, fn_selectors, block_env, tx_fork_db, context, tx_arena_epoch| {
                 self.run_assertion_contract(
                     assertion_contract,
@@ -541,6 +618,131 @@ impl AssertionExecutor {
 
         debug!(target: "assertion-executor::execute_assertions", ?results, "Assertion Execution Results");
         results
+    }
+
+    #[cfg(any(test, feature = "test"))]
+    /// Bench helper that measures assertion setup without executing any assertion bytecode.
+    ///
+    /// The `black_box` calls intentionally keep the cloned setup artifacts alive so the
+    /// optimizer cannot fold away the work that the setup benchmark is trying to measure.
+    pub fn benchmark_prepare_selected_assertions<Active>(
+        &self,
+        block_env: &BlockEnv,
+        tx_fork_db: &ForkDb<Active>,
+        assertions: &[AssertionsForExecution],
+        forked_tx_result: &ExecuteForkedTxResult,
+        tx_env: &TxEnv,
+    ) -> BenchmarkAssertionSetupStats
+    where
+        Active: DatabaseRef + Sync + Send + Clone,
+        Active::Error: Send,
+    {
+        let logs_and_traces = LogsAndTraces {
+            tx_logs: forked_tx_result.result_and_state.result.logs(),
+            call_traces: &forked_tx_result.call_tracer,
+        };
+
+        let mut stats = BenchmarkAssertionSetupStats::default();
+
+        for assertion_for_execution in assertions {
+            let phevm_context = PhEvmContext::new(
+                &logs_and_traces,
+                assertion_for_execution.adopter,
+                tx_env,
+                assertion_for_execution.assertion_spec.clone(),
+            );
+            let prepared = self.prepare_assertion_contract(
+                &assertion_for_execution.assertion_contract,
+                &assertion_for_execution.selectors,
+                tx_fork_db.clone(),
+                &phevm_context,
+            );
+
+            stats.assertion_contracts_prepared += 1;
+
+            let selector_count = assertion_for_execution.selectors.len();
+            if selector_count == 0 {
+                continue;
+            }
+
+            stats.selector_fanouts_prepared += selector_count;
+
+            if selector_count == 1 {
+                std::hint::black_box(prepared.multi_fork_db);
+                std::hint::black_box(prepared.inspector);
+                continue;
+            }
+
+            if should_parallelize_assertion_fns(selector_count) {
+                assertion_executor_pool().install(|| {
+                    assertion_for_execution.selectors.par_iter().for_each(|_| {
+                        // Match the real multi-selector path by cloning the prepared
+                        // db and inspector once per selector fanout.
+                        std::hint::black_box(prepared.multi_fork_db.clone());
+                        std::hint::black_box(prepared.inspector.clone());
+                    });
+                });
+            } else {
+                for _ in &assertion_for_execution.selectors {
+                    // Small fanouts stay sequential in production, so the setup bench
+                    // mirrors that branch instead of always forcing rayon.
+                    std::hint::black_box(prepared.multi_fork_db.clone());
+                    std::hint::black_box(prepared.inspector.clone());
+                }
+            }
+        }
+
+        let _ = block_env;
+        stats
+    }
+
+    #[cfg(any(test, feature = "test"))]
+    /// Bench helper that executes already-selected assertions so the perf harness can
+    /// measure assertion execution separately from store lookup and setup preparation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any selected assertion fails to execute against the
+    /// prepared post-transaction state.
+    pub fn benchmark_execute_selected_assertions<Active>(
+        &self,
+        block_env: &BlockEnv,
+        tx_fork_db: &ForkDb<Active>,
+        assertions: Vec<AssertionsForExecution>,
+        forked_tx_result: &ExecuteForkedTxResult,
+        tx_env: &TxEnv,
+    ) -> Result<Vec<AssertionContractExecution>, ExecutorError<<Active as DatabaseRef>::Error>>
+    where
+        Active: DatabaseRef + Sync + Send + Clone,
+        Active::Error: Send,
+    {
+        let tx_arena_epoch = next_tx_arena_epoch();
+        Self::execute_selected_assertions(
+            SelectedAssertionsExecutionParams {
+                block_env,
+                tx_fork_db,
+                assertions,
+                forked_tx_result,
+                tx_env,
+                tx_arena_epoch,
+            },
+            |assertion_contract, fn_selectors, block_env, tx_fork_db, context, tx_arena_epoch| {
+                self.run_assertion_contract(
+                    assertion_contract,
+                    fn_selectors,
+                    block_env,
+                    tx_fork_db,
+                    context,
+                    tx_arena_epoch,
+                )
+            },
+        )
+        .map_err(|err| {
+            ExecutorError::AssertionExecutionError(
+                forked_tx_result.result_and_state.state.clone(),
+                err,
+            )
+        })
     }
 
     /// Runs a single assertion contract's functions in parallel (without a custom inspector).
@@ -567,8 +769,84 @@ impl AssertionExecutor {
         Active: DatabaseRef + Sync + Send + Clone,
         Active::Error: Send,
     {
+        // `AssertionStore::read` already prunes this case, but keep the guard here so callers that
+        // bypass the store still avoid db setup, persistent-account insertion, and inspector clones.
+        if fn_selectors.is_empty() {
+            debug!(
+                target: "assertion-executor::execute_assertions",
+                assertion_contract_id = ?assertion_contract.id,
+                "Skipping assertion contract with no matched selectors"
+            );
+            return Ok(AssertionContractExecution {
+                adopter: context.adopter,
+                assertion_fns_results: vec![],
+                total_assertion_gas: 0,
+                total_assertion_funcs_ran: 0,
+            });
+        }
+
         let prepared =
             self.prepare_assertion_contract(assertion_contract, fn_selectors, tx_fork_db, context);
+
+        if fn_selectors.len() == 1 {
+            // The common case is one matched selector. Run it directly so we keep the same
+            // execution semantics without paying the scheduling/cloning cost of the general path.
+            let fn_selector = fn_selectors[0];
+            let fn_result = self.execute_assertion_fn(AssertionExecutionParams {
+                assertion_contract,
+                fn_selector: &fn_selector,
+                tx_arena_epoch,
+                block_env: block_env.clone(),
+                multi_fork_db: prepared.multi_fork_db,
+                inspector: prepared.inspector,
+            })?;
+            let total_assertion_gas = fn_result.as_result().gas_used();
+            return Ok(AssertionContractExecution {
+                adopter: context.adopter,
+                assertion_fns_results: vec![fn_result],
+                total_assertion_gas,
+                total_assertion_funcs_ran: 1,
+            });
+        }
+
+        let execution_count = fn_selectors.len();
+        let parallel_fns = should_parallelize_assertion_fns(execution_count);
+        trace!(
+            target: "assertion-executor::execute_assertions",
+            assertion_contract_id = ?assertion_contract.id,
+            selector_count = fn_selectors.len(),
+            execution_count,
+            scheduling = if parallel_fns { "parallel" } else { "sequential" },
+            "Assertion fn scheduling decision"
+        );
+
+        if !parallel_fns {
+            let mut valid_results = Vec::with_capacity(execution_count);
+            let mut total_assertion_gas = 0;
+
+            // Small selector batches are faster in a tight loop than in rayon, so keep the
+            // execution order local and preserve the same aggregation logic as the parallel path.
+            for fn_selector in fn_selectors {
+                let fn_result = self.execute_assertion_fn(AssertionExecutionParams {
+                    assertion_contract,
+                    fn_selector,
+                    tx_arena_epoch,
+                    block_env: block_env.clone(),
+                    multi_fork_db: prepared.multi_fork_db.clone(),
+                    inspector: prepared.inspector.clone(),
+                })?;
+                total_assertion_gas += fn_result.as_result().gas_used();
+                valid_results.push(fn_result);
+            }
+
+            let total_assertion_funcs_ran = valid_results.len() as u64;
+            return Ok(AssertionContractExecution {
+                adopter: context.adopter,
+                assertion_fns_results: valid_results,
+                total_assertion_gas,
+                total_assertion_funcs_ran,
+            });
+        }
 
         let current_span = tracing::Span::current();
         let results_vec: Vec<_> = current_span.in_scope(|| {
@@ -589,7 +867,6 @@ impl AssertionExecutor {
             })
         });
 
-        trace!(target: "assertion-executor::execute_assertions", execution_results=?results_vec.iter().map(|result| format!("{result:?}")).collect::<Vec<_>>(), "Assertion Execution Results");
         let mut valid_results = Vec::with_capacity(results_vec.len());
         let mut total_assertion_gas = 0;
         for result in results_vec {
@@ -634,7 +911,7 @@ impl AssertionExecutor {
         prepare_tx_arena_for_current_thread(tx_arena_epoch);
 
         let result = self.execute_assertion_fn_call(
-            block_env,
+            &block_env,
             *fn_selector,
             &mut multi_fork_db,
             &mut inspector,
@@ -653,6 +930,10 @@ impl AssertionExecutor {
     ///
     /// Returns an error if executing the transaction or assertions fails.
     #[instrument(level = "debug", skip_all, target = "executor::validate_tx")]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "This public API preserves the existing ownership-taking signature for external callers"
+    )]
     pub fn validate_transaction<Active>(
         &mut self,
         block_env: BlockEnv,
@@ -683,7 +964,7 @@ impl AssertionExecutor {
         let assertion_timer = Instant::now();
         let results = self
             .execute_assertions(
-                block_env,
+                &block_env,
                 fork_db,
                 &forked_tx_result,
                 tx_env,
@@ -870,7 +1151,12 @@ mod test {
             DatabaseRef,
             overlay::test_utils::MockDb,
         },
-        inspectors::CallTracer,
+        inspectors::{
+            CallTracer,
+            LogsAndTraces,
+            PhEvmContext,
+            spec_recorder::AssertionSpec,
+        },
         primitives::{
             Account,
             AccountInfo,
@@ -930,7 +1216,6 @@ mod test {
 
         assert_eq!(account_info.code.unwrap(), counter_assertion.deployed_code);
     }
-
     #[tokio::test]
     async fn test_execute_assertion_detects_post_tx_overrides() {
         let test_db: TestDB = TestDB::new_test();
@@ -1002,7 +1287,7 @@ mod test {
         let tx_arena_epoch = crate::arena::next_tx_arena_epoch();
         let results = executor
             .execute_assertions(
-                block_env,
+                &block_env,
                 &fork_db,
                 &forked_tx_result,
                 &TxEnv::default(),
@@ -1015,6 +1300,122 @@ mod test {
             !results[0].assertion_fns_results[0].is_success(),
             "Assertion should revert when counter exceeds limit even if post-tx journal clears code"
         );
+    }
+
+    #[test]
+    fn test_should_parallelize_assertion_fns_respects_threshold() {
+        assert!(!should_parallelize_assertion_fns(0));
+        assert!(!should_parallelize_assertion_fns(1));
+        assert!(!should_parallelize_assertion_fns(
+            ASSERTION_FN_PARALLEL_MIN_WORK_ITEMS - 1
+        ));
+        assert!(should_parallelize_assertion_fns(
+            ASSERTION_FN_PARALLEL_MIN_WORK_ITEMS
+        ));
+        assert!(should_parallelize_assertion_fns(
+            ASSERTION_FN_PARALLEL_MIN_WORK_ITEMS + 1
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_run_assertion_contract_empty_selectors_short_circuits() {
+        let test_db: TestDB = TestDB::new_test();
+        let fork_db: TestForkDB = test_db.fork();
+        let executor =
+            AssertionExecutor::new(ExecutorConfig::default(), AssertionStore::new_ephemeral());
+
+        let call_tracer = CallTracer::default();
+        let logs_and_traces = LogsAndTraces {
+            tx_logs: &[],
+            call_traces: &call_tracer,
+        };
+        let tx_env = TxEnv::default();
+        let context = PhEvmContext::new(
+            &logs_and_traces,
+            COUNTER_ADDRESS,
+            &tx_env,
+            AssertionSpec::Legacy,
+        );
+
+        let execution = executor
+            .run_assertion_contract(
+                &counter_assertion(),
+                &[],
+                &BlockEnv::default(),
+                fork_db,
+                &context,
+                crate::arena::next_tx_arena_epoch(),
+            )
+            .expect("empty selector execution should short-circuit");
+
+        assert_eq!(execution.adopter, COUNTER_ADDRESS);
+        assert!(execution.assertion_fns_results.is_empty());
+        assert_eq!(execution.total_assertion_gas, 0);
+        assert_eq!(execution.total_assertion_funcs_ran, 0);
+    }
+
+    #[tokio::test]
+    async fn test_run_assertion_contract_sequential_path_executes_each_selector_once() {
+        let test_db: TestDB = TestDB::new_test();
+        let fork_db: TestForkDB = test_db.fork();
+        let executor =
+            AssertionExecutor::new(ExecutorConfig::default(), AssertionStore::new_ephemeral());
+
+        let extracted = selector_assertion();
+        let mut fn_selectors: Vec<_> = extracted
+            .trigger_recorder
+            .triggers
+            .values()
+            .flat_map(|selectors| selectors.iter().copied())
+            .collect();
+        fn_selectors.sort();
+        fn_selectors.dedup();
+
+        assert!(fn_selectors.len() > 1);
+        assert!(!should_parallelize_assertion_fns(fn_selectors.len()));
+
+        let call_tracer = CallTracer::default();
+        let logs_and_traces = LogsAndTraces {
+            tx_logs: &[],
+            call_traces: &call_tracer,
+        };
+        let tx_env = TxEnv::default();
+        let context = PhEvmContext::new(
+            &logs_and_traces,
+            COUNTER_ADDRESS,
+            &tx_env,
+            AssertionSpec::Legacy,
+        );
+
+        let execution = executor
+            .run_assertion_contract(
+                &extracted.assertion_contract,
+                &fn_selectors,
+                &BlockEnv::default(),
+                fork_db,
+                &context,
+                crate::arena::next_tx_arena_epoch(),
+            )
+            .expect("sequential multi-selector execution should succeed");
+
+        let mut executed_selectors: Vec<_> = execution
+            .assertion_fns_results
+            .iter()
+            .map(|result| result.id.fn_selector)
+            .collect();
+        executed_selectors.sort();
+
+        assert!(
+            execution
+                .assertion_fns_results
+                .iter()
+                .all(AssertionFunctionResult::is_success)
+        );
+        assert_eq!(
+            execution.total_assertion_funcs_ran,
+            fn_selectors.len() as u64
+        );
+        assert_eq!(executed_selectors, fn_selectors);
     }
 
     #[tokio::test]

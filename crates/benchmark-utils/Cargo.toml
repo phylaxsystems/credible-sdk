@@ -7,6 +7,4 @@ edition.workspace = true
 alloy = { workspace = true, features = ["rlp"] }
 assertion-executor = { workspace = true, features = ["test"] }
 revm = { workspace = true }
-
-[dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros"] }

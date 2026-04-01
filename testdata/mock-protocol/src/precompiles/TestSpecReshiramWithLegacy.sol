@@ -7,7 +7,7 @@ import {Test} from "forge-std/Test.sol";
 import {TARGET} from "./Target.sol";
 
 /// @notice Assertion that uses both Legacy and Reshiram-tier precompiles.
-/// Should pass under Reshiram or Experimental spec.
+/// Should fail under Reshiram and pass under Experimental spec.
 contract TestSpecReshiramWithLegacy is Assertion, Test {
     constructor() payable {}
 

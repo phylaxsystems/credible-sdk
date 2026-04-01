@@ -44,7 +44,7 @@ use assertion_executor::primitives::{
     EvmStorage,
     U256,
 };
-use futures::StreamExt;
+use futures_util::StreamExt;
 use moka::sync::Cache;
 use std::{
     collections::BTreeMap,

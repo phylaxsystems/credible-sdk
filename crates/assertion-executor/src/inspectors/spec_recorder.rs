@@ -40,9 +40,6 @@ use std::ops::Range;
 pub const SPEC_ADDRESS: Address = address!("3cf4a3c0a0af502eef5907cc92584b70f01d686d");
 
 /// The assertion spec defines what subset of precompiles to expose during phevm execution.
-///
-/// All new specs derive and expose all precompiles from the old definitions, unless specified
-/// otherwise.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum AssertionSpec {
     /// Standard set of `PhEvm` precompiles available at launch.
@@ -57,15 +54,15 @@ pub enum AssertionSpec {
 impl AssertionSpec {
     /// Returns `true` if the given precompile selector is allowed under this spec.
     ///
-    /// Each spec is a superset of the previous one:
-    /// - `Legacy`: all precompiles except Reshiram-only selectors
-    /// - `Reshiram`: all precompiles except Experimental-only selectors
-    /// - `Experimental`: unrestricted
+    /// `Reshiram` replaces the legacy fork-switching model with immutable snapshot reads.
+    /// `Experimental` enables both legacy and Reshiram selectors.
     #[must_use]
     pub fn allows_selector(&self, selector: [u8; 4]) -> bool {
         match self {
             Self::Experimental => true,
-            Self::Reshiram => !Self::is_experimental_only(selector),
+            Self::Reshiram => {
+                !Self::is_experimental_only(selector) && !Self::is_legacy_only(selector)
+            }
             Self::Legacy => {
                 !Self::is_reshiram_only(selector) && !Self::is_experimental_only(selector)
             }
@@ -75,7 +72,25 @@ impl AssertionSpec {
     fn is_reshiram_only(selector: [u8; 4]) -> bool {
         use crate::inspectors::sol_primitives::PhEvm;
         use alloy_sol_types::SolCall;
-        matches!(selector, PhEvm::getTxObjectCall::SELECTOR)
+        matches!(
+            selector,
+            PhEvm::getTxObjectCall::SELECTOR
+                | PhEvm::loadStateAt_0Call::SELECTOR
+                | PhEvm::loadStateAt_1Call::SELECTOR
+        )
+    }
+
+    fn is_legacy_only(selector: [u8; 4]) -> bool {
+        use crate::inspectors::sol_primitives::PhEvm;
+        use alloy_sol_types::SolCall;
+        matches!(
+            selector,
+            PhEvm::forkPreTxCall::SELECTOR
+                | PhEvm::forkPostTxCall::SELECTOR
+                | PhEvm::forkPreCallCall::SELECTOR
+                | PhEvm::forkPostCallCall::SELECTOR
+                | PhEvm::loadCall::SELECTOR
+        )
     }
 
     fn is_experimental_only(_selector: [u8; 4]) -> bool {
