@@ -17,12 +17,17 @@ use uuid::Uuid;
     about = "Download assertion source code for a protocol"
 )]
 pub struct DownloadArgs {
-    #[arg(long, help = "Project UUID to download assertions from")]
+    #[arg(
+        long,
+        help = "Project UUID to download assertions from",
+        conflicts_with = "manager"
+    )]
     pub project_id: Option<Uuid>,
 
     #[arg(
         long,
-        help = "Protocol manager address to look up the project"
+        help = "Protocol manager address to look up the project",
+        conflicts_with = "project_id"
     )]
     pub manager: Option<String>,
 
@@ -105,6 +110,7 @@ struct DownloadedFile {
 }
 
 impl DownloadArgs {
+    #[allow(clippy::too_many_lines)]
     pub async fn run(&self, cli_args: &CliArgs, config: &CliConfig) -> Result<(), DownloadError> {
         let json_output = cli_args.json_output() || self.json;
 
@@ -112,9 +118,7 @@ impl DownloadArgs {
 
         let (project_id, project_name) = self.resolve_project(&client).await?;
 
-        let assertions = self
-            .fetch_assertions_list(&client, &project_id)
-            .await?;
+        let assertions = self.fetch_assertions_list(&client, &project_id).await?;
 
         if assertions.is_empty() {
             if json_output {
@@ -129,9 +133,9 @@ impl DownloadArgs {
                         files: vec![],
                     })?
                 );
-            } else {
-                eprintln!("No assertions found for project.");
+                return Ok(());
             }
+            eprintln!("No assertions found for project.");
             return Err(DownloadError::NoAssertionsFound);
         }
 
@@ -140,17 +144,21 @@ impl DownloadArgs {
             .clone()
             .unwrap_or_else(|| PathBuf::from(format!("{project_name}-assertions")));
 
-        std::fs::create_dir_all(&output_dir).map_err(|e| DownloadError::Io {
-            message: format!("Failed to create output directory: {}", output_dir.display()),
-            source: e,
+        std::fs::create_dir_all(&output_dir).map_err(|e| {
+            DownloadError::Io {
+                message: format!(
+                    "Failed to create output directory: {}",
+                    output_dir.display()
+                ),
+                source: e,
+            }
         })?;
 
         if !json_output {
             println!(
-                "Downloading {} assertion{} for project \"{}\"...\n",
+                "Downloading {} assertion{} for project \"{project_name}\"...\n",
                 assertions.len(),
                 if assertions.len() == 1 { "" } else { "s" },
-                project_name
             );
         }
 
@@ -174,48 +182,47 @@ impl DownloadArgs {
                 .and_then(|s| s.source_code.clone())
                 .or_else(|| detail.artifact.as_ref().map(|a| a.solidity_source.clone()));
 
-            match source_code {
-                Some(code) => {
-                    let id_prefix = &assertion_id[..8];
-                    let file_name = format!("{contract_name}_{id_prefix}.sol");
-                    let file_path = output_dir.join(&file_name);
+            if let Some(code) = source_code {
+                let id_prefix = assertion_id.get(..8).unwrap_or(assertion_id);
+                let file_name = format!("{contract_name}_{id_prefix}.sol");
+                let file_path = output_dir.join(&file_name);
 
-                    std::fs::write(&file_path, &code).map_err(|e| DownloadError::Io {
+                std::fs::write(&file_path, &code).map_err(|e| {
+                    DownloadError::Io {
                         message: format!("Failed to write file: {}", file_path.display()),
                         source: e,
-                    })?;
-
-                    if !json_output {
-                        println!("  {}", file_name);
                     }
+                })?;
 
-                    let source_label = detail
-                        .source
-                        .as_ref()
-                        .map(|s| s.verification_status.to_string())
-                        .unwrap_or_else(|| {
+                if !json_output {
+                    println!("  {file_name}");
+                }
+
+                let source_label = detail
+                    .source
+                    .as_ref()
+                    .filter(|s| s.source_code.is_some())
+                    .map_or_else(
+                        || {
                             detail
                                 .artifact
                                 .as_ref()
                                 .map(|_| "artifact".to_string())
                                 .unwrap_or_default()
-                        });
+                        },
+                        |s| s.verification_status.to_string(),
+                    );
 
-                    downloaded.push(DownloadedFile {
-                        assertion_id: assertion_id.clone(),
-                        contract_name: contract_name.clone(),
-                        file_name: file_name.clone(),
-                        source: source_label,
-                    });
-                }
-                None => {
-                    skipped += 1;
-                    if !json_output {
-                        println!(
-                            "  [skipped] {} — no source code available",
-                            contract_name
-                        );
-                    }
+                downloaded.push(DownloadedFile {
+                    assertion_id: assertion_id.clone(),
+                    contract_name: contract_name.clone(),
+                    file_name: file_name.clone(),
+                    source: source_label,
+                });
+            } else {
+                skipped += 1;
+                if !json_output {
+                    println!("  [skipped] {contract_name} — no source code available");
                 }
             }
         }
@@ -234,21 +241,17 @@ impl DownloadArgs {
             );
         } else {
             println!(
-                "\nDone. {} file{} written to {}/ ({} skipped)",
+                "\nDone. {} file{} written to {}/ ({skipped} skipped)",
                 downloaded.len(),
                 if downloaded.len() == 1 { "" } else { "s" },
                 output_dir.display(),
-                skipped
             );
         }
 
         Ok(())
     }
 
-    fn authenticated_client(
-        &self,
-        config: &CliConfig,
-    ) -> Result<GeneratedClient, DownloadError> {
+    fn authenticated_client(&self, config: &CliConfig) -> Result<GeneratedClient, DownloadError> {
         let auth = config.auth.as_ref().ok_or(DownloadError::NoAuthToken)?;
         let mut base = self.api_url.clone();
         base.set_path("/api/v1");
@@ -274,8 +277,36 @@ impl DownloadArgs {
         &self,
         client: &GeneratedClient,
     ) -> Result<(Uuid, String), DownloadError> {
+        if self.project_id.is_some() && self.manager.is_some() {
+            return Err(DownloadError::MissingIdentifier);
+        }
+
         if let Some(pid) = self.project_id {
-            return Ok((pid, pid.to_string()));
+            let response = client
+                .get_views_projects(None, None, None, None, None)
+                .await
+                .map(dapp_api_client::generated::client::ResponseValue::into_inner)
+                .map_err(|e| {
+                    DownloadError::Api {
+                        endpoint: "/views/projects".to_string(),
+                        status: e.status().map(|s| s.as_u16()),
+                        body: e.to_string(),
+                    }
+                })?;
+
+            let project = response
+                .data
+                .items
+                .into_iter()
+                .find(|item| item.project_id == pid.to_string())
+                .ok_or_else(|| DownloadError::ManagerNotFound(format!("project {pid}")))?;
+
+            let project_id = project
+                .project_id
+                .parse::<Uuid>()
+                .map_err(|e| DownloadError::InvalidConfig(format!("Invalid project UUID: {e}")))?;
+
+            return Ok((project_id, project.project_name));
         }
 
         let manager = self
@@ -288,10 +319,12 @@ impl DownloadArgs {
             .get_views_projects(None, None, None, None, None)
             .await
             .map(dapp_api_client::generated::client::ResponseValue::into_inner)
-            .map_err(|e| DownloadError::Api {
-                endpoint: "/views/projects".to_string(),
-                status: e.status().map(|s| s.as_u16()),
-                body: e.to_string(),
+            .map_err(|e| {
+                DownloadError::Api {
+                    endpoint: "/views/projects".to_string(),
+                    status: e.status().map(|s| s.as_u16()),
+                    body: e.to_string(),
+                }
             })?;
 
         let matches: Vec<_> = response
@@ -305,12 +338,9 @@ impl DownloadArgs {
             0 => Err(DownloadError::ManagerNotFound(manager)),
             1 => {
                 let project = &matches[0];
-                let project_id = project
-                    .project_id
-                    .parse::<Uuid>()
-                    .map_err(|e| {
-                        DownloadError::InvalidConfig(format!("Invalid project UUID: {e}"))
-                    })?;
+                let project_id = project.project_id.parse::<Uuid>().map_err(|e| {
+                    DownloadError::InvalidConfig(format!("Invalid project UUID: {e}"))
+                })?;
                 Ok((project_id, project.project_name.clone()))
             }
             _ => Err(DownloadError::MultipleProjectsForManager(manager)),
@@ -326,15 +356,17 @@ impl DownloadArgs {
             dapp_api_client::generated::client::types::GetViewsProjectsProjectIdAssertionsResponseDataAssertionsItem,
         >,
         DownloadError,
-    > {
+    >{
         let response = client
             .get_views_projects_project_id_assertions(project_id, None)
             .await
             .map(dapp_api_client::generated::client::ResponseValue::into_inner)
-            .map_err(|e| DownloadError::Api {
-                endpoint: format!("/views/projects/{project_id}/assertions"),
-                status: e.status().map(|s| s.as_u16()),
-                body: e.to_string(),
+            .map_err(|e| {
+                DownloadError::Api {
+                    endpoint: format!("/views/projects/{project_id}/assertions"),
+                    status: e.status().map(|s| s.as_u16()),
+                    body: e.to_string(),
+                }
             })?;
 
         Ok(response.data.assertions)
@@ -348,20 +380,20 @@ impl DownloadArgs {
     ) -> Result<
         dapp_api_client::generated::client::types::GetViewsProjectsProjectIdAssertionsAssertionIdResponseData,
         DownloadError,
-    > {
+    >{
         let aid = GetViewsProjectsProjectIdAssertionsAssertionIdAssertionId::try_from(assertion_id)
-            .map_err(|e| {
-                DownloadError::InvalidConfig(format!("Invalid assertion ID: {e}"))
-            })?;
+            .map_err(|e| DownloadError::InvalidConfig(format!("Invalid assertion ID: {e}")))?;
 
         let response = client
             .get_views_projects_project_id_assertions_assertion_id(project_id, &aid)
             .await
             .map(dapp_api_client::generated::client::ResponseValue::into_inner)
-            .map_err(|e| DownloadError::Api {
-                endpoint: format!("/views/projects/{project_id}/assertions/{assertion_id}"),
-                status: e.status().map(|s| s.as_u16()),
-                body: e.to_string(),
+            .map_err(|e| {
+                DownloadError::Api {
+                    endpoint: format!("/views/projects/{project_id}/assertions/{assertion_id}"),
+                    status: e.status().map(|s| s.as_u16()),
+                    body: e.to_string(),
+                }
             })?;
 
         Ok(response.data)
@@ -437,10 +469,7 @@ mod tests {
         .unwrap();
         match cli.command {
             TestCommand::Download(args) => {
-                assert_eq!(
-                    args.output_dir.unwrap(),
-                    PathBuf::from("/tmp/my-sol-files")
-                );
+                assert_eq!(args.output_dir.unwrap(), PathBuf::from("/tmp/my-sol-files"));
             }
         }
     }
@@ -460,5 +489,18 @@ mod tests {
                 assert!(args.json);
             }
         }
+    }
+
+    #[test]
+    fn rejects_both_project_id_and_manager() {
+        let result = TestCli::try_parse_from([
+            "pcl",
+            "download",
+            "--project-id",
+            "550e8400-e29b-41d4-a716-446655440000",
+            "--manager",
+            "0x1234567890abcdef1234567890abcdef12345678",
+        ]);
+        assert!(result.is_err());
     }
 }
