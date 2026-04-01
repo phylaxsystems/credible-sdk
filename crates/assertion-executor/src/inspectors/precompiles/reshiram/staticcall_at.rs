@@ -430,6 +430,7 @@ where
         if let Some(rax) = deduct_gas_and_check(&mut gas_left, call.gas_limit, gas_limit) {
             return Err(StaticCallAtError::OutOfGas(rax));
         }
+        // Restore: actual nested gas is charged after execution via nested_gas_used.
         gas_left += call.gas_limit;
 
         journal
