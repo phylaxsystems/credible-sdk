@@ -1,4 +1,5 @@
 //! Unified configuration combining CLI args and file config
+pub mod clap_merge_poc;
 pub mod cli;
 
 use crate::{
