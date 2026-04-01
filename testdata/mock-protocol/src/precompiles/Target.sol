@@ -31,6 +31,20 @@ contract Target {
         return value;
     }
 
+    function readMsgSender() external view returns (address) {
+        return msg.sender;
+    }
+
+    function revertWithMessage() external pure {
+        revert("revert from Target view");
+    }
+
+    function consumeGas(uint256 iterations) external pure returns (uint256 result) {
+        for (uint256 i = 0; i < iterations; i++) {
+            result += i;
+        }
+    }
+
     function incrementStorage() public {
         uint256 _value = value + 1;
         writeStorage(_value);

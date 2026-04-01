@@ -77,6 +77,7 @@ impl AssertionSpec {
             PhEvm::getTxObjectCall::SELECTOR
                 | PhEvm::loadStateAt_0Call::SELECTOR
                 | PhEvm::loadStateAt_1Call::SELECTOR
+                | PhEvm::staticcallAtCall::SELECTOR
         )
     }
 
