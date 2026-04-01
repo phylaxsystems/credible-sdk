@@ -19,6 +19,7 @@ sidecar-test-macros = { path = "src/utils/test-macros", optional = true }
 mdbx = { workspace = true, features = ["reader"] }
 int-test-utils = { workspace = true, optional = true }
 
+config = { version = "0.15", features = ["json"] }
 clap = { workspace = true }
 dashmap = { workspace = true }
 anyhow = { workspace = true }
