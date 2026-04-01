@@ -8,8 +8,8 @@ use sidecar::cache::sources::{
     Source,
     mdbx::MdbxSource,
 };
-pub(crate) use ::state_worker::FlushControl;
-use ::state_worker::{
+pub(crate) use state_worker::FlushControl;
+use state_worker::{
     DEFAULT_TRACE_TIMEOUT as STATE_WORKER_DEFAULT_TRACE_TIMEOUT,
     WorkerConfig as StateWorkerConfig,
     run_supervisor_loop,

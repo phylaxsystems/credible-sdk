@@ -11,10 +11,6 @@ use assertion_executor::{
 };
 use credible_utils::shutdown::wait_for_sigterm;
 use flume::unbounded;
-use state_worker::{
-    StateWorker,
-    build_mdbx_source,
-};
 use mdbx::{
     StateReader,
     common::CircularBufferConfig,
@@ -65,7 +61,11 @@ use sidecar::{
     },
     utils::ErrorRecoverability,
 };
-use state_worker::FlushControl;
+use state_worker::{
+    FlushControl,
+    StateWorker,
+    build_mdbx_source,
+};
 use std::{
     net::SocketAddr,
     path::Path,
@@ -293,6 +293,22 @@ impl ThreadHandles {
             transaction_observer: None,
             state_worker: None,
         }
+    }
+
+    fn install_state_worker(
+        &mut self,
+        state_worker: Option<StateWorker>,
+    ) -> (Option<CancellationToken>, Option<Arc<FlushControl>>) {
+        let mut state_worker_shutdown = None;
+        let mut state_worker_commit_control = None;
+
+        if let Some(state_worker) = state_worker {
+            state_worker_commit_control = Some(state_worker.commit_control.clone());
+            state_worker_shutdown = Some(state_worker.shutdown.clone());
+            self.state_worker = Some(state_worker.handle);
+        }
+
+        (state_worker_shutdown, state_worker_commit_control)
     }
 
     fn join_all(&mut self) {
@@ -659,22 +675,6 @@ async fn stop_da_reachability_monitor(da_reachability_handle: tokio::task::JoinH
     }
 }
 
-fn install_state_worker(
-    thread_handles: &mut ThreadHandles,
-    state_worker: Option<StateWorker>,
-) -> (Option<CancellationToken>, Option<Arc<FlushControl>>) {
-    let mut state_worker_shutdown = None;
-    let mut state_worker_commit_control = None;
-
-    if let Some(state_worker) = state_worker {
-        state_worker_commit_control = Some(state_worker.commit_control.clone());
-        state_worker_shutdown = Some(state_worker.shutdown.clone());
-        thread_handles.state_worker = Some(state_worker.handle);
-    }
-
-    (state_worker_shutdown, state_worker_commit_control)
-}
-
 fn incident_channels(
     transaction_observer_enabled: bool,
 ) -> (
@@ -706,7 +706,7 @@ async fn run_sidecar_once(
         state_worker,
     } = build_sources_from_config(config).await?;
     let (state_worker_shutdown, state_worker_commit_control) =
-        install_state_worker(&mut thread_handles, state_worker);
+        thread_handles.install_state_worker(state_worker);
 
     let state = Arc::new(Sources::new(sources, config.state.minimum_state_diff));
     let cache: OverlayDb<Sources> = OverlayDb::new(Some(state.clone()));
