@@ -15,7 +15,6 @@ use crate::{
                     GetCallInputsError,
                     get_call_inputs,
                 },
-                console_log::ConsoleLogError,
                 fork::{
                     ForkError,
                     fork_post_call,
@@ -65,6 +64,8 @@ use crate::{
     },
 };
 
+#[cfg(feature = "phoundry")]
+use crate::inspectors::precompiles::legacy::console_log::ConsoleLogError;
 use op_revm::OpContext;
 use revm::{
     Inspector,
@@ -174,6 +175,7 @@ pub enum PrecompileError<ExtDb: DatabaseRef<Error: std::fmt::Debug>> {
     GetCallInputsError(#[source] GetCallInputsError),
     #[error("Error switching forks: {0}")]
     ForkError(#[source] ForkError),
+    #[cfg(feature = "phoundry")]
     #[error("Error logging to console: {0}")]
     ConsoleLogError(#[source] ConsoleLogError),
     #[error("Error loading external slot: {0}")]

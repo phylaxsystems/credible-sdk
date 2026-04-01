@@ -82,6 +82,8 @@ use revm::{
 
 use super::BASE_COST as RESHIRAM_BASE_COST;
 
+type CtxDbError<CTX> = ContextError<<<CTX as ContextTr>::Db as Database>::Error>;
+
 const MEM_WRITE_COST: u64 = 3;
 const RETURN_WORD_COST: u64 = 3;
 const EVM_WORD_BYTES: u64 = 32;
@@ -171,10 +173,7 @@ fn encode_result(ok: bool, data: Bytes) -> Bytes {
 fn resolve_known_bytecode<CTX>(
     context: &mut CTX,
     target: Address,
-) -> Result<
-    Option<(B256, crate::primitives::Bytecode)>,
-    ContextError<<<CTX as ContextTr>::Db as Database>::Error>,
->
+) -> Result<Option<(B256, crate::primitives::Bytecode)>, CtxDbError<CTX>>
 where
     CTX: ContextTr,
     CTX::Journal: JournalTr,
@@ -202,7 +201,7 @@ where
 fn run_frame_loop<EVM>(
     evm: &mut EVM,
     first_frame_input: FrameInit,
-) -> Result<FrameResult, ContextError<<<EVM::Context as ContextTr>::Db as Database>::Error>>
+) -> Result<FrameResult, CtxDbError<EVM::Context>>
 where
     EVM: EvmTr<Frame = EthFrame<EthInterpreter>>,
     EVM::Frame: revm::handler::FrameTr<FrameInit = FrameInit, FrameResult = FrameResult>,
@@ -238,10 +237,7 @@ fn execute_nested_staticcall<EVM>(
     target: Address,
     calldata: Bytes,
     gas_limit: u64,
-) -> Result<
-    revm::context_interface::result::ExecutionResult<HaltReason>,
-    ContextError<<<EVM::Context as ContextTr>::Db as Database>::Error>,
->
+) -> Result<revm::context_interface::result::ExecutionResult<HaltReason>, CtxDbError<EVM::Context>>
 where
     EVM: EvmTr<Frame = EthFrame<EthInterpreter>>,
     EVM::Frame: revm::handler::FrameTr<FrameInit = FrameInit, FrameResult = FrameResult>,
@@ -275,9 +271,7 @@ where
         },
     )?;
 
-    if let Err(err) = core::mem::replace(evm.ctx_mut().error(), Ok(())) {
-        return Err(err);
-    }
+    core::mem::replace(evm.ctx_mut().error(), Ok(()))?;
 
     let result = post_execution::output::<_, HaltReason>(evm.ctx_mut(), frame_result);
     evm.ctx_mut().local_mut().clear();
