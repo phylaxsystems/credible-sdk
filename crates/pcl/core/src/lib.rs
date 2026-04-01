@@ -7,6 +7,7 @@ pub mod apply;
 pub mod auth;
 pub mod config;
 pub mod credible_config;
+pub mod diff;
 pub mod error;
 pub mod verify;
 

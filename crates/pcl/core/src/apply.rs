@@ -5,6 +5,7 @@ use crate::{
         CredibleToml,
         assertion_contract_name,
     },
+    diff::PreviewResponse,
     error::ApplyError,
     verify::{
         VerificationSummary,
@@ -30,7 +31,6 @@ use inquire::Select;
 use pcl_common::args::CliArgs;
 use pcl_phoundry::build_and_flatten::BuildAndFlattenArgs;
 use serde::Serialize;
-use serde_json::Value;
 use std::{
     collections::HashMap,
     io::{
@@ -95,7 +95,7 @@ struct ApplyJsonOutput {
     status: &'static str,
     project_id: Uuid,
     verification: VerificationSummary,
-    preview: Value,
+    preview: Option<PreviewResponse>,
     applied: bool,
     release: Option<PostProjectsProjectIdReleasesResponse>,
 }
@@ -118,11 +118,42 @@ impl ApplyArgs {
         let (payload, verification_inputs) = Self::build_payload(&credible, &root)?;
         let verification = Self::verify_all_assertions(&verification_inputs, json_output)?;
 
-        // TODO(ENG-2129): Uncomment the preview request and the preview/no-op handling block
-        // below once the preview endpoint and diff rendering flow are finalized in follow-up PRs.
-        let preview = Value::Null;
+        let (http_client, base_url) = Self::build_http_client(config, &self.api_url)?;
+        let preview = Self::call_preview(&http_client, &base_url, &project_id, &payload).await?;
 
-        let client = self.authenticated_client(config)?;
+        if !preview.has_changes() {
+            if json_output {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&ApplyJsonOutput {
+                        status: "no_changes",
+                        project_id,
+                        verification,
+                        preview: Some(preview),
+                        applied: false,
+                        release: None,
+                    })?
+                );
+            } else {
+                println!("{}", crate::diff::NO_CHANGES_MESSAGE);
+            }
+            return Ok(());
+        }
+
+        if !json_output {
+            print!("{}", preview.render_plan());
+        }
+
+        if !self.yes {
+            if json_output {
+                return Err(ApplyError::JsonConfirmationRequiresYes);
+            }
+            if !confirm_apply()? {
+                return Err(ApplyError::ApplyCancelled);
+            }
+        }
+
+        let client = GeneratedClient::new_with_client(&base_url, http_client);
 
         let release = client
             .post_projects_project_id_releases(&project_id, None, &payload)
@@ -143,7 +174,7 @@ impl ApplyArgs {
                     status: "success",
                     project_id,
                     verification,
-                    preview,
+                    preview: Some(preview),
                     applied: true,
                     release: Some(release),
                 })?
@@ -155,10 +186,13 @@ impl ApplyArgs {
         Ok(())
     }
 
-    // Build an authenticated generated API client
-    fn authenticated_client(&self, config: &CliConfig) -> Result<GeneratedClient, ApplyError> {
+    /// Builds an authenticated reqwest client and the base URL for the API.
+    fn build_http_client(
+        config: &CliConfig,
+        api_url: &Url,
+    ) -> Result<(reqwest::Client, String), ApplyError> {
         let auth = config.auth.as_ref().ok_or(ApplyError::NoAuthToken)?;
-        let mut base = self.api_url.clone();
+        let mut base = api_url.clone();
         base.set_path("/api/v1");
         let base_url = base.to_string();
 
@@ -173,7 +207,48 @@ impl ApplyArgs {
             .build()
             .map_err(|e| ApplyError::InvalidConfig(format!("Failed to build HTTP client: {e}")))?;
 
-        Ok(GeneratedClient::new_with_client(&base_url, http_client))
+        Ok((http_client, base_url))
+    }
+
+    /// Calls `POST /projects/{id}/releases/preview` and returns the parsed
+    /// diff response.
+    async fn call_preview(
+        http_client: &reqwest::Client,
+        base_url: &str,
+        project_id: &Uuid,
+        payload: &PostProjectsProjectIdReleasesBody,
+    ) -> Result<PreviewResponse, ApplyError> {
+        let url = format!("{base_url}/projects/{project_id}/releases/preview");
+        let response = http_client
+            .post(&url)
+            .json(payload)
+            .send()
+            .await
+            .map_err(|e| {
+                ApplyError::Api {
+                    endpoint: format!("/projects/{project_id}/releases/preview"),
+                    status: e.status().map(|s| s.as_u16()),
+                    body: e.to_string(),
+                }
+            })?;
+
+        if !response.status().is_success() {
+            let status = response.status().as_u16();
+            let body = response.text().await.unwrap_or_default();
+            return Err(ApplyError::Api {
+                endpoint: format!("/projects/{project_id}/releases/preview"),
+                status: Some(status),
+                body,
+            });
+        }
+
+        response.json::<PreviewResponse>().await.map_err(|e| {
+            ApplyError::Api {
+                endpoint: format!("/projects/{project_id}/releases/preview"),
+                status: None,
+                body: format!("Failed to parse preview response: {e}"),
+            }
+        })
     }
 
     fn build_payload(
@@ -275,7 +350,8 @@ impl ApplyArgs {
             )
         })?;
 
-        let client = self.authenticated_client(config)?;
+        let (http_client, base_url) = Self::build_http_client(config, &self.api_url)?;
+        let client = GeneratedClient::new_with_client(&base_url, http_client);
         let projects: Vec<GetProjectsResponseItem> = client
             .get_projects(None, Some(user_id), None)
             .await
@@ -392,77 +468,8 @@ fn canonicalize_root(root: &Path) -> Result<PathBuf, ApplyError> {
     })
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
-fn preview_has_changes(preview: &Value) -> bool {
-    if let Some(has_changes) = preview.get("has_changes").and_then(Value::as_bool) {
-        return has_changes;
-    }
-    if let Some(no_changes) = preview.get("no_changes").and_then(Value::as_bool) {
-        return !no_changes;
-    }
-    if let Some(summary) = preview.get("summary").and_then(Value::as_object) {
-        let total = ["create", "update", "delete", "replace"]
-            .into_iter()
-            .filter_map(|key| summary.get(key).and_then(Value::as_u64))
-            .sum::<u64>();
-        if total > 0 {
-            return true;
-        }
-    }
-    for key in ["changes", "operations", "diff", "plan"] {
-        if let Some(values) = preview.get(key).and_then(Value::as_array) {
-            return !values.is_empty();
-        }
-    }
-
-    true
-}
-
-#[allow(dead_code)]
-fn render_preview(preview: &Value) {
-    println!("Preview:");
-    if let Some(summary) = preview.get("summary").and_then(Value::as_object) {
-        let create = summary.get("create").and_then(Value::as_u64).unwrap_or(0);
-        let update = summary.get("update").and_then(Value::as_u64).unwrap_or(0);
-        let delete = summary.get("delete").and_then(Value::as_u64).unwrap_or(0);
-        let replace = summary.get("replace").and_then(Value::as_u64).unwrap_or(0);
-        println!(
-            "  Plan: {create} to add, {update} to change, {delete} to destroy, {replace} to replace."
-        );
-    }
-
-    if let Some(changes) = preview
-        .get("changes")
-        .or_else(|| preview.get("operations"))
-        .and_then(Value::as_array)
-    {
-        for change in changes {
-            let action = change
-                .get("action")
-                .or_else(|| change.get("kind"))
-                .and_then(Value::as_str)
-                .unwrap_or("change");
-            let target = change
-                .get("target")
-                .or_else(|| change.get("resource"))
-                .or_else(|| change.get("name"))
-                .and_then(Value::as_str)
-                .unwrap_or("resource");
-            println!("  {action} {target}");
-        }
-        return;
-    }
-
-    println!(
-        "{}",
-        serde_json::to_string_pretty(preview).unwrap_or_else(|_| preview.to_string())
-    );
-}
-
-#[allow(dead_code)]
-// TODO: to reuse when preview diff is activated
 fn confirm_apply() -> Result<bool, ApplyError> {
-    eprint!("Do you want to apply these changes? Only 'yes' will be accepted: ");
+    eprint!("Do you want to apply these changes? [Y/n]: ");
     stderr().flush().map_err(|e| {
         ApplyError::Io {
             message: "Failed to flush stderr".to_string(),
@@ -476,26 +483,8 @@ fn confirm_apply() -> Result<bool, ApplyError> {
             source: e,
         }
     })?;
-    Ok(input.trim() == "yes")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn detects_preview_noop_from_summary() {
-        let preview = json!({
-            "summary": {
-                "create": 0,
-                "update": 0,
-                "delete": 0,
-                "replace": 0
-            },
-            "changes": []
-        });
-
-        assert!(!preview_has_changes(&preview));
-    }
+    let trimmed = input.trim();
+    Ok(trimmed.is_empty()
+        || trimmed.eq_ignore_ascii_case("y")
+        || trimmed.eq_ignore_ascii_case("yes"))
 }
