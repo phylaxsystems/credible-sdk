@@ -1,5 +1,6 @@
 use crate::{
     DEFAULT_PLATFORM_URL,
+    client::authenticated_client,
     config::CliConfig,
 };
 use dapp_api_client::generated::client::{
@@ -64,6 +65,9 @@ pub enum DownloadError {
     #[error("No project found for manager address: {0}")]
     ManagerNotFound(String),
 
+    #[error("No project found with ID: {0}")]
+    ProjectNotFound(String),
+
     #[error("Multiple projects found for manager address: {0}")]
     MultipleProjectsForManager(String),
 
@@ -114,7 +118,7 @@ impl DownloadArgs {
     pub async fn run(&self, cli_args: &CliArgs, config: &CliConfig) -> Result<(), DownloadError> {
         let json_output = cli_args.json_output() || self.json;
 
-        let client = self.authenticated_client(config)?;
+        let client = self.build_client(config)?;
 
         let (project_id, project_name) = self.resolve_project(&client).await?;
 
@@ -251,26 +255,13 @@ impl DownloadArgs {
         Ok(())
     }
 
-    fn authenticated_client(&self, config: &CliConfig) -> Result<GeneratedClient, DownloadError> {
-        let auth = config.auth.as_ref().ok_or(DownloadError::NoAuthToken)?;
-        let mut base = self.api_url.clone();
-        base.set_path("/api/v1");
-        let base_url = base.to_string();
-
-        let mut headers = reqwest::header::HeaderMap::new();
-        let auth_value = format!("Bearer {}", auth.access_token);
-        let header_val = reqwest::header::HeaderValue::from_str(&auth_value)
-            .map_err(|e| DownloadError::InvalidConfig(format!("Invalid auth token: {e}")))?;
-        headers.insert(reqwest::header::AUTHORIZATION, header_val);
-
-        let http_client = reqwest::Client::builder()
-            .default_headers(headers)
-            .build()
-            .map_err(|e| {
-                DownloadError::InvalidConfig(format!("Failed to build HTTP client: {e}"))
-            })?;
-
-        Ok(GeneratedClient::new_with_client(&base_url, http_client))
+    fn build_client(&self, config: &CliConfig) -> Result<GeneratedClient, DownloadError> {
+        authenticated_client(config, &self.api_url).map_err(|e| match e {
+            crate::client::ClientBuildError::NoAuthToken => DownloadError::NoAuthToken,
+            crate::client::ClientBuildError::InvalidConfig(msg) => {
+                DownloadError::InvalidConfig(msg)
+            }
+        })
     }
 
     async fn resolve_project(
@@ -282,31 +273,17 @@ impl DownloadArgs {
         }
 
         if let Some(pid) = self.project_id {
-            let response = client
-                .get_views_projects(None, None, None, None, None)
+            let project = client
+                .get_projects_project_id(&pid, None)
                 .await
                 .map(dapp_api_client::generated::client::ResponseValue::into_inner)
-                .map_err(|e| {
-                    DownloadError::Api {
-                        endpoint: "/views/projects".to_string(),
-                        status: e.status().map(|s| s.as_u16()),
-                        body: e.to_string(),
-                    }
+                .map_err(|e| DownloadError::Api {
+                    endpoint: format!("/projects/{pid}"),
+                    status: e.status().map(|s| s.as_u16()),
+                    body: e.to_string(),
                 })?;
 
-            let project = response
-                .data
-                .items
-                .into_iter()
-                .find(|item| item.project_id == pid.to_string())
-                .ok_or_else(|| DownloadError::ManagerNotFound(format!("project {pid}")))?;
-
-            let project_id = project
-                .project_id
-                .parse::<Uuid>()
-                .map_err(|e| DownloadError::InvalidConfig(format!("Invalid project UUID: {e}")))?;
-
-            return Ok((project_id, project.project_name));
+            return Ok((project.project_id, project.project_name.to_string()));
         }
 
         let manager = self
@@ -319,12 +296,10 @@ impl DownloadArgs {
             .get_views_projects(None, None, None, None, None)
             .await
             .map(dapp_api_client::generated::client::ResponseValue::into_inner)
-            .map_err(|e| {
-                DownloadError::Api {
-                    endpoint: "/views/projects".to_string(),
-                    status: e.status().map(|s| s.as_u16()),
-                    body: e.to_string(),
-                }
+            .map_err(|e| DownloadError::Api {
+                endpoint: "/views/projects".to_string(),
+                status: e.status().map(|s| s.as_u16()),
+                body: e.to_string(),
             })?;
 
         let matches: Vec<_> = response
