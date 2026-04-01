@@ -469,7 +469,7 @@ fn canonicalize_root(root: &Path) -> Result<PathBuf, ApplyError> {
 }
 
 fn confirm_apply() -> Result<bool, ApplyError> {
-    eprint!("Do you want to apply these changes? Only 'yes' will be accepted: ");
+    eprint!("Do you want to apply these changes? [Y/n]: ");
     stderr().flush().map_err(|e| {
         ApplyError::Io {
             message: "Failed to flush stderr".to_string(),
@@ -483,5 +483,8 @@ fn confirm_apply() -> Result<bool, ApplyError> {
             source: e,
         }
     })?;
-    Ok(input.trim() == "yes")
+    let trimmed = input.trim();
+    Ok(trimmed.is_empty()
+        || trimmed.eq_ignore_ascii_case("y")
+        || trimmed.eq_ignore_ascii_case("yes"))
 }

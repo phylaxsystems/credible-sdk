@@ -88,8 +88,8 @@ fn render_plan(diff: &ReleaseDiff) -> String {
     for (label, entry) in &modified {
         render_modified(&mut out, label, entry);
     }
-    for (label, _) in &unchanged {
-        render_unchanged(&mut out, label);
+    for (label, entry) in &unchanged {
+        render_unchanged(&mut out, label, entry);
     }
 
     let s = &diff.summary.assertions;
@@ -103,18 +103,20 @@ fn render_plan(diff: &ReleaseDiff) -> String {
     out
 }
 
-/// Abbreviates a hex address to `0xABCD...WXYZ` when longer than 10 characters.
-fn abbreviate_address(addr: &str) -> String {
-    if addr.len() > 10 && addr.starts_with("0x") {
-        format!("{}...{}", &addr[..6], &addr[addr.len() - 4..])
-    } else {
-        addr.to_string()
-    }
+/// Returns the display name for a contract: the name if present, otherwise the label.
+fn contract_display_name<'a>(label: &'a str, entry: &'a ContractDiffEntry) -> &'a str {
+    entry.name.as_deref().unwrap_or(label)
 }
 
 fn render_added(out: &mut String, label: &str, entry: &ContractDiffEntry) {
-    let addr = abbreviate_address(&entry.address);
-    writeln!(out, "  {} contract \"{label}\" ({addr})", "+".green()).unwrap();
+    let name = contract_display_name(label, entry);
+    writeln!(
+        out,
+        "  {} contract \"{name}\" ({})",
+        "+".green(),
+        &*entry.address,
+    )
+    .unwrap();
     for a in &entry.assertions {
         if let Some(file) = &a.file {
             writeln!(out, "      {} {file}", "+".green()).unwrap();
@@ -124,8 +126,14 @@ fn render_added(out: &mut String, label: &str, entry: &ContractDiffEntry) {
 }
 
 fn render_removed(out: &mut String, label: &str, entry: &ContractDiffEntry) {
-    let addr = abbreviate_address(&entry.address);
-    writeln!(out, "  {} contract \"{label}\" ({addr})", "-".red()).unwrap();
+    let name = contract_display_name(label, entry);
+    writeln!(
+        out,
+        "  {} contract \"{name}\" ({})",
+        "-".red(),
+        &*entry.address,
+    )
+    .unwrap();
     for a in &entry.assertions {
         if let Some(file) = &a.file {
             writeln!(out, "      {} {file}", "-".red()).unwrap();
@@ -135,8 +143,14 @@ fn render_removed(out: &mut String, label: &str, entry: &ContractDiffEntry) {
 }
 
 fn render_modified(out: &mut String, label: &str, entry: &ContractDiffEntry) {
-    let addr = abbreviate_address(&entry.address);
-    writeln!(out, "  {} contract \"{label}\" ({addr})", "~".yellow()).unwrap();
+    let name = contract_display_name(label, entry);
+    writeln!(
+        out,
+        "  {} contract \"{name}\" ({})",
+        "~".yellow(),
+        &*entry.address,
+    )
+    .unwrap();
 
     if let Some(meta) = &entry.metadata_changes {
         if let Some(name_change) = &meta.name {
@@ -148,8 +162,7 @@ fn render_modified(out: &mut String, label: &str, entry: &ContractDiffEntry) {
             writeln!(
                 out,
                 "      address: {} \u{2192} {}",
-                abbreviate_address(&addr_change.from),
-                abbreviate_address(&addr_change.to),
+                &*addr_change.from, &*addr_change.to,
             )
             .unwrap();
         }
@@ -180,11 +193,12 @@ fn render_assertion_diff(out: &mut String, a: &AssertionDiffEntry) {
     }
 }
 
-fn render_unchanged(out: &mut String, label: &str) {
+fn render_unchanged(out: &mut String, label: &str, entry: &ContractDiffEntry) {
+    let name = contract_display_name(label, entry);
     writeln!(
         out,
         "  {}",
-        format!("contract \"{label}\" (unchanged)").dimmed(),
+        format!("contract \"{name}\" (unchanged)").dimmed(),
     )
     .unwrap();
     writeln!(out).unwrap();
@@ -377,23 +391,31 @@ mod tests {
 
         assert!(output.starts_with("pcl apply \u{2014} Deployment Plan\n"));
 
-        // Added
-        assert!(output.contains("+ contract \"price_feed\" (0x1234...5678)"));
+        // Added — uses contract name, full address
+        assert!(output.contains(
+            "+ contract \"Token Price Feed\" (0x1234567890abcdef1234567890abcdef12345678)"
+        ));
         assert!(output.contains("+ PriceFeedAssertion.a.sol"));
 
         // Removed
-        assert!(output.contains("- contract \"old_contract\" (0xdead...beef)"));
+        assert!(
+            output.contains(
+                "- contract \"Old Contract\" (0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef)"
+            )
+        );
         assert!(output.contains("- OldAssertion.sol"));
 
         // Modified
-        assert!(output.contains("~ contract \"simple_lending\" (0xDeaD...bEeF)"));
+        assert!(output.contains(
+            "~ contract \"Simple Lending Protocol\" (0xDeaDbEeFDeaDbEeFDeaDbEeFDeaDbEeFDeaDbEeF)"
+        ));
         assert!(output.contains("name: \"Simple Lending\" \u{2192} \"Simple Lending Protocol\""));
         assert!(output.contains("+ SimpleLendingAssertion.a.sol"));
         assert!(output.contains("- OldAssertion.sol"));
         assert!(output.contains("~ MockAssertion.sol"));
 
-        // Unchanged
-        assert!(output.contains("contract \"stable_contract\" (unchanged)"));
+        // Unchanged — uses contract name
+        assert!(output.contains("contract \"Stable\" (unchanged)"));
 
         // Summary uses assertion-level totals
         assert!(output.contains("Plan: 2 added, 1 changed, 2 removed."));
@@ -431,7 +453,7 @@ mod tests {
 
         let preview: PreviewResponse = serde_json::from_value(json).unwrap();
         let output = preview.render_plan();
-        assert!(output.contains("+ contract \"new_contract\" (0xaaaa...aaaa)"));
+        assert!(output.contains("+ contract \"New\" (0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)"));
         assert!(output.contains("Plan: 1 added, 0 changed, 0 removed."));
     }
 
@@ -466,7 +488,9 @@ mod tests {
 
         let preview: PreviewResponse = serde_json::from_value(json).unwrap();
         let output = preview.render_plan();
-        assert!(output.contains("- contract \"gone\" (0xdead...beef)"));
+        assert!(
+            output.contains("- contract \"Gone\" (0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef)")
+        );
         assert!(output.contains("- X.sol"));
         assert!(output.contains("- Y.sol"));
         assert!(!output.contains('+'));
@@ -506,8 +530,13 @@ mod tests {
 
         let preview: PreviewResponse = serde_json::from_value(json).unwrap();
         let output = preview.render_plan();
-        assert!(output.contains("~ contract \"migrated\" (0x2222...2222)"));
-        assert!(output.contains("address: 0x1111...1111 \u{2192} 0x2222...2222"));
+        assert!(
+            output
+                .contains("~ contract \"Same Name\" (0x2222222222222222222222222222222222222222)")
+        );
+        assert!(output.contains(
+            "address: 0x1111111111111111111111111111111111111111 \u{2192} 0x2222222222222222222222222222222222222222"
+        ));
         assert!(!output.contains("name:"));
     }
 
@@ -579,8 +608,8 @@ mod tests {
 
         let preview: PreviewResponse = serde_json::from_value(json).unwrap();
         let output = preview.render_plan();
-        assert!(output.contains("contract \"stable_a\" (unchanged)"));
-        assert!(output.contains("contract \"stable_b\" (unchanged)"));
+        assert!(output.contains("contract \"A\" (unchanged)"));
+        assert!(output.contains("contract \"B\" (unchanged)"));
         assert!(!output.contains('+'));
         assert!(!output.contains('-'));
         assert!(!output.contains('~'));
@@ -639,7 +668,9 @@ mod tests {
 
         let preview: PreviewResponse = serde_json::from_value(json).unwrap();
         let output = preview.render_plan();
-        assert!(output.contains("~ contract \"renamed\" (0xaaaa...aaaa)"));
+        assert!(
+            output.contains("~ contract \"New Name\" (0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)")
+        );
         assert!(output.contains("name: \"Old Name\" \u{2192} \"New Name\""));
         assert!(!output.contains("address:"));
     }
@@ -675,7 +706,7 @@ mod tests {
 
         let preview: PreviewResponse = serde_json::from_value(json).unwrap();
         let output = preview.render_plan();
-        assert!(output.contains("~ contract \"tweaked\""));
+        assert!(output.contains("~ contract \"Same\""));
         assert!(output.contains("+ New.sol"));
         assert!(output.contains("- Old.sol"));
         assert!(!output.contains("name:"));
@@ -718,27 +749,9 @@ mod tests {
 
         let preview: PreviewResponse = serde_json::from_value(json).unwrap();
         let output = preview.render_plan();
-        assert!(output.contains("+ contract \"alpha\" (0xaaaa...aaaa)"));
-        assert!(output.contains("+ contract \"beta\" (0xbbbb...bbbb)"));
+        assert!(output.contains("+ contract \"A\" (0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)"));
+        assert!(output.contains("+ contract \"B\" (0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb)"));
         assert!(output.contains("+ B1.sol"));
         assert!(output.contains("+ B2.sol"));
-    }
-
-    #[test]
-    fn abbreviates_long_hex_address() {
-        assert_eq!(
-            abbreviate_address("0x1234567890abcdef1234567890abcdef12345678"),
-            "0x1234...5678"
-        );
-    }
-
-    #[test]
-    fn preserves_short_address() {
-        assert_eq!(abbreviate_address("0xshort"), "0xshort");
-    }
-
-    #[test]
-    fn preserves_non_hex_string() {
-        assert_eq!(abbreviate_address("localhost"), "localhost");
     }
 }
