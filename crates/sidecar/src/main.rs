@@ -2,7 +2,7 @@
 #![doc = include_str!("../README.md")]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
-mod integrated_state_worker;
+mod state_worker;
 
 use assertion_da_client::DaClient;
 use assertion_executor::{
@@ -11,9 +11,9 @@ use assertion_executor::{
 };
 use credible_utils::shutdown::wait_for_sigterm;
 use flume::unbounded;
-use integrated_state_worker::{
-    IntegratedStateWorker,
-    build_integrated_mdbx_source,
+use state_worker::{
+    StateWorker,
+    build_mdbx_source,
 };
 use mdbx::{
     StateReader,
@@ -333,7 +333,7 @@ impl ThreadHandles {
 
 struct BuiltSources {
     sources: Vec<Arc<dyn Source>>,
-    integrated_state_worker: Option<IntegratedStateWorker>,
+    state_worker: Option<StateWorker>,
 }
 
 fn transaction_observer_config_from(config: &Config) -> Option<TransactionObserverConfig> {
@@ -385,7 +385,7 @@ async fn connect_eth_rpc_source(sources: &mut Vec<Arc<dyn Source>>, ws_url: &Url
 
 async fn build_sources_from_config(config: &Config) -> anyhow::Result<BuiltSources> {
     let mut sources: Vec<Arc<dyn Source>> = Vec::new();
-    let mut integrated_state_worker: Option<IntegratedStateWorker> = None;
+    let mut state_worker: Option<StateWorker> = None;
     let mut saw_integrated_mdbx = false;
 
     if config.state.sources.is_empty() {
@@ -432,7 +432,7 @@ async fn build_sources_from_config(config: &Config) -> anyhow::Result<BuiltSourc
                         );
                     }
                     saw_integrated_mdbx = true;
-                    integrated_state_worker = match build_integrated_mdbx_source(
+                    state_worker = match build_mdbx_source(
                         mdbx_path,
                         *buffer_capacity,
                         ws_url,
@@ -467,7 +467,7 @@ async fn build_sources_from_config(config: &Config) -> anyhow::Result<BuiltSourc
 
     Ok(BuiltSources {
         sources,
-        integrated_state_worker,
+        state_worker,
     })
 }
 
@@ -659,17 +659,17 @@ async fn stop_da_reachability_monitor(da_reachability_handle: tokio::task::JoinH
     }
 }
 
-fn install_integrated_state_worker(
+fn install_state_worker(
     thread_handles: &mut ThreadHandles,
-    integrated_state_worker: Option<IntegratedStateWorker>,
+    state_worker: Option<StateWorker>,
 ) -> (Option<CancellationToken>, Option<Arc<FlushControl>>) {
     let mut state_worker_shutdown = None;
     let mut state_worker_commit_control = None;
 
-    if let Some(integrated_state_worker) = integrated_state_worker {
-        state_worker_commit_control = Some(integrated_state_worker.commit_control.clone());
-        state_worker_shutdown = Some(integrated_state_worker.shutdown.clone());
-        thread_handles.state_worker = Some(integrated_state_worker.handle);
+    if let Some(state_worker) = state_worker {
+        state_worker_commit_control = Some(state_worker.commit_control.clone());
+        state_worker_shutdown = Some(state_worker.shutdown.clone());
+        thread_handles.state_worker = Some(state_worker.handle);
     }
 
     (state_worker_shutdown, state_worker_commit_control)
@@ -703,10 +703,10 @@ async fn run_sidecar_once(
 
     let BuiltSources {
         sources,
-        integrated_state_worker,
+        state_worker,
     } = build_sources_from_config(config).await?;
     let (state_worker_shutdown, state_worker_commit_control) =
-        install_integrated_state_worker(&mut thread_handles, integrated_state_worker);
+        install_state_worker(&mut thread_handles, state_worker);
 
     let state = Arc::new(Sources::new(sources, config.state.minimum_state_diff));
     let cache: OverlayDb<Sources> = OverlayDb::new(Some(state.clone()));

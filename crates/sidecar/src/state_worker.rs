@@ -8,9 +8,9 @@ use sidecar::cache::sources::{
     Source,
     mdbx::MdbxSource,
 };
-use state_worker::{
+pub(crate) use ::state_worker::FlushControl;
+use ::state_worker::{
     DEFAULT_TRACE_TIMEOUT as STATE_WORKER_DEFAULT_TRACE_TIMEOUT,
-    FlushControl,
     WorkerConfig as StateWorkerConfig,
     run_supervisor_loop,
 };
@@ -22,13 +22,13 @@ use std::{
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
-pub(crate) struct IntegratedStateWorker {
+pub(crate) struct StateWorker {
     pub(crate) commit_control: Arc<FlushControl>,
     pub(crate) shutdown: CancellationToken,
     pub(crate) handle: JoinHandle<anyhow::Result<()>>,
 }
 
-fn spawn_integrated_state_worker(
+fn spawn_state_worker(
     config: StateWorkerConfig,
     shutdown: CancellationToken,
     commit_control: Arc<FlushControl>,
@@ -43,31 +43,31 @@ fn spawn_integrated_state_worker(
         })?)
 }
 
-pub(crate) fn build_integrated_mdbx_source(
+pub(crate) fn build_mdbx_source(
     mdbx_path: &Path,
     buffer_capacity: usize,
     ws_url: &Url,
     genesis_file: &Path,
     start_block: Option<u64>,
-) -> anyhow::Result<(Arc<dyn Source>, Option<IntegratedStateWorker>)> {
-    build_integrated_mdbx_source_with(
+) -> anyhow::Result<(Arc<dyn Source>, Option<StateWorker>)> {
+    build_mdbx_source_with(
         mdbx_path,
         buffer_capacity,
         ws_url,
         genesis_file,
         start_block,
-        spawn_integrated_state_worker,
+        spawn_state_worker,
     )
 }
 
-pub(crate) fn build_integrated_mdbx_source_with<F>(
+pub(crate) fn build_mdbx_source_with<F>(
     mdbx_path: &Path,
     buffer_capacity: usize,
     ws_url: &Url,
     genesis_file: &Path,
     start_block: Option<u64>,
     spawn_worker: F,
-) -> anyhow::Result<(Arc<dyn Source>, Option<IntegratedStateWorker>)>
+) -> anyhow::Result<(Arc<dyn Source>, Option<StateWorker>)>
 where
     F: FnOnce(
         StateWorkerConfig,
@@ -111,7 +111,7 @@ where
     };
     let worker = match spawn_worker(worker_config, shutdown.clone(), commit_control.clone()) {
         Ok(handle) => {
-            Some(IntegratedStateWorker {
+            Some(StateWorker {
                 commit_control,
                 shutdown,
                 handle,
@@ -132,7 +132,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::build_integrated_mdbx_source_with;
+    use super::build_mdbx_source_with;
     use alloy::primitives::{
         B256,
         U256,
@@ -169,7 +169,7 @@ mod tests {
 
         let ws_url = Url::parse("ws://127.0.0.1:8546").unwrap();
         let genesis = Path::new("/tmp/genesis.json");
-        let (source, worker) = build_integrated_mdbx_source_with(
+        let (source, worker) = build_mdbx_source_with(
             &path,
             3,
             &ws_url,
@@ -191,7 +191,7 @@ mod tests {
         let ws_url = Url::parse("ws://127.0.0.1:8546").unwrap();
         let genesis = Path::new("/tmp/genesis.json");
 
-        let (source, worker) = build_integrated_mdbx_source_with(
+        let (source, worker) = build_mdbx_source_with(
             &path,
             3,
             &ws_url,
