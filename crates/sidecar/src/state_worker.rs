@@ -1,3 +1,6 @@
+//! Embeds the state worker as an in-process OS thread, coordinating MDBX
+//! writes through a [`FlushControl`] so the core engine controls visibility.
+
 use anyhow::Context;
 use mdbx::{
     Reader,
@@ -22,12 +25,14 @@ use std::{
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
+/// Handles returned by spawning the state worker on its own OS thread.
 pub(crate) struct StateWorker {
     pub(crate) commit_control: Arc<FlushControl>,
     pub(crate) shutdown: CancellationToken,
     pub(crate) handle: JoinHandle<anyhow::Result<()>>,
 }
 
+/// Spawn the state worker on a dedicated single-threaded tokio runtime.
 fn spawn_state_worker(
     config: StateWorkerConfig,
     shutdown: CancellationToken,
@@ -43,6 +48,7 @@ fn spawn_state_worker(
         })?)
 }
 
+/// Open an MDBX database, spawn the state worker, and return the source + worker handles.
 pub(crate) fn build_mdbx_source(
     mdbx_path: &Path,
     buffer_capacity: usize,
@@ -60,6 +66,7 @@ pub(crate) fn build_mdbx_source(
     )
 }
 
+/// Same as [`build_mdbx_source`] but accepts a custom spawn function (for testing).
 pub(crate) fn build_mdbx_source_with<F>(
     mdbx_path: &Path,
     buffer_capacity: usize,
