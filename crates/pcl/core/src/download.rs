@@ -1,3 +1,10 @@
+//! Download assertion source code for a protocol.
+//!
+//! Resolves a project by UUID (`--project-id`) or on-chain manager address
+//! (`--manager`), fetches every assertion registered against that project
+//! via the platform API, and writes each Solidity source file to a local
+//! output directory.
+
 use crate::{
     DEFAULT_PLATFORM_URL,
     client::authenticated_client,
@@ -341,24 +348,35 @@ impl DownloadArgs {
 
         let manager_str = manager.to_string().to_lowercase();
 
-        let response = client
-            .get_views_projects(None, None, None, None, None)
-            .await
-            .map(dapp_api_client::generated::client::ResponseValue::into_inner)
-            .map_err(|e| {
-                DownloadError::Api {
-                    endpoint: "/views/projects".to_string(),
-                    status: e.status().map(|s| s.as_u16()),
-                    body: e.to_string(),
-                }
-            })?;
+        let mut matches = Vec::new();
+        let mut page = 1u64;
+        loop {
+            let page_param = std::num::NonZeroU64::new(page);
+            let response = client
+                .get_views_projects(None, None, None, page_param, None)
+                .await
+                .map(dapp_api_client::generated::client::ResponseValue::into_inner)
+                .map_err(|e| {
+                    DownloadError::Api {
+                        endpoint: "/views/projects".to_string(),
+                        status: e.status().map(|s| s.as_u16()),
+                        body: e.to_string(),
+                    }
+                })?;
 
-        let matches: Vec<_> = response
-            .data
-            .items
-            .into_iter()
-            .filter(|item| item.project_manager.to_lowercase() == manager_str)
-            .collect();
+            matches.extend(
+                response
+                    .data
+                    .items
+                    .into_iter()
+                    .filter(|item| item.project_manager.to_lowercase() == manager_str),
+            );
+
+            if !response.data.pagination.has_more {
+                break;
+            }
+            page += 1;
+        }
 
         match matches.len() {
             0 => Err(DownloadError::ManagerNotFound(manager_str)),
