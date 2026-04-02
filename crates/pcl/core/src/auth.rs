@@ -131,10 +131,12 @@ impl AuthCommand {
 
     /// Display login URL and code to the user, attempting to open the browser automatically
     fn display_login_instructions(&self, auth_response: &GetCliAuthCodeResponse) {
-        let base = self.auth_url.as_str().trim_end_matches('/');
-        let url = format!("{base}/device?session_id={}", auth_response.session_id);
+        let mut device_url = self.auth_url.clone();
+        device_url.set_path("/device");
+        device_url.set_query(Some(&format!("session_id={}", auth_response.session_id)));
+        let url = device_url.as_str();
 
-        if open::that(&url).is_ok() {
+        if open::that(url).is_ok() {
             println!(
                 "\n{} Opening browser for authentication...\n\n🔗 {}\n📝 {}\n",
                 "🌐".green(),
