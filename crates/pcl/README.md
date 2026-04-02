@@ -215,7 +215,7 @@ pcl apply --root ./my-project -c path/to/credible.toml
 
 ### Download
 
-Download assertion source code for a protocol as `.sol` files. Provide either a project UUID or a protocol manager address to identify the protocol.
+Download assertion source code for a protocol as `.sol` files. Provide a project UUID to identify the protocol.
 
 ```bash
 pcl download [OPTIONS]

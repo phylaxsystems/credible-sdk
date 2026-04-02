@@ -1,7 +1,7 @@
 //! Download assertion source code for a protocol.
 //!
-//! Resolves a project by UUID (`--project-id`) or on-chain manager address
-//! (`--manager`), fetches every assertion registered against that project
+//! Resolves a project by UUID (`--project-id`), fetches every assertion
+//! registered against that project
 //! via the platform API, and writes each Solidity source file to a local
 //! output directory.
 
@@ -10,7 +10,6 @@ use crate::{
     client::authenticated_client,
     config::CliConfig,
 };
-use alloy_primitives::Address;
 use dapp_api_client::generated::client::{
     Client as GeneratedClient,
     types::GetViewsProjectsProjectIdAssertionsAssertionIdAssertionId,
@@ -29,19 +28,8 @@ use uuid::Uuid;
     about = "Download assertion source code for a protocol"
 )]
 pub struct DownloadArgs {
-    #[arg(
-        long,
-        help = "Project UUID to download assertions from",
-        conflicts_with = "manager"
-    )]
+    #[arg(long, help = "Project UUID to download assertions from")]
     pub project_id: Option<Uuid>,
-
-    #[arg(
-        long,
-        help = "Protocol manager address to look up the project",
-        conflicts_with = "project_id"
-    )]
-    pub manager: Option<Address>,
 
     #[arg(
         short = 'o',
@@ -70,14 +58,8 @@ pub enum DownloadError {
     #[error("Run `pcl auth login` first")]
     NoAuthToken,
 
-    #[error("Specify exactly one of --project-id or --manager")]
+    #[error("--project-id is required")]
     MissingIdentifier,
-
-    #[error("No project found for manager address: {0}")]
-    ManagerNotFound(String),
-
-    #[error("Multiple projects found for manager address: {0}")]
-    MultipleProjectsForManager(String),
 
     #[error("No assertions found for project")]
     NoAssertionsFound,
@@ -324,54 +306,21 @@ impl DownloadArgs {
         &self,
         client: &GeneratedClient,
     ) -> Result<(Uuid, String), DownloadError> {
-        if let Some(pid) = self.project_id {
-            let project = client
-                .get_projects_project_id(&pid, None)
-                .await
-                .map(dapp_api_client::generated::client::ResponseValue::into_inner)
-                .map_err(|e| {
-                    DownloadError::Api {
-                        endpoint: format!("/projects/{pid}"),
-                        status: e.status().map(|s| s.as_u16()),
-                        body: e.to_string(),
-                    }
-                })?;
+        let pid = self.project_id.ok_or(DownloadError::MissingIdentifier)?;
 
-            return Ok((project.project_id, project.project_name.to_string()));
-        }
-
-        let manager = self.manager.ok_or(DownloadError::MissingIdentifier)?;
-        let manager_str = manager.to_string().to_lowercase();
-
-        let projects = client
-            .get_projects(None, None, None)
+        let project = client
+            .get_projects_project_id(&pid, None)
             .await
             .map(dapp_api_client::generated::client::ResponseValue::into_inner)
             .map_err(|e| {
                 DownloadError::Api {
-                    endpoint: "/projects".to_string(),
+                    endpoint: format!("/projects/{pid}"),
                     status: e.status().map(|s| s.as_u16()),
                     body: e.to_string(),
                 }
             })?;
 
-        let matches: Vec<_> = projects
-            .into_iter()
-            .filter(|p| {
-                p.protocol_manager_address
-                    .as_ref()
-                    .is_some_and(|addr| addr.to_lowercase() == manager_str)
-            })
-            .collect();
-
-        match matches.len() {
-            0 => Err(DownloadError::ManagerNotFound(manager_str)),
-            1 => {
-                let project = &matches[0];
-                Ok((project.project_id, project.project_name.to_string()))
-            }
-            _ => Err(DownloadError::MultipleProjectsForManager(manager_str)),
-        }
+        Ok((project.project_id, project.project_name.to_string()))
     }
 
     async fn fetch_assertions_list(
@@ -458,27 +407,7 @@ mod tests {
                     args.project_id.unwrap().to_string(),
                     "550e8400-e29b-41d4-a716-446655440000"
                 );
-                assert!(args.manager.is_none());
-            }
-        }
-    }
-
-    #[test]
-    fn parses_download_with_manager() {
-        let cli = TestCli::try_parse_from([
-            "pcl",
-            "download",
-            "--manager",
-            "0x1234567890abcdef1234567890abcdef12345678",
-        ])
-        .unwrap();
-        match cli.command {
-            TestCommand::Download(args) => {
-                let expected: Address = "0x1234567890abcdef1234567890abcdef12345678"
-                    .parse()
-                    .unwrap();
-                assert_eq!(args.manager.unwrap(), expected);
-                assert!(args.project_id.is_none());
+                assert!(args.output_dir.is_none());
             }
         }
     }
@@ -519,12 +448,10 @@ mod tests {
     }
 
     #[test]
-    fn rejects_both_project_id_and_manager() {
+    fn rejects_unknown_manager_flag() {
         let result = TestCli::try_parse_from([
             "pcl",
             "download",
-            "--project-id",
-            "550e8400-e29b-41d4-a716-446655440000",
             "--manager",
             "0x1234567890abcdef1234567890abcdef12345678",
         ]);
