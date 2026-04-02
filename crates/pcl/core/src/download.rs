@@ -3,6 +3,7 @@ use crate::{
     client::authenticated_client,
     config::CliConfig,
 };
+use alloy_primitives::Address;
 use dapp_api_client::generated::client::{
     Client as GeneratedClient,
     types::GetViewsProjectsProjectIdAssertionsAssertionIdAssertionId,
@@ -30,7 +31,7 @@ pub struct DownloadArgs {
         help = "Protocol manager address to look up the project",
         conflicts_with = "project_id"
     )]
-    pub manager: Option<String>,
+    pub manager: Option<Address>,
 
     #[arg(
         short = 'o',
@@ -64,9 +65,6 @@ pub enum DownloadError {
 
     #[error("No project found for manager address: {0}")]
     ManagerNotFound(String),
-
-    #[error("No project found with ID: {0}")]
-    ProjectNotFound(String),
 
     #[error("Multiple projects found for manager address: {0}")]
     MultipleProjectsForManager(String),
@@ -114,7 +112,6 @@ struct DownloadedFile {
 }
 
 impl DownloadArgs {
-    #[allow(clippy::too_many_lines)]
     pub async fn run(&self, cli_args: &CliArgs, config: &CliConfig) -> Result<(), DownloadError> {
         let json_output = cli_args.json_output() || self.json;
 
@@ -125,38 +122,10 @@ impl DownloadArgs {
         let assertions = self.fetch_assertions_list(&client, &project_id).await?;
 
         if assertions.is_empty() {
-            if json_output {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&DownloadJsonOutput {
-                        status: "no_assertions",
-                        project_id,
-                        project_name,
-                        files_downloaded: 0,
-                        files_skipped: 0,
-                        files: vec![],
-                    })?
-                );
-                return Ok(());
-            }
-            eprintln!("No assertions found for project.");
-            return Err(DownloadError::NoAssertionsFound);
+            return self.handle_empty_assertions(json_output, project_id, project_name);
         }
 
-        let output_dir = self
-            .output_dir
-            .clone()
-            .unwrap_or_else(|| PathBuf::from(format!("{project_name}-assertions")));
-
-        std::fs::create_dir_all(&output_dir).map_err(|e| {
-            DownloadError::Io {
-                message: format!(
-                    "Failed to create output directory: {}",
-                    output_dir.display()
-                ),
-                source: e,
-            }
-        })?;
+        let output_dir = self.prepare_output_dir(&project_name)?;
 
         if !json_output {
             println!(
@@ -166,10 +135,66 @@ impl DownloadArgs {
             );
         }
 
+        let (downloaded, skipped) = self
+            .download_assertions(&client, &project_id, &assertions, &output_dir, json_output)
+            .await?;
+
+        self.print_result(json_output, project_id, project_name, downloaded, skipped, &output_dir)
+    }
+
+    fn handle_empty_assertions(
+        &self,
+        json_output: bool,
+        project_id: Uuid,
+        project_name: String,
+    ) -> Result<(), DownloadError> {
+        if json_output {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&DownloadJsonOutput {
+                    status: "no_assertions",
+                    project_id,
+                    project_name,
+                    files_downloaded: 0,
+                    files_skipped: 0,
+                    files: vec![],
+                })?
+            );
+            return Ok(());
+        }
+        eprintln!("No assertions found for project.");
+        Err(DownloadError::NoAssertionsFound)
+    }
+
+    fn prepare_output_dir(&self, project_name: &str) -> Result<PathBuf, DownloadError> {
+        let output_dir = self
+            .output_dir
+            .clone()
+            .unwrap_or_else(|| PathBuf::from(format!("{project_name}-assertions")));
+
+        std::fs::create_dir_all(&output_dir).map_err(|e| DownloadError::Io {
+            message: format!(
+                "Failed to create output directory: {}",
+                output_dir.display()
+            ),
+            source: e,
+        })?;
+
+        Ok(output_dir)
+    }
+
+    async fn download_assertions(
+        &self,
+        client: &GeneratedClient,
+        project_id: &Uuid,
+        assertions: &[dapp_api_client::generated::client::types::GetViewsProjectsProjectIdAssertionsResponseDataAssertionsItem],
+        output_dir: &PathBuf,
+        json_output: bool,
+    ) -> Result<(Vec<DownloadedFile>, usize), DownloadError> {
         let mut downloaded = Vec::new();
         let mut skipped = 0usize;
 
-        for assertion in &assertions {
+        for assertion in assertions {
             let assertion_id = &assertion.assertion_id;
             let contract_name = assertion
                 .contract_name
@@ -177,7 +202,7 @@ impl DownloadArgs {
                 .unwrap_or_else(|| "unknown".to_string());
 
             let detail = self
-                .fetch_assertion_detail(&client, &project_id, assertion_id)
+                .fetch_assertion_detail(client, project_id, assertion_id)
                 .await?;
 
             let source_code = detail
@@ -191,11 +216,9 @@ impl DownloadArgs {
                 let file_name = format!("{contract_name}_{id_prefix}.sol");
                 let file_path = output_dir.join(&file_name);
 
-                std::fs::write(&file_path, &code).map_err(|e| {
-                    DownloadError::Io {
-                        message: format!("Failed to write file: {}", file_path.display()),
-                        source: e,
-                    }
+                std::fs::write(&file_path, &code).map_err(|e| DownloadError::Io {
+                    message: format!("Failed to write file: {}", file_path.display()),
+                    source: e,
                 })?;
 
                 if !json_output {
@@ -231,6 +254,18 @@ impl DownloadArgs {
             }
         }
 
+        Ok((downloaded, skipped))
+    }
+
+    fn print_result(
+        &self,
+        json_output: bool,
+        project_id: Uuid,
+        project_name: String,
+        downloaded: Vec<DownloadedFile>,
+        skipped: usize,
+        output_dir: &PathBuf,
+    ) -> Result<(), DownloadError> {
         if json_output {
             println!(
                 "{}",
@@ -288,9 +323,9 @@ impl DownloadArgs {
 
         let manager = self
             .manager
-            .as_ref()
-            .ok_or(DownloadError::MissingIdentifier)?
-            .to_lowercase();
+            .ok_or(DownloadError::MissingIdentifier)?;
+
+        let manager_str = manager.to_string().to_lowercase();
 
         let response = client
             .get_views_projects(None, None, None, None, None)
@@ -306,11 +341,11 @@ impl DownloadArgs {
             .data
             .items
             .into_iter()
-            .filter(|item| item.project_manager.to_lowercase() == manager)
+            .filter(|item| item.project_manager.to_lowercase() == manager_str)
             .collect();
 
         match matches.len() {
-            0 => Err(DownloadError::ManagerNotFound(manager)),
+            0 => Err(DownloadError::ManagerNotFound(manager_str)),
             1 => {
                 let project = &matches[0];
                 let project_id = project.project_id.parse::<Uuid>().map_err(|e| {
@@ -318,7 +353,7 @@ impl DownloadArgs {
                 })?;
                 Ok((project_id, project.project_name.clone()))
             }
-            _ => Err(DownloadError::MultipleProjectsForManager(manager)),
+            _ => Err(DownloadError::MultipleProjectsForManager(manager_str)),
         }
     }
 
@@ -422,10 +457,9 @@ mod tests {
         .unwrap();
         match cli.command {
             TestCommand::Download(args) => {
-                assert_eq!(
-                    args.manager.unwrap(),
-                    "0x1234567890abcdef1234567890abcdef12345678"
-                );
+                let expected: Address =
+                    "0x1234567890abcdef1234567890abcdef12345678".parse().unwrap();
+                assert_eq!(args.manager.unwrap(), expected);
                 assert!(args.project_id.is_none());
             }
         }
