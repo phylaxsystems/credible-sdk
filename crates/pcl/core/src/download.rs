@@ -324,10 +324,6 @@ impl DownloadArgs {
         &self,
         client: &GeneratedClient,
     ) -> Result<(Uuid, String), DownloadError> {
-        if self.project_id.is_some() && self.manager.is_some() {
-            return Err(DownloadError::MissingIdentifier);
-        }
-
         if let Some(pid) = self.project_id {
             let project = client
                 .get_projects_project_id(&pid, None)
@@ -345,47 +341,34 @@ impl DownloadArgs {
         }
 
         let manager = self.manager.ok_or(DownloadError::MissingIdentifier)?;
-
         let manager_str = manager.to_string().to_lowercase();
 
-        let mut matches = Vec::new();
-        let mut page = 1u64;
-        loop {
-            let page_param = std::num::NonZeroU64::new(page);
-            let response = client
-                .get_views_projects(None, None, None, page_param, None)
-                .await
-                .map(dapp_api_client::generated::client::ResponseValue::into_inner)
-                .map_err(|e| {
-                    DownloadError::Api {
-                        endpoint: "/views/projects".to_string(),
-                        status: e.status().map(|s| s.as_u16()),
-                        body: e.to_string(),
-                    }
-                })?;
+        let projects = client
+            .get_projects(None, None, None)
+            .await
+            .map(dapp_api_client::generated::client::ResponseValue::into_inner)
+            .map_err(|e| {
+                DownloadError::Api {
+                    endpoint: "/projects".to_string(),
+                    status: e.status().map(|s| s.as_u16()),
+                    body: e.to_string(),
+                }
+            })?;
 
-            matches.extend(
-                response
-                    .data
-                    .items
-                    .into_iter()
-                    .filter(|item| item.project_manager.to_lowercase() == manager_str),
-            );
-
-            if !response.data.pagination.has_more {
-                break;
-            }
-            page += 1;
-        }
+        let matches: Vec<_> = projects
+            .into_iter()
+            .filter(|p| {
+                p.protocol_manager_address
+                    .as_ref()
+                    .is_some_and(|addr| addr.to_lowercase() == manager_str)
+            })
+            .collect();
 
         match matches.len() {
             0 => Err(DownloadError::ManagerNotFound(manager_str)),
             1 => {
                 let project = &matches[0];
-                let project_id = project.project_id.parse::<Uuid>().map_err(|e| {
-                    DownloadError::InvalidConfig(format!("Invalid project UUID: {e}"))
-                })?;
-                Ok((project_id, project.project_name.clone()))
+                Ok((project.project_id, project.project_name.to_string()))
             }
             _ => Err(DownloadError::MultipleProjectsForManager(manager_str)),
         }

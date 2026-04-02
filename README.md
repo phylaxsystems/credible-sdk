@@ -67,6 +67,7 @@ Common workflows include:
 pcl auth login                                     # Authenticate
 pcl build                                          # Compile Solidity assertions
 pcl test                                           # Run assertion tests
+pcl verify                                         # Verify assertion bytecode deployability
 pcl apply --root ./my-project                      # Deploy assertions via credible.toml
 pcl download --project-id <UUID>                   # Download assertion source code as .sol files
 pcl download --manager 0x1234...                   # Download by protocol manager address
