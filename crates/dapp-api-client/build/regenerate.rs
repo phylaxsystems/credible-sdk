@@ -86,7 +86,7 @@ fn resolve_openapi_url() -> String {
     // Respect DAPP_ENV environment variable
     match env::var("DAPP_ENV").as_deref() {
         Ok("development") | Ok("dev") => "http://localhost:3000/api/v1/openapi".to_string(),
-        _ => "https://dapp.phylax.systems/api/v1/openapi".to_string(),
+        _ => "https://app.phylax.systems/api/v1/openapi".to_string(),
     }
 }
 
