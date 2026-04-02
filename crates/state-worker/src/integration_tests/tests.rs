@@ -845,16 +845,12 @@ async fn test_mdbx_bootstrap_recovery_without_diffs() -> Result<()> {
     use mdbx::{
         StateWriter,
         Writer,
-        common::CircularBufferConfig,
     };
 
     let mdbx_dir =
         crate::integration_tests::mdbx_fixture::MdbxTestDir::new().map_err(anyhow::Error::msg)?;
     let mdbx_path = mdbx_dir.path_str().map_err(anyhow::Error::msg)?;
-    let config = CircularBufferConfig::new(3).context("Failed to build circular buffer config")?;
-
-    let writer = StateWriter::new(mdbx_path, config.clone())
-        .context("Failed to create MDBX test instance")?;
+    let writer = StateWriter::new(mdbx_path).context("Failed to create MDBX test instance")?;
 
     let test_address_hash = AddressHash::from_hash(B256::repeat_byte(0xAA));
     let accounts = vec![make_account_state(
@@ -875,8 +871,8 @@ async fn test_mdbx_bootstrap_recovery_without_diffs() -> Result<()> {
         .context("bootstrap should succeed")?;
 
     assert_eq!(
-        stats.accounts_written, 3,
-        "should write to all 3 namespaces"
+        stats.accounts_written, 1,
+        "should write a single latest snapshot"
     );
 
     let reader = writer.reader();
@@ -913,8 +909,8 @@ async fn test_mdbx_bootstrap_recovery_without_diffs() -> Result<()> {
         .commit_block(&update_102)
         .context("Block 102 should commit")?;
     assert_eq!(
-        stats_102.diffs_applied, 1,
-        "Block 102 should apply 1 diff (block 101)"
+        stats_102.diffs_applied, 0,
+        "single-state MDBX never replays diffs"
     );
     assert_block_available(reader, 102)?;
 
@@ -928,16 +924,16 @@ async fn test_mdbx_bootstrap_recovery_without_diffs() -> Result<()> {
         .commit_block(&update_103)
         .context("Block 103 should commit")?;
     assert_eq!(
-        stats_103.diffs_applied, 2,
-        "Block 103 should apply 2 diffs (101, 102)"
+        stats_103.diffs_applied, 0,
+        "single-state MDBX never replays diffs"
     );
     assert_block_available(reader, 103)?;
     assert_latest_block(reader, 103)?;
     assert_account(reader, test_address_hash, 103, 1300, 8)?;
 
     assert_block_unavailable(reader, 100)?;
-    assert_block_available(reader, 101)?;
-    assert_block_available(reader, 102)?;
+    assert_block_unavailable(reader, 101)?;
+    assert_block_unavailable(reader, 102)?;
     assert_block_available(reader, 103)?;
     Ok(())
 }

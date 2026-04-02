@@ -5,7 +5,6 @@ use anyhow::Context;
 use mdbx::{
     Reader,
     StateWriter,
-    common::CircularBufferConfig,
 };
 use sidecar::cache::sources::{
     Source,
@@ -82,7 +81,7 @@ where
         Arc<FlushControl>,
     ) -> anyhow::Result<JoinHandle<anyhow::Result<()>>>,
 {
-    let writer = StateWriter::new(mdbx_path, CircularBufferConfig::new(1)?).with_context(|| {
+    let writer = StateWriter::new(mdbx_path).with_context(|| {
         format!(
             "failed to initialize integrated MDBX database at {}",
             mdbx_path.display()
@@ -149,7 +148,6 @@ mod tests {
         BlockStateUpdate,
         StateWriter,
         Writer,
-        common::CircularBufferConfig,
     };
     use std::path::Path;
     use tempfile::tempdir;
@@ -170,7 +168,7 @@ mod tests {
     fn integrated_source_keeps_existing_mdbx_state_when_worker_start_fails() -> anyhow::Result<()> {
         let dir = tempdir()?;
         let path = dir.path().join("state");
-        let writer = StateWriter::new(&path, CircularBufferConfig::new(1)?)?;
+        let writer = StateWriter::new(&path)?;
         commit_empty_block(&writer, 5)?;
         drop(writer);
 

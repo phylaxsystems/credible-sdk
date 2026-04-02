@@ -29,6 +29,12 @@ pub enum StateError {
     #[error("Failed to create table '{table}': {message}")]
     CreateTable { table: String, message: String },
 
+    /// Existing on-disk data uses the pre-ENG-2237 layout.
+    #[error(
+        "Existing MDBX data at {path} uses the legacy {table} layout; re-sync the database with a fresh MDBX directory"
+    )]
+    LegacyLayoutRequiresResync { path: String, table: &'static str },
+
     /// Transaction commit failed
     #[error("Failed to commit transaction: {0}")]
     CommitFailed(String),
@@ -41,16 +47,12 @@ pub enum StateError {
     #[error("Failed to parse U256 from '{0}'")]
     ParseU256(String, #[source] alloy::primitives::ruint::ParseError),
 
-    /// Block not found in expected namespace
-    #[error("Block {block_number} not found in namespace {namespace_idx}")]
-    BlockNotFound {
+    /// Block is not available in the store.
+    #[error("Block {block_number} is not available; latest available block is {latest_block}")]
+    BlockNotAvailable {
         block_number: u64,
-        namespace_idx: u8,
+        latest_block: u64,
     },
-
-    /// Block is not available in the circular buffer
-    #[error("Block {0} is not available in the circular buffer (oldest available: {1})")]
-    BlockNotAvailable(u64, u64),
 
     /// Metadata is not available
     #[error("Metadata is not available")]
@@ -72,14 +74,6 @@ pub enum StateError {
     /// Failed to deserialize state diff
     #[error("Failed to deserialize state diff for block {0}")]
     DeserializeDiff(u64, #[source] serde_json::Error),
-
-    /// Invalid namespace calculation
-    #[error("Invalid namespace index {0} for buffer size {1}")]
-    InvalidNamespace(u8, u8),
-
-    /// Invalid buffer size
-    #[error("Buffer size must be greater than 0")]
-    InvalidBufferSize,
 
     /// Invalid B256 length
     #[error("Invalid B256 length: expected 32 bytes, got {0}")]

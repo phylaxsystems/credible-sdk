@@ -1,6 +1,6 @@
 //! # MDBX Table Definitions
 //!
-//! This module defines all database tables used by the circular buffer state storage.
+//! This module defines all database tables used by the MDBX state store.
 //! Each table is implemented using reth's database abstractions over MDBX.
 //!
 //! ## MDBX Primer
@@ -15,13 +15,13 @@
 //!
 //! | Table | Key | Value | Purpose |
 //! |-------|-----|-------|---------|
-//! | `NamespaceBlocks` | `u8` | `u64` | Current block in each namespace |
-//! | `NamespacedAccounts` | `(ns, addr_hash)` | `AccountData` | Account state |
-//! | `NamespacedStorage` | `(ns, addr_hash, slot)` | `U256` | Storage slots |
-//! | `Bytecodes` | `code_hash` | `Bytes` | Contract code (shared) |
+//! | `NamespaceBlocks` | `u8` | `u64` | Reserved compatibility mirror of latest block |
+//! | `NamespacedAccounts` | `addr_hash` | `AccountData` | Account state |
+//! | `NamespacedStorage` | `(addr_hash, slot)` | `U256` | Storage slots |
+//! | `Bytecodes` | `code_hash` | `Bytes` | Contract code |
 //! | `BlockMetadata` | `block_number` | `(hash, root)` | Block info |
-//! | `StateDiffs` | `block_number` | `JSON` | Diffs for reconstruction |
-//! | `Metadata` | `0` | `GlobalMetadata` | Latest block, buffer size |
+//! | `StateDiffs` | `block_number` | `JSON` | Latest diff snapshot for diagnostics |
+//! | `Metadata` | `0` | `GlobalMetadata` | Latest block |
 //!
 //! ## Key Encoding Strategy
 //!
@@ -36,8 +36,8 @@
 //! ### Composite Keys
 //!
 //! ```text
-//! NamespacedAccountKey:  [namespace(1) | address_hash(32)]  = 33 bytes
-//! NamespacedStorageKey:  [namespace(1) | address_hash(32) | slot_hash(32)] = 65 bytes
+//! NamespacedAccountKey:  [address_hash(32)]  = 32 bytes
+//! NamespacedStorageKey:  [address_hash(32) | slot_hash(32)] = 64 bytes
 //! ```
 //!
 //! Big-endian encoding ensures lexicographic ordering matches numeric ordering.
@@ -67,9 +67,7 @@ use serde::{
     Serialize,
 };
 
-/// Wrapper for namespace index (0..`buffer_size`).
-///
-/// Encoded as a single byte, supporting up to 255 namespaces.
+/// Reserved compatibility key for the single `NamespaceBlocks` entry.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize,
 )]
@@ -274,28 +272,18 @@ macro_rules! impl_compact_table_codec {
 }
 
 // Implement for our custom Compact types
-impl_compact_table_codec!(NamespacedAccountKey, 33);
-impl_compact_table_codec!(NamespacedStorageKey, 65);
-impl_compact_table_codec!(NamespacedBytecodeKey, 33);
+impl_compact_table_codec!(NamespacedAccountKey, 32);
+impl_compact_table_codec!(NamespacedStorageKey, 64);
+impl_compact_table_codec!(NamespacedBytecodeKey, 32);
 impl_compact_table_codec!(AccountInfo, 64);
 impl_compact_table_codec!(StorageValue, 32);
 impl_compact_table_codec!(BlockMetadata, 64);
-impl_compact_table_codec!(GlobalMetadata, 16);
+impl_compact_table_codec!(GlobalMetadata, 8);
 
-/// Maps namespace index (0..`buffer_size`) to current block number in that namespace.
+/// Mirrors the latest committed block under key `0`.
 ///
-/// This is the primary lookup for determining which block is in which namespace.
-///
-/// ```text
-/// Example with buffer_size=3 at block 105:
-/// ┌─────┬───────┐
-/// │ Key │ Value │
-/// ├─────┼───────┤
-/// │  0  │  105  │
-/// │  1  │  103  │
-/// │  2  │  104  │
-/// └─────┴───────┘
-/// ```
+/// The table is retained so existing MDBX environments keep the same table set
+/// while the namespace abstraction is removed.
 #[derive(Debug)]
 pub struct NamespaceBlocks;
 
@@ -306,9 +294,9 @@ impl Table for NamespaceBlocks {
     type Value = BlockNumber;
 }
 
-/// Account data per namespace.
+/// Account data keyed by address hash.
 ///
-/// Key: `NamespacedAccountKey` (`namespace_idx` + `address_hash`)
+/// Key: `NamespacedAccountKey` (`address_hash`)
 /// Value: `AccountData` (`balance`, `nonce`, `code_hash`)
 ///
 /// Storage is in a separate table (`NamespacedStorage`) because:
@@ -325,9 +313,9 @@ impl Table for NamespacedAccounts {
     type Value = AccountInfo;
 }
 
-/// Storage slots per account per namespace.
+/// Storage slots per account.
 ///
-/// Key: `NamespacedStorageKey` (`namespace_idx` + `address_hash` + `slot_hash`)
+/// Key: `NamespacedStorageKey` (`address_hash` + `slot_hash`)
 /// Value: `StorageValue` (U256)
 ///
 /// Zero values are deleted (Ethereum semantics: zero == non-existent).
@@ -341,13 +329,10 @@ impl Table for NamespacedStorage {
     type Value = StorageValue;
 }
 
-/// Contract bytecode per namespace.
+/// Contract bytecode by hash.
 ///
-/// Key: `NamespacedBytecodeKey` (`namespace_idx` + `code_hash`)
+/// Key: `NamespacedBytecodeKey` (`code_hash`)
 /// Value: `Bytecode` (Bytes)
-///
-/// Note: This does mean bytecode is duplicated across namespaces, but this
-/// ensures correctness when querying historical state within the buffer.
 #[derive(Debug)]
 pub struct Bytecodes;
 
@@ -363,7 +348,7 @@ impl Table for Bytecodes {
 /// Key: `BlockNumber` (u64)
 /// Value: `BlockMetadata` (`block_hash` + `state_root`)
 ///
-/// Kept for `buffer_size` blocks; older entries are cleaned up.
+/// Only the latest block metadata entry is retained in the single-state model.
 #[derive(Debug)]
 pub struct BlockMetadataTable;
 
@@ -374,14 +359,13 @@ impl Table for BlockMetadataTable {
     type Value = BlockMetadata;
 }
 
-/// State diffs for reconstructing state during circular buffer rotation.
+/// Serialized state diff for the latest committed block.
 ///
 /// Key: `BlockNumber` (u64)
-/// Value: `StateDiffData` (JSON serialized `BlockStateUpdate`)
+/// Value: `StateDiffData`
 ///
-/// When namespace N rotates from block B to block B+`buffer_size`, we need
-/// to apply all intermediate diffs (B+1, B+2, ..., B+`buffer_size`-1) to
-/// bring the state up to date.
+/// This is retained for diagnostics and tooling compatibility even though
+/// rotation/reconstruction no longer exists in the single-state model.
 #[derive(Debug)]
 pub struct StateDiffs;
 
@@ -392,7 +376,7 @@ impl Table for StateDiffs {
     type Value = StateDiffData;
 }
 
-/// Global metadata (latest block, buffer size).
+/// Global metadata (latest block).
 ///
 /// Key: `MetadataKey` (always 0 - single entry table)
 /// Value: `GlobalMetadata`

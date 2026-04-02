@@ -11,10 +11,7 @@ use assertion_executor::{
 };
 use credible_utils::shutdown::wait_for_sigterm;
 use flume::unbounded;
-use mdbx::{
-    StateReader,
-    common::CircularBufferConfig,
-};
+use mdbx::StateReader;
 use metrics::counter;
 use sidecar::{
     args::{
@@ -380,12 +377,8 @@ fn transaction_observer_config_from(config: &Config) -> Option<TransactionObserv
     }
 }
 
-fn connect_mdbx_source(
-    sources: &mut Vec<Arc<dyn Source>>,
-    mdbx_path: &Path,
-    depth: u8,
-) -> anyhow::Result<()> {
-    match StateReader::new(mdbx_path, CircularBufferConfig::new(depth)?) {
+fn connect_mdbx_source(sources: &mut Vec<Arc<dyn Source>>, mdbx_path: &Path) -> anyhow::Result<()> {
+    match StateReader::new(mdbx_path) {
         Ok(state_worker_client) => sources.push(Arc::new(MdbxSource::new(state_worker_client))),
         Err(err) => error!(error = ?err, "Failed to connect MDBX"),
     }
@@ -408,15 +401,11 @@ async fn build_sources_from_config(config: &Config) -> anyhow::Result<BuiltSourc
         if config.state.legacy.has_any() {
             warn!("Using legacy state source configuration; migrate to state.sources.");
         }
-        if let (Some(state_worker_path), Some(state_worker_depth)) = (
+        if let (Some(state_worker_path), Some(_state_worker_depth)) = (
             config.state.legacy.state_worker_mdbx_path.as_ref(),
             config.state.legacy.state_worker_depth,
         ) {
-            connect_mdbx_source(
-                &mut sources,
-                state_worker_path,
-                u8::try_from(state_worker_depth)?,
-            )?;
+            connect_mdbx_source(&mut sources, state_worker_path)?;
         }
 
         if let (Some(eth_rpc_source_ws_url), Some(eth_rpc_source_http_url)) = (
@@ -432,8 +421,12 @@ async fn build_sources_from_config(config: &Config) -> anyhow::Result<BuiltSourc
         }
         for (source_index, source_config) in config.state.sources.iter().enumerate() {
             match source_config {
-                StateSourceConfig::Mdbx { mdbx_path, depth } => {
-                    connect_mdbx_source(&mut sources, mdbx_path, u8::try_from(*depth)?)?;
+                StateSourceConfig::Mdbx {
+                    mdbx_path,
+                    depth: _,
+                } => {
+                    // `depth` is ignored for backwards config compatibility after ENG-2237.
+                    connect_mdbx_source(&mut sources, mdbx_path)?;
                 }
                 StateSourceConfig::IntegratedMdbx {
                     mdbx_path,

@@ -13,7 +13,6 @@ pub use error::{
 // Re-export commonly used items from types module
 pub use types::{
     BlockMetadata,
-    CircularBufferConfig,
     GlobalMetadata,
     NamespacedAccountKey,
     NamespacedBytecodeKey,

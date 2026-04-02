@@ -328,9 +328,9 @@ pub trait Reader {
     /// Returns any backend read error.
     fn latest_block_number(&self) -> Result<Option<u64>, Self::Error>;
 
-    /// Check if a block is available in the circular buffer.
+    /// Check if a block is available in the MDBX store.
     ///
-    /// A block is available if its namespace currently contains that block.
+    /// In the single-state model, only the latest committed block is available.
     ///
     /// # Errors
     ///
@@ -340,8 +340,6 @@ pub trait Reader {
     /// Get account info without storage slots (balance, nonce, code hash only).
     /// This is the recommended method for most use cases to avoid large data transfers.
     /// Use `get_full_account` or `get_all_storage` separately if storage is needed.
-    ///
-    /// Returns an error if the namespace is locked for writing.
     ///
     /// # Errors
     ///
@@ -429,14 +427,14 @@ pub trait Reader {
     /// Returns any backend read error.
     fn get_available_block_range(&self) -> Result<Option<(u64, u64)>, Self::Error>;
 
-    /// Scan all account hashes in the buffer for a specific block.
+    /// Scan all account hashes in the latest committed snapshot.
     ///
     /// This returns the address hashes (keccak256 of addresses), not the
     /// original addresses. Useful for iteration/debugging.
     ///
     /// # Errors
     ///
-    /// Returns `BlockNotFound` if the block is not in the circular buffer.
+    /// Returns an error if the requested block is not the latest committed block.
     fn scan_account_hashes(&self, block_number: u64) -> Result<Vec<AddressHash>, Self::Error>;
 }
 
@@ -447,9 +445,9 @@ pub trait Writer {
     /// Commit a block's state update to the database.
     ///
     /// This handles:
-    /// 1. Applying intermediate diffs if rotating the circular buffer
-    /// 2. Writing all account and storage changes
-    /// 3. Updating metadata and cleaning up old data
+    /// 1. Writing all account and storage changes into the latest snapshot
+    /// 2. Updating metadata for the committed block
+    /// 3. Replacing the previously retained diff/metadata entry
     ///
     /// All changes happen in a single transaction. If anything fails,
     /// the entire operation is rolled back.
@@ -461,19 +459,7 @@ pub trait Writer {
     /// Returns any backend write or validation error.
     fn commit_block(&self, update: &BlockStateUpdate) -> Result<CommitStats, Self::Error>;
 
-    /// Bootstrap the circular buffer from a single state snapshot.
-    ///
-    /// Copies the same state to ALL namespaces, with all namespaces pointing
-    /// to the same block number. This allows the circular buffer to work
-    /// correctly once new blocks start arriving.
-    ///
-    /// After `buffer_size` new blocks are processed, all state will be accurate
-    /// (the initially duplicated state will have been overwritten).
-    ///
-    /// ## Note
-    ///
-    /// No state diffs are stored during bootstrap - they're not needed since
-    /// all namespaces are initialized with identical state at the same block.
+    /// Bootstrap the single latest-state snapshot from a full state dump.
     ///
     /// # Errors
     ///

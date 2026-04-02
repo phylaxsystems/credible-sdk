@@ -23,7 +23,6 @@ use log::error;
 use mdbx::{
     Reader,
     StateReader,
-    common::CircularBufferConfig,
 };
 use rust_tracing::trace;
 use tracing::info;
@@ -86,11 +85,7 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
 
-    let config = CircularBufferConfig {
-        buffer_size: args.state_depth,
-    };
-
-    let reader = StateReader::new(&args.mdbx_path, config)?;
+    let reader = StateReader::new(&args.mdbx_path)?;
 
     let service = StateRootService::new(&reader);
 
