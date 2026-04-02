@@ -163,7 +163,25 @@ pub enum AuthError {
 #[derive(Deserialize)]
 struct ApiErrorBody {
     error: String,
-    code: Option<String>,
+    code: Option<DappErrorCode>,
+}
+
+/// Structured error codes returned by the dapp CLI auth status endpoint.
+///
+/// Only codes that drive distinct polling behavior are listed here.
+#[derive(Deserialize, Debug, PartialEq, Eq)]
+enum DappErrorCode {
+    #[serde(rename = "SESSION_EXPIRED")]
+    SessionExpired,
+    #[serde(rename = "SESSION_NOT_FOUND")]
+    SessionNotFound,
+    #[serde(rename = "USER_NOT_FOUND")]
+    UserNotFound,
+    #[serde(rename = "INTERNAL_ERROR")]
+    InternalError,
+    /// Catch-all for codes that don't need distinct handling.
+    #[serde(other)]
+    Other,
 }
 
 impl From<ApiError<GetCliAuthStatusResponse>> for AuthError {
@@ -178,12 +196,12 @@ impl From<ApiError<GetCliAuthStatusResponse>> for AuthError {
         if let ApiError::InvalidResponsePayload(bytes, _) = &err
             && let Ok(body) = serde_json::from_slice::<ApiErrorBody>(bytes)
         {
-            return match body.code.as_deref() {
-                Some("SESSION_EXPIRED") => Self::SessionExpired,
-                Some("SESSION_NOT_FOUND") => Self::SessionNotFound,
-                Some("USER_NOT_FOUND") => Self::UserNotFound,
-                Some("INTERNAL_ERROR") => Self::ServerError(body.error),
-                _ => Self::InvalidSession(body.error),
+            return match body.code {
+                Some(DappErrorCode::SessionExpired) => Self::SessionExpired,
+                Some(DappErrorCode::SessionNotFound) => Self::SessionNotFound,
+                Some(DappErrorCode::UserNotFound) => Self::UserNotFound,
+                Some(DappErrorCode::InternalError) => Self::ServerError(body.error),
+                Some(DappErrorCode::Other) | None => Self::InvalidSession(body.error),
             };
         }
 
@@ -191,7 +209,7 @@ impl From<ApiError<GetCliAuthStatusResponse>> for AuthError {
         // happen for our error shapes, but handle gracefully.
         if let ApiError::ErrorResponse(ref rv) = err {
             if let Some(status) = err.status()
-                && status.as_u16() >= 500
+                && status.is_server_error()
             {
                 return Self::ServerError(format!("HTTP {status}"));
             }
