@@ -94,6 +94,7 @@ mod test {
                 PhEvmContext,
             },
             sol_primitives::PhEvm,
+            spec_recorder::AssertionSpec,
             tracer::CallTracer,
         },
         test_utils::{
@@ -101,6 +102,7 @@ mod test {
             random_bytes,
             random_bytes32,
             run_precompile_test,
+            run_precompile_test_with_spec,
         },
     };
     use alloy_primitives::{
@@ -466,5 +468,14 @@ mod test {
         assert!(result.is_valid());
         let result_and_state = result.result_and_state;
         assert!(result_and_state.result.is_success());
+    }
+
+    #[tokio::test]
+    async fn test_reshiram_spec_forbids_get_logs() {
+        let result = run_precompile_test_with_spec("TestGetLogs", AssertionSpec::Reshiram);
+        assert!(
+            !result.is_valid(),
+            "getLogs should be forbidden under Reshiram spec"
+        );
     }
 }

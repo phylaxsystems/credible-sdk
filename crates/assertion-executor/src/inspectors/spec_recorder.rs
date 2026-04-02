@@ -77,7 +77,12 @@ impl AssertionSpec {
             PhEvm::getTxObjectCall::SELECTOR
                 | PhEvm::loadStateAt_0Call::SELECTOR
                 | PhEvm::loadStateAt_1Call::SELECTOR
+                | PhEvm::getLogsQueryCall::SELECTOR
                 | PhEvm::staticcallAtCall::SELECTOR
+                | PhEvm::getErc20TransfersCall::SELECTOR
+                | PhEvm::getErc20TransfersForTokensCall::SELECTOR
+                | PhEvm::changedErc20BalanceDeltasCall::SELECTOR
+                | PhEvm::reduceErc20BalanceDeltasCall::SELECTOR
         )
     }
 
@@ -90,6 +95,7 @@ impl AssertionSpec {
                 | PhEvm::forkPostTxCall::SELECTOR
                 | PhEvm::forkPreCallCall::SELECTOR
                 | PhEvm::forkPostCallCall::SELECTOR
+                | PhEvm::getLogsCall::SELECTOR
                 | PhEvm::loadCall::SELECTOR
         )
     }
