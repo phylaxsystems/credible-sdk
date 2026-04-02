@@ -59,7 +59,7 @@ fn log_matches_query(log: &Log, query: &LogQuery) -> bool {
 
 /// Filter the selected fork window down to matching logs and ABI-encode them as
 /// the `PhEvm.Log[]` result returned by the precompile.
-fn encode_logs_query_result(logs: &[Log], query: &LogQuery) -> Bytes {
+fn filter_and_encode_logs(logs: &[Log], query: &LogQuery) -> Bytes {
     crate::arena::with_current_tx_arena(|arena| {
         // Reuse the transaction arena so temporary ABI-shaping allocations stay scoped
         // to the current transaction instead of hitting the general heap on each query.
@@ -121,7 +121,7 @@ pub fn get_logs_query(
         return Err(GetLogsQueryError::OutOfGas(rax));
     }
 
-    let encoded = encode_logs_query_result(logs, &call.query);
+    let encoded = filter_and_encode_logs(logs, &call.query);
     let encoded_words = (encoded.len() as u64).div_ceil(32);
     if let Some(rax) = deduct_gas_and_check(
         &mut gas_left,
@@ -205,7 +205,7 @@ mod test {
     }
 
     fn expected_gas(scope: &[Log], query: &LogQuery) -> u64 {
-        let encoded = encode_logs_query_result(scope, query);
+        let encoded = filter_and_encode_logs(scope, query);
         RESHIRAM_BASE_COST
             + scope.len() as u64
             + ABI_ENCODE_COST * (encoded.len() as u64).div_ceil(32)
