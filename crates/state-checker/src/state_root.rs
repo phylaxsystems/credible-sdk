@@ -142,7 +142,7 @@ impl StateRootCalculator {
     /// 6. **Pre-allocated account-hash vector** to avoid repeated reallocations
     ///    when scanning millions of accounts.
     pub fn calculate_for_block(&self, block_number: u64) -> Result<B256> {
-        info!("Starting state root calculation for block {block_number}");
+        info!(target: "state-checker", "Starting state root calculation for block {block_number}");
 
         // Open a single MDBX read transaction for the entire calculation.
         // MDBX read transactions use MVCC — every read sees the same consistent snapshot.
@@ -161,21 +161,21 @@ impl StateRootCalculator {
 
         // Step 1: Scan all account hashes (lightweight — just B256 values).
         // Pre-allocate based on a reasonable estimate to avoid repeated reallocations.
-        info!("Scanning account hashes...");
+        info!(target: "state-checker", "Scanning account hashes...");
         let mut account_hashes =
             StateReader::scan_account_hashes_in_tx(&tx, namespace_idx, ESTIMATED_ACCOUNT_COUNT)
                 .context("Failed to scan account hashes")?;
 
         if account_hashes.is_empty() {
-            info!("No accounts found — returning empty state root");
+            info!(target: "state-checker", "No accounts found — returning empty state root");
             return Ok(EMPTY_TRIE_ROOT);
         }
 
         let total_accounts = account_hashes.len();
-        info!("Found {total_accounts} accounts to process");
+        info!(target: "state-checker", "Found {total_accounts} accounts to process");
 
         // Step 2: Sort hashes for proper trie construction.
-        info!("Sorting account hashes...");
+        info!(target: "state-checker", "Sorting account hashes...");
         account_hashes.sort_unstable();
 
         // Step 3: Process accounts in large chunks with a two-phase approach.
@@ -183,6 +183,7 @@ impl StateRootCalculator {
         let mut processed = 0usize;
 
         info!(
+            target: "state-checker",
             "Processing accounts (chunk_size={CHUNK_SIZE}, rayon_threads={})...",
             rayon::current_num_threads()
         );
@@ -227,6 +228,7 @@ impl StateRootCalculator {
             processed += chunk.len();
             if processed.is_multiple_of(LOG_EVERY_N_ACCOUNTS) || processed == total_accounts {
                 info!(
+                    target: "state-checker",
                     "Processed {processed}/{total_accounts} accounts ({:.1}%)",
                     (processed as f64 / total_accounts as f64) * 100.0
                 );
@@ -234,9 +236,9 @@ impl StateRootCalculator {
         }
 
         // Step 4: Compute the final state root.
-        info!("Computing final state root...");
+        info!(target: "state-checker", "Computing final state root...");
         let root = hash_builder.root();
-        info!("State root calculated: 0x{}", hex::encode(root));
+        info!(target: "state-checker", "State root calculated: 0x{}", hex::encode(root));
 
         Ok(root)
     }
@@ -267,7 +269,7 @@ impl StateRootService {
             .context("Failed to get latest block")?
             .ok_or_else(|| anyhow::anyhow!("No blocks available in state worker"))?;
 
-        info!("Latest block in state worker: {latest_block}");
+        info!(target: "state-checker", "Latest block in state worker: {latest_block}");
 
         // Calculate state root
         Ok((

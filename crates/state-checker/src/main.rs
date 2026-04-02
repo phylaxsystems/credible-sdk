@@ -90,6 +90,7 @@ async fn main() -> Result<()> {
     if let Some(threads) = args.rayon_threads {
         rayon::ThreadPoolBuilder::new()
             .num_threads(threads)
+            .thread_name(|idx| format!("state-checker-{idx}"))
             .build_global()
             .context("Failed to configure Rayon thread pool")?;
         info!("Rayon thread pool configured with {threads} threads");
