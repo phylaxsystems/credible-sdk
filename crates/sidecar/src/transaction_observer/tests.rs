@@ -57,9 +57,7 @@ fn hex_bytes(bytes: &[u8]) -> String {
 fn format_timestamp(timestamp: u64) -> String {
     let seconds = i64::try_from(timestamp).expect("valid timestamp");
     let date_time = chrono::DateTime::<Utc>::from_timestamp(seconds, 0).expect("valid timestamp");
-    // The generated PostEnforcerIncidentsBody type has a DateTime field (format: date-time)
-    // which re-serializes UTC timestamps with "Z" suffix instead of "+00:00"
-    date_time.to_rfc3339().replace("+00:00", "Z")
+    date_time.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
 fn parse_chain_id(value: &Value) -> Option<u64> {
