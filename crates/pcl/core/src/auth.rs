@@ -133,7 +133,9 @@ impl AuthCommand {
     fn display_login_instructions(&self, auth_response: &GetCliAuthCodeResponse) {
         let mut device_url = self.auth_url.clone();
         device_url.set_path("/device");
-        device_url.set_query(Some(&format!("session_id={}", auth_response.session_id)));
+        device_url
+            .query_pairs_mut()
+            .append_pair("session_id", &auth_response.session_id.to_string());
         let url = device_url.as_str();
 
         if open::that(url).is_ok() {
@@ -830,6 +832,49 @@ mod tests {
 
         let result = AuthCommand::check_auth_status(&client, &auth_response).await;
         assert!(result.is_err());
+        mock.assert();
+    }
+
+    #[tokio::test]
+    async fn test_polling_stops_on_verified_missing_tokens() {
+        let mut server = Server::new_async().await;
+
+        // Server returns verified:true but without tokens — wait_for_verification
+        // should bail with InvalidAuthData instead of silently continuing.
+        let mock = server
+            .mock("GET", "/api/v1/cli/auth/status")
+            .match_query(mockito::Matcher::AllOf(vec![
+                mockito::Matcher::UrlEncoded(
+                    "session_id".into(),
+                    "550e8400-e29b-41d4-a716-446655440000".into(),
+                ),
+                mockito::Matcher::UrlEncoded("device_secret".into(), "test_secret".into()),
+            ]))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"verified":true}"#)
+            .expect(1)
+            .create();
+
+        let cmd = AuthCommand::try_parse_from(vec!["auth", "--auth-url", &server.url(), "login"])
+            .unwrap();
+        let client = cmd.api_client();
+        let mut config = CliConfig::default();
+
+        let auth_response: GetCliAuthCodeResponse = serde_json::from_str(
+            r#"{"code":"123456","sessionId":"550e8400-e29b-41d4-a716-446655440000","deviceSecret":"test_secret","expiresAt":"2099-12-31T00:00:00Z"}"#,
+        )
+        .unwrap();
+
+        let result = cmd
+            .wait_for_verification(&mut config, &client, &auth_response)
+            .await;
+
+        assert!(
+            matches!(result, Err(AuthError::InvalidAuthData(_))),
+            "Expected InvalidAuthData, got {result:?}"
+        );
+        assert!(config.auth.is_none());
         mock.assert();
     }
 }
