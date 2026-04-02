@@ -42,10 +42,7 @@ use anyhow::{
     ensure,
 };
 use futures_util::FutureExt;
-use mdbx::{
-    StateWriter,
-    common::CircularBufferConfig,
-};
+use mdbx::StateWriter;
 use std::{
     panic::AssertUnwindSafe,
     path::{
@@ -199,10 +196,7 @@ pub async fn build_state_worker(
     let provider = connect_provider(config.ws_url.as_str()).await?;
 
     validate_geth_version(&provider).await?;
-    let writer_reader = match StateWriter::new(
-        &config.mdbx_path,
-        CircularBufferConfig::new(config.mdbx_depth)?,
-    ) {
+    let writer_reader = match StateWriter::new(&config.mdbx_path) {
         Ok(writer_reader) => {
             metrics::set_db_healthy(true);
             writer_reader

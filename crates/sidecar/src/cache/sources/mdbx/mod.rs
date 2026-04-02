@@ -288,7 +288,6 @@ mod tests {
         BlockStateUpdate,
         StateWriter,
         Writer,
-        common::CircularBufferConfig,
     };
     use tempfile::tempdir;
 
@@ -312,8 +311,7 @@ mod tests {
     fn integrated_source_is_synced_when_committed_head_meets_minimum() {
         let dir = tempdir().expect("tmpdir");
         let path = dir.path().join("state");
-        let writer =
-            StateWriter::new(&path, CircularBufferConfig::new(1).expect("config")).expect("writer");
+        let writer = StateWriter::new(&path).expect("writer");
         commit_empty_block(&writer, 0);
 
         let reader = writer.reader().clone();
@@ -329,8 +327,7 @@ mod tests {
     fn integrated_source_is_unsynced_when_committed_head_is_too_far_behind() {
         let dir = tempdir().expect("tmpdir");
         let path = dir.path().join("state");
-        let writer =
-            StateWriter::new(&path, CircularBufferConfig::new(1).expect("config")).expect("writer");
+        let writer = StateWriter::new(&path).expect("writer");
         commit_empty_block(&writer, 0);
 
         let reader = writer.reader().clone();
@@ -345,8 +342,7 @@ mod tests {
     fn external_source_uses_latest_committed_block_without_background_poller() {
         let dir = tempdir().expect("tmpdir");
         let path = dir.path().join("state");
-        let writer =
-            StateWriter::new(&path, CircularBufferConfig::new(3).expect("config")).expect("writer");
+        let writer = StateWriter::new(&path).expect("writer");
         commit_empty_block(&writer, 5);
 
         let reader = writer.reader().clone();
@@ -360,8 +356,7 @@ mod tests {
     fn external_source_is_unsynced_when_minimum_block_has_been_evicted() {
         let dir = tempdir().expect("tmpdir");
         let path = dir.path().join("state");
-        let writer =
-            StateWriter::new(&path, CircularBufferConfig::new(2).expect("config")).expect("writer");
+        let writer = StateWriter::new(&path).expect("writer");
         commit_empty_block(&writer, 4);
         commit_empty_block(&writer, 5);
         commit_empty_block(&writer, 6);
