@@ -525,9 +525,7 @@ impl StateReader {
     /// # Errors
     ///
     /// Returns any database error when starting the transaction.
-    pub fn create_read_tx(
-        &self,
-    ) -> StateResult<reth_db::mdbx::tx::Tx<reth_libmdbx::RO>> {
+    pub fn create_read_tx(&self) -> StateResult<reth_db::mdbx::tx::Tx<reth_libmdbx::RO>> {
         self.db.tx()
     }
 
