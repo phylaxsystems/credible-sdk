@@ -86,6 +86,22 @@ use tracing::{
     trace,
 };
 
+/// Account data optimized for state root calculation.
+///
+/// Unlike [`AccountState`](crate::AccountState), this type:
+/// - Skips bytecode loading (only `code_hash` is needed for the state trie)
+/// - Returns storage as a sorted `Vec` instead of `HashMap` (MDBX cursors
+///   already iterate in key order, so no extra sort or hash overhead)
+/// - Filters out zero-value storage slots inline during cursor iteration
+#[derive(Debug)]
+pub struct StateRootAccountData {
+    pub nonce: u64,
+    pub balance: U256,
+    pub code_hash: B256,
+    /// Storage slots sorted by slot hash with zero values already filtered out.
+    pub sorted_storage: Vec<(B256, U256)>,
+}
+
 /// State reader for querying blockchain state from MDBX.
 #[derive(Clone, Debug)]
 pub struct StateReader {
@@ -500,12 +516,145 @@ impl StateReader {
             .map_err(StateError::Database)
     }
 
+    /// Create a read-only MDBX transaction for shared use across multiple reads.
+    ///
+    /// MDBX read transactions use MVCC — all reads through a single transaction
+    /// see a consistent snapshot from when it was created. Sharing one transaction
+    /// across millions of reads eliminates per-read transaction open/close overhead.
+    ///
+    /// # Errors
+    ///
+    /// Returns any database error when starting the transaction.
+    pub fn create_read_tx(&self) -> StateResult<reth_db::mdbx::tx::Tx<reth_libmdbx::RO>> {
+        self.db.tx()
+    }
+
+    /// Get the namespace index for a block number.
+    ///
+    /// This is a pure computation (modular arithmetic), no transaction required.
+    ///
+    /// # Errors
+    ///
+    /// Returns `IntConversion` if the namespace index does not fit into a `u8`.
+    pub fn namespace_for_block(&self, block_number: u64) -> StateResult<u8> {
+        self.db.namespace_for_block(block_number)
+    }
+
+    /// Scan all account hashes using an existing shared transaction.
+    ///
+    /// Same semantics as [`Reader::scan_account_hashes`] but avoids opening a
+    /// new transaction. The caller must have already verified the block is
+    /// available via [`Self::verify_block_available`].
+    ///
+    /// `estimated_count` pre-allocates the result vector to reduce reallocations
+    /// when the approximate number of accounts is known (e.g. 10 M on mainnet).
+    ///
+    /// # Errors
+    ///
+    /// Returns any database cursor or read error.
+    pub fn scan_account_hashes_in_tx<TX: DbTx>(
+        tx: &TX,
+        namespace_idx: u8,
+        estimated_count: usize,
+    ) -> StateResult<Vec<AddressHash>> {
+        let mut result = Vec::with_capacity(estimated_count);
+        let mut cursor = tx
+            .cursor_read::<NamespacedAccounts>()
+            .map_err(StateError::Database)?;
+
+        let start_key = NamespacedAccountKey::new(namespace_idx, AddressHash::default());
+
+        if let Some((key, _)) = cursor.seek(start_key).map_err(StateError::Database)?
+            && key.namespace_idx == namespace_idx
+        {
+            result.push(key.address_hash);
+            while let Some((key, _)) = cursor.next().map_err(StateError::Database)? {
+                if key.namespace_idx != namespace_idx {
+                    break;
+                }
+                result.push(key.address_hash);
+            }
+        }
+
+        Ok(result)
+    }
+
+    /// Load account data needed for state root calculation using a shared
+    /// transaction.
+    ///
+    /// Compared to [`Reader::get_full_account`] this method:
+    /// 1. **Skips bytecode loading** — the state trie only needs `code_hash`.
+    /// 2. **Collects storage into a sorted `Vec`** — the MDBX B-tree cursor
+    ///    already yields keys in order, so we avoid `HashMap` allocation,
+    ///    hashing, and a subsequent sort.
+    /// 3. **Filters zero-value slots inline** — Ethereum treats zero as
+    ///    non-existent, so they are dropped during iteration rather than in
+    ///    a second pass.
+    ///
+    /// The caller must have already verified the block is available.
+    ///
+    /// # Errors
+    ///
+    /// Returns any database read or cursor error.
+    pub fn get_account_for_state_root<TX: DbTx>(
+        tx: &TX,
+        namespace_idx: u8,
+        address_hash: AddressHash,
+    ) -> StateResult<Option<StateRootAccountData>> {
+        let key = NamespacedAccountKey::new(namespace_idx, address_hash);
+        let Some(account) = tx
+            .get::<NamespacedAccounts>(key)
+            .map_err(StateError::Database)?
+        else {
+            return Ok(None);
+        };
+
+        // Read storage directly into a sorted Vec.
+        // MDBX's B-tree cursor iterates in key order (namespace | address_hash | slot_hash),
+        // so for a fixed namespace + address_hash prefix the slot_hashes are already sorted.
+        let mut sorted_storage = Vec::new();
+        let mut cursor = tx
+            .cursor_read::<NamespacedStorage>()
+            .map_err(StateError::Database)?;
+        let start_key = NamespacedStorageKey::new(namespace_idx, address_hash, B256::ZERO);
+
+        if let Some((key, value)) = cursor.seek(start_key).map_err(StateError::Database)?
+            && key.namespace_idx == namespace_idx
+            && key.address_hash == address_hash
+        {
+            if !value.0.is_zero() {
+                sorted_storage.push((key.slot_hash, value.0));
+            }
+            while let Some((key, value)) = cursor.next().map_err(StateError::Database)? {
+                if key.namespace_idx != namespace_idx || key.address_hash != address_hash {
+                    break;
+                }
+                if !value.0.is_zero() {
+                    sorted_storage.push((key.slot_hash, value.0));
+                }
+            }
+        }
+
+        // No bytecode loading — state root only needs code_hash.
+
+        Ok(Some(StateRootAccountData {
+            nonce: account.nonce,
+            balance: account.balance,
+            code_hash: account.code_hash,
+            sorted_storage,
+        }))
+    }
+
     /// Verify that the block is in the expected namespace.
     ///
     /// Due to MDBX's MVCC, readers always see a consistent snapshot.
     /// If the namespace contains our block, all related data is guaranteed
     /// to be consistent and complete.
-    fn verify_block_available<TX: DbTx>(
+    ///
+    /// # Errors
+    ///
+    /// Returns `BlockNotFound` if the block is not in the circular buffer.
+    pub fn verify_block_available<TX: DbTx>(
         tx: &TX,
         namespace_idx: u8,
         block_number: u64,

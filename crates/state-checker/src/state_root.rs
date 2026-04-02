@@ -22,11 +22,13 @@ use alloy_trie::{
 use anyhow::{
     Context,
     Result,
-    anyhow,
 };
-use mdbx::Reader;
+use mdbx::{
+    Reader,
+    StateReader,
+    StateRootAccountData,
+};
 use rayon::prelude::*;
-use std::collections::HashMap;
 use tracing::info;
 
 /// Empty trie root = keccak256(rlp([]))
@@ -35,8 +37,18 @@ pub const EMPTY_TRIE_ROOT: B256 = B256::new([
     0x5b, 0x48, 0xe0, 0x1b, 0x99, 0x6c, 0xad, 0xc0, 0x01, 0x62, 0x2f, 0xb5, 0xe3, 0x63, 0xb4, 0x21,
 ]);
 
-const MIN_CHUNK_SIZE: usize = 256;
-const LOG_EVERY_N_ACCOUNTS: usize = 10_000;
+/// Number of accounts processed per chunk.
+///
+/// Larger chunks reduce synchronisation barriers between the sequential trie-build
+/// phase and the parallel storage-root phase. For 10 M+ accounts, 100 K gives ~100
+/// chunks — enough parallelism with minimal overhead.
+const CHUNK_SIZE: usize = 100_000;
+
+const LOG_EVERY_N_ACCOUNTS: usize = 100_000;
+
+/// Pre-allocation hint for the account-hash vector.
+/// Mainnet has ~250 M accounts; many L2s / testnets are in the 1–15 M range.
+const ESTIMATED_ACCOUNT_COUNT: usize = 10_000_000;
 
 /// Ethereum account state for state trie construction.
 #[derive(Debug, Clone, PartialEq)]
@@ -80,39 +92,21 @@ impl AccountState {
     }
 }
 
-/// Calculate storage root for an account using a proper Merkle Patricia Trie.
-/// This produces Ethereum storage roots
-fn calculate_storage_root(storage: &HashMap<B256, U256>) -> B256 {
-    if storage.is_empty() {
+/// Calculate storage root from pre-sorted, zero-filtered storage slots.
+///
+/// The caller guarantees that `sorted_storage` is sorted by slot hash and
+/// contains no zero values. This is the case when slots come directly from
+/// an MDBX cursor via [`StateReader::get_account_for_state_root`].
+fn calculate_storage_root_presorted(sorted_storage: &[(B256, U256)]) -> B256 {
+    if sorted_storage.is_empty() {
         return EMPTY_TRIE_ROOT;
     }
 
-    // Convert to sorted entries for deterministic trie construction
-    let mut entries = Vec::with_capacity(storage.len());
-    for (slot, value) in storage {
-        // Skip zero values - they don't exist in the trie
-        if value.is_zero() {
-            continue;
-        }
-
-        // Storage keys from mdbx are already keccak256(pad32(slot)).
-        // Use them directly to avoid double-hashing.
-        let key_hash = *slot;
-
-        // Value: RLP-encoded value (will trim leading zeros automatically)
+    let mut hash_builder = HashBuilder::default();
+    for (key_hash, value) in sorted_storage {
         let mut value_rlp = Vec::new();
         value.encode(&mut value_rlp);
-
-        entries.push((key_hash, value_rlp));
-    }
-
-    // Sort by key hash for proper trie construction
-    entries.sort_unstable_by(|a, b| a.0.cmp(&b.0));
-
-    // Build the storage trie
-    let mut hash_builder = HashBuilder::default();
-    for (key_hash, value_rlp) in entries {
-        let nibbles = Nibbles::unpack(key_hash);
+        let nibbles = Nibbles::unpack(*key_hash);
         hash_builder.add_leaf(nibbles, &value_rlp);
     }
 
@@ -120,88 +114,110 @@ fn calculate_storage_root(storage: &HashMap<B256, U256>) -> B256 {
 }
 
 /// Memory-efficient state root calculator using streaming processing.
-pub struct StateRootCalculator<R: Reader> {
-    reader: R,
+pub struct StateRootCalculator {
+    reader: StateReader,
 }
 
-impl<R: Reader + Clone> StateRootCalculator<R>
-where
-    R: Send + Sync,
-    R::Error: std::error::Error + Send + Sync + 'static,
-{
-    pub fn new(reader: &R) -> Self {
+impl StateRootCalculator {
+    pub fn new(reader: &StateReader) -> Self {
         Self {
             reader: reader.clone(),
         }
     }
 
-    /// Calculate state root with minimal memory usage by processing accounts one at a time.
+    /// Calculate state root with minimal memory usage by processing accounts
+    /// in chunks.
     ///
-    /// **Memory Efficient**: Never holds all accounts in memory - processes them in sorted
-    /// order and drops each one after adding it to the trie.
+    /// ## Optimisations over the naïve per-account approach
     ///
-    /// **This produces REAL Ethereum state roots that match block headers!**
+    /// 1. **Single MDBX read transaction** shared across the entire calculation,
+    ///    eliminating millions of transaction open/close cycles.
+    /// 2. **Bytecode skipped** — only `code_hash` is needed for the state trie.
+    /// 3. **Sorted `Vec` for storage** — the MDBX cursor already yields keys in
+    ///    order; collecting into a `Vec` avoids `HashMap` hashing/allocation and
+    ///    the subsequent sort.
+    /// 4. **Two-phase processing per chunk**: sequential I/O (shared tx) followed
+    ///    by parallel CPU work (storage root + RLP encoding).
+    /// 5. **Large chunk size** (100 K) to reduce synchronisation barriers.
+    /// 6. **Pre-allocated account-hash vector** to avoid repeated reallocations
+    ///    when scanning millions of accounts.
     pub fn calculate_for_block(&self, block_number: u64) -> Result<B256> {
-        info!("Starting state root calculation for block {block_number}");
+        info!(target: "state-checker", "Starting state root calculation for block {block_number}");
 
-        // Step 1: Scan all account hashes (lightweight - just B256 values)
-        info!("Scanning account hashes...");
-        let mut account_hashes = self
+        // Open a single MDBX read transaction for the entire calculation.
+        // MDBX read transactions use MVCC — every read sees the same consistent snapshot.
+        let tx = self
             .reader
-            .scan_account_hashes(block_number)
-            .context("Failed to scan account hashes")?;
+            .create_read_tx()
+            .context("Failed to create MDBX read transaction")?;
+        let namespace_idx = self
+            .reader
+            .namespace_for_block(block_number)
+            .context("Failed to compute namespace")?;
+
+        // Verify block availability once, then trust the namespace for all reads.
+        StateReader::verify_block_available(&tx, namespace_idx, block_number)
+            .context("Block not available in MDBX")?;
+
+        // Step 1: Scan all account hashes (lightweight — just B256 values).
+        // Pre-allocate based on a reasonable estimate to avoid repeated reallocations.
+        info!(target: "state-checker", "Scanning account hashes...");
+        let mut account_hashes =
+            StateReader::scan_account_hashes_in_tx(&tx, namespace_idx, ESTIMATED_ACCOUNT_COUNT)
+                .context("Failed to scan account hashes")?;
 
         if account_hashes.is_empty() {
-            info!("No accounts found - returning empty state root");
+            info!(target: "state-checker", "No accounts found — returning empty state root");
             return Ok(EMPTY_TRIE_ROOT);
         }
 
-        info!("Found {} accounts to process", account_hashes.len());
+        let total_accounts = account_hashes.len();
+        info!(target: "state-checker", "Found {total_accounts} accounts to process");
 
-        // Step 2: Sort hashes for proper trie construction
-        // The state trie requires leaves to be added in sorted order
-        info!("Sorting account hashes...");
+        // Step 2: Sort hashes for proper trie construction.
+        info!(target: "state-checker", "Sorting account hashes...");
         account_hashes.sort_unstable();
 
-        // Step 3: Create a hash builder for the state trie
+        // Step 3: Process accounts in large chunks with a two-phase approach.
         let mut hash_builder = HashBuilder::default();
-
-        // Step 4: Process accounts in bounded parallel chunks
-        info!("Processing accounts...");
-        let total_accounts = account_hashes.len();
-        let chunk_size = (rayon::current_num_threads() * MIN_CHUNK_SIZE).max(MIN_CHUNK_SIZE);
         let mut processed = 0usize;
 
-        for chunk in account_hashes.chunks(chunk_size) {
-            let account_rlps: Vec<Option<Vec<u8>>> = chunk
-                .par_iter()
-                .map(|address_hash| -> Result<Option<Vec<u8>>> {
-                    let account_data = self
-                        .reader
-                        .get_full_account(*address_hash, block_number)
-                        .with_context(|| format!("Failed to read account {address_hash:?}"))?;
+        info!(
+            target: "state-checker",
+            "Processing accounts (chunk_size={CHUNK_SIZE}, rayon_threads={})...",
+            rayon::current_num_threads()
+        );
 
-                    let Some(data) = account_data else {
-                        return Ok(None);
-                    };
-
-                    // Calculate storage root for this account
-                    // (Storage is loaded temporarily here, then dropped)
-                    let storage_root = calculate_storage_root(&data.storage);
-
-                    // Create an account state
-                    let account = AccountState {
-                        nonce: data.nonce,
-                        balance: data.balance,
-                        storage_root,
-                        code_hash: data.code_hash,
-                    };
-
-                    // RLP encode the account
-                    Ok(Some(account.rlp_encode()))
+        for chunk in account_hashes.chunks(CHUNK_SIZE) {
+            // Phase 1 — Sequential I/O using the shared transaction.
+            // Each account read is a cursor seek (very fast), and we avoid
+            // opening a new transaction per account.
+            let account_data: Vec<Option<StateRootAccountData>> = chunk
+                .iter()
+                .map(|address_hash| {
+                    StateReader::get_account_for_state_root(&tx, namespace_idx, *address_hash)
+                        .with_context(|| format!("Failed to read account {address_hash}"))
                 })
                 .collect::<Result<Vec<_>>>()?;
 
+            // Phase 2 — Parallel CPU work: storage root calculation + RLP encoding.
+            let account_rlps: Vec<Option<Vec<u8>>> = account_data
+                .into_par_iter()
+                .map(|data| {
+                    data.map(|d| {
+                        let storage_root = calculate_storage_root_presorted(&d.sorted_storage);
+                        AccountState {
+                            nonce: d.nonce,
+                            balance: d.balance,
+                            storage_root,
+                            code_hash: d.code_hash,
+                        }
+                        .rlp_encode()
+                    })
+                })
+                .collect();
+
+            // Phase 3 — Sequential trie building (leaves must be added in sorted order).
             for (address_hash, account_rlp) in chunk.iter().zip(account_rlps.into_iter()) {
                 if let Some(rlp) = account_rlp {
                     let nibbles = Nibbles::unpack(*address_hash);
@@ -212,34 +228,29 @@ where
             processed += chunk.len();
             if processed.is_multiple_of(LOG_EVERY_N_ACCOUNTS) || processed == total_accounts {
                 info!(
-                    "Processed {}/{} accounts ({:.1}%)",
-                    processed,
-                    total_accounts,
+                    target: "state-checker",
+                    "Processed {processed}/{total_accounts} accounts ({:.1}%)",
                     (processed as f64 / total_accounts as f64) * 100.0
                 );
             }
         }
 
-        // Step 5: Compute the final state root
-        info!("Computing final state root...");
+        // Step 4: Compute the final state root.
+        info!(target: "state-checker", "Computing final state root...");
         let root = hash_builder.root();
-        info!("State root calculated: 0x{}", hex::encode(root));
+        info!(target: "state-checker", "State root calculated: 0x{}", hex::encode(root));
 
         Ok(root)
     }
 }
 
 /// High-level service for state root calculation.
-pub struct StateRootService<R: Reader> {
-    calculator: StateRootCalculator<R>,
+pub struct StateRootService {
+    calculator: StateRootCalculator,
 }
 
-impl<R: Reader + Clone> StateRootService<R>
-where
-    R: Send + Sync,
-    R::Error: std::error::Error + Send + Sync + 'static,
-{
-    pub fn new(reader: &R) -> Self {
+impl StateRootService {
+    pub fn new(reader: &StateReader) -> Self {
         Self {
             calculator: StateRootCalculator::new(reader),
         }
@@ -256,9 +267,9 @@ where
             .reader
             .latest_block_number()
             .context("Failed to get latest block")?
-            .ok_or_else(|| anyhow!("No blocks available in state worker"))?;
+            .ok_or_else(|| anyhow::anyhow!("No blocks available in state worker"))?;
 
-        info!("Latest block in state worker: {latest_block}");
+        info!(target: "state-checker", "Latest block in state worker: {latest_block}");
 
         // Calculate state root
         Ok((
@@ -286,7 +297,37 @@ mod tests {
         common::CircularBufferConfig,
     };
     use revm::primitives::KECCAK_EMPTY;
+    use std::collections::HashMap;
     use tempfile::TempDir;
+
+    /// Calculate storage root for an account using a proper Merkle Patricia Trie.
+    /// Test-only helper that accepts a `HashMap` (production code uses pre-sorted `Vec`).
+    fn calculate_storage_root(storage: &HashMap<B256, U256>) -> B256 {
+        if storage.is_empty() {
+            return EMPTY_TRIE_ROOT;
+        }
+
+        let mut entries = Vec::with_capacity(storage.len());
+        for (slot, value) in storage {
+            if value.is_zero() {
+                continue;
+            }
+            let key_hash = *slot;
+            let mut value_rlp = Vec::new();
+            value.encode(&mut value_rlp);
+            entries.push((key_hash, value_rlp));
+        }
+
+        entries.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+
+        let mut hash_builder = HashBuilder::default();
+        for (key_hash, value_rlp) in entries {
+            let nibbles = Nibbles::unpack(key_hash);
+            hash_builder.add_leaf(nibbles, &value_rlp);
+        }
+
+        hash_builder.root()
+    }
 
     #[test]
     fn test_empty_storage_root() {

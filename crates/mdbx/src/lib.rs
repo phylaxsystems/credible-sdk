@@ -33,7 +33,10 @@ pub mod writer;
 pub use writer::StateWriter;
 
 #[cfg(feature = "reader")]
-pub use reader::StateReader;
+pub use reader::{
+    StateReader,
+    StateRootAccountData,
+};
 
 /// Account info without storage (for reader API).
 ///
