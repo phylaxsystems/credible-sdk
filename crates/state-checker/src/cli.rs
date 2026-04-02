@@ -20,4 +20,9 @@ pub struct Args {
     /// Optional HTTP RPC URL for comparing the state root.
     #[arg(long, env = "STATE_CHECKER_RPC_URL")]
     pub rpc_url: Option<String>,
+
+    /// Number of Rayon threads for parallel storage-root computation.
+    /// Defaults to the number of available CPUs if unset.
+    #[arg(long, env = "STATE_CHECKER_RAYON_THREADS")]
+    pub rayon_threads: Option<usize>,
 }
