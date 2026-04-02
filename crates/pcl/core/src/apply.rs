@@ -188,10 +188,12 @@ impl ApplyArgs {
     }
 
     fn build_client(&self, config: &CliConfig) -> Result<GeneratedClient, ApplyError> {
-        authenticated_client(config, &self.api_url).map_err(|e| match e {
-            crate::client::ClientBuildError::NoAuthToken => ApplyError::NoAuthToken,
-            crate::client::ClientBuildError::InvalidConfig(msg) => {
-                ApplyError::InvalidConfig(msg)
+        authenticated_client(config, &self.api_url).map_err(|e| {
+            match e {
+                crate::client::ClientBuildError::NoAuthToken => ApplyError::NoAuthToken,
+                crate::client::ClientBuildError::InvalidConfig(msg) => {
+                    ApplyError::InvalidConfig(msg)
+                }
             }
         })
     }

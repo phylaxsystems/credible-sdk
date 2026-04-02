@@ -10,7 +10,10 @@ use dapp_api_client::generated::client::{
 };
 use pcl_common::args::CliArgs;
 use serde::Serialize;
-use std::path::PathBuf;
+use std::path::{
+    Path,
+    PathBuf,
+};
 use uuid::Uuid;
 
 #[derive(clap::Parser, Debug)]
@@ -122,7 +125,7 @@ impl DownloadArgs {
         let assertions = self.fetch_assertions_list(&client, &project_id).await?;
 
         if assertions.is_empty() {
-            return self.handle_empty_assertions(json_output, project_id, project_name);
+            return Self::handle_empty_assertions(json_output, project_id, project_name);
         }
 
         let output_dir = self.prepare_output_dir(&project_name)?;
@@ -139,11 +142,17 @@ impl DownloadArgs {
             .download_assertions(&client, &project_id, &assertions, &output_dir, json_output)
             .await?;
 
-        self.print_result(json_output, project_id, project_name, downloaded, skipped, &output_dir)
+        Self::print_result(
+            json_output,
+            project_id,
+            project_name,
+            downloaded,
+            skipped,
+            &output_dir,
+        )
     }
 
     fn handle_empty_assertions(
-        &self,
         json_output: bool,
         project_id: Uuid,
         project_name: String,
@@ -172,12 +181,14 @@ impl DownloadArgs {
             .clone()
             .unwrap_or_else(|| PathBuf::from(format!("{project_name}-assertions")));
 
-        std::fs::create_dir_all(&output_dir).map_err(|e| DownloadError::Io {
-            message: format!(
-                "Failed to create output directory: {}",
-                output_dir.display()
-            ),
-            source: e,
+        std::fs::create_dir_all(&output_dir).map_err(|e| {
+            DownloadError::Io {
+                message: format!(
+                    "Failed to create output directory: {}",
+                    output_dir.display()
+                ),
+                source: e,
+            }
         })?;
 
         Ok(output_dir)
@@ -188,7 +199,7 @@ impl DownloadArgs {
         client: &GeneratedClient,
         project_id: &Uuid,
         assertions: &[dapp_api_client::generated::client::types::GetViewsProjectsProjectIdAssertionsResponseDataAssertionsItem],
-        output_dir: &PathBuf,
+        output_dir: &Path,
         json_output: bool,
     ) -> Result<(Vec<DownloadedFile>, usize), DownloadError> {
         let mut downloaded = Vec::new();
@@ -216,9 +227,11 @@ impl DownloadArgs {
                 let file_name = format!("{contract_name}_{id_prefix}.sol");
                 let file_path = output_dir.join(&file_name);
 
-                std::fs::write(&file_path, &code).map_err(|e| DownloadError::Io {
-                    message: format!("Failed to write file: {}", file_path.display()),
-                    source: e,
+                std::fs::write(&file_path, &code).map_err(|e| {
+                    DownloadError::Io {
+                        message: format!("Failed to write file: {}", file_path.display()),
+                        source: e,
+                    }
                 })?;
 
                 if !json_output {
@@ -258,13 +271,12 @@ impl DownloadArgs {
     }
 
     fn print_result(
-        &self,
         json_output: bool,
         project_id: Uuid,
         project_name: String,
         downloaded: Vec<DownloadedFile>,
         skipped: usize,
-        output_dir: &PathBuf,
+        output_dir: &Path,
     ) -> Result<(), DownloadError> {
         if json_output {
             println!(
@@ -291,10 +303,12 @@ impl DownloadArgs {
     }
 
     fn build_client(&self, config: &CliConfig) -> Result<GeneratedClient, DownloadError> {
-        authenticated_client(config, &self.api_url).map_err(|e| match e {
-            crate::client::ClientBuildError::NoAuthToken => DownloadError::NoAuthToken,
-            crate::client::ClientBuildError::InvalidConfig(msg) => {
-                DownloadError::InvalidConfig(msg)
+        authenticated_client(config, &self.api_url).map_err(|e| {
+            match e {
+                crate::client::ClientBuildError::NoAuthToken => DownloadError::NoAuthToken,
+                crate::client::ClientBuildError::InvalidConfig(msg) => {
+                    DownloadError::InvalidConfig(msg)
+                }
             }
         })
     }
@@ -312,18 +326,18 @@ impl DownloadArgs {
                 .get_projects_project_id(&pid, None)
                 .await
                 .map(dapp_api_client::generated::client::ResponseValue::into_inner)
-                .map_err(|e| DownloadError::Api {
-                    endpoint: format!("/projects/{pid}"),
-                    status: e.status().map(|s| s.as_u16()),
-                    body: e.to_string(),
+                .map_err(|e| {
+                    DownloadError::Api {
+                        endpoint: format!("/projects/{pid}"),
+                        status: e.status().map(|s| s.as_u16()),
+                        body: e.to_string(),
+                    }
                 })?;
 
             return Ok((project.project_id, project.project_name.to_string()));
         }
 
-        let manager = self
-            .manager
-            .ok_or(DownloadError::MissingIdentifier)?;
+        let manager = self.manager.ok_or(DownloadError::MissingIdentifier)?;
 
         let manager_str = manager.to_string().to_lowercase();
 
@@ -331,10 +345,12 @@ impl DownloadArgs {
             .get_views_projects(None, None, None, None, None)
             .await
             .map(dapp_api_client::generated::client::ResponseValue::into_inner)
-            .map_err(|e| DownloadError::Api {
-                endpoint: "/views/projects".to_string(),
-                status: e.status().map(|s| s.as_u16()),
-                body: e.to_string(),
+            .map_err(|e| {
+                DownloadError::Api {
+                    endpoint: "/views/projects".to_string(),
+                    status: e.status().map(|s| s.as_u16()),
+                    body: e.to_string(),
+                }
             })?;
 
         let matches: Vec<_> = response
@@ -457,8 +473,9 @@ mod tests {
         .unwrap();
         match cli.command {
             TestCommand::Download(args) => {
-                let expected: Address =
-                    "0x1234567890abcdef1234567890abcdef12345678".parse().unwrap();
+                let expected: Address = "0x1234567890abcdef1234567890abcdef12345678"
+                    .parse()
+                    .unwrap();
                 assert_eq!(args.manager.unwrap(), expected);
                 assert!(args.project_id.is_none());
             }
