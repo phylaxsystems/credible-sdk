@@ -33,6 +33,16 @@ use crate::{
                 },
             },
             reshiram::{
+                erc20_balance_deltas::{
+                    Erc20BalanceDeltasError,
+                    changed_erc20_balance_deltas,
+                    reduce_erc20_balance_deltas,
+                },
+                erc20_transfers::{
+                    Erc20TransfersError,
+                    get_erc20_transfers,
+                    get_erc20_transfers_for_tokens,
+                },
                 get_logs_query::{
                     GetLogsQueryError,
                     get_logs_query,
@@ -188,6 +198,10 @@ pub enum PrecompileError<ExtDb: DatabaseRef<Error: std::fmt::Debug>> {
     LoadStateAtError(#[source] LoadStateAtError<ExtDb>),
     #[error("Error querying logs at fork: {0}")]
     GetLogsQueryError(#[source] GetLogsQueryError),
+    #[error("Error querying ERC20 transfers: {0}")]
+    Erc20TransfersError(#[source] Erc20TransfersError),
+    #[error("Error querying ERC20 balance deltas: {0}")]
+    Erc20BalanceDeltasError(#[source] Erc20BalanceDeltasError),
     #[error("Error executing staticcallAt: {0}")]
     StaticCallAtError(#[source] StaticCallAtError<ExtDb>),
 }
@@ -438,6 +452,30 @@ impl<'a> PhEvmInspector<'a> {
                 match get_logs_query(&self.context, input_bytes, inputs.gas_limit) {
                     Ok(rax) | Err(GetLogsQueryError::OutOfGas(rax)) => rax,
                     Err(err) => return Err(PrecompileError::GetLogsQueryError(err)),
+                }
+            }
+            PhEvm::getErc20TransfersCall::SELECTOR => {
+                match get_erc20_transfers(&self.context, input_bytes, inputs.gas_limit) {
+                    Ok(rax) | Err(Erc20TransfersError::OutOfGas(rax)) => rax,
+                    Err(err) => return Err(PrecompileError::Erc20TransfersError(err)),
+                }
+            }
+            PhEvm::getErc20TransfersForTokensCall::SELECTOR => {
+                match get_erc20_transfers_for_tokens(&self.context, input_bytes, inputs.gas_limit) {
+                    Ok(rax) | Err(Erc20TransfersError::OutOfGas(rax)) => rax,
+                    Err(err) => return Err(PrecompileError::Erc20TransfersError(err)),
+                }
+            }
+            PhEvm::changedErc20BalanceDeltasCall::SELECTOR => {
+                match changed_erc20_balance_deltas(&self.context, input_bytes, inputs.gas_limit) {
+                    Ok(rax) | Err(Erc20BalanceDeltasError::OutOfGas(rax)) => rax,
+                    Err(err) => return Err(PrecompileError::Erc20BalanceDeltasError(err)),
+                }
+            }
+            PhEvm::reduceErc20BalanceDeltasCall::SELECTOR => {
+                match reduce_erc20_balance_deltas(&self.context, input_bytes, inputs.gas_limit) {
+                    Ok(rax) | Err(Erc20BalanceDeltasError::OutOfGas(rax)) => rax,
+                    Err(err) => return Err(PrecompileError::Erc20BalanceDeltasError(err)),
                 }
             }
             PhEvm::loadStateAt_0Call::SELECTOR => {

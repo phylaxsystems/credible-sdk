@@ -76,6 +76,19 @@ sol! {
             bytes data;
         }
 
+        #[derive(Debug)]
+        // Decoded ERC20 Transfer event data returned by ERC20 introspection precompiles.
+        struct Erc20TransferData {
+            // The token contract that emitted the Transfer event.
+            address token_addr;
+            // The sender indexed in topic1.
+            address from;
+            // The receiver indexed in topic2.
+            address to;
+            // The transferred amount decoded from the log data.
+            uint256 value;
+        }
+
         //Forks to the state prior to the assertion triggering transaction.
         function forkPreTx() external;
 
@@ -182,6 +195,30 @@ sol! {
             external
             view
             returns (Log[] memory logs);
+
+        /// @notice Returns all ERC20 transfers for a single token in the specified fork.
+        function getErc20Transfers(address token, ForkId fork)
+            external
+            view
+            returns (Erc20TransferData[] memory transfers);
+
+        /// @notice Returns all ERC20 transfers for multiple tokens in the specified fork.
+        function getErc20TransfersForTokens(address[] calldata tokens, ForkId fork)
+            external
+            view
+            returns (Erc20TransferData[] memory transfers);
+
+        /// @notice Semantic alias of `getErc20Transfers` for balance-delta workflows.
+        function changedErc20BalanceDeltas(address token, ForkId fork)
+            external
+            view
+            returns (Erc20TransferData[] memory deltas);
+
+        /// @notice Reduces transfers into net balance deltas per unique `(from, to)` pair.
+        function reduceErc20BalanceDeltas(address token, ForkId fork)
+            external
+            view
+            returns (Erc20TransferData[] memory deltas);
     }
 
     interface Console {

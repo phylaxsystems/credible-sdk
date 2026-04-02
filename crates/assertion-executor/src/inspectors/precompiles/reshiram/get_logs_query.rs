@@ -1,11 +1,9 @@
 use crate::{
     inspectors::{
-        CallTracer,
         PhEvmContext,
         phevm::PhevmOutcome,
         precompiles::deduct_gas_and_check,
         sol_primitives::PhEvm::{
-            ForkId as SolForkId,
             LogQuery,
             getLogsQueryCall,
         },
@@ -13,7 +11,6 @@ use crate::{
     primitives::{
         Address,
         Bytes,
-        U256,
     },
 };
 
@@ -27,7 +24,13 @@ use alloy_sol_types::{
 };
 use bumpalo::Bump;
 
-use super::BASE_COST as RESHIRAM_BASE_COST;
+use super::{
+    BASE_COST as RESHIRAM_BASE_COST,
+    snapshot_logs::{
+        ForkWindowError,
+        logs_for_fork,
+    },
+};
 
 const LOG_SCAN_COST: u64 = 1;
 const ABI_ENCODE_COST: u64 = 3;
@@ -36,68 +39,10 @@ const ABI_ENCODE_COST: u64 = 3;
 pub enum GetLogsQueryError {
     #[error("Error decoding getLogsQuery call: {0}")]
     DecodeError(#[source] alloy_sol_types::Error),
-    #[error("Invalid fork type: {fork_type}")]
-    InvalidForkType { fork_type: u8 },
-    #[error("Call ID {call_id} is too large to be a valid index")]
-    CallIdOverflow { call_id: U256 },
-    #[error("Cannot query logs at call {call_id}: call is inside a reverted subtree")]
-    CallInsideRevertedSubtree { call_id: usize },
-    #[error("Pre-call checkpoint missing for call {call_id}")]
-    PreCallCheckpointMissing { call_id: usize },
-    #[error("Post-call checkpoint missing for call {call_id}")]
-    PostCallCheckpointMissing { call_id: usize },
+    #[error(transparent)]
+    ForkWindow(#[from] ForkWindowError),
     #[error("Out of gas")]
     OutOfGas(PhevmOutcome),
-}
-
-fn logs_for_fork<'a>(
-    tx_logs: &'a [Log],
-    call_tracer: &CallTracer,
-    fork: &SolForkId,
-) -> Result<&'a [Log], GetLogsQueryError> {
-    let end = match fork.forkType {
-        // PreTx cannot observe any logs because the transaction has not started yet.
-        0 => 0,
-        // PostTx sees every log emitted by the transaction.
-        1 => tx_logs.len(),
-        2 | 3 => {
-            let call_id = fork.callIndex;
-            let call_id_usize = call_id
-                .try_into()
-                .map_err(|_| GetLogsQueryError::CallIdOverflow { call_id })?;
-
-            // Reshiram snapshots are only valid for calls that survived execution.
-            // Calls inside reverted subtrees never expose a stable fork window.
-            if !call_tracer.is_call_forkable(call_id_usize) {
-                return Err(GetLogsQueryError::CallInsideRevertedSubtree {
-                    call_id: call_id_usize,
-                });
-            }
-
-            // PreCall uses the log index before entering the call, while PostCall
-            // uses the log index immediately after the call completes.
-            let checkpoint = if fork.forkType == 2 {
-                call_tracer.get_pre_call_checkpoint(call_id_usize).ok_or(
-                    GetLogsQueryError::PreCallCheckpointMissing {
-                        call_id: call_id_usize,
-                    },
-                )?
-            } else {
-                call_tracer.get_post_call_checkpoint(call_id_usize).ok_or(
-                    GetLogsQueryError::PostCallCheckpointMissing {
-                        call_id: call_id_usize,
-                    },
-                )?
-            };
-
-            // Checkpoints are recorded against the transaction log stream, so the
-            // visible fork window is always the prefix ending at that log index.
-            checkpoint.log_i.min(tx_logs.len())
-        }
-        fork_type => return Err(GetLogsQueryError::InvalidForkType { fork_type }),
-    };
-
-    Ok(&tx_logs[..end])
 }
 
 fn log_matches_query(log: &Log, query: &LogQuery) -> bool {
@@ -194,10 +139,15 @@ mod test {
     use super::*;
     use crate::{
         inspectors::{
+            CallTracer,
             LogsAndTraces,
-            sol_primitives::PhEvm,
+            sol_primitives::PhEvm::{
+                self,
+                ForkId as SolForkId,
+            },
             spec_recorder::AssertionSpec,
         },
+        primitives::U256,
         test_utils::{
             random_address,
             random_bytes32,
@@ -423,7 +373,7 @@ mod test {
 
         assert!(matches!(
             err,
-            GetLogsQueryError::InvalidForkType { fork_type: 9 }
+            GetLogsQueryError::ForkWindow(ForkWindowError::InvalidForkType { fork_type: 9 })
         ));
     }
 
@@ -446,7 +396,9 @@ mod test {
 
         assert!(matches!(
             err,
-            GetLogsQueryError::CallInsideRevertedSubtree { call_id: 0 }
+            GetLogsQueryError::ForkWindow(ForkWindowError::CallInsideRevertedSubtree {
+                call_id: 0
+            })
         ));
     }
 
@@ -471,7 +423,9 @@ mod test {
 
         assert!(matches!(
             err,
-            GetLogsQueryError::PostCallCheckpointMissing { call_id: 0 }
+            GetLogsQueryError::ForkWindow(ForkWindowError::PostCallCheckpointMissing {
+                call_id: 0
+            })
         ));
     }
 
