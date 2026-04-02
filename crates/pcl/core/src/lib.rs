@@ -5,9 +5,11 @@
 
 pub mod apply;
 pub mod auth;
+pub mod client;
 pub mod config;
 pub mod credible_config;
 pub mod diff;
+pub mod download;
 pub mod error;
 pub mod verify;
 

@@ -1,5 +1,6 @@
 use crate::{
     DEFAULT_PLATFORM_URL,
+    client::authenticated_client,
     config::CliConfig,
     credible_config::{
         CredibleToml,
@@ -153,7 +154,7 @@ impl ApplyArgs {
             }
         }
 
-        let client = GeneratedClient::new_with_client(&base_url, http_client);
+        let client = self.build_client(config)?;
 
         let release = client
             .post_projects_project_id_releases(&project_id, None, &payload)
@@ -186,7 +187,17 @@ impl ApplyArgs {
         Ok(())
     }
 
-    /// Builds an authenticated reqwest client and the base URL for the API.
+    fn build_client(&self, config: &CliConfig) -> Result<GeneratedClient, ApplyError> {
+        authenticated_client(config, &self.api_url).map_err(|e| {
+            match e {
+                crate::client::ClientBuildError::NoAuthToken => ApplyError::NoAuthToken,
+                crate::client::ClientBuildError::InvalidConfig(msg) => {
+                    ApplyError::InvalidConfig(msg)
+                }
+            }
+        })
+    }
+
     fn build_http_client(
         config: &CliConfig,
         api_url: &Url,
@@ -210,8 +221,6 @@ impl ApplyArgs {
         Ok((http_client, base_url))
     }
 
-    /// Calls `POST /projects/{id}/releases/preview` and returns the parsed
-    /// diff response.
     async fn call_preview(
         http_client: &reqwest::Client,
         base_url: &str,
@@ -350,8 +359,7 @@ impl ApplyArgs {
             )
         })?;
 
-        let (http_client, base_url) = Self::build_http_client(config, &self.api_url)?;
-        let client = GeneratedClient::new_with_client(&base_url, http_client);
+        let client = self.build_client(config)?;
         let projects: Vec<GetProjectsResponseItem> = client
             .get_projects(None, Some(user_id), None)
             .await

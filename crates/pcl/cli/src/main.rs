@@ -48,6 +48,9 @@ async fn main() -> Result<()> {
             Commands::Verify(verify_cmd) => {
                 verify_cmd.run(&cli.args)?;
             }
+            Commands::Download(download_cmd) => {
+                download_cmd.run(&cli.args, &config).await?;
+            }
         }
         config.write_to_file(&cli.args)?;
         Ok::<_, Report>(())

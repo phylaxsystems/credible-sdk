@@ -6,7 +6,7 @@ The Credible SDK contains building blocks for running transactions against Phyla
 
 1. **Core PCL Crates**
 
-   - `pcl-core`: Core functionality including auth, apply workflow, and project management
+   - `pcl-core`: Core functionality including auth, apply, download, and project management
    - `pcl-cli`: Main CLI binary that provides the `pcl` command
    - `pcl-common`: Shared utilities and types used across PCL crates
    - `pcl-phoundry`: Foundry integration for building and testing Solidity assertions
@@ -68,6 +68,8 @@ pcl auth login                                     # Authenticate
 pcl build                                          # Compile Solidity assertions
 pcl test                                           # Run assertion tests
 pcl apply --root ./my-project                      # Deploy assertions via credible.toml
+pcl download --project-id <UUID>                   # Download assertion source code as .sol files
+pcl download --manager 0x1234...                   # Download by protocol manager address
 ```
 
 The CLI automatically detects assertion projects by looking for an `assertions/` directory or `foundry.toml` file.
