@@ -108,6 +108,13 @@ pub enum StateError {
     /// Duplicate account in block state update
     #[error("Duplicate account in BlockStateUpdate: {0:x}")]
     DuplicateAccount(AddressHash),
+
+    /// Buffer size increase is not supported on an existing database
+    #[error(
+        "Buffer size increase not supported: database was created with buffer_size={stored}, \
+         but configured buffer_size={configured}. Increasing buffer size requires re-bootstrapping."
+    )]
+    BufferSizeIncrease { stored: u8, configured: u8 },
 }
 
 /// Result type alias for state operations.

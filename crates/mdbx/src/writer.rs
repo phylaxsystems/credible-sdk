@@ -149,7 +149,7 @@ struct WriteTransactionArgs<'a> {
 /// MDBX B-trees perform best with sorted inserts (avoids page splits).
 /// This structure collects all writes and sorts them before applying.
 #[derive(Default)]
-struct WriteBatch {
+pub(crate) struct WriteBatch {
     /// Account updates, will be sorted by key before writing.
     accounts: Vec<(NamespacedAccountKey, AccountInfo)>,
     /// Accounts to delete.
@@ -1193,7 +1193,10 @@ impl StateWriter {
     }
 
     /// Build write batch from diff with parallel account processing.
-    fn build_write_batch_parallel(namespace_idx: u8, diff: &BinaryStateDiff) -> WriteBatch {
+    pub(crate) fn build_write_batch_parallel(
+        namespace_idx: u8,
+        diff: &BinaryStateDiff,
+    ) -> WriteBatch {
         // Estimate total storage count for capacity hint
         let storage_count: usize = diff.accounts.iter().map(|a| a.storage.len()).sum();
 
@@ -1280,8 +1283,8 @@ impl StateWriter {
     // ========================================================================
 
     /// Copy all state from one namespace to another, returning a `WriteBatch`.
-    fn copy_namespace_state(
-        tx: &reth_db::mdbx::tx::Tx<reth_libmdbx::RO>,
+    pub(crate) fn copy_namespace_state<TX: DbTx>(
+        tx: &TX,
         from_namespace: u8,
         to_namespace: u8,
     ) -> StateResult<WriteBatch> {
@@ -1389,7 +1392,7 @@ impl StateWriter {
     // ========================================================================
 
     /// Execute batched writes using cursors for optimal performance.
-    fn execute_batch(
+    pub(crate) fn execute_batch(
         tx: &reth_db::mdbx::tx::Tx<reth_libmdbx::RW>,
         batch: WriteBatch,
     ) -> StateResult<()> {
