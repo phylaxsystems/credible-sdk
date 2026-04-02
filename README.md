@@ -70,7 +70,6 @@ pcl test                                           # Run assertion tests
 pcl verify                                         # Verify assertion bytecode deployability
 pcl apply --root ./my-project                      # Deploy assertions via credible.toml
 pcl download --project-id <UUID>                   # Download assertion source code as .sol files
-pcl download --manager 0x1234...                   # Download by protocol manager address
 ```
 
 The CLI automatically detects assertion projects by looking for an `assertions/` directory or `foundry.toml` file.
