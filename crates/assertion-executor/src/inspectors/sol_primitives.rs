@@ -12,6 +12,14 @@ sol! {
             address emitter;
         }
 
+        // Query used to filter logs by emitter and/or event signature.
+        struct LogQuery {
+            // address(0) matches any emitter.
+            address emitter;
+            // bytes32(0) matches any signature. Compared against topic[0].
+            bytes32 signature;
+        }
+
         // Call inputs for the getCallInputs precompile
         struct CallInputs {
             // The call data of the call.
@@ -168,6 +176,12 @@ sol! {
             external
             view
             returns (StaticCallResult memory result);
+
+        /// @notice Returns logs matching the query from the specified fork.
+        function getLogsQuery(LogQuery calldata query, ForkId fork)
+            external
+            view
+            returns (Log[] memory logs);
     }
 
     interface Console {
