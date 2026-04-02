@@ -121,6 +121,7 @@ async fn test_private_endpoint_with_auth_real_api() {
                     "project_id": "c1e794ce-4030-487c-a4e6-917caeeb4875",
                     "project_name": "Saved Project",
                     "project_networks": ["1"],
+                    "is_private": false,
                     "created_at": "2025-01-01T00:00:00Z",
                     "updated_at": "2025-01-01T00:00:00Z",
                     "saved_count": 1,
