@@ -215,30 +215,24 @@ pcl apply --root ./my-project -c path/to/credible.toml
 
 ### Download
 
-Download assertion source code for a protocol as `.sol` files. Provide either a project UUID or a protocol manager address to identify the protocol.
+Download assertion source code for a protocol as `.sol` files. Provide a project UUID to identify the protocol.
 
 ```bash
 pcl download [OPTIONS]
 
 Options:
       --project-id <UUID>    Project UUID to download assertions from
-      --manager <ADDRESS>    Protocol manager address to look up the project
   -o, --output-dir <PATH>    Output directory for .sol files (default: <project_name>-assertions/)
       --json                 Emit machine-readable JSON output
   -u, --api-url <URL>        Base URL for the platform API [env: PCL_API_URL=] [default: https://app.phylax.systems]
   -h, --help                 Print help
 ```
 
-Exactly one of `--project-id` or `--manager` is required.
-
 Source code is resolved by preferring the release-submitted source, falling back to the DA-layer artifact when the release source is unavailable. Files are named `{contract_name}_{assertion_id_prefix}.sol`.
 
 ```bash
 # Download by project UUID
 pcl download --project-id 550e8400-e29b-41d4-a716-446655440000
-
-# Download by protocol manager address
-pcl download --manager 0x1234567890abcdef1234567890abcdef12345678
 
 # Custom output directory
 pcl download --project-id <UUID> --output-dir ./my-assertions
@@ -273,7 +267,6 @@ pcl apply --root ./my-project --yes
 
 # Download assertion source code
 pcl download --project-id <UUID>
-pcl download --manager 0x1234...
 
 # Logout when done
 pcl auth logout

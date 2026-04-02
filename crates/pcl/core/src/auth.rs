@@ -11,19 +11,15 @@ use color_eyre::Result;
 use colored::Colorize;
 use dapp_api_client::generated::client::{
     Client as GeneratedClient,
-    ClientInfo,
     types::{
         GetCliAuthCodeResponse,
         GetCliAuthStatusResponse,
-        GetCliAuthStatusResponseVariant1Address,
-        GetCliAuthStatusResponseVariant1Username,
     },
 };
 use indicatif::{
     ProgressBar,
     ProgressStyle,
 };
-use serde::Deserialize;
 use tokio::time::{
     Duration,
     sleep,
@@ -33,59 +29,6 @@ use tokio::time::{
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
 /// Maximum number of retry attempts (5 minutes worth of 2-second intervals)
 const MAX_RETRIES: u32 = 150;
-/// Timeout for individual auth status requests
-const AUTH_STATUS_TIMEOUT: Duration = Duration::from_secs(60);
-
-/// Flat deserialization target for the auth status endpoint.
-///
-/// The generated `GetCliAuthStatusResponse` untagged enum always deserializes as
-/// Variant0 because typify ignores `enum:[true/false]` constraints. We
-/// deserialize here then convert via `From<AuthStatusRaw>`.
-
-// TODO(typify): Revisit with a newer typify version — this workaround can be
-// removed once typify handles untagged enums with boolean discriminants.
-// Ref: https://github.com/oxidecomputer/typify/issues/498
-#[derive(Deserialize)]
-struct AuthStatusRaw {
-    verified: bool,
-    user_id: Option<uuid::Uuid>,
-    address: Option<GetCliAuthStatusResponseVariant1Address>,
-    email: Option<String>,
-    username: Option<GetCliAuthStatusResponseVariant1Username>,
-    token: Option<String>,
-    refresh_token: Option<String>,
-}
-
-impl From<AuthStatusRaw> for GetCliAuthStatusResponse {
-    fn from(raw: AuthStatusRaw) -> Self {
-        match (raw.verified, raw.token, raw.refresh_token, raw.user_id) {
-            // All required Variant1 fields present
-            (true, Some(token), Some(refresh_token), Some(user_id)) => {
-                Self::Variant1 {
-                    verified: true,
-                    token,
-                    refresh_token,
-                    user_id,
-                    address: raw.address,
-                    email: raw.email,
-                    username: raw.username,
-                }
-            }
-            // Otherwise it's a not-verified response
-            _ => {
-                Self::Variant0 {
-                    verified: raw.verified,
-                }
-            }
-        }
-    }
-}
-
-/// Server error response body (used for non-200 status codes).
-#[derive(Deserialize)]
-struct ApiErrorBody {
-    error: String,
-}
 
 /// Authentication commands for the PCL CLI
 #[derive(clap::Parser)]
@@ -188,10 +131,14 @@ impl AuthCommand {
 
     /// Display login URL and code to the user, attempting to open the browser automatically
     fn display_login_instructions(&self, auth_response: &GetCliAuthCodeResponse) {
-        let base = self.auth_url.as_str().trim_end_matches('/');
-        let url = format!("{base}/device?session_id={}", auth_response.session_id);
+        let mut device_url = self.auth_url.clone();
+        device_url.set_path("/device");
+        device_url
+            .query_pairs_mut()
+            .append_pair("session_id", &auth_response.session_id.to_string());
+        let url = device_url.as_str();
 
-        if open::that(&url).is_ok() {
+        if open::that(url).is_ok() {
             println!(
                 "\n{} Opening browser for authentication...\n\n🔗 {}\n📝 {}\n",
                 "🌐".green(),
@@ -227,26 +174,49 @@ impl AuthCommand {
         spinner.set_message("Waiting for authentication...");
 
         for _ in 0..MAX_RETRIES {
-            let status = Self::check_auth_status(client, auth_response).await?;
+            // Stop polling once the session has expired
+            if chrono::Utc::now() >= auth_response.expires_at {
+                spinner.finish_with_message("❌ Session expired");
+                return Err(AuthError::SessionExpired);
+            }
 
-            if let GetCliAuthStatusResponse::Variant1 {
-                token,
-                refresh_token,
-                user_id,
-                address,
-                email,
-                ..
-            } = status
-            {
+            let status = match Self::check_auth_status(client, auth_response).await {
+                Ok(s) => s,
+                // Transient errors — keep polling
+                Err(AuthError::ServerError(_) | AuthError::StatusRequestFailed(_)) => {
+                    spinner.tick();
+                    sleep(POLL_INTERVAL).await;
+                    continue;
+                }
+                // Terminal errors — stop immediately
+                Err(e) => {
+                    spinner.finish_with_message(format!("❌ {e}"));
+                    return Err(e);
+                }
+            };
+
+            if status.verified {
+                let token = status.token.ok_or_else(|| {
+                    AuthError::InvalidAuthData("Verified but missing access token".to_string())
+                })?;
+                let refresh_token = status.refresh_token.ok_or_else(|| {
+                    AuthError::InvalidAuthData("Verified but missing refresh token".to_string())
+                })?;
+                let user_id = status.user_id.ok_or_else(|| {
+                    AuthError::InvalidAuthData("Verified but missing user_id".to_string())
+                })?;
+                let wallet_address = status
+                    .address
+                    .and_then(|a| a.to_string().parse::<Address>().ok());
+
                 spinner.finish_with_message("✅ Authentication successful!");
-                let wallet_address = address.and_then(|a| a.to_string().parse::<Address>().ok());
                 config.auth = Some(UserAuth {
                     access_token: token,
                     refresh_token,
                     expires_at: auth_response.expires_at,
                     user_id: Some(user_id),
                     wallet_address,
-                    email,
+                    email: status.email,
                 });
                 Self::display_success_message(config)?;
                 return Ok(());
@@ -260,43 +230,16 @@ impl AuthCommand {
         Err(AuthError::Timeout(MAX_RETRIES))
     }
 
-    /// Fetch auth status via raw request, bypassing the generated client.
-    ///
-    /// NOTE: The generated untagged enum always matches Variant0 (serde ignores extra
-    /// fields), and the server treats verified sessions as single-use — so a
-    /// fallback re-fetch would get 400. Single raw request + `AuthStatusRaw`
-    /// avoids both issues.
+    /// Check authentication status using the generated client.
     async fn check_auth_status(
         client: &GeneratedClient,
         auth_response: &GetCliAuthCodeResponse,
     ) -> Result<GetCliAuthStatusResponse, AuthError> {
-        let url = format!("{}/cli/auth/status", client.baseurl());
-        let response = client
-            .client()
-            .get(&url)
-            .timeout(AUTH_STATUS_TIMEOUT)
-            .query(&[
-                ("session_id", auth_response.session_id.to_string()),
-                ("device_secret", auth_response.device_secret.clone()),
-            ])
-            .send()
+        client
+            .get_cli_auth_status(&auth_response.device_secret, &auth_response.session_id)
             .await
-            .map_err(|e| AuthError::StatusRequestFailed(e.to_string()))?;
-
-        if !response.status().is_success() {
-            let msg = response
-                .json::<ApiErrorBody>()
-                .await
-                .map_or_else(|_| "Unknown error".to_string(), |b| b.error);
-            return Err(AuthError::InvalidSession(msg));
-        }
-
-        let raw: AuthStatusRaw = response
-            .json()
-            .await
-            .map_err(|e| AuthError::StatusRequestFailed(e.to_string()))?;
-
-        Ok(raw.into())
+            .map(dapp_api_client::generated::client::ResponseValue::into_inner)
+            .map_err(AuthError::from)
     }
 
     /// Display success message after authentication
@@ -429,24 +372,14 @@ mod tests {
 
         let result = AuthCommand::check_auth_status(&client, &auth_response).await;
         assert!(result.is_ok());
-        match result.unwrap() {
-            GetCliAuthStatusResponse::Variant1 {
-                token,
-                refresh_token,
-                address,
-                ..
-            } => {
-                assert_eq!(token, "test_token");
-                assert_eq!(refresh_token, "test_refresh");
-                assert_eq!(
-                    &*address.unwrap(),
-                    "0x1234567890123456789012345678901234567890"
-                );
-            }
-            other @ GetCliAuthStatusResponse::Variant0 { .. } => {
-                panic!("Expected Variant1, got {other:?}")
-            }
-        }
+        let status = result.unwrap();
+        assert!(status.verified);
+        assert_eq!(status.token.as_deref(), Some("test_token"));
+        assert_eq!(status.refresh_token.as_deref(), Some("test_refresh"));
+        assert_eq!(
+            &*status.address.unwrap(),
+            "0x1234567890123456789012345678901234567890"
+        );
         mock.assert();
     }
 
@@ -477,10 +410,9 @@ mod tests {
 
         let result = AuthCommand::check_auth_status(&client, &auth_response).await;
         assert!(result.is_ok());
-        assert!(matches!(
-            result.unwrap(),
-            GetCliAuthStatusResponse::Variant0 { verified: false }
-        ));
+        let status = result.unwrap();
+        assert!(!status.verified);
+        assert!(status.token.is_none());
         mock.assert();
     }
 
@@ -508,15 +440,10 @@ mod tests {
 
         let result = AuthCommand::check_auth_status(&client, &auth_response).await;
         assert!(result.is_ok());
-        match result.unwrap() {
-            GetCliAuthStatusResponse::Variant1 { token, address, .. } => {
-                assert_eq!(token, "test_token");
-                assert!(address.is_none());
-            }
-            other @ GetCliAuthStatusResponse::Variant0 { .. } => {
-                panic!("Expected Variant1, got {other:?}")
-            }
-        }
+        let status = result.unwrap();
+        assert!(status.verified);
+        assert_eq!(status.token.as_deref(), Some("test_token"));
+        assert!(status.address.is_none());
         mock.assert();
     }
 
@@ -563,10 +490,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_check_auth_status_verified_missing_required_fields_falls_back() {
+    async fn test_check_auth_status_verified_missing_optional_fields() {
         let mut server = Server::new_async().await;
 
-        // verified:true but missing required Variant1 fields → AuthStatusRaw → Variant0
+        // verified:true but missing optional token/address fields
         let mock = server
             .mock("GET", "/api/v1/cli/auth/status")
             .match_query(mockito::Matcher::AllOf(vec![
@@ -590,11 +517,293 @@ mod tests {
 
         let result = AuthCommand::check_auth_status(&client, &auth_response).await;
         assert!(result.is_ok());
-        assert!(matches!(
-            result.unwrap(),
-            GetCliAuthStatusResponse::Variant0 { verified: true }
-        ));
+        let status = result.unwrap();
+        assert!(status.verified);
+        assert!(status.token.is_none());
+        assert!(status.refresh_token.is_none());
         mock.assert();
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_verification_stops_when_session_expired() {
+        let server = Server::new_async().await;
+
+        // No mocks — the server should never be called because the session
+        // is already expired before the first poll.
+
+        let cmd = AuthCommand::try_parse_from(vec!["auth", "--auth-url", &server.url(), "login"])
+            .unwrap();
+        let client = cmd.api_client();
+        let mut config = CliConfig::default();
+
+        // Build an auth response with expiresAt in the past
+        let expired_response: GetCliAuthCodeResponse = serde_json::from_str(
+            r#"{"code":"999999","sessionId":"550e8400-e29b-41d4-a716-446655440000","deviceSecret":"test_secret","expiresAt":"2020-01-01T00:00:00Z"}"#,
+        )
+        .unwrap();
+
+        let result = cmd
+            .wait_for_verification(&mut config, &client, &expired_response)
+            .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, AuthError::SessionExpired),
+            "Expected SessionExpired, got {err:?}"
+        );
+        // Config should remain unauthenticated
+        assert!(config.auth.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_check_auth_status_session_expired_returns_typed_error() {
+        let mut server = Server::new_async().await;
+
+        // Server returns 400 with SESSION_EXPIRED error code
+        let mock = server
+            .mock("GET", "/api/v1/cli/auth/status")
+            .match_query(mockito::Matcher::AllOf(vec![
+                mockito::Matcher::UrlEncoded(
+                    "session_id".into(),
+                    "550e8400-e29b-41d4-a716-446655440000".into(),
+                ),
+                mockito::Matcher::UrlEncoded("device_secret".into(), "test_secret".into()),
+            ]))
+            .with_status(400)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"error":"Session has expired","code":"SESSION_EXPIRED"}"#)
+            .expect(1)
+            .create();
+
+        let cmd = AuthCommand::try_parse_from(vec!["auth", "--auth-url", &server.url(), "login"])
+            .unwrap();
+        let client = cmd.api_client();
+        let auth_response: GetCliAuthCodeResponse =
+            serde_json::from_str(test_auth_response_json()).unwrap();
+
+        let result = AuthCommand::check_auth_status(&client, &auth_response).await;
+        assert!(
+            matches!(result, Err(AuthError::SessionExpired)),
+            "Expected SessionExpired, got {result:?}"
+        );
+        mock.assert();
+    }
+
+    #[tokio::test]
+    async fn test_check_auth_status_session_not_found_returns_typed_error() {
+        let mut server = Server::new_async().await;
+
+        let mock = server
+            .mock("GET", "/api/v1/cli/auth/status")
+            .match_query(mockito::Matcher::AllOf(vec![
+                mockito::Matcher::UrlEncoded(
+                    "session_id".into(),
+                    "550e8400-e29b-41d4-a716-446655440000".into(),
+                ),
+                mockito::Matcher::UrlEncoded("device_secret".into(), "test_secret".into()),
+            ]))
+            .with_status(400)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"error":"Session not found","code":"SESSION_NOT_FOUND"}"#)
+            .expect(1)
+            .create();
+
+        let cmd = AuthCommand::try_parse_from(vec!["auth", "--auth-url", &server.url(), "login"])
+            .unwrap();
+        let client = cmd.api_client();
+        let auth_response: GetCliAuthCodeResponse =
+            serde_json::from_str(test_auth_response_json()).unwrap();
+
+        let result = AuthCommand::check_auth_status(&client, &auth_response).await;
+        assert!(
+            matches!(result, Err(AuthError::SessionNotFound)),
+            "Expected SessionNotFound, got {result:?}"
+        );
+        mock.assert();
+    }
+
+    #[tokio::test]
+    async fn test_check_auth_status_user_not_found_returns_typed_error() {
+        let mut server = Server::new_async().await;
+
+        let mock = server
+            .mock("GET", "/api/v1/cli/auth/status")
+            .match_query(mockito::Matcher::AllOf(vec![
+                mockito::Matcher::UrlEncoded(
+                    "session_id".into(),
+                    "550e8400-e29b-41d4-a716-446655440000".into(),
+                ),
+                mockito::Matcher::UrlEncoded("device_secret".into(), "test_secret".into()),
+            ]))
+            .with_status(400)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"error":"User not found. Request a new code and try again.","code":"USER_NOT_FOUND"}"#)
+            .expect(1)
+            .create();
+
+        let cmd = AuthCommand::try_parse_from(vec!["auth", "--auth-url", &server.url(), "login"])
+            .unwrap();
+        let client = cmd.api_client();
+        let auth_response: GetCliAuthCodeResponse =
+            serde_json::from_str(test_auth_response_json()).unwrap();
+
+        let result = AuthCommand::check_auth_status(&client, &auth_response).await;
+        assert!(
+            matches!(result, Err(AuthError::UserNotFound)),
+            "Expected UserNotFound, got {result:?}"
+        );
+        mock.assert();
+    }
+
+    #[tokio::test]
+    async fn test_check_auth_status_server_error_returns_typed_error() {
+        let mut server = Server::new_async().await;
+
+        let mock = server
+            .mock("GET", "/api/v1/cli/auth/status")
+            .match_query(mockito::Matcher::AllOf(vec![
+                mockito::Matcher::UrlEncoded(
+                    "session_id".into(),
+                    "550e8400-e29b-41d4-a716-446655440000".into(),
+                ),
+                mockito::Matcher::UrlEncoded("device_secret".into(), "test_secret".into()),
+            ]))
+            .with_status(500)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"error":"Internal server error","code":"INTERNAL_ERROR"}"#)
+            .expect(1)
+            .create();
+
+        let cmd = AuthCommand::try_parse_from(vec!["auth", "--auth-url", &server.url(), "login"])
+            .unwrap();
+        let client = cmd.api_client();
+        let auth_response: GetCliAuthCodeResponse =
+            serde_json::from_str(test_auth_response_json()).unwrap();
+
+        let result = AuthCommand::check_auth_status(&client, &auth_response).await;
+        assert!(
+            matches!(result, Err(AuthError::ServerError(_))),
+            "Expected ServerError, got {result:?}"
+        );
+        mock.assert();
+    }
+
+    #[tokio::test]
+    async fn test_polling_stops_on_session_expired() {
+        let mut server = Server::new_async().await;
+
+        // First poll: pending. Second poll: session expired.
+        let pending_mock = server
+            .mock("GET", "/api/v1/cli/auth/status")
+            .match_query(mockito::Matcher::AllOf(vec![
+                mockito::Matcher::UrlEncoded(
+                    "session_id".into(),
+                    "550e8400-e29b-41d4-a716-446655440000".into(),
+                ),
+                mockito::Matcher::UrlEncoded("device_secret".into(), "test_secret".into()),
+            ]))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"verified":false}"#)
+            .expect(1)
+            .create();
+
+        let expired_mock = server
+            .mock("GET", "/api/v1/cli/auth/status")
+            .match_query(mockito::Matcher::AllOf(vec![
+                mockito::Matcher::UrlEncoded(
+                    "session_id".into(),
+                    "550e8400-e29b-41d4-a716-446655440000".into(),
+                ),
+                mockito::Matcher::UrlEncoded("device_secret".into(), "test_secret".into()),
+            ]))
+            .with_status(400)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"error":"Session has expired","code":"SESSION_EXPIRED"}"#)
+            .expect(1)
+            .create();
+
+        let cmd = AuthCommand::try_parse_from(vec!["auth", "--auth-url", &server.url(), "login"])
+            .unwrap();
+        let client = cmd.api_client();
+        let mut config = CliConfig::default();
+
+        // Use a far-future expiresAt so the client-side check doesn't trigger
+        let auth_response: GetCliAuthCodeResponse = serde_json::from_str(
+            r#"{"code":"123456","sessionId":"550e8400-e29b-41d4-a716-446655440000","deviceSecret":"test_secret","expiresAt":"2099-12-31T00:00:00Z"}"#,
+        )
+        .unwrap();
+
+        let result = cmd
+            .wait_for_verification(&mut config, &client, &auth_response)
+            .await;
+
+        assert!(
+            matches!(result, Err(AuthError::SessionExpired)),
+            "Expected SessionExpired, got {result:?}"
+        );
+        assert!(config.auth.is_none());
+        pending_mock.assert();
+        expired_mock.assert();
+    }
+
+    #[tokio::test]
+    async fn test_polling_retries_on_server_error() {
+        let mut server = Server::new_async().await;
+
+        // First poll: 500 (transient). Second poll: success.
+        let error_mock = server
+            .mock("GET", "/api/v1/cli/auth/status")
+            .match_query(mockito::Matcher::AllOf(vec![
+                mockito::Matcher::UrlEncoded(
+                    "session_id".into(),
+                    "550e8400-e29b-41d4-a716-446655440000".into(),
+                ),
+                mockito::Matcher::UrlEncoded("device_secret".into(), "test_secret".into()),
+            ]))
+            .with_status(500)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"error":"Internal server error","code":"INTERNAL_ERROR"}"#)
+            .expect(1)
+            .create();
+
+        let success_mock = server
+            .mock("GET", "/api/v1/cli/auth/status")
+            .match_query(mockito::Matcher::AllOf(vec![
+                mockito::Matcher::UrlEncoded(
+                    "session_id".into(),
+                    "550e8400-e29b-41d4-a716-446655440000".into(),
+                ),
+                mockito::Matcher::UrlEncoded("device_secret".into(), "test_secret".into()),
+            ]))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"verified":true,"user_id":"550e8400-e29b-41d4-a716-446655440000","token":"test_token","refresh_token":"test_refresh","address":"0x1234567890123456789012345678901234567890"}"#)
+            .expect(1)
+            .create();
+
+        let cmd = AuthCommand::try_parse_from(vec!["auth", "--auth-url", &server.url(), "login"])
+            .unwrap();
+        let client = cmd.api_client();
+        let mut config = CliConfig::default();
+
+        let auth_response: GetCliAuthCodeResponse = serde_json::from_str(
+            r#"{"code":"123456","sessionId":"550e8400-e29b-41d4-a716-446655440000","deviceSecret":"test_secret","expiresAt":"2099-12-31T00:00:00Z"}"#,
+        )
+        .unwrap();
+
+        let result = cmd
+            .wait_for_verification(&mut config, &client, &auth_response)
+            .await;
+
+        assert!(
+            result.is_ok(),
+            "Expected success after retry, got {result:?}"
+        );
+        assert!(config.auth.is_some());
+        error_mock.assert();
+        success_mock.assert();
     }
 
     #[tokio::test]
@@ -623,6 +832,49 @@ mod tests {
 
         let result = AuthCommand::check_auth_status(&client, &auth_response).await;
         assert!(result.is_err());
+        mock.assert();
+    }
+
+    #[tokio::test]
+    async fn test_polling_stops_on_verified_missing_tokens() {
+        let mut server = Server::new_async().await;
+
+        // Server returns verified:true but without tokens — wait_for_verification
+        // should bail with InvalidAuthData instead of silently continuing.
+        let mock = server
+            .mock("GET", "/api/v1/cli/auth/status")
+            .match_query(mockito::Matcher::AllOf(vec![
+                mockito::Matcher::UrlEncoded(
+                    "session_id".into(),
+                    "550e8400-e29b-41d4-a716-446655440000".into(),
+                ),
+                mockito::Matcher::UrlEncoded("device_secret".into(), "test_secret".into()),
+            ]))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"verified":true}"#)
+            .expect(1)
+            .create();
+
+        let cmd = AuthCommand::try_parse_from(vec!["auth", "--auth-url", &server.url(), "login"])
+            .unwrap();
+        let client = cmd.api_client();
+        let mut config = CliConfig::default();
+
+        let auth_response: GetCliAuthCodeResponse = serde_json::from_str(
+            r#"{"code":"123456","sessionId":"550e8400-e29b-41d4-a716-446655440000","deviceSecret":"test_secret","expiresAt":"2099-12-31T00:00:00Z"}"#,
+        )
+        .unwrap();
+
+        let result = cmd
+            .wait_for_verification(&mut config, &client, &auth_response)
+            .await;
+
+        assert!(
+            matches!(result, Err(AuthError::InvalidAuthData(_))),
+            "Expected InvalidAuthData, got {result:?}"
+        );
+        assert!(config.auth.is_none());
         mock.assert();
     }
 }

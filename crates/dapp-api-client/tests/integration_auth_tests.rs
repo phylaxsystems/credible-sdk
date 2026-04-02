@@ -71,7 +71,7 @@ async fn test_private_endpoint_without_auth_real_api() {
     let mock = setup_mock(&server, |when, then| {
         when.method(GET)
             .path("/api/v1/projects/saved")
-            .query_param("wallet_address", "c1e794ce-4030-487c-a4e6-917caeeb4875");
+            .query_param("user_id", "c1e794ce-4030-487c-a4e6-917caeeb4875");
         then.status(200)
             .header("content-type", "application/json")
             .json_body(json!([])); // Empty array for unauthenticated requests
@@ -112,7 +112,7 @@ async fn test_private_endpoint_with_auth_real_api() {
     let mock = setup_mock(&server, |when, then| {
         when.method(GET)
             .path("/api/v1/projects/saved")
-            .query_param("wallet_address", "c1e794ce-4030-487c-a4e6-917caeeb4875")
+            .query_param("user_id", "c1e794ce-4030-487c-a4e6-917caeeb4875")
             .header("authorization", "Bearer test-token");
         then.status(200)
             .header("content-type", "application/json")
@@ -121,7 +121,6 @@ async fn test_private_endpoint_with_auth_real_api() {
                     "project_id": "c1e794ce-4030-487c-a4e6-917caeeb4875",
                     "project_name": "Saved Project",
                     "project_networks": ["1"],
-                    "project_manager": "c1e794ce-4030-487c-a4e6-917caeeb4875",
                     "created_at": "2025-01-01T00:00:00Z",
                     "updated_at": "2025-01-01T00:00:00Z",
                     "saved_count": 1,

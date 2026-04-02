@@ -143,7 +143,6 @@ fn print_authenticated_project_details(projects: &[GetProjectsResponseItem]) {
             "      Created: {}",
             project.created_at.format("%Y-%m-%d %H:%M:%S")
         );
-        println!("      Manager: {}", project.project_manager);
         println!("      Networks: {:?}", project.project_networks);
         println!("      Saved Count: {:?}", project.saved_count);
         println!();
@@ -187,7 +186,7 @@ fn print_project_error(e: &GeneratedError<GetProjectsResponse>) {
 fn print_additional_methods() {
     println!("\n5. Additional Available Methods:");
     println!("   - api.get_projects(network_id, user, show_archived) - List projects with filters");
-    println!("   - api.get_projects_saved(wallet_address) - Get saved projects");
+    println!("   - api.get_projects_saved(user_id) - Get saved projects");
     println!("   - api.get_projects_project_id(project_id, include) - Get specific project");
     println!("   - api.get_health() - Check API health");
 }
