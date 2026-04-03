@@ -77,6 +77,7 @@ impl AssertionSpec {
             PhEvm::getTxObjectCall::SELECTOR
                 | PhEvm::loadStateAt_0Call::SELECTOR
                 | PhEvm::loadStateAt_1Call::SELECTOR
+                | PhEvm::getLogsQueryCall::SELECTOR
                 | PhEvm::staticcallAtCall::SELECTOR
         )
     }
@@ -90,6 +91,7 @@ impl AssertionSpec {
                 | PhEvm::forkPostTxCall::SELECTOR
                 | PhEvm::forkPreCallCall::SELECTOR
                 | PhEvm::forkPostCallCall::SELECTOR
+                | PhEvm::getLogsCall::SELECTOR
                 | PhEvm::loadCall::SELECTOR
         )
     }

@@ -33,6 +33,10 @@ use crate::{
                 },
             },
             reshiram::{
+                get_logs_query::{
+                    GetLogsQueryError,
+                    get_logs_query,
+                },
                 load_state_at::{
                     LoadStateAtError,
                     load_state_at_default_target,
@@ -182,6 +186,8 @@ pub enum PrecompileError<ExtDb: DatabaseRef<Error: std::fmt::Debug>> {
     LoadExternalSlotError(#[source] LoadExternalSlotError<ExtDb>),
     #[error("Error loading state at fork: {0}")]
     LoadStateAtError(#[source] LoadStateAtError<ExtDb>),
+    #[error("Error querying logs at fork: {0}")]
+    GetLogsQueryError(#[source] GetLogsQueryError),
     #[error("Error executing staticcallAt: {0}")]
     StaticCallAtError(#[source] StaticCallAtError<ExtDb>),
 }
@@ -428,6 +434,12 @@ impl<'a> PhEvmInspector<'a> {
                 get_assertion_adopter(&self.context).map_err(PrecompileError::UnexpectedError)?
             }
             PhEvm::getTxObjectCall::SELECTOR => load_tx_object(&self.context, inputs.gas_limit),
+            PhEvm::getLogsQueryCall::SELECTOR => {
+                match get_logs_query(&self.context, input_bytes, inputs.gas_limit) {
+                    Ok(rax) | Err(GetLogsQueryError::OutOfGas(rax)) => rax,
+                    Err(err) => return Err(PrecompileError::GetLogsQueryError(err)),
+                }
+            }
             PhEvm::loadStateAt_0Call::SELECTOR => {
                 match load_state_at_default_target(
                     context,
