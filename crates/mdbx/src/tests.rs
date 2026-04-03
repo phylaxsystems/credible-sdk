@@ -4679,3 +4679,1303 @@ fn test_commit_stats_default() {
     assert_eq!(stats.accounts_written, 0);
     assert_eq!(stats.total_duration, Duration::ZERO);
 }
+
+// ============================================================================
+// Buffer size migration tests
+// ============================================================================
+
+use crate::migration::MigrationResult;
+
+/// Helper: reopen a writer with a different buffer size against an existing DB.
+/// The caller MUST have dropped all previous writer/reader handles first.
+fn reopen_writer(tmp: &TempDir, buf: u8) -> StateWriter {
+    let cfg = CircularBufferConfig::new(buf).unwrap();
+    StateWriter::new(tmp.path().join("state"), cfg).unwrap()
+}
+
+#[test]
+fn test_migration_noop_when_sizes_match() {
+    let (w, _tmp) = writer_env(3);
+    let a = addr(0x11);
+
+    w.commit_block(&simple_update(0, a, 100, 0)).unwrap();
+    w.commit_block(&simple_update(1, a, 200, 1)).unwrap();
+    w.commit_block(&simple_update(2, a, 300, 2)).unwrap();
+
+    // Same buffer size — no migration
+    assert!(matches!(
+        w.migrate_if_needed().unwrap(),
+        MigrationResult::NoOp
+    ));
+}
+
+#[test]
+fn test_migration_noop_empty_db() {
+    let (w, _tmp) = writer_env(3);
+
+    // Empty DB — no metadata, nothing to migrate
+    assert!(matches!(
+        w.migrate_if_needed().unwrap(),
+        MigrationResult::NoOp
+    ));
+}
+
+#[test]
+fn test_migration_rejects_buffer_increase() {
+    let (w, tmp) = writer_env(2);
+    let a = addr(0x11);
+
+    w.commit_block(&simple_update(0, a, 100, 0)).unwrap();
+    w.commit_block(&simple_update(1, a, 200, 1)).unwrap();
+    drop(w);
+
+    // Reopen with larger buffer_size
+    let w = reopen_writer(&tmp, 5);
+    let err = w.migrate_if_needed().unwrap_err();
+    assert!(
+        err.to_string().contains("increase not supported"),
+        "expected BufferSizeIncrease error, got: {err}"
+    );
+}
+
+#[test]
+fn test_migration_3_to_2() {
+    let (w, tmp) = writer_env(3);
+    let a = addr(0x11);
+
+    w.bootstrap_from_snapshot(
+        vec![account_state_with_storage(a, 1000, 0, [(1, 100)])],
+        100,
+        B256::ZERO,
+        B256::ZERO,
+    )
+    .unwrap();
+
+    w.commit_block(&update_with_storage(101, a, 1100, 1, [(2, 200)]))
+        .unwrap();
+    w.commit_block(&update_with_storage(102, a, 1200, 2, [(3, 300)]))
+        .unwrap();
+
+    // Verify pre-migration state
+    assert!(w.is_block_available(100).unwrap());
+    assert!(w.is_block_available(101).unwrap());
+    assert!(w.is_block_available(102).unwrap());
+
+    drop(w);
+
+    // Reopen with buffer_size=2
+    let w = reopen_writer(&tmp, 2);
+    let result = w.migrate_if_needed().unwrap();
+    assert!(
+        matches!(
+            result,
+            MigrationResult::Completed {
+                old_size: 3,
+                new_size: 2,
+                ..
+            }
+        ),
+        "expected Completed(3→2), got: {result:?}"
+    );
+
+    if let MigrationResult::Completed {
+        cleanup: Some(task),
+        ..
+    } = result
+    {
+        task.run().unwrap();
+    }
+
+    // After migration:
+    // ns 0 = block 102 (102%2=0), ns 1 = block 101 (101%2=1, advanced from 100)
+    assert!(w.is_block_available(102).unwrap());
+    assert!(w.is_block_available(101).unwrap());
+    assert!(!w.is_block_available(100).unwrap());
+
+    // Verify state correctness via writer's Reader impl
+    let storage_102 = w.get_all_storage(a.into(), 102).unwrap();
+    assert_eq!(storage_102.get(&hash_slot(slot_b256(1))), Some(&u256(100)));
+    assert_eq!(storage_102.get(&hash_slot(slot_b256(2))), Some(&u256(200)));
+    assert_eq!(storage_102.get(&hash_slot(slot_b256(3))), Some(&u256(300)));
+
+    // Verify state at block 101 (namespace was advanced by applying diff 101)
+    let storage_101 = w.get_all_storage(a.into(), 101).unwrap();
+    assert_eq!(storage_101.get(&hash_slot(slot_b256(1))), Some(&u256(100)));
+    assert_eq!(storage_101.get(&hash_slot(slot_b256(2))), Some(&u256(200)));
+    // slot 3 was added in block 102, shouldn't exist at 101
+    assert_eq!(storage_101.get(&hash_slot(slot_b256(3))), None);
+
+    // Verify account balances
+    let acc_102 = w.get_account(a.into(), 102).unwrap().unwrap();
+    assert_eq!(acc_102.balance, u256(1200));
+    let acc_101 = w.get_account(a.into(), 101).unwrap().unwrap();
+    assert_eq!(acc_101.balance, u256(1100));
+}
+
+#[test]
+fn test_migration_3_to_1() {
+    let (w, tmp) = writer_env(3);
+    let a = addr(0x22);
+
+    w.bootstrap_from_snapshot(
+        vec![account_state_with_storage(a, 1000, 0, [(1, 100)])],
+        100,
+        B256::ZERO,
+        B256::ZERO,
+    )
+    .unwrap();
+    w.commit_block(&update_with_storage(101, a, 1100, 1, [(2, 200)]))
+        .unwrap();
+    w.commit_block(&update_with_storage(102, a, 1200, 2, [(3, 300)]))
+        .unwrap();
+    drop(w);
+
+    let w = reopen_writer(&tmp, 1);
+    let result = w.migrate_if_needed().unwrap();
+    assert!(matches!(
+        result,
+        MigrationResult::Completed {
+            old_size: 3,
+            new_size: 1,
+            ..
+        }
+    ));
+
+    if let MigrationResult::Completed {
+        cleanup: Some(task),
+        ..
+    } = result
+    {
+        task.run().unwrap();
+    }
+
+    // Only block 102 available
+    assert!(w.is_block_available(102).unwrap());
+    assert!(!w.is_block_available(101).unwrap());
+    assert!(!w.is_block_available(100).unwrap());
+
+    // Verify state at block 102
+    let storage = w.get_all_storage(a.into(), 102).unwrap();
+    assert_eq!(storage.len(), 3);
+    assert_eq!(storage.get(&hash_slot(slot_b256(1))), Some(&u256(100)));
+    assert_eq!(storage.get(&hash_slot(slot_b256(2))), Some(&u256(200)));
+    assert_eq!(storage.get(&hash_slot(slot_b256(3))), Some(&u256(300)));
+}
+
+#[test]
+fn test_migration_then_continue_writing() {
+    let (w, tmp) = writer_env(3);
+    let a = addr(0x33);
+
+    w.bootstrap_from_snapshot(
+        vec![account_state_with_storage(a, 1000, 0, [(1, 100)])],
+        100,
+        B256::ZERO,
+        B256::ZERO,
+    )
+    .unwrap();
+    w.commit_block(&update_with_storage(101, a, 1100, 1, [(2, 200)]))
+        .unwrap();
+    w.commit_block(&update_with_storage(102, a, 1200, 2, [(3, 300)]))
+        .unwrap();
+    drop(w);
+
+    // Migrate 3→2 and continue writing
+    let w = reopen_writer(&tmp, 2);
+    let result = w.migrate_if_needed().unwrap();
+    if let MigrationResult::Completed {
+        cleanup: Some(task),
+        ..
+    } = result
+    {
+        task.run().unwrap();
+    }
+
+    // Write new blocks with buffer_size=2
+    w.commit_block(&update_with_storage(103, a, 1300, 3, [(4, 400)]))
+        .unwrap();
+    w.commit_block(&update_with_storage(104, a, 1400, 4, [(5, 500)]))
+        .unwrap();
+
+    // With buffer_size=2: blocks 103 and 104 available
+    assert!(w.is_block_available(104).unwrap());
+    assert!(w.is_block_available(103).unwrap());
+    assert!(!w.is_block_available(102).unwrap());
+
+    // Verify cumulative state at block 104
+    let storage = w.get_all_storage(a.into(), 104).unwrap();
+    assert_eq!(storage.len(), 5);
+    assert_eq!(storage.get(&hash_slot(slot_b256(1))), Some(&u256(100)));
+    assert_eq!(storage.get(&hash_slot(slot_b256(5))), Some(&u256(500)));
+
+    let acc = w.get_account(a.into(), 104).unwrap().unwrap();
+    assert_eq!(acc.balance, u256(1400));
+    assert_eq!(acc.nonce, 4);
+}
+
+#[test]
+fn test_migration_idempotent_on_rerun() {
+    // Simulates crash resilience: migration commits but cleanup doesn't finish.
+    // Next startup should detect orphaned data and return a cleanup task.
+    let (w, tmp) = writer_env(3);
+    let a = addr(0x44);
+
+    w.bootstrap_from_snapshot(
+        vec![account_state_with_storage(a, 1000, 0, [(1, 100)])],
+        100,
+        B256::ZERO,
+        B256::ZERO,
+    )
+    .unwrap();
+    w.commit_block(&update_with_storage(101, a, 1100, 1, [(2, 200)]))
+        .unwrap();
+    w.commit_block(&update_with_storage(102, a, 1200, 2, [(3, 300)]))
+        .unwrap();
+    drop(w);
+
+    // First migration: 3→2, but DON'T run cleanup
+    {
+        let w = reopen_writer(&tmp, 2);
+        let result = w.migrate_if_needed().unwrap();
+        assert!(matches!(
+            result,
+            MigrationResult::Completed {
+                old_size: 3,
+                new_size: 2,
+                ..
+            }
+        ));
+        // Intentionally skip cleanup — drop the task with the writer
+    }
+
+    // Second open: sizes match but orphaned data exists
+    {
+        let w = reopen_writer(&tmp, 2);
+        let result = w.migrate_if_needed().unwrap();
+        assert!(
+            matches!(
+                result,
+                MigrationResult::Completed {
+                    cleanup: Some(_),
+                    ..
+                }
+            ),
+            "expected pending cleanup, got: {result:?}"
+        );
+        if let MigrationResult::Completed {
+            cleanup: Some(task),
+            ..
+        } = result
+        {
+            let stats = task.run().unwrap();
+            assert!(
+                stats.accounts_deleted > 0,
+                "should have cleaned up orphaned accounts"
+            );
+        }
+    }
+
+    // Third open: should be fully clean
+    let w = reopen_writer(&tmp, 2);
+    assert!(matches!(
+        w.migrate_if_needed().unwrap(),
+        MigrationResult::NoOp
+    ));
+}
+
+#[test]
+fn test_migration_5_to_2() {
+    let (w, tmp) = writer_env(5);
+    let a = addr(0x55);
+
+    w.bootstrap_from_snapshot(
+        vec![account_state_with_storage(a, 1000, 0, [(1, 100)])],
+        200,
+        B256::ZERO,
+        B256::ZERO,
+    )
+    .unwrap();
+
+    w.commit_block(&update_with_storage(201, a, 1100, 1, [(2, 200)]))
+        .unwrap();
+    w.commit_block(&update_with_storage(202, a, 1200, 2, [(3, 300)]))
+        .unwrap();
+    w.commit_block(&update_with_storage(203, a, 1300, 3, [(4, 400)]))
+        .unwrap();
+    w.commit_block(&update_with_storage(204, a, 1400, 4, [(5, 500)]))
+        .unwrap();
+    drop(w);
+
+    // Migrate 5→2
+    let w = reopen_writer(&tmp, 2);
+    let result = w.migrate_if_needed().unwrap();
+    assert!(matches!(
+        result,
+        MigrationResult::Completed {
+            old_size: 5,
+            new_size: 2,
+            ..
+        }
+    ));
+
+    if let MigrationResult::Completed {
+        cleanup: Some(task),
+        ..
+    } = result
+    {
+        task.run().unwrap();
+    }
+
+    assert!(w.is_block_available(204).unwrap());
+    assert!(w.is_block_available(203).unwrap());
+    assert!(!w.is_block_available(202).unwrap());
+
+    // Verify state at 204
+    let storage = w.get_all_storage(a.into(), 204).unwrap();
+    assert_eq!(storage.len(), 5);
+    assert_eq!(storage.get(&hash_slot(slot_b256(5))), Some(&u256(500)));
+
+    let acc = w.get_account(a.into(), 204).unwrap().unwrap();
+    assert_eq!(acc.balance, u256(1400));
+
+    // Verify state at 203
+    let acc_203 = w.get_account(a.into(), 203).unwrap().unwrap();
+    assert_eq!(acc_203.balance, u256(1300));
+}
+
+#[test]
+fn test_migration_multiple_accounts_with_code() {
+    // Two accounts: one EOA, one contract with bytecode and storage.
+    // Verifies bytecodes, storage, and balances survive migration for both.
+    let (w, tmp) = writer_env(3);
+    let eoa = addr(0xAA);
+    let contract = addr(0xBB);
+    let code = vec![0x60, 0x80, 0x60, 0x40, 0x52]; // PUSH1 0x80 PUSH1 0x40 MSTORE
+    let code_hash = keccak256(&code);
+
+    // Bootstrap both accounts
+    w.bootstrap_from_snapshot(
+        vec![
+            account_state_with_storage(eoa, 5000, 0, [(1, 10)]),
+            AccountState {
+                address_hash: AddressHash(keccak256(contract)),
+                balance: u256(0),
+                nonce: 1,
+                code_hash,
+                code: Some(Bytes::from(code.clone())),
+                storage: hash_storage(storage([(100, 999), (200, 888)])),
+                deleted: false,
+            },
+        ],
+        50,
+        B256::ZERO,
+        B256::ZERO,
+    )
+    .unwrap();
+
+    // Block 51: update EOA balance + contract storage
+    w.commit_block(&block_update(
+        51,
+        vec![
+            simple_account(eoa, 4500, 1),
+            AccountState {
+                address_hash: AddressHash(keccak256(contract)),
+                balance: u256(500),
+                nonce: 2,
+                code_hash,
+                code: None,
+                storage: hash_storage(storage([(300, 777)])),
+                deleted: false,
+            },
+        ],
+    ))
+    .unwrap();
+
+    // Block 52: only EOA changes
+    w.commit_block(&block_update(52, vec![simple_account(eoa, 4000, 2)]))
+        .unwrap();
+
+    drop(w);
+
+    // Migrate 3→2
+    let w = reopen_writer(&tmp, 2);
+    let result = w.migrate_if_needed().unwrap();
+    assert!(matches!(
+        result,
+        MigrationResult::Completed {
+            old_size: 3,
+            new_size: 2,
+            ..
+        }
+    ));
+    if let MigrationResult::Completed {
+        cleanup: Some(task),
+        ..
+    } = result
+    {
+        let stats = task.run().unwrap();
+        // Orphaned namespace 2 had data from bootstrap
+        assert!(stats.accounts_deleted > 0);
+        assert!(
+            stats.bytecodes_deleted > 0,
+            "bytecodes should be cleaned from orphaned ns"
+        );
+    }
+
+    // Verify EOA at block 52 (ns 0)
+    let eoa_52 = w.get_account(eoa.into(), 52).unwrap().unwrap();
+    assert_eq!(eoa_52.balance, u256(4000));
+    assert_eq!(eoa_52.nonce, 2);
+
+    // Verify EOA at block 51 (ns 1, was advanced from block 50)
+    let eoa_51 = w.get_account(eoa.into(), 51).unwrap().unwrap();
+    assert_eq!(eoa_51.balance, u256(4500));
+
+    // Verify contract bytecode at block 52
+    let retrieved_code = w.get_code(code_hash, 52).unwrap();
+    assert_eq!(retrieved_code, Some(Bytes::from(code.clone())));
+
+    // Verify contract storage at block 52 (unchanged since block 51)
+    let cstorage = w.get_all_storage(contract.into(), 52).unwrap();
+    assert_eq!(cstorage.get(&hash_slot(slot_b256(100))), Some(&u256(999)));
+    assert_eq!(cstorage.get(&hash_slot(slot_b256(200))), Some(&u256(888)));
+    assert_eq!(cstorage.get(&hash_slot(slot_b256(300))), Some(&u256(777)));
+
+    // Verify contract storage at block 51 (ns advanced)
+    let cstorage_51 = w.get_all_storage(contract.into(), 51).unwrap();
+    assert_eq!(
+        cstorage_51.get(&hash_slot(slot_b256(300))),
+        Some(&u256(777))
+    );
+
+    // Verify bytecode at block 51
+    assert_eq!(w.get_code(code_hash, 51).unwrap(), Some(Bytes::from(code)));
+}
+
+#[test]
+fn test_migration_with_deleted_account() {
+    // Account exists, then gets deleted in a later block.
+    // Migration must correctly carry the deletion forward.
+    let (w, tmp) = writer_env(3);
+    let a = addr(0xDD);
+
+    w.bootstrap_from_snapshot(
+        vec![account_state_with_storage(a, 1000, 5, [(1, 100), (2, 200)])],
+        100,
+        B256::ZERO,
+        B256::ZERO,
+    )
+    .unwrap();
+
+    // Block 101: account still alive, modify storage
+    w.commit_block(&update_with_storage(101, a, 1100, 6, [(3, 300)]))
+        .unwrap();
+
+    // Block 102: delete the account
+    w.commit_block(&block_update(102, vec![deleted_account(a)]))
+        .unwrap();
+
+    drop(w);
+
+    // Migrate 3→1
+    let w = reopen_writer(&tmp, 1);
+    let result = w.migrate_if_needed().unwrap();
+    assert!(matches!(
+        result,
+        MigrationResult::Completed {
+            old_size: 3,
+            new_size: 1,
+            ..
+        }
+    ));
+    if let MigrationResult::Completed {
+        cleanup: Some(task),
+        ..
+    } = result
+    {
+        task.run().unwrap();
+    }
+
+    // At block 102, account should be deleted (no data)
+    let acc = w.get_account(a.into(), 102).unwrap();
+    assert!(acc.is_none(), "deleted account should not be found");
+
+    let storage = w.get_all_storage(a.into(), 102).unwrap();
+    assert!(storage.is_empty(), "deleted account should have no storage");
+}
+
+#[test]
+fn test_migration_storage_slot_deletion() {
+    // Storage slot set to zero (deletion) must survive migration.
+    let (w, tmp) = writer_env(3);
+    let a = addr(0xEE);
+
+    w.bootstrap_from_snapshot(
+        vec![account_state_with_storage(
+            a,
+            1000,
+            0,
+            [(1, 100), (2, 200), (3, 300)],
+        )],
+        100,
+        B256::ZERO,
+        B256::ZERO,
+    )
+    .unwrap();
+
+    // Block 101: delete slot 2 by setting to zero, add slot 4
+    w.commit_block(&block_update(
+        101,
+        vec![AccountState {
+            address_hash: AddressHash(keccak256(a)),
+            balance: u256(1000),
+            nonce: 1,
+            code_hash: B256::ZERO,
+            code: None,
+            storage: hash_storage(storage([(2, 0), (4, 400)])),
+            deleted: false,
+        }],
+    ))
+    .unwrap();
+
+    // Block 102: modify slot 1
+    w.commit_block(&update_with_storage(102, a, 1200, 2, [(1, 150)]))
+        .unwrap();
+
+    drop(w);
+
+    // Migrate 3→2: ns 1 must advance from block 100 to 101
+    let w = reopen_writer(&tmp, 2);
+    w.migrate_if_needed().unwrap();
+
+    // At block 101 (advanced namespace): slot 2 should be gone, slot 4 should exist
+    let s101 = w.get_all_storage(a.into(), 101).unwrap();
+    assert_eq!(s101.get(&hash_slot(slot_b256(1))), Some(&u256(100))); // unchanged
+    assert_eq!(s101.get(&hash_slot(slot_b256(2))), None); // deleted
+    assert_eq!(s101.get(&hash_slot(slot_b256(3))), Some(&u256(300))); // unchanged
+    assert_eq!(s101.get(&hash_slot(slot_b256(4))), Some(&u256(400))); // new
+
+    // At block 102: slot 1 updated
+    let s102 = w.get_all_storage(a.into(), 102).unwrap();
+    assert_eq!(s102.get(&hash_slot(slot_b256(1))), Some(&u256(150)));
+    assert_eq!(s102.get(&hash_slot(slot_b256(2))), None); // still deleted
+    assert_eq!(s102.get(&hash_slot(slot_b256(4))), Some(&u256(400)));
+}
+
+#[test]
+fn test_migration_sequential_reductions_3_to_2_to_1() {
+    let (w, tmp) = writer_env(3);
+    let a = addr(0x77);
+
+    w.bootstrap_from_snapshot(
+        vec![account_state_with_storage(a, 1000, 0, [(1, 100)])],
+        100,
+        B256::ZERO,
+        B256::ZERO,
+    )
+    .unwrap();
+    w.commit_block(&update_with_storage(101, a, 1100, 1, [(2, 200)]))
+        .unwrap();
+    w.commit_block(&update_with_storage(102, a, 1200, 2, [(3, 300)]))
+        .unwrap();
+    drop(w);
+
+    // Step 1: migrate 3→2
+    let w = reopen_writer(&tmp, 2);
+    let result = w.migrate_if_needed().unwrap();
+    assert!(matches!(
+        result,
+        MigrationResult::Completed {
+            old_size: 3,
+            new_size: 2,
+            ..
+        }
+    ));
+    if let MigrationResult::Completed {
+        cleanup: Some(task),
+        ..
+    } = result
+    {
+        task.run().unwrap();
+    }
+
+    // Write one more block to exercise the buffer with size 2
+    w.commit_block(&update_with_storage(103, a, 1300, 3, [(4, 400)]))
+        .unwrap();
+
+    assert!(w.is_block_available(103).unwrap());
+    assert!(w.is_block_available(102).unwrap());
+    assert!(!w.is_block_available(101).unwrap());
+    drop(w);
+
+    // Step 2: migrate 2→1
+    let w = reopen_writer(&tmp, 1);
+    let result = w.migrate_if_needed().unwrap();
+    assert!(matches!(
+        result,
+        MigrationResult::Completed {
+            old_size: 2,
+            new_size: 1,
+            ..
+        }
+    ));
+    if let MigrationResult::Completed {
+        cleanup: Some(task),
+        ..
+    } = result
+    {
+        let stats = task.run().unwrap();
+        assert!(stats.accounts_deleted > 0);
+    }
+
+    // Only block 103 should be available
+    assert!(w.is_block_available(103).unwrap());
+    assert!(!w.is_block_available(102).unwrap());
+
+    // Verify cumulative state at 103
+    let storage = w.get_all_storage(a.into(), 103).unwrap();
+    assert_eq!(storage.len(), 4);
+    assert_eq!(storage.get(&hash_slot(slot_b256(1))), Some(&u256(100)));
+    assert_eq!(storage.get(&hash_slot(slot_b256(4))), Some(&u256(400)));
+
+    // Write another block after double migration
+    w.commit_block(&update_with_storage(104, a, 1400, 4, [(5, 500)]))
+        .unwrap();
+    assert!(w.is_block_available(104).unwrap());
+    assert!(!w.is_block_available(103).unwrap()); // rotated out with buffer_size=1
+
+    let acc = w.get_account(a.into(), 104).unwrap().unwrap();
+    assert_eq!(acc.balance, u256(1400));
+    assert_eq!(acc.nonce, 4);
+}
+
+#[test]
+fn test_migration_block_range_and_metadata() {
+    // Verify get_available_block_range and get_block_metadata after migration.
+    let (w, tmp) = writer_env(3);
+    let a = addr(0x88);
+
+    w.bootstrap_from_snapshot(
+        vec![simple_account(a, 1000, 0)],
+        100,
+        B256::repeat_byte(0x11),
+        B256::repeat_byte(0x22),
+    )
+    .unwrap();
+    w.commit_block(&simple_update(101, a, 1100, 1)).unwrap();
+    w.commit_block(&simple_update(102, a, 1200, 2)).unwrap();
+
+    // Pre-migration: all 3 blocks available
+    let range = w.get_available_block_range().unwrap().unwrap();
+    assert_eq!(range, (100, 102));
+    drop(w);
+
+    // Migrate 3→2
+    let w = reopen_writer(&tmp, 2);
+    w.migrate_if_needed().unwrap();
+
+    // Post-migration: range should be (101, 102)
+    let range = w.get_available_block_range().unwrap().unwrap();
+    assert_eq!(range, (101, 102));
+
+    // Block metadata for 102 should still exist
+    let meta_102 = w.get_block_metadata(102).unwrap();
+    assert!(meta_102.is_some());
+
+    // Block metadata for 101 should still exist
+    let meta_101 = w.get_block_metadata(101).unwrap();
+    assert!(meta_101.is_some());
+
+    // Block metadata for 100 should be pruned
+    let meta_100 = w.get_block_metadata(100).unwrap();
+    assert!(
+        meta_100.is_none(),
+        "block 100 metadata should be pruned after migration"
+    );
+}
+
+#[test]
+fn test_migration_early_blocks() {
+    // Migration with low block numbers (0, 1, 2) to test underflow safety.
+    let (w, tmp) = writer_env(3);
+    let a = addr(0x99);
+
+    w.commit_block(&update_with_storage(0, a, 100, 0, [(1, 10)]))
+        .unwrap();
+    w.commit_block(&update_with_storage(1, a, 200, 1, [(2, 20)]))
+        .unwrap();
+    w.commit_block(&update_with_storage(2, a, 300, 2, [(3, 30)]))
+        .unwrap();
+    drop(w);
+
+    // Migrate 3→2
+    let w = reopen_writer(&tmp, 2);
+    let result = w.migrate_if_needed().unwrap();
+    assert!(matches!(
+        result,
+        MigrationResult::Completed {
+            old_size: 3,
+            new_size: 2,
+            ..
+        }
+    ));
+
+    // With latest=2, new_size=2: target ns 0 = block 2, target ns 1 = block 1
+    assert!(w.is_block_available(2).unwrap());
+    assert!(w.is_block_available(1).unwrap());
+    assert!(!w.is_block_available(0).unwrap());
+
+    let acc = w.get_account(a.into(), 2).unwrap().unwrap();
+    assert_eq!(acc.balance, u256(300));
+
+    let acc_1 = w.get_account(a.into(), 1).unwrap().unwrap();
+    assert_eq!(acc_1.balance, u256(200));
+
+    // Storage: block 1 should have slots 1,2 but not 3
+    let s1 = w.get_all_storage(a.into(), 1).unwrap();
+    assert_eq!(s1.get(&hash_slot(slot_b256(1))), Some(&u256(10)));
+    assert_eq!(s1.get(&hash_slot(slot_b256(2))), Some(&u256(20)));
+    assert_eq!(s1.get(&hash_slot(slot_b256(3))), None);
+}
+
+#[test]
+fn test_migration_early_blocks_to_1() {
+    // Separate test for sequential 3→2→1 with early blocks
+    let (w, tmp) = writer_env(3);
+    let a = addr(0x99);
+
+    w.commit_block(&update_with_storage(0, a, 100, 0, [(1, 10)]))
+        .unwrap();
+    w.commit_block(&update_with_storage(1, a, 200, 1, [(2, 20)]))
+        .unwrap();
+    w.commit_block(&update_with_storage(2, a, 300, 2, [(3, 30)]))
+        .unwrap();
+    drop(w);
+
+    // Migrate 3→1 directly
+    let w = reopen_writer(&tmp, 1);
+    let result = w.migrate_if_needed().unwrap();
+    assert!(matches!(
+        result,
+        MigrationResult::Completed {
+            old_size: 3,
+            new_size: 1,
+            ..
+        }
+    ));
+
+    assert!(w.is_block_available(2).unwrap());
+    assert!(!w.is_block_available(1).unwrap());
+    assert!(!w.is_block_available(0).unwrap());
+}
+
+#[test]
+fn test_migration_cleanup_stats_detailed() {
+    // Verify cleanup stats report correct counts for accounts, storage, and bytecodes.
+    let (w, tmp) = writer_env(3);
+    let a1 = addr(0xA1);
+    let a2 = addr(0xA2);
+    let code = vec![0x60, 0x01];
+    let code_hash = keccak256(&code);
+
+    w.bootstrap_from_snapshot(
+        vec![
+            account_state_with_storage(a1, 1000, 0, [(1, 10), (2, 20)]),
+            AccountState {
+                address_hash: AddressHash(keccak256(a2)),
+                balance: u256(500),
+                nonce: 0,
+                code_hash,
+                code: Some(Bytes::from(code)),
+                storage: hash_storage(storage([(10, 100)])),
+                deleted: false,
+            },
+        ],
+        100,
+        B256::ZERO,
+        B256::ZERO,
+    )
+    .unwrap();
+
+    w.commit_block(&simple_update(101, a1, 1100, 1)).unwrap();
+    w.commit_block(&simple_update(102, a1, 1200, 2)).unwrap();
+    drop(w);
+
+    // Migrate 3→1
+    let w = reopen_writer(&tmp, 1);
+    let result = w.migrate_if_needed().unwrap();
+
+    if let MigrationResult::Completed {
+        cleanup: Some(task),
+        ..
+    } = result
+    {
+        let stats = task.run().unwrap();
+        // Orphaned namespaces 1 and 2 each had 2 accounts from bootstrap
+        assert!(
+            stats.accounts_deleted >= 2,
+            "expected at least 2 orphaned accounts deleted, got {}",
+            stats.accounts_deleted
+        );
+        assert!(
+            stats.storage_slots_deleted >= 2,
+            "expected at least 2 orphaned storage slots deleted, got {}",
+            stats.storage_slots_deleted
+        );
+        assert!(
+            stats.bytecodes_deleted >= 1,
+            "expected at least 1 orphaned bytecode deleted, got {}",
+            stats.bytecodes_deleted
+        );
+    } else {
+        panic!("expected MigrationResult::Completed with cleanup");
+    }
+}
+
+#[test]
+fn test_migration_heavy_rotation_after_reduction() {
+    // After migration, write enough blocks to exercise multiple full rotations
+    // of the new (smaller) buffer. This tests that the normal rotation logic
+    // works correctly on top of migrated state.
+    let (w, tmp) = writer_env(4);
+    let a = addr(0xCC);
+
+    w.bootstrap_from_snapshot(
+        vec![account_state_with_storage(a, 1000, 0, [(1, 100)])],
+        50,
+        B256::ZERO,
+        B256::ZERO,
+    )
+    .unwrap();
+    for b in 51..=53 {
+        w.commit_block(&update_with_storage(b, a, 1000 + b * 10, b, [(b, b * 10)]))
+            .unwrap();
+    }
+    drop(w);
+
+    // Migrate 4→2
+    let w = reopen_writer(&tmp, 2);
+    w.migrate_if_needed().unwrap();
+
+    // Write 10 more blocks — 5 full rotations of buffer_size=2
+    for b in 54..=63 {
+        w.commit_block(&update_with_storage(b, a, 1000 + b * 10, b, [(b, b * 10)]))
+            .unwrap();
+    }
+
+    // Only the last 2 blocks should be available
+    assert!(w.is_block_available(63).unwrap());
+    assert!(w.is_block_available(62).unwrap());
+    assert!(!w.is_block_available(61).unwrap());
+
+    // Verify cumulative storage at block 63 has all slots from 1 through 63
+    let storage = w.get_all_storage(a.into(), 63).unwrap();
+    // Original slot 1 + slots 51..=63 = 14 slots
+    assert_eq!(storage.len(), 14);
+    assert_eq!(storage.get(&hash_slot(slot_b256(1))), Some(&u256(100)));
+    assert_eq!(storage.get(&hash_slot(slot_b256(63))), Some(&u256(630)));
+
+    let acc = w.get_account(a.into(), 63).unwrap().unwrap();
+    assert_eq!(acc.balance, u256(1630));
+    assert_eq!(acc.nonce, 63);
+}
+
+#[test]
+fn test_migration_different_accounts_per_block() {
+    // Different accounts are modified in different blocks.
+    // Tests that migration correctly applies diffs that touch different accounts.
+    let (w, tmp) = writer_env(3);
+    let a = addr(0xD1);
+    let b_addr = addr(0xD2);
+    let c = addr(0xD3);
+
+    // Bootstrap with account A
+    w.bootstrap_from_snapshot(
+        vec![account_state_with_storage(a, 1000, 0, [(1, 10)])],
+        100,
+        B256::ZERO,
+        B256::ZERO,
+    )
+    .unwrap();
+
+    // Block 101: introduce account B (new account in diff)
+    w.commit_block(&block_update(
+        101,
+        vec![account_state_with_storage(b_addr, 2000, 0, [(1, 20)])],
+    ))
+    .unwrap();
+
+    // Block 102: introduce account C, modify A
+    w.commit_block(&block_update(
+        102,
+        vec![
+            simple_account(a, 1500, 1),
+            account_state_with_storage(c, 3000, 0, [(1, 30)]),
+        ],
+    ))
+    .unwrap();
+
+    drop(w);
+
+    // Migrate 3→2: ns 1 advances from block 100 to 101
+    let w = reopen_writer(&tmp, 2);
+    w.migrate_if_needed().unwrap();
+
+    // At block 101: A exists (from bootstrap), B exists (from block 101), C doesn't
+    let a_101 = w.get_account(a.into(), 101).unwrap().unwrap();
+    assert_eq!(a_101.balance, u256(1000)); // unchanged at 101
+    let b_101 = w.get_account(b_addr.into(), 101).unwrap().unwrap();
+    assert_eq!(b_101.balance, u256(2000));
+    let c_101 = w.get_account(c.into(), 101).unwrap();
+    assert!(c_101.is_none(), "account C shouldn't exist at block 101");
+
+    // At block 102: all three exist
+    let a_102 = w.get_account(a.into(), 102).unwrap().unwrap();
+    assert_eq!(a_102.balance, u256(1500));
+    let b_102 = w.get_account(b_addr.into(), 102).unwrap().unwrap();
+    assert_eq!(b_102.balance, u256(2000)); // unchanged
+    let c_102 = w.get_account(c.into(), 102).unwrap().unwrap();
+    assert_eq!(c_102.balance, u256(3000));
+}
+
+#[test]
+fn test_migration_rebuild_path_then_write() {
+    // Triggers the rebuild path (current > target due to modulo remapping)
+    // and then writes blocks that rotate into the rebuilt namespace, proving
+    // the rebuilt state is correct for the normal writer rotation logic.
+    //
+    // Setup: buffer_size=3, bootstrap at block 50, write 51 and 52.
+    //   ns 0 = block 51 (51%3=0)
+    //   ns 1 = block 52 (52%3=1)
+    //   ns 2 = block 50 (bootstrap)
+    //
+    // Migrate 3→2:
+    //   target ns 0 = block 52 (52%2=0)  ← advance from 51
+    //   target ns 1 = block 51 (51%2=1)  ← REBUILD (has 52, needs 51)
+    let (w, tmp) = writer_env(3);
+    let a = addr(0xF1);
+
+    w.bootstrap_from_snapshot(
+        vec![account_state_with_storage(a, 1000, 0, [(1, 100)])],
+        50,
+        B256::ZERO,
+        B256::ZERO,
+    )
+    .unwrap();
+    w.commit_block(&update_with_storage(51, a, 1100, 1, [(2, 200)]))
+        .unwrap();
+    w.commit_block(&update_with_storage(52, a, 1200, 2, [(3, 300)]))
+        .unwrap();
+    drop(w);
+
+    let w = reopen_writer(&tmp, 2);
+    w.migrate_if_needed().unwrap();
+
+    // Verify rebuilt namespace (ns 1 = block 51)
+    let acc_51 = w.get_account(a.into(), 51).unwrap().unwrap();
+    assert_eq!(acc_51.balance, u256(1100));
+    let s51 = w.get_all_storage(a.into(), 51).unwrap();
+    assert_eq!(s51.get(&hash_slot(slot_b256(1))), Some(&u256(100)));
+    assert_eq!(s51.get(&hash_slot(slot_b256(2))), Some(&u256(200)));
+    assert_eq!(s51.get(&hash_slot(slot_b256(3))), None); // added at 52
+
+    // Verify advanced namespace (ns 0 = block 52)
+    let acc_52 = w.get_account(a.into(), 52).unwrap().unwrap();
+    assert_eq!(acc_52.balance, u256(1200));
+
+    // Write block 53 → 53%2=1 → ns 1 (the rebuilt one). The writer's
+    // load_base_batches will see ns 1 has block 51 and apply diff 52 as
+    // an intermediate before writing 53's changes.
+    w.commit_block(&update_with_storage(53, a, 1300, 3, [(4, 400)]))
+        .unwrap();
+    assert!(w.is_block_available(53).unwrap());
+
+    let acc_53 = w.get_account(a.into(), 53).unwrap().unwrap();
+    assert_eq!(acc_53.balance, u256(1300));
+    let s53 = w.get_all_storage(a.into(), 53).unwrap();
+    assert_eq!(s53.len(), 4); // slots 1,2,3,4
+    assert_eq!(s53.get(&hash_slot(slot_b256(4))), Some(&u256(400)));
+
+    // Write block 54 → 54%2=0 → ns 0. Normal rotation.
+    w.commit_block(&update_with_storage(54, a, 1400, 4, [(5, 500)]))
+        .unwrap();
+    assert!(w.is_block_available(54).unwrap());
+    assert!(w.is_block_available(53).unwrap());
+    assert!(!w.is_block_available(52).unwrap());
+}
+
+#[test]
+fn test_migration_latest_block_number_preserved() {
+    // Verify latest_block_number() returns the correct value after migration.
+    let (w, tmp) = writer_env(3);
+    let a = addr(0xF2);
+
+    w.bootstrap_from_snapshot(
+        vec![simple_account(a, 1000, 0)],
+        100,
+        B256::ZERO,
+        B256::ZERO,
+    )
+    .unwrap();
+    w.commit_block(&simple_update(101, a, 1100, 1)).unwrap();
+    w.commit_block(&simple_update(102, a, 1200, 2)).unwrap();
+
+    assert_eq!(w.latest_block_number().unwrap(), Some(102));
+    drop(w);
+
+    let w = reopen_writer(&tmp, 2);
+    // Before migration, latest_block should still be readable
+    assert_eq!(w.latest_block_number().unwrap(), Some(102));
+
+    w.migrate_if_needed().unwrap();
+
+    // After migration, latest_block must be unchanged
+    assert_eq!(w.latest_block_number().unwrap(), Some(102));
+}
+
+#[test]
+fn test_migration_rebuild_with_multiple_diffs() {
+    // Rebuild path where source is 2 blocks behind target,
+    // requiring multiple diffs to be applied after copy.
+    //
+    // buffer_size=4, bootstrap at 40, write 41..=43.
+    //   ns 0 = block 40 (40%4=0, bootstrap)
+    //   ns 1 = block 41 (41%4=1)
+    //   ns 2 = block 42 (42%4=2)
+    //   ns 3 = block 43 (43%4=3)
+    //
+    // Migrate 4→2:
+    //   target ns 0 = block 42 (42%2=0)
+    //   target ns 1 = block 43 (43%2=1)
+    //
+    //   ns 0 has block 40, target 42 → advance (apply diffs 41, 42)
+    //   ns 1 has block 41, target 43 → advance (apply diffs 42, 43)
+    let (w, tmp) = writer_env(4);
+    let a = addr(0xF3);
+
+    w.bootstrap_from_snapshot(
+        vec![account_state_with_storage(a, 1000, 0, [(1, 100)])],
+        40,
+        B256::ZERO,
+        B256::ZERO,
+    )
+    .unwrap();
+    w.commit_block(&update_with_storage(41, a, 1100, 1, [(2, 200)]))
+        .unwrap();
+    w.commit_block(&update_with_storage(42, a, 1200, 2, [(3, 300)]))
+        .unwrap();
+    w.commit_block(&update_with_storage(43, a, 1300, 3, [(4, 400)]))
+        .unwrap();
+    drop(w);
+
+    let w = reopen_writer(&tmp, 2);
+    w.migrate_if_needed().unwrap();
+
+    // ns 0 should have block 42 state (advanced from 40 by diffs 41, 42)
+    let acc_42 = w.get_account(a.into(), 42).unwrap().unwrap();
+    assert_eq!(acc_42.balance, u256(1200));
+    let s42 = w.get_all_storage(a.into(), 42).unwrap();
+    assert_eq!(s42.len(), 3); // slots 1,2,3
+    assert_eq!(s42.get(&hash_slot(slot_b256(3))), Some(&u256(300)));
+    assert_eq!(s42.get(&hash_slot(slot_b256(4))), None); // added at 43
+
+    // ns 1 should have block 43 state (advanced from 41 by diffs 42, 43)
+    let acc_43 = w.get_account(a.into(), 43).unwrap().unwrap();
+    assert_eq!(acc_43.balance, u256(1300));
+    let s43 = w.get_all_storage(a.into(), 43).unwrap();
+    assert_eq!(s43.len(), 4); // slots 1,2,3,4
+
+    // Continue writing to confirm rotation works
+    w.commit_block(&update_with_storage(44, a, 1400, 4, [(5, 500)]))
+        .unwrap();
+    assert!(w.is_block_available(44).unwrap());
+    assert!(w.is_block_available(43).unwrap());
+    assert!(!w.is_block_available(42).unwrap());
+}
+
+#[test]
+fn test_migration_3_to_1_ns0_already_at_target() {
+    // Verifies the no-op path: ns 0 already holds the latest block and
+    // needs zero diffs. After 3→1, ONLY block 102 is reachable.
+    //
+    // State before migration:
+    //   ns 0 = block 102  (102 % 3 = 0)  ← latest, cumulative state
+    //   ns 1 = block 100  (100 % 3 = 1)  ← bootstrap state
+    //   ns 2 = block 101  (101 % 3 = 2)
+    //
+    // Migrate 3→1:
+    //   target ns 0 = block 102  (102 % 1 = 0) → already there, no work
+    //   ns 1, ns 2 → orphaned
+    let (w, tmp) = writer_env(3);
+    let a = addr(0xE1);
+
+    w.bootstrap_from_snapshot(
+        vec![account_state_with_storage(a, 1000, 0, [(1, 100)])],
+        100,
+        B256::repeat_byte(0x10),
+        B256::repeat_byte(0x20),
+    )
+    .unwrap();
+    w.commit_block(&update_with_storage(101, a, 1100, 1, [(2, 200)]))
+        .unwrap();
+    w.commit_block(&update_with_storage(102, a, 1200, 2, [(3, 300)]))
+        .unwrap();
+
+    // Sanity: all 3 blocks available before migration
+    assert!(w.is_block_available(100).unwrap());
+    assert!(w.is_block_available(101).unwrap());
+    assert!(w.is_block_available(102).unwrap());
+    assert_eq!(w.latest_block_number().unwrap(), Some(102));
+    drop(w);
+
+    // Migrate 3→1
+    let w = reopen_writer(&tmp, 1);
+    let result = w.migrate_if_needed().unwrap();
+    assert!(matches!(
+        result,
+        MigrationResult::Completed {
+            old_size: 3,
+            new_size: 1,
+            ..
+        }
+    ));
+
+    // latest_block must be preserved
+    assert_eq!(w.latest_block_number().unwrap(), Some(102));
+
+    // Only block 102 reachable
+    assert!(w.is_block_available(102).unwrap());
+    assert!(!w.is_block_available(101).unwrap());
+    assert!(!w.is_block_available(100).unwrap());
+
+    // Block range should be exactly (102, 102)
+    assert_eq!(w.get_available_block_range().unwrap(), Some((102, 102)));
+
+    // Full state at block 102: cumulative across all 3 commits
+    let acc = w.get_account(a.into(), 102).unwrap().unwrap();
+    assert_eq!(acc.balance, u256(1200));
+    assert_eq!(acc.nonce, 2);
+
+    let storage = w.get_all_storage(a.into(), 102).unwrap();
+    assert_eq!(storage.len(), 3);
+    assert_eq!(storage.get(&hash_slot(slot_b256(1))), Some(&u256(100)));
+    assert_eq!(storage.get(&hash_slot(slot_b256(2))), Some(&u256(200)));
+    assert_eq!(storage.get(&hash_slot(slot_b256(3))), Some(&u256(300)));
+
+    // Block metadata for 102 must survive, 100 and 101 must be pruned
+    assert!(w.get_block_metadata(102).unwrap().is_some());
+    assert!(w.get_block_metadata(101).unwrap().is_none());
+    assert!(w.get_block_metadata(100).unwrap().is_none());
+
+    // Continue writing — next block goes to ns 0 (103 % 1 = 0)
+    w.commit_block(&update_with_storage(103, a, 1300, 3, [(4, 400)]))
+        .unwrap();
+    assert!(w.is_block_available(103).unwrap());
+    assert!(!w.is_block_available(102).unwrap()); // rotated out, buffer=1
+
+    let acc_103 = w.get_account(a.into(), 103).unwrap().unwrap();
+    assert_eq!(acc_103.balance, u256(1300));
+    let s103 = w.get_all_storage(a.into(), 103).unwrap();
+    assert_eq!(s103.len(), 4);
+}
+
+#[test]
+fn test_migration_3_to_2_ns1_advanced_by_diff() {
+    // Verifies the advance path: ns 1 holds block 100 and must be advanced
+    // to block 101 by applying exactly one state diff.
+    //
+    // State before migration:
+    //   ns 0 = block 102  (102 % 3 = 0)
+    //   ns 1 = block 100  (100 % 3 = 1)  ← bootstrap state
+    //   ns 2 = block 101  (101 % 3 = 2)
+    //
+    // Migrate 3→2:
+    //   target ns 0 = block 102  (102 % 2 = 0) → already there
+    //   target ns 1 = block 101  (101 % 2 = 1) → advance from 100 by diff 101
+    //   ns 2 → orphaned
+    //
+    // Diff 101 contains: balance=1100, nonce=1, slot 2=200.
+    // ns 1 base (block 100): balance=1000, nonce=0, slot 1=100.
+    // After applying diff 101: balance=1100, nonce=1, slot 1=100, slot 2=200.
+    //   (slot 3 does NOT exist — it was added at block 102)
+    let (w, tmp) = writer_env(3);
+    let a = addr(0xE2);
+
+    w.bootstrap_from_snapshot(
+        vec![account_state_with_storage(a, 1000, 0, [(1, 100)])],
+        100,
+        B256::repeat_byte(0x10),
+        B256::repeat_byte(0x20),
+    )
+    .unwrap();
+    w.commit_block(&update_with_storage(101, a, 1100, 1, [(2, 200)]))
+        .unwrap();
+    w.commit_block(&update_with_storage(102, a, 1200, 2, [(3, 300)]))
+        .unwrap();
+    drop(w);
+
+    // Migrate 3→2
+    let w = reopen_writer(&tmp, 2);
+    let result = w.migrate_if_needed().unwrap();
+    assert!(matches!(
+        result,
+        MigrationResult::Completed {
+            old_size: 3,
+            new_size: 2,
+            ..
+        }
+    ));
+
+    assert_eq!(w.latest_block_number().unwrap(), Some(102));
+
+    // Both blocks available
+    assert!(w.is_block_available(102).unwrap());
+    assert!(w.is_block_available(101).unwrap());
+    assert!(!w.is_block_available(100).unwrap());
+
+    assert_eq!(w.get_available_block_range().unwrap(), Some((101, 102)));
+
+    // --- Verify ns 0 (block 102, no-op path) ---
+    let acc_102 = w.get_account(a.into(), 102).unwrap().unwrap();
+    assert_eq!(acc_102.balance, u256(1200));
+    assert_eq!(acc_102.nonce, 2);
+    let s102 = w.get_all_storage(a.into(), 102).unwrap();
+    assert_eq!(s102.len(), 3);
+    assert_eq!(s102.get(&hash_slot(slot_b256(1))), Some(&u256(100)));
+    assert_eq!(s102.get(&hash_slot(slot_b256(2))), Some(&u256(200)));
+    assert_eq!(s102.get(&hash_slot(slot_b256(3))), Some(&u256(300)));
+
+    // --- Verify ns 1 (block 101, advanced from 100 by diff 101) ---
+    let acc_101 = w.get_account(a.into(), 101).unwrap().unwrap();
+    assert_eq!(acc_101.balance, u256(1100));
+    assert_eq!(acc_101.nonce, 1);
+    let s101 = w.get_all_storage(a.into(), 101).unwrap();
+    assert_eq!(s101.len(), 2); // only slots 1 and 2
+    assert_eq!(s101.get(&hash_slot(slot_b256(1))), Some(&u256(100)));
+    assert_eq!(s101.get(&hash_slot(slot_b256(2))), Some(&u256(200)));
+    assert_eq!(s101.get(&hash_slot(slot_b256(3))), None); // NOT here yet
+
+    // Block metadata: 101 and 102 survive, 100 pruned
+    assert!(w.get_block_metadata(102).unwrap().is_some());
+    assert!(w.get_block_metadata(101).unwrap().is_some());
+    assert!(w.get_block_metadata(100).unwrap().is_none());
+
+    // Continue writing — block 103 → 103%2=1 → ns 1 (the advanced one).
+    // load_base_batches sees ns 1 at block 101, applies diff 102 as
+    // intermediate, then writes 103's changes.
+    w.commit_block(&update_with_storage(103, a, 1300, 3, [(4, 400)]))
+        .unwrap();
+    assert!(w.is_block_available(103).unwrap());
+    assert!(w.is_block_available(102).unwrap());
+    assert!(!w.is_block_available(101).unwrap());
+
+    let acc_103 = w.get_account(a.into(), 103).unwrap().unwrap();
+    assert_eq!(acc_103.balance, u256(1300));
+    assert_eq!(acc_103.nonce, 3);
+    let s103 = w.get_all_storage(a.into(), 103).unwrap();
+    assert_eq!(s103.len(), 4); // slots 1,2,3,4 — cumulative
+    assert_eq!(s103.get(&hash_slot(slot_b256(1))), Some(&u256(100)));
+    assert_eq!(s103.get(&hash_slot(slot_b256(2))), Some(&u256(200)));
+    assert_eq!(s103.get(&hash_slot(slot_b256(3))), Some(&u256(300)));
+    assert_eq!(s103.get(&hash_slot(slot_b256(4))), Some(&u256(400)));
+}

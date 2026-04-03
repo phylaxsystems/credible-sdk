@@ -20,6 +20,9 @@ use std::{
 pub mod common;
 pub mod db;
 
+#[cfg(feature = "writer")]
+pub mod migration;
+
 #[cfg(test)]
 mod tests;
 
@@ -36,6 +39,13 @@ pub use writer::StateWriter;
 pub use reader::{
     StateReader,
     StateRootAccountData,
+};
+
+#[cfg(feature = "writer")]
+pub use migration::{
+    CleanupStats,
+    CleanupTask,
+    MigrationResult,
 };
 
 /// Account info without storage (for reader API).

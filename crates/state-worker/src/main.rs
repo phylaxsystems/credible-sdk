@@ -47,6 +47,7 @@ use anyhow::{
 };
 use clap::Parser;
 use mdbx::{
+    MigrationResult,
     StateWriter,
     common::CircularBufferConfig,
 };
@@ -135,6 +136,28 @@ async fn run_once(args: &Args) -> Result<WorkerExit> {
             return Err(err).context("failed to initialize database client");
         }
     };
+
+    // Check for buffer size migration (reduction) on existing database
+    match writer_reader
+        .migrate_if_needed()
+        .context("buffer size migration failed")?
+    {
+        MigrationResult::NoOp => {}
+        MigrationResult::Completed {
+            old_size,
+            new_size,
+            cleanup,
+        } => {
+            info!(old_size, new_size, "buffer size migration completed");
+            if let Some(task) = cleanup {
+                tokio::task::spawn_blocking(move || {
+                    if let Err(e) = task.run() {
+                        warn!(error = %e, "background cleanup of orphaned namespace data failed");
+                    }
+                });
+            }
+        }
+    }
 
     // Load genesis from file (required to seed initial state)
     let file_path = &args.file_to_genesis;
