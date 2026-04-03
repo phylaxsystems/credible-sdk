@@ -2,7 +2,7 @@ name: Docker GHCR Push
 
 on:
   push:
-    branches: [main, add-base-image-cached]
+    branches: [main]
   workflow_dispatch:
     inputs:
       version:

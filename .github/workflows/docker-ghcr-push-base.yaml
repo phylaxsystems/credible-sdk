@@ -2,7 +2,7 @@ name: Docker GHCR Push Base Image
 
 on:
   push:
-    branches: [main, add-base-image-cached]
+    branches: [main]
     paths:
       - 'dockerfile/Dockerfile.base'
       - 'rust-toolchain.toml'
