@@ -8,13 +8,10 @@ use alloy::rpc::types::BlockNumberOrTag;
 use alloy_provider::{
     Provider,
     RootProvider,
-    ext::DebugApi,
 };
 use alloy_rpc_types_trace::geth::{
-    GethDebugTracerType,
     GethDebugTracingOptions,
     GethDefaultTracingOptions,
-    PreStateConfig,
 };
 use anyhow::{
     Context,
@@ -41,12 +38,6 @@ impl GethTraceProvider {
     }
 
     fn build_trace_options(&self) -> GethDebugTracingOptions {
-        let prestate_config = PreStateConfig {
-            diff_mode: Some(true),
-            disable_code: None,
-            disable_storage: None,
-        };
-
         GethDebugTracingOptions {
             config: GethDefaultTracingOptions {
                 enable_memory: Some(false),
@@ -56,10 +47,15 @@ impl GethTraceProvider {
                 debug: Some(false),
                 ..Default::default()
             },
-            tracer: Some(GethDebugTracerType::BuiltInTracer(
-                alloy_rpc_types_trace::geth::GethDebugBuiltInTracerType::PreStateTracer,
-            )),
-            tracer_config: prestate_config.into(),
+            tracer: Some(
+                alloy_rpc_types_trace::geth::GethDebugBuiltInTracerType::PreStateTracer.into(),
+            ),
+            tracer_config: alloy_rpc_types_trace::geth::PreStateConfig {
+                diff_mode: Some(true),
+                disable_code: None,
+                disable_storage: None,
+            }
+            .into(),
             timeout: None,
         }
         .with_timeout(self.trace_timeout)
@@ -83,7 +79,7 @@ impl TraceProvider for GethTraceProvider {
         let trace_options = self.build_trace_options();
         let traces = self
             .provider
-            .debug_trace_block_by_number(block_id, trace_options)
+            .raw_request("debug_traceBlockByNumber".into(), (block_id, trace_options))
             .await
             .with_context(|| format!("failed to trace block {block_number}"))?;
 

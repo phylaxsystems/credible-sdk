@@ -29,6 +29,63 @@ fn make_trace_result(frame: PreStateFrame) -> TraceResult {
     }
 }
 
+fn raw_trace_result_from_typed(trace: TraceResult) -> geth::RawTraceResult {
+    match trace {
+        TraceResult::Success {
+            result: GethTrace::PreStateTracer(frame),
+            tx_hash,
+        } => {
+            geth::RawTraceResult::Success {
+                result: raw_frame_from_typed(frame),
+                tx_hash,
+            }
+        }
+        TraceResult::Success { tx_hash, .. } | TraceResult::Error { tx_hash, .. } => {
+            geth::RawTraceResult::Error {
+                error: format!("trace failed or unexpected tracer type (tx: {tx_hash:?})"),
+                tx_hash,
+            }
+        }
+    }
+}
+
+fn raw_frame_from_typed(frame: PreStateFrame) -> geth::RawPreStateFrame {
+    match frame {
+        PreStateFrame::Default(mode) => {
+            geth::RawPreStateFrame::Default(geth::RawPreStateMode(
+                mode.0
+                    .into_iter()
+                    .map(|(address, account)| (address, raw_account_from_typed(account)))
+                    .collect(),
+            ))
+        }
+        PreStateFrame::Diff(diff) => {
+            geth::RawPreStateFrame::Diff(geth::RawDiffMode {
+                pre: diff
+                    .pre
+                    .into_iter()
+                    .map(|(address, account)| (address, raw_account_from_typed(account)))
+                    .collect(),
+                post: diff
+                    .post
+                    .into_iter()
+                    .map(|(address, account)| (address, raw_account_from_typed(account)))
+                    .collect(),
+            })
+        }
+    }
+}
+
+fn raw_account_from_typed(account: GethAccountState) -> geth::RawAccountState {
+    geth::RawAccountState {
+        balance: account.balance,
+        code: account.code,
+        nonce: account.nonce,
+        code_hash: None,
+        storage: account.storage,
+    }
+}
+
 #[test]
 fn test_simple_balance_change() -> Result<()> {
     let address = address!("0x1111111111111111111111111111111111111111");
@@ -51,7 +108,12 @@ fn test_simple_balance_change() -> Result<()> {
         post,
     }))];
 
-    let mut accounts = geth::process_geth_traces(traces)?;
+    let mut accounts = geth::process_geth_traces(
+        traces
+            .into_iter()
+            .map(raw_trace_result_from_typed)
+            .collect(),
+    )?;
     assert_eq!(accounts.len(), 1);
     accounts.sort_by_key(|a| a.address_hash);
 
@@ -85,7 +147,12 @@ fn test_contract_deployment() -> Result<()> {
         post,
     }))];
 
-    let mut accounts = geth::process_geth_traces(traces)?;
+    let mut accounts = geth::process_geth_traces(
+        traces
+            .into_iter()
+            .map(raw_trace_result_from_typed)
+            .collect(),
+    )?;
     assert_eq!(accounts.len(), 1);
     accounts.sort_by_key(|a| a.address_hash);
 
@@ -142,7 +209,12 @@ fn test_storage_updates() -> Result<()> {
         pre,
         post,
     }))];
-    let mut accounts = geth::process_geth_traces(traces)?;
+    let mut accounts = geth::process_geth_traces(
+        traces
+            .into_iter()
+            .map(raw_trace_result_from_typed)
+            .collect(),
+    )?;
     assert_eq!(accounts.len(), 1);
     accounts.sort_by_key(|a| a.address_hash);
 
@@ -184,7 +256,12 @@ fn test_selfdestruct_balance_transfer() -> Result<()> {
         pre,
         post,
     }))];
-    let accounts = geth::process_geth_traces(traces)?;
+    let accounts = geth::process_geth_traces(
+        traces
+            .into_iter()
+            .map(raw_trace_result_from_typed)
+            .collect(),
+    )?;
 
     assert_eq!(accounts.len(), 1);
     let account = accounts.first().context("expected one account")?;
@@ -223,7 +300,12 @@ fn test_selfdestruct_storage_persists() -> Result<()> {
         pre,
         post,
     }))];
-    let accounts = geth::process_geth_traces(traces)?;
+    let accounts = geth::process_geth_traces(
+        traces
+            .into_iter()
+            .map(raw_trace_result_from_typed)
+            .collect(),
+    )?;
 
     assert_eq!(accounts.len(), 1);
     let account = accounts.first().context("expected one account")?;
@@ -253,7 +335,12 @@ fn test_account_deletion() -> Result<()> {
         post: BTreeMap::new(),
     }))];
 
-    let accounts = geth::process_geth_traces(traces)?;
+    let accounts = geth::process_geth_traces(
+        traces
+            .into_iter()
+            .map(raw_trace_result_from_typed)
+            .collect(),
+    )?;
     assert_eq!(accounts.len(), 1);
     let account = accounts.first().context("expected one account")?;
     assert!(account.deleted);
@@ -300,7 +387,12 @@ fn test_account_deletion_overrides_storage_updates() -> Result<()> {
         post: BTreeMap::new(),
     }));
 
-    let accounts = geth::process_geth_traces(vec![trace1, trace2])?;
+    let accounts = geth::process_geth_traces(
+        vec![trace1, trace2]
+            .into_iter()
+            .map(raw_trace_result_from_typed)
+            .collect(),
+    )?;
     assert_eq!(accounts.len(), 1);
     let account = accounts.first().context("expected one account")?;
     assert!(account.deleted);
@@ -349,7 +441,12 @@ fn test_account_deleted_then_recreated() -> Result<()> {
         post: post2,
     }));
 
-    let accounts = geth::process_geth_traces(vec![trace1, trace2])?;
+    let accounts = geth::process_geth_traces(
+        vec![trace1, trace2]
+            .into_iter()
+            .map(raw_trace_result_from_typed)
+            .collect(),
+    )?;
     assert_eq!(accounts.len(), 1);
 
     let account = accounts.first().context("expected one account")?;
@@ -398,7 +495,12 @@ fn test_multiple_transactions() -> Result<()> {
         post: post2,
     }));
 
-    let accounts = geth::process_geth_traces(vec![trace1, trace2])?;
+    let accounts = geth::process_geth_traces(
+        vec![trace1, trace2]
+            .into_iter()
+            .map(raw_trace_result_from_typed)
+            .collect(),
+    )?;
     assert_eq!(accounts.len(), 1);
     let account = accounts.first().context("expected one account")?;
     assert_eq!(account.balance, U256::from(800));
@@ -462,7 +564,12 @@ fn test_complex_scenario() -> Result<()> {
         pre,
         post,
     }))];
-    let mut results = geth::process_geth_traces(traces)?;
+    let mut results = geth::process_geth_traces(
+        traces
+            .into_iter()
+            .map(raw_trace_result_from_typed)
+            .collect(),
+    )?;
 
     assert_eq!(results.len(), 3);
     results.sort_by_key(|a| a.address_hash);
