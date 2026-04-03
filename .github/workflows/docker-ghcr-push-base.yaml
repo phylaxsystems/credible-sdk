@@ -6,6 +6,7 @@ on:
     paths:
       - 'dockerfile/Dockerfile.base'
       - 'rust-toolchain.toml'
+      - '.github/workflows/docker-ghcr-push-base.yaml'
   workflow_dispatch:
   # Allow the container push workflow to call this as a reusable workflow
   workflow_call:
