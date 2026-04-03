@@ -121,7 +121,7 @@ impl BlockStateUpdateBuilder {
         traces: Vec<alloy_rpc_types_trace::geth::TraceResult>,
     ) -> Result<BlockStateUpdate> {
         let accounts =
-            geth::process_geth_traces(traces).context(format!("block {block_number}"))?;
+            geth::process_geth_traces(traces).with_context(|| format!("block {block_number}"))?;
 
         Ok(BlockStateUpdate {
             block_number,

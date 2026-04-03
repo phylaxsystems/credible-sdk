@@ -1,0 +1,23 @@
+# syntax=docker/dockerfile:1.6
+# Shared base image for all Rust service builds.
+# Contains: Rust nightly toolchain, cargo-chef, clang/LLVM.
+# Built and cached separately so individual service images skip the slow
+# toolchain-install step.
+
+FROM rustlang/rust:nightly
+
+RUN rustup install nightly-2026-01-07 && \
+    rustup default nightly-2026-01-07 && \
+    cargo install cargo-chef && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends libclang-dev clang mold && \
+    rm -rf /var/lib/apt/lists/*
+
+# Use mold linker (5-10x faster than default ld for Rust)
+ENV RUSTFLAGS="-C linker=clang -C link-arg=-fuse-ld=mold"
+# Skip incremental compilation artifacts — wasted in Docker builds
+ENV CARGO_INCREMENTAL=0
+
+# Pre-warm the crates.io registry index so cargo chef cook
+# doesn't spend ~30-60s downloading it on every service build.
+RUN cargo search --limit 1
