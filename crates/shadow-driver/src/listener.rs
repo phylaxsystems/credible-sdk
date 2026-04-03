@@ -1064,7 +1064,7 @@ impl Listener {
             self.provider.get_block_by_number(block_num.into()).full(),
         )
         .await
-        .context(format!("timeout fetching block {block_num}"))?;
+        .with_context(|| format!("timeout fetching block {block_num}"))?;
 
         match block_result {
             Ok(Some(block)) => {
