@@ -33,13 +33,37 @@ use url::Url;
 
 const DEFAULT_CONFIG: &str = include_str!("../../default_config.json");
 
-fn default_accepted_txs_ttl_ms() -> Duration {
-    Duration::from_secs(2)
-}
+// ── CredibleConfig defaults ──────────────────────────────────────────────────
 
-fn default_poll_interval() -> Duration {
-    Duration::from_secs(1)
-}
+/// Gas limit for each assertion EVM execution.
+const DEFAULT_ASSERTION_GAS_LIMIT: u64 = 3_000_000;
+/// Sled cache capacity in bytes (256 MB).
+const DEFAULT_CACHE_CAPACITY_BYTES: usize = 256_000_000;
+/// How often the `FsDb` is flushed to disk (5 s).
+const DEFAULT_FLUSH_EVERY_MS: usize = 5_000;
+/// Local assertion DA server endpoint.
+const DEFAULT_ASSERTION_DA_RPC_URL: &str = "http://127.0.0.1:5001";
+/// Local GraphQL event source endpoint.
+const DEFAULT_EVENT_SOURCE_URL: &str = "http://127.0.0.1:4350/graphql";
+/// Event source indexer poll interval (1 s).
+const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(1);
+/// Local path for the sled assertion store.
+const DEFAULT_ASSERTION_STORE_DB_PATH: &str = ".local/sidecar-host/assertion_store_database";
+/// Maximum number of cached transaction results.
+const DEFAULT_TRANSACTION_RESULTS_MAX_CAPACITY: usize = 1_000;
+/// TTL for accepted transactions awaiting results (2 s).
+const DEFAULT_ACCEPTED_TXS_TTL: Duration = Duration::from_secs(2);
+
+// ── StateSourceConfig defaults ───────────────────────────────────────────────
+
+/// Default MDBX path for the integrated state worker.
+const DEFAULT_MDBX_PATH: &str = "/data/state_worker.mdbx";
+/// Maximum traced blocks the integrated worker may buffer ahead of commit.
+const DEFAULT_BUFFER_CAPACITY: usize = 3;
+/// Execution node websocket URL for the integrated state worker tracer.
+const DEFAULT_STATE_WORKER_WS_URL: &str = "ws://127.0.0.1:8546";
+/// Genesis file consumed to hydrate block 0.
+const DEFAULT_GENESIS_FILE: &str = "/data/genesis.json";
 
 #[derive(Clone, PartialEq, Eq, Default, Deserialize)]
 pub struct SecretString(String);
@@ -189,18 +213,18 @@ pub struct CredibleConfigFile {
     /// How often in ms will the `FsDb` be flushed to disk, 5 sec default
     pub flush_every_ms: Option<usize>,
     /// HTTP URL of the assertion DA
-    pub assertion_da_rpc_url: Option<String>,
+    pub assertion_da_rpc_url: Option<Url>,
     /// URL of the event source for assertion events
-    pub event_source_url: Option<String>,
+    pub event_source_url: Option<Url>,
     /// Poll interval for the event source indexer
     #[serde_as(as = "Option<DurationMilliSeconds<u64>>")]
     pub poll_interval: Option<Duration>,
     /// Path to the rpc store db
-    pub assertion_store_db_path: Option<String>,
+    pub assertion_store_db_path: Option<PathBuf>,
     /// Path to the transaction observer database
-    pub transaction_observer_db_path: Option<String>,
+    pub transaction_observer_db_path: Option<PathBuf>,
     /// Dapp API endpoint for incident publishing
-    pub transaction_observer_endpoint: Option<String>,
+    pub transaction_observer_endpoint: Option<Url>,
     /// Dapp API auth token for incident publishing
     pub transaction_observer_auth_token: Option<SecretString>,
     /// Max incident publish requests per poll interval
@@ -220,7 +244,7 @@ pub struct CredibleConfigFile {
     pub accepted_txs_ttl_ms: Option<Duration>,
     /// Cache checker client websocket url
     #[cfg(feature = "cache_validation")]
-    pub cache_checker_ws_url: Option<String>,
+    pub cache_checker_ws_url: Option<Url>,
     /// Interval between prune runs in milliseconds for the assertion store
     pub assertion_store_prune_config_interval_ms: Option<u64>,
     /// Number of blocks to keep after inactivation (buffer for reorgs) for the assertion store
@@ -243,17 +267,17 @@ pub struct CredibleConfig {
     /// How often in ms will the `FsDb` be flushed to disk, 5 sec default
     pub flush_every_ms: Option<usize>,
     /// HTTP URL of the assertion DA
-    pub assertion_da_rpc_url: String,
+    pub assertion_da_rpc_url: Url,
     /// URL of the event source for assertion events
-    pub event_source_url: String,
+    pub event_source_url: Url,
     /// Poll interval for the event source indexer
     pub poll_interval: Duration,
     /// Path to the rpc store db
-    pub assertion_store_db_path: String,
+    pub assertion_store_db_path: PathBuf,
     /// Path to the transaction observer database
-    pub transaction_observer_db_path: Option<String>,
+    pub transaction_observer_db_path: Option<PathBuf>,
     /// Dapp API endpoint for incident publishing
-    pub transaction_observer_endpoint: Option<String>,
+    pub transaction_observer_endpoint: Option<Url>,
     /// Dapp API auth token for incident publishing
     pub transaction_observer_auth_token: Option<SecretString>,
     /// Max incident publish requests per poll interval
@@ -269,18 +293,51 @@ pub struct CredibleConfig {
     /// Maximum capacity for transaction results
     pub transaction_results_max_capacity: usize,
     /// Maximum time (ms) to keep accepted transactions without results.
-    #[serde(default = "default_accepted_txs_ttl_ms")]
     #[serde_as(as = "DurationMilliSeconds<u64>")]
     pub accepted_txs_ttl_ms: Duration,
     /// Cache checker client websocket url
     #[cfg(feature = "cache_validation")]
-    pub cache_checker_ws_url: String,
+    pub cache_checker_ws_url: Url,
     /// Interval between prune runs in milliseconds for the assertion store
     pub assertion_store_prune_config_interval_ms: Option<u64>,
     /// Number of blocks to keep after inactivation (buffer for reorgs) for the assertion store
     pub assertion_store_prune_config_retention_blocks: Option<u64>,
     /// Address of the on-chain DA verifier, `DAVerifierOnChain`.
     pub onchain_da_verifier: Option<Address>,
+}
+
+impl Default for CredibleConfig {
+    #[allow(clippy::expect_used)] // Hardcoded URL literals are guaranteed to parse.
+    fn default() -> Self {
+        Self {
+            assertion_gas_limit: DEFAULT_ASSERTION_GAS_LIMIT,
+            overlay_cache_invalidation_every_block: None,
+            overlay_cache_retention_blocks: None,
+            cache_capacity_bytes: Some(DEFAULT_CACHE_CAPACITY_BYTES),
+            flush_every_ms: Some(DEFAULT_FLUSH_EVERY_MS),
+            assertion_da_rpc_url: Url::parse(DEFAULT_ASSERTION_DA_RPC_URL)
+                .expect("hardcoded default URL"),
+            event_source_url: Url::parse(DEFAULT_EVENT_SOURCE_URL).expect("hardcoded default URL"),
+            poll_interval: DEFAULT_POLL_INTERVAL,
+            assertion_store_db_path: PathBuf::from(DEFAULT_ASSERTION_STORE_DB_PATH),
+            transaction_observer_db_path: None,
+            transaction_observer_endpoint: None,
+            transaction_observer_auth_token: None,
+            transaction_observer_endpoint_rps_max: None,
+            transaction_observer_poll_interval_ms: None,
+            aeges_url: None,
+            state_oracle: Address::ZERO,
+            state_oracle_deployment_block: 0,
+            transaction_results_max_capacity: DEFAULT_TRANSACTION_RESULTS_MAX_CAPACITY,
+            accepted_txs_ttl_ms: DEFAULT_ACCEPTED_TXS_TTL,
+            #[cfg(feature = "cache_validation")]
+            cache_checker_ws_url: Url::parse(DEFAULT_STATE_WORKER_WS_URL)
+                .expect("hardcoded default URL"),
+            assertion_store_prune_config_interval_ms: None,
+            assertion_store_prune_config_retention_blocks: None,
+            onchain_da_verifier: None,
+        }
+    }
 }
 
 /// Transport configuration from file
@@ -301,27 +358,53 @@ pub enum StateSourceConfig {
     #[serde(rename = "mdbx")]
     Mdbx {
         /// State worker MDBX path
-        mdbx_path: String,
+        mdbx_path: PathBuf,
         /// State worker depth (how many blocks behind head state worker will have the data from)
         depth: usize,
+    },
+    #[serde(rename = "integrated-mdbx")]
+    IntegratedMdbx {
+        /// MDBX path shared by the integrated state worker and the sidecar reader.
+        mdbx_path: PathBuf,
+        /// Maximum number of traced blocks the integrated worker may buffer ahead of commit.
+        buffer_capacity: usize,
+        /// Execution node websocket URL used by the integrated state worker tracer.
+        ws_url: Url,
+        /// Genesis file consumed to hydrate block 0.
+        genesis_file: PathBuf,
+        /// Optional manual override for the next traced block.
+        start_block: Option<u64>,
     },
     #[serde(rename = "eth-rpc")]
     EthRpc {
         /// Eth RPC source websocket bind address and port
-        ws_url: String,
+        ws_url: Url,
         /// Eth RPC source HTTP bind address and port
-        http_url: String,
+        http_url: Url,
     },
+}
+
+impl Default for StateSourceConfig {
+    #[allow(clippy::expect_used)] // Hardcoded URL literal is guaranteed to parse.
+    fn default() -> Self {
+        Self::IntegratedMdbx {
+            mdbx_path: PathBuf::from(DEFAULT_MDBX_PATH),
+            buffer_capacity: DEFAULT_BUFFER_CAPACITY,
+            ws_url: Url::parse(DEFAULT_STATE_WORKER_WS_URL).expect("hardcoded default URL"),
+            genesis_file: PathBuf::from(DEFAULT_GENESIS_FILE),
+            start_block: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
 pub struct LegacyStateConfig {
     /// Eth RPC source websocket bind address and port
-    pub eth_rpc_source_ws_url: Option<String>,
+    pub eth_rpc_source_ws_url: Option<Url>,
     /// Eth RCP source HTTP bind address and port
-    pub eth_rpc_source_http_url: Option<String>,
+    pub eth_rpc_source_http_url: Option<Url>,
     /// State worker MDBX path
-    pub state_worker_mdbx_path: Option<String>,
+    pub state_worker_mdbx_path: Option<PathBuf>,
     /// State worker depth (how many blocks behind head state worker will have the data from)
     pub state_worker_depth: Option<usize>,
 }
@@ -352,6 +435,7 @@ pub struct StateConfigFile {
     pub sources_monitoring_period_ms: Option<u64>,
 }
 
+/// Resolved state configuration used by the sidecar runtime.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct StateConfig {
     /// State sources
@@ -506,14 +590,14 @@ fn resolve_state(state_file: &StateConfigFile) -> Result<StateConfig, ConfigErro
 
 struct CredibleRequired {
     assertion_gas_limit: u64,
-    assertion_da_rpc_url: String,
-    event_source_url: String,
-    assertion_store_db_path: String,
+    assertion_da_rpc_url: Url,
+    event_source_url: Url,
+    assertion_store_db_path: PathBuf,
     state_oracle: Address,
     state_oracle_deployment_block: u64,
     transaction_results_max_capacity: usize,
     #[cfg(feature = "cache_validation")]
-    cache_checker_ws_url: String,
+    cache_checker_ws_url: Url,
 }
 
 struct CredibleOptional {
@@ -522,8 +606,8 @@ struct CredibleOptional {
     cache_capacity_bytes: Option<usize>,
     flush_every_ms: Option<usize>,
     poll_interval: Duration,
-    transaction_observer_db_path: Option<String>,
-    transaction_observer_endpoint: Option<String>,
+    transaction_observer_db_path: Option<PathBuf>,
+    transaction_observer_endpoint: Option<Url>,
     transaction_observer_auth_token: Option<SecretString>,
     transaction_observer_endpoint_rps_max: Option<usize>,
     transaction_observer_poll_interval_ms: Option<u64>,
@@ -606,7 +690,7 @@ fn resolve_credible_optional(
         flush_every_ms: optional_or_env(credible_file.flush_every_ms, "SIDECAR_FLUSH_EVERY_MS")?,
         poll_interval: parse_env_duration_ms("SIDECAR_POLL_INTERVAL_MS")?
             .or(credible_file.poll_interval)
-            .unwrap_or_else(default_poll_interval),
+            .unwrap_or(DEFAULT_POLL_INTERVAL),
         transaction_observer_db_path: optional_or_env(
             credible_file.transaction_observer_db_path.clone(),
             "SIDECAR_TRANSACTION_OBSERVER_DB_PATH",
@@ -635,7 +719,7 @@ fn resolve_credible_ttls(credible_file: &CredibleConfigFile) -> Result<CredibleT
     Ok(CredibleTtls {
         accepted_txs_ttl_ms: parse_env_duration_ms("SIDECAR_ACCEPTED_TXS_TTL_MS")?
             .or(credible_file.accepted_txs_ttl_ms)
-            .unwrap_or_else(default_accepted_txs_ttl_ms),
+            .unwrap_or(DEFAULT_ACCEPTED_TXS_TTL),
     })
 }
 
@@ -924,20 +1008,23 @@ mod tests {
         assert_eq!(config.credible.flush_every_ms, Some(5000));
         assert_eq!(
             config.credible.assertion_da_rpc_url,
-            "http://localhost:8545"
+            Url::parse("http://localhost:8545").unwrap()
         );
         assert_eq!(
             config.credible.event_source_url,
-            "http://localhost:4350/graphql"
+            Url::parse("http://localhost:4350/graphql").unwrap()
         );
-        assert_eq!(config.credible.assertion_store_db_path, "/tmp/store.db");
+        assert_eq!(
+            config.credible.assertion_store_db_path,
+            PathBuf::from("/tmp/store.db")
+        );
         assert_eq!(
             config.credible.transaction_observer_db_path,
-            Some("/tmp/observer.db".to_string())
+            Some(PathBuf::from("/tmp/observer.db"))
         );
         assert_eq!(
             config.credible.transaction_observer_endpoint,
-            Some("http://localhost:3001/api/v1/enforcer/incidents".to_string())
+            Some(Url::parse("http://localhost:3001/api/v1/enforcer/incidents").unwrap())
         );
         assert_eq!(
             config.credible.transaction_observer_auth_token,
@@ -962,11 +1049,11 @@ mod tests {
             config.state.sources,
             vec![
                 StateSourceConfig::EthRpc {
-                    ws_url: "ws://localhost:8548".to_string(),
-                    http_url: "http://localhost:8545".to_string(),
+                    ws_url: Url::parse("ws://localhost:8548").unwrap(),
+                    http_url: Url::parse("http://localhost:8545").unwrap(),
                 },
                 StateSourceConfig::Mdbx {
-                    mdbx_path: "/data/state_worker.mdbx".to_string(),
+                    mdbx_path: PathBuf::from("/data/state_worker.mdbx"),
                     depth: 100,
                 }
             ]
@@ -1129,7 +1216,7 @@ mod tests {
         let config = Config::from_file(temp_file.path()).unwrap();
         assert_eq!(
             config.credible.transaction_observer_endpoint,
-            Some("http://example.com/incidents".to_string())
+            Some(Url::parse("http://example.com/incidents").unwrap())
         );
         assert_eq!(
             config.credible.transaction_observer_auth_token,
@@ -1202,8 +1289,65 @@ mod tests {
         assert_eq!(
             config.state.sources,
             vec![StateSourceConfig::Mdbx {
-                mdbx_path: "/data/state.mdbx".to_string(),
+                mdbx_path: PathBuf::from("/data/state.mdbx"),
                 depth: 7,
+            }]
+        );
+    }
+
+    #[test]
+    fn test_integrated_state_source_from_file() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        write!(
+            temp_file,
+            r#"{{
+  "chain": {{
+    "spec_id": "CANCUN",
+    "chain_id": 1
+  }},
+  "credible": {{
+    "assertion_gas_limit": 30000000,
+    "assertion_da_rpc_url": "http://localhost:8545",
+    "event_source_url": "http://localhost:4350/graphql",
+    "assertion_store_db_path": "/tmp/store.db",
+    "state_oracle": "0x1234567890123456789012345678901234567890",
+    "state_oracle_deployment_block": 100,
+    "transaction_results_max_capacity": 10000
+  }},
+  "transport": {{
+    "bind_addr": "127.0.0.1:3000",
+    "health_bind_addr": "127.0.0.1:3001"
+  }},
+  "state": {{
+    "sources": [
+      {{
+        "type": "integrated-mdbx",
+        "mdbx_path": "/data/state_worker.mdbx",
+        "buffer_capacity": 8,
+        "ws_url": "ws://localhost:8548",
+        "genesis_file": "/data/genesis.json",
+        "start_block": 42
+      }}
+    ],
+    "minimum_state_diff": 10,
+    "sources_sync_timeout_ms": 30000,
+    "sources_monitoring_period_ms": 1000
+  }}
+}}"#
+        )
+        .unwrap();
+        temp_file.flush().unwrap();
+
+        let config = Config::from_file(temp_file.path()).unwrap();
+
+        assert_eq!(
+            config.state.sources,
+            vec![StateSourceConfig::IntegratedMdbx {
+                mdbx_path: PathBuf::from("/data/state_worker.mdbx"),
+                buffer_capacity: 8,
+                ws_url: Url::parse("ws://localhost:8548").unwrap(),
+                genesis_file: PathBuf::from("/data/genesis.json"),
+                start_block: Some(42),
             }]
         );
     }
@@ -1229,15 +1373,15 @@ mod tests {
         let config = Config::from_file(temp_file.path()).unwrap();
         assert_eq!(
             config.state.legacy.eth_rpc_source_ws_url,
-            Some("ws://legacy:8546".to_string())
+            Some(Url::parse("ws://legacy:8546").unwrap())
         );
         assert_eq!(
             config.state.legacy.eth_rpc_source_http_url,
-            Some("http://legacy:8545".to_string())
+            Some(Url::parse("http://legacy:8545").unwrap())
         );
         assert_eq!(
             config.state.legacy.state_worker_mdbx_path,
-            Some("/data/legacy_state.mdbx".to_string())
+            Some(PathBuf::from("/data/legacy_state.mdbx"))
         );
         assert_eq!(config.state.legacy.state_worker_depth, Some(5));
         assert!(config.state.legacy.has_any());
@@ -1434,15 +1578,15 @@ mod tests {
         assert!(config.state.sources.is_empty());
         assert_eq!(
             config.state.legacy.eth_rpc_source_ws_url,
-            Some("ws://legacy.example:8546".to_string())
+            Some(Url::parse("ws://legacy.example:8546").unwrap())
         );
         assert_eq!(
             config.state.legacy.eth_rpc_source_http_url,
-            Some("http://legacy.example:8545".to_string())
+            Some(Url::parse("http://legacy.example:8545").unwrap())
         );
         assert_eq!(
             config.state.legacy.state_worker_mdbx_path,
-            Some("/data/legacy_state_worker.mdbx".to_string())
+            Some(PathBuf::from("/data/legacy_state_worker.mdbx"))
         );
         assert_eq!(config.state.legacy.state_worker_depth, Some(7));
     }
@@ -1507,15 +1651,15 @@ mod tests {
             config.state.sources,
             vec![
                 StateSourceConfig::EthRpc {
-                    ws_url: "ws://first.example:8546".to_string(),
-                    http_url: "http://first.example:8545".to_string(),
+                    ws_url: Url::parse("ws://first.example:8546").unwrap(),
+                    http_url: Url::parse("http://first.example:8545").unwrap(),
                 },
                 StateSourceConfig::EthRpc {
-                    ws_url: "ws://second.example:8546".to_string(),
-                    http_url: "http://second.example:8545".to_string(),
+                    ws_url: Url::parse("ws://second.example:8546").unwrap(),
+                    http_url: Url::parse("http://second.example:8545").unwrap(),
                 },
                 StateSourceConfig::Mdbx {
-                    mdbx_path: "/data/state_worker.mdbx".to_string(),
+                    mdbx_path: PathBuf::from("/data/state_worker.mdbx"),
                     depth: 42,
                 }
             ]
@@ -1582,18 +1726,28 @@ mod tests {
             config.state.sources,
             vec![
                 StateSourceConfig::Mdbx {
-                    mdbx_path: "/data/state_worker_a.mdbx".to_string(),
+                    mdbx_path: PathBuf::from("/data/state_worker_a.mdbx"),
                     depth: 10,
                 },
                 StateSourceConfig::Mdbx {
-                    mdbx_path: "/data/state_worker_b.mdbx".to_string(),
+                    mdbx_path: PathBuf::from("/data/state_worker_b.mdbx"),
                     depth: 20,
                 },
                 StateSourceConfig::EthRpc {
-                    ws_url: "ws://rpc.example:8546".to_string(),
-                    http_url: "http://rpc.example:8545".to_string(),
+                    ws_url: Url::parse("ws://rpc.example:8546").unwrap(),
+                    http_url: Url::parse("http://rpc.example:8545").unwrap(),
                 }
             ]
         );
+    }
+
+    #[test]
+    fn test_default_config_parses() {
+        let config = ConfigFile::from_str(DEFAULT_CONFIG)
+            .unwrap()
+            .resolve()
+            .unwrap();
+
+        assert!(config.credible.transaction_observer_endpoint.is_none());
     }
 }

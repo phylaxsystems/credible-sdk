@@ -152,6 +152,7 @@ impl<DB> CoreEngine<DB> {
                 .max_capacity(super::ASSERTION_FAILURE_CACHE_SIZE)
                 .build(),
             custom_tx_executor: None,
+            state_worker_flush_control: None,
         }
     }
 }
@@ -269,6 +270,7 @@ async fn create_test_engine_with_timeout_and_retention(
             overlay_cache_invalidation_every_block: false,
             overlay_cache_retention_blocks: retention_blocks,
             incident_sender: None,
+            state_worker_flush_control: None,
             #[cfg(feature = "cache_validation")]
             provider_ws_url: None,
         },
@@ -845,6 +847,77 @@ async fn test_read_touch_inside_iteration_keeps_hot_key_in_next_eviction() {
         !engine.cache.is_cached(&TableKey::BlockHash(1)),
         "key touched in block 2 should be evicted when block 2 becomes oldest beyond retention"
     );
+}
+
+#[tokio::test]
+async fn test_commit_head_success_notifies_state_worker_flush_control() {
+    let (mut engine, tx_sender) = create_test_engine().await;
+    let flush_control = FlushControl::new();
+    engine.state_worker_flush_control = Some(flush_control.clone());
+
+    let commit_head = queue::CommitHead::new(
+        U256::from(1),
+        0,
+        None,
+        0,
+        B256::from([0x11; 32]),
+        Some(B256::from([0x22; 32])),
+        U256::from(100),
+    );
+
+    tx_sender
+        .send(TxQueueContents::CommitHead(commit_head))
+        .expect("queue send should succeed");
+    drop(tx_sender);
+
+    let result = engine.run().await;
+    assert!(matches!(result, Err(EngineError::ChannelClosed)));
+    assert_eq!(flush_control.permitted_flush_block(), Some(1));
+}
+
+#[tokio::test]
+async fn test_commit_head_nothing_to_commit_still_notifies_state_worker_flush_control() {
+    let (mut engine, tx_sender) = create_test_engine().await;
+    let flush_control = FlushControl::new();
+    engine.state_worker_flush_control = Some(flush_control.clone());
+
+    let tx_execution_id = TxExecutionId::new(U256::from(1), 0, B256::ZERO, 0);
+    let mut version_db = VersionDb::new(engine.cache.clone());
+    version_db.commit_empty();
+    engine.current_block_iterations.insert(
+        tx_execution_id.as_block_execution_id(),
+        BlockIterationData {
+            version_db,
+            executed_txs: vec![ExecutedTx::valid(
+                tx_execution_id,
+                (tx_execution_id.tx_hash, TxEnv::default()),
+            )],
+            executed_state_deltas: Vec::new(),
+            block_env: BlockEnv {
+                number: U256::from(1),
+                ..Default::default()
+            },
+        },
+    );
+
+    let commit_head = queue::CommitHead::new(
+        U256::from(1),
+        0,
+        Some(tx_execution_id.tx_hash),
+        1,
+        B256::from([0x11; 32]),
+        Some(B256::from([0x22; 32])),
+        U256::from(100),
+    );
+
+    tx_sender
+        .send(TxQueueContents::CommitHead(commit_head))
+        .expect("queue send should succeed");
+    drop(tx_sender);
+
+    let result = engine.run().await;
+    assert!(matches!(result, Err(EngineError::ChannelClosed)));
+    assert_eq!(flush_control.permitted_flush_block(), Some(1));
 }
 
 #[crate::utils::engine_test(all)]
@@ -2121,6 +2194,7 @@ async fn build_canonical_setup(caller: Address) -> CanonicalSetup {
             overlay_cache_invalidation_every_block: false,
             overlay_cache_retention_blocks: 10,
             incident_sender: None,
+            state_worker_flush_control: None,
             #[cfg(feature = "cache_validation")]
             provider_ws_url: None,
         },

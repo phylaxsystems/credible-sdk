@@ -12,7 +12,7 @@
     "poll_interval": 1000,
     "assertion_store_db_path": ".local/sidecar-host/assertion_store_database",
     "transaction_observer_db_path": ".local/sidecar-host/transaction_observer_database",
-    "transaction_observer_endpoint": "",
+    "transaction_observer_endpoint": null,
     "transaction_observer_auth_token": "",
     "transaction_observer_endpoint_rps_max": 60,
     "transaction_observer_poll_interval_ms": 1000,
@@ -31,14 +31,16 @@
   "state": {
     "sources": [
       {
+        "type": "integrated-mdbx",
+        "mdbx_path": "/data/state_worker.mdbx",
+        "buffer_capacity": 3,
+        "ws_url": "ws://127.0.0.1:8546",
+        "genesis_file": "/data/genesis.json"
+      },
+      {
         "type": "eth-rpc",
         "ws_url": "ws://127.0.0.1:8546",
         "http_url": "http://127.0.0.1:8545"
-      },
-      {
-        "type": "mdbx",
-        "mdbx_path": "/data/state_worker.mdbx",
-        "depth": 3
       }
     ],
     "minimum_state_diff": 100,
