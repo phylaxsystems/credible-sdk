@@ -1,5 +1,6 @@
 //! Unified configuration combining CLI args and file config
 pub mod cli;
+pub mod figment_clap_poc;
 
 use crate::{
     args::cli::SidecarArgs,
