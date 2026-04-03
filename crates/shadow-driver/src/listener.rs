@@ -1545,13 +1545,13 @@ impl Listener {
 
                 if !status_matches {
                     warn!(
-                        "  Status mismatch: provider={provider_success}, sidecar={sidecar_status_str}"
+                        "  Status mismatch for {tx_hash}: provider={provider_success}, sidecar={sidecar_status_str}"
                     );
                 }
                 if !gas_matches {
                     let gas_diff = provider_gas_used.abs_diff(sidecar_gas_used);
                     warn!(
-                        "  Gas mismatch: provider={provider_gas_used}, sidecar={sidecar_gas_used} (diff={gas_diff})"
+                        "  Gas mismatch for {tx_hash}: provider={provider_gas_used}, sidecar={sidecar_gas_used} (diff={gas_diff})"
                     );
                 }
 
