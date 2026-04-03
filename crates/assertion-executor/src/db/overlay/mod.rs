@@ -44,6 +44,7 @@ use dashmap::{
     mapref::entry::Entry,
 };
 use enum_as_inner::EnumAsInner;
+use eviction_tracker::EvictionTracker;
 use metrics::{
     counter,
     gauge,
@@ -55,9 +56,12 @@ use std::{
     sync::Arc,
     time::Duration,
 };
+use thiserror::Error;
 use tokio::task::JoinHandle;
+use tracing::error;
 
 pub mod active_overlay;
+pub(crate) mod eviction_tracker;
 #[cfg(any(test, feature = "test"))]
 pub mod test_utils;
 
@@ -80,6 +84,25 @@ pub enum TableValue {
     BlockHash(B256),
 }
 
+type BlockNum = u64;
+
+#[derive(Debug, Clone)]
+struct BlockDelta {
+    block: BlockNum,
+    keys: Vec<TableKey>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OverlayEvictionOutcome {
+    pub min_required_synced_block: Option<U256>,
+}
+
+#[derive(Debug, Clone, Error, PartialEq, Eq)]
+pub enum OverlayEvictionError {
+    #[error("overlay eviction state lock is poisoned")]
+    LockPoisoned,
+}
+
 /// The `OverlayDb` is fast `TinyLFU`'d in memory cache for an on disk EVM database.
 /// It optionally points to an on disk database that implements `revm::DatabaseRef`
 /// and has a configurable cache.
@@ -92,6 +115,7 @@ pub enum TableValue {
 pub struct OverlayDb<Db> {
     underlying_db: Option<Arc<Db>>,
     pub overlay: Arc<DashMap<TableKey, TableValue>>,
+    eviction: EvictionTracker,
 }
 
 impl<Db> Clone for OverlayDb<Db> {
@@ -99,15 +123,19 @@ impl<Db> Clone for OverlayDb<Db> {
         Self {
             underlying_db: self.underlying_db.clone(),
             overlay: self.overlay.clone(),
+            eviction: self.eviction.clone(),
         }
     }
 }
 
 impl<Db> Default for OverlayDb<Db> {
     fn default() -> Self {
+        let overlay = Arc::new(DashMap::new());
+        let last_touched = Arc::new(DashMap::new());
         Self {
             underlying_db: None,
-            overlay: Arc::new(DashMap::new()),
+            eviction: EvictionTracker::new(overlay.clone(), last_touched),
+            overlay,
         }
     }
 }
@@ -116,9 +144,12 @@ impl<Db> OverlayDb<Db> {
     /// Creates a new `OverlayDB` with the max cache size in bytes.
     #[must_use]
     pub fn new(underlying_db: Option<Arc<Db>>) -> Self {
+        let overlay = Arc::new(DashMap::new());
+        let last_touched = Arc::new(DashMap::new());
         Self {
             underlying_db,
-            overlay: Arc::new(DashMap::new()),
+            eviction: EvictionTracker::new(overlay.clone(), last_touched),
+            overlay,
         }
     }
 
@@ -126,15 +157,80 @@ impl<Db> OverlayDb<Db> {
     /// of elements inside of the cache instead of the size.
     #[must_use]
     pub fn new_with_len(underlying_db: Option<Arc<Db>>) -> Self {
+        let overlay = Arc::new(DashMap::new());
+        let last_touched = Arc::new(DashMap::new());
         Self {
             underlying_db,
-            overlay: Arc::new(DashMap::new()),
+            eviction: EvictionTracker::new(overlay.clone(), last_touched),
+            overlay,
         }
     }
 
     ///Invalidates all cache entries.
     pub fn invalidate_all(&self) {
+        if let Err(error) = self.try_invalidate_all() {
+            error!(
+                target = "overlay",
+                ?error,
+                "failed to invalidate overlay cache"
+            );
+        }
+    }
+
+    /// Invalidates all cache entries and eviction tracking state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OverlayEvictionError::LockPoisoned`] if the eviction-state mutex is poisoned.
+    pub fn try_invalidate_all(&self) -> Result<(), OverlayEvictionError> {
         self.overlay.clear();
+        self.eviction.invalidate_all()
+    }
+
+    /// Sets the current block used for touch tracking.
+    pub fn set_current_block(&self, block: U256) {
+        self.eviction.set_current_block(block);
+    }
+
+    /// Sets the current block used for touch tracking.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OverlayEvictionError::LockPoisoned`] if the eviction-state mutex is poisoned.
+    pub fn try_set_current_block(&self, block: U256) -> Result<(), OverlayEvictionError> {
+        self.eviction.try_set_current_block(block)
+    }
+
+    /// Sets the number of committed blocks to retain before evicting oldest entries.
+    pub fn set_max_committed_blocks(&self, window: usize) {
+        self.eviction.set_max_committed_blocks(window);
+    }
+
+    /// Sets the number of committed blocks to retain before evicting oldest entries.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OverlayEvictionError::LockPoisoned`] if the eviction-state mutex is poisoned.
+    pub fn try_set_max_committed_blocks(&self, window: usize) -> Result<(), OverlayEvictionError> {
+        self.eviction.try_set_max_committed_blocks(window)
+    }
+
+    /// Commits the current block boundary and evicts old committed blocks in FIFO order.
+    #[must_use]
+    pub fn commit_block(&self, block: U256) -> OverlayEvictionOutcome {
+        self.eviction.commit_block(block)
+    }
+
+    /// Commits the current block boundary and evicts old committed blocks in FIFO order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OverlayEvictionError::LockPoisoned`] if the eviction-state mutex is poisoned.
+    pub fn try_commit_block(
+        &self,
+        block: U256,
+    ) -> Result<OverlayEvictionOutcome, OverlayEvictionError> {
+        self.eviction.try_commit_block(block)
     }
 
     /// Replaces underlying database refrance with a new one.
@@ -175,7 +271,7 @@ impl<Db> OverlayDb<Db> {
         &self,
         active_db: Arc<UnsafeCell<ActiveDbT>>,
     ) -> ActiveOverlay<ActiveDbT> {
-        ActiveOverlay::new(active_db, self.overlay.clone())
+        ActiveOverlay::new_with_tracking(active_db, self.overlay.clone(), self.eviction.clone())
     }
 
     /// Check if a value is present inside of the cache.
@@ -227,6 +323,14 @@ impl<Db> OverlayDb<Db> {
             }
         })
     }
+
+    fn touch_key(&self, key: &TableKey) {
+        self.eviction.touch_key(key);
+    }
+
+    fn insert_with_touch(&self, key: &TableKey, value: TableValue) {
+        self.eviction.insert_with_touch(key, value);
+    }
 }
 
 impl<Db: DatabaseRef> DatabaseRef for OverlayDb<Db> {
@@ -235,11 +339,13 @@ impl<Db: DatabaseRef> DatabaseRef for OverlayDb<Db> {
     fn basic_ref(&self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
         let key = TableKey::Basic(address);
         if let Some(value) = self.overlay.get(&key) {
-            if let Some(account_info) = value.as_basic() {
+            let account_info = value.as_basic().cloned();
+            drop(value);
+            if let Some(account_info) = account_info {
                 // Found in cache
                 counter!("assex_overlay_db_basic_ref_hits").increment(1);
-                let result = Some(account_info.clone());
-                return Ok(result);
+                self.touch_key(&key);
+                return Ok(Some(account_info));
             }
             return Ok(None);
         }
@@ -253,8 +359,7 @@ impl<Db: DatabaseRef> DatabaseRef for OverlayDb<Db> {
 
             if let Some(account_info) = result.as_ref() {
                 // Found in DB, cache it
-                self.overlay
-                    .insert(key, TableValue::Basic(account_info.clone()));
+                self.insert_with_touch(&key, TableValue::Basic(account_info.clone()));
 
                 // If the code is present, already populate the cache with the code hash, so we save one call to the underlying DB
                 if let Some(code) = account_info.code.as_ref() {
@@ -262,7 +367,7 @@ impl<Db: DatabaseRef> DatabaseRef for OverlayDb<Db> {
                     let code_hash = TableKey::CodeByHash(revm::primitives::keccak256(code_byte));
                     let bytecode =
                         TableValue::CodeByHash(Bytecode::new_raw(code_byte.to_vec().into()));
-                    self.overlay.insert(code_hash, bytecode);
+                    self.insert_with_touch(&code_hash, bytecode);
                 }
             }
 
@@ -276,10 +381,15 @@ impl<Db: DatabaseRef> DatabaseRef for OverlayDb<Db> {
     fn code_by_hash_ref(&self, code_hash: B256) -> Result<Bytecode, Self::Error> {
         let key = TableKey::CodeByHash(code_hash);
         if let Some(value) = self.overlay.get(&key) {
-            // Found in cache
-            counter!("assex_overlay_db_code_by_hash_ref_hits").increment(1);
-            let bytecode = value.as_code_by_hash().cloned().unwrap(); // unwrap safe, Clone Bytecode
-            return Ok(bytecode);
+            let bytecode = value.as_code_by_hash().cloned();
+            drop(value);
+            if let Some(bytecode) = bytecode {
+                // Found in cache
+                counter!("assex_overlay_db_code_by_hash_ref_hits").increment(1);
+                self.touch_key(&key);
+                return Ok(bytecode);
+            }
+            self.overlay.remove(&key);
         }
 
         counter!("assex_overlay_db_code_by_hash_ref_misses").increment(1);
@@ -290,8 +400,7 @@ impl<Db: DatabaseRef> DatabaseRef for OverlayDb<Db> {
             // Map error if needed
             let bytecode = db.code_by_hash_ref(code_hash).map_err(|_| NotFoundError)?;
             // Found in DB, cache it
-            self.overlay
-                .insert(key, TableValue::CodeByHash(bytecode.clone()));
+            self.insert_with_touch(&key, TableValue::CodeByHash(bytecode.clone()));
             Ok(bytecode)
         } else {
             // No underlying DB and not in cache
@@ -301,38 +410,52 @@ impl<Db: DatabaseRef> DatabaseRef for OverlayDb<Db> {
 
     fn storage_ref(&self, address: Address, slot: U256) -> Result<U256, Self::Error> {
         let key = TableKey::Storage(address);
+        let mut saw_existing_storage = false;
 
-        if let Some(mut entry) = self.overlay.get_mut(&key)
-            && let Some(storage_map) = entry.as_storage_mut()
+        if let Some(entry) = self.overlay.get(&key)
+            && let Some(storage_map) = entry.as_storage()
         {
-            if let Some(value) = storage_map.map.get(&slot) {
+            saw_existing_storage = true;
+            if let Some(value) = storage_map.map.get(&slot).copied() {
+                drop(entry);
                 counter!("assex_overlay_db_storage_ref_hits").increment(1);
-                return Ok(*value);
+                self.touch_key(&key);
+                return Ok(value);
             }
 
             if storage_map.dont_read_from_inner_db {
+                drop(entry);
                 counter!("assex_overlay_db_storage_ref_hits").increment(1);
+                self.touch_key(&key);
                 return Ok(U256::ZERO);
             }
-
-            counter!("assex_overlay_db_storage_ref_misses").increment(1);
-
-            if let Some(db) = self.underlying_db.as_ref() {
-                let value_u256 = db.storage_ref(address, slot).map_err(|_| NotFoundError)?;
-                storage_map.map.insert(slot, value_u256);
-                return Ok(value_u256);
-            }
-
-            return Ok(U256::ZERO);
         }
 
         counter!("assex_overlay_db_storage_ref_misses").increment(1);
+        if saw_existing_storage {
+            // Mark as hot before inner DB fetch to prevent concurrent eviction of existing map.
+            self.touch_key(&key);
+        }
 
         if let Some(db) = self.underlying_db.as_ref() {
             let value_u256 = db.storage_ref(address, slot).map_err(|_| NotFoundError)?;
-            let mut storage_map = ForkStorageMap::default();
-            storage_map.map.insert(slot, value_u256);
-            self.overlay.insert(key, TableValue::Storage(storage_map));
+            match self.overlay.entry(key.clone()) {
+                Entry::Occupied(mut entry) => {
+                    if let Some(storage_map) = entry.get_mut().as_storage_mut() {
+                        storage_map.map.insert(slot, value_u256);
+                    } else {
+                        let mut storage_map = ForkStorageMap::default();
+                        storage_map.map.insert(slot, value_u256);
+                        entry.insert(TableValue::Storage(storage_map));
+                    }
+                }
+                Entry::Vacant(entry) => {
+                    let mut storage_map = ForkStorageMap::default();
+                    storage_map.map.insert(slot, value_u256);
+                    entry.insert(TableValue::Storage(storage_map));
+                }
+            }
+            self.touch_key(&key);
             return Ok(value_u256); // Return the U256 value
         }
 
@@ -343,9 +466,15 @@ impl<Db: DatabaseRef> DatabaseRef for OverlayDb<Db> {
     fn block_hash_ref(&self, number: u64) -> Result<B256, Self::Error> {
         let key = TableKey::BlockHash(number);
         if let Some(value) = self.overlay.get(&key) {
-            // Found in cache
-            counter!("assex_overlay_db_block_hash_ref_hits").increment(1);
-            return Ok(*value.as_block_hash().unwrap()); // unwrap safe
+            let block_hash = value.as_block_hash().copied();
+            drop(value);
+            if let Some(block_hash) = block_hash {
+                // Found in cache
+                counter!("assex_overlay_db_block_hash_ref_hits").increment(1);
+                self.touch_key(&key);
+                return Ok(block_hash);
+            }
+            self.overlay.remove(&key);
         }
 
         counter!("assex_overlay_db_block_hash_ref_misses").increment(1);
@@ -355,7 +484,7 @@ impl<Db: DatabaseRef> DatabaseRef for OverlayDb<Db> {
             // Underlying DB returns Result<B256, Error>
             let block_hash = db.block_hash_ref(number).map_err(|_| NotFoundError)?;
             // Found in DB, cache it
-            self.overlay.insert(key, TableValue::BlockHash(block_hash));
+            self.insert_with_touch(&key, TableValue::BlockHash(block_hash));
             Ok(block_hash)
         } else {
             // No underlying DB and not in cache
@@ -410,19 +539,18 @@ impl<Db> DatabaseCommit for OverlayDb<Db> {
 
             // Update account info
             let key = TableKey::Basic(address);
-            self.overlay
-                .insert(key, TableValue::Basic(account.info.clone()));
+            self.insert_with_touch(&key, TableValue::Basic(account.info.clone()));
 
             // Update code if present
             if let Some(code) = &account.info.code {
                 let code_key = TableKey::CodeByHash(account.info.code_hash);
-                self.overlay
-                    .insert(code_key, TableValue::CodeByHash(code.clone()));
+                self.insert_with_touch(&code_key, TableValue::CodeByHash(code.clone()));
             }
 
             // Update storage slots
             if is_created || !account.storage.is_empty() {
                 let storage_key = TableKey::Storage(address);
+                self.touch_key(&storage_key);
                 let mut new_storage: HashMap<U256, U256, RandomState> = account
                     .storage
                     .into_iter()
@@ -462,8 +590,8 @@ impl<Db> DatabaseCommit for OverlayDb<Db> {
 /// This caches block hashes in the overlay for BLOCKHASH opcode lookups.
 impl<Db> BlockHashStore for OverlayDb<Db> {
     fn store_block_hash(&self, number: u64, hash: B256) {
-        self.overlay
-            .insert(TableKey::BlockHash(number), TableValue::BlockHash(hash));
+        let key = TableKey::BlockHash(number);
+        self.insert_with_touch(&key, TableValue::BlockHash(hash));
     }
 }
 
@@ -472,20 +600,19 @@ impl<Db> OverlayDb<Db> {
         // Update account info
         for (address, account_info) in fork_db.basic {
             let key = TableKey::Basic(address);
-            self.overlay
-                .insert(key, TableValue::Basic(account_info.clone()));
+            self.insert_with_touch(&key, TableValue::Basic(account_info.clone()));
         }
 
         // Update code if present
         for (address, code) in fork_db.code_by_hash {
             let code_key = TableKey::CodeByHash(address);
-            self.overlay
-                .insert(code_key, TableValue::CodeByHash(code.clone()));
+            self.insert_with_touch(&code_key, TableValue::CodeByHash(code.clone()));
         }
 
         // Update storage slots
         for (address, mut slot_map) in fork_db.storage {
             let storage_key = TableKey::Storage(address);
+            self.touch_key(&storage_key);
 
             match self.overlay.entry(storage_key) {
                 Entry::Occupied(mut entry) => {
@@ -510,14 +637,14 @@ impl<Db: DatabaseRef> Database for OverlayDb<Db> {
     fn basic(&mut self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
         let key = TableKey::Basic(address);
         if let Some(value) = self.overlay.get(&key) {
-            match value.as_basic() {
+            let account_info = value.as_basic().cloned();
+            drop(value);
+            match account_info {
                 Some(account_info) => {
-                    // Found in cache
-                    return Ok(Some(account_info.clone()));
+                    self.touch_key(&key);
+                    return Ok(Some(account_info));
                 }
-                None => {
-                    return Ok(None);
-                }
+                None => return Ok(None),
             }
         }
 
@@ -528,8 +655,7 @@ impl<Db: DatabaseRef> Database for OverlayDb<Db> {
                 match db.basic_ref(address).map_err(|_| NotFoundError)? {
                     Some(account_info) => {
                         // Found in DB, cache it
-                        self.overlay
-                            .insert(key, TableValue::Basic(account_info.clone()));
+                        self.insert_with_touch(&key, TableValue::Basic(account_info.clone()));
                         Ok(Some(account_info)) // Return the found info
                     }
                     None => {
@@ -548,8 +674,14 @@ impl<Db: DatabaseRef> Database for OverlayDb<Db> {
     fn code_by_hash(&mut self, code_hash: B256) -> Result<Bytecode, Self::Error> {
         let key = TableKey::CodeByHash(code_hash);
         if let Some(value) = self.overlay.get(&key) {
-            // Found in cache
-            return Ok(value.as_code_by_hash().cloned().unwrap()); // unwrap safe, Clone Bytecode
+            let bytecode = value.as_code_by_hash().cloned();
+            drop(value);
+            if let Some(bytecode) = bytecode {
+                // Found in cache
+                self.touch_key(&key);
+                return Ok(bytecode);
+            }
+            self.overlay.remove(&key);
         }
 
         // Not in cache, try underlying DB
@@ -559,8 +691,7 @@ impl<Db: DatabaseRef> Database for OverlayDb<Db> {
                 // Map error if needed
                 let bytecode = db.code_by_hash_ref(code_hash).map_err(|_| NotFoundError)?;
                 // Found in DB, cache it
-                self.overlay
-                    .insert(key, TableValue::CodeByHash(bytecode.clone()));
+                self.insert_with_touch(&key, TableValue::CodeByHash(bytecode.clone()));
                 Ok(bytecode)
             }
             None => {
@@ -577,8 +708,14 @@ impl<Db: DatabaseRef> Database for OverlayDb<Db> {
     fn block_hash(&mut self, number: u64) -> Result<B256, Self::Error> {
         let key = TableKey::BlockHash(number);
         if let Some(value) = self.overlay.get(&key) {
-            // Found in cache
-            return Ok(*value.as_block_hash().unwrap()); // unwrap safe
+            let block_hash = value.as_block_hash().copied();
+            drop(value);
+            if let Some(block_hash) = block_hash {
+                // Found in cache
+                self.touch_key(&key);
+                return Ok(block_hash);
+            }
+            self.overlay.remove(&key);
         }
 
         // Not in cache, try underlying DB
@@ -587,7 +724,7 @@ impl<Db: DatabaseRef> Database for OverlayDb<Db> {
                 // Underlying DB returns Result<B256, Error>
                 let block_hash = db.block_hash_ref(number).map_err(|_| NotFoundError)?;
                 // Found in DB, cache it
-                self.overlay.insert(key, TableValue::BlockHash(block_hash));
+                self.insert_with_touch(&key, TableValue::BlockHash(block_hash));
                 Ok(block_hash)
             }
             None => {
@@ -1200,6 +1337,289 @@ mod overlay_db_tests {
 
         // Run pending tasks to ensure all entries are properly cached
         assert_eq!(overlay_db.cache_entry_count(), 5); // 2 accounts + 1 code + 2 storage maps
+    }
+
+    #[test]
+    fn test_block_indexed_fifo_eviction() {
+        let overlay_db: OverlayDb<MockDb> = OverlayDb::new(None);
+        overlay_db.set_max_committed_blocks(2);
+
+        overlay_db.set_current_block(U256::from(1));
+        overlay_db.store_block_hash(
+            1,
+            b256!("0100000000000000000000000000000000000000000000000000000000000001"),
+        );
+        assert_eq!(
+            overlay_db.commit_block(U256::from(1)),
+            OverlayEvictionOutcome::default()
+        );
+
+        overlay_db.set_current_block(U256::from(2));
+        overlay_db.store_block_hash(
+            2,
+            b256!("0200000000000000000000000000000000000000000000000000000000000002"),
+        );
+        assert_eq!(
+            overlay_db.commit_block(U256::from(2)),
+            OverlayEvictionOutcome::default()
+        );
+
+        overlay_db.set_current_block(U256::from(3));
+        overlay_db.store_block_hash(
+            3,
+            b256!("0300000000000000000000000000000000000000000000000000000000000003"),
+        );
+        let outcome = overlay_db.commit_block(U256::from(3));
+
+        assert_eq!(
+            outcome.min_required_synced_block,
+            Some(U256::from(1)),
+            "oldest committed block should define new sync floor"
+        );
+        assert!(!overlay_db.is_cached(&TableKey::BlockHash(1)));
+        assert!(overlay_db.is_cached(&TableKey::BlockHash(2)));
+        assert!(overlay_db.is_cached(&TableKey::BlockHash(3)));
+    }
+
+    #[test]
+    fn test_read_touch_keeps_hot_entries() {
+        let overlay_db: OverlayDb<MockDb> = OverlayDb::new(None);
+        overlay_db.set_max_committed_blocks(1);
+
+        overlay_db.set_current_block(U256::from(1));
+        let hash = b256!("0100000000000000000000000000000000000000000000000000000000000001");
+        overlay_db.store_block_hash(1, hash);
+        assert_eq!(
+            overlay_db.commit_block(U256::from(1)),
+            OverlayEvictionOutcome::default()
+        );
+
+        overlay_db.set_current_block(U256::from(2));
+        assert_eq!(
+            overlay_db.block_hash_ref(1).unwrap(),
+            hash,
+            "read should touch and move key to current block"
+        );
+        let outcome = overlay_db.commit_block(U256::from(2));
+        assert_eq!(
+            outcome.min_required_synced_block, None,
+            "no state should be evicted when key was read-touched in newer block"
+        );
+        assert!(overlay_db.is_cached(&TableKey::BlockHash(1)));
+
+        overlay_db.set_current_block(U256::from(3));
+        let outcome = overlay_db.commit_block(U256::from(3));
+        assert_eq!(outcome.min_required_synced_block, Some(U256::from(2)));
+        assert!(!overlay_db.is_cached(&TableKey::BlockHash(1)));
+    }
+
+    #[test]
+    fn test_write_touch_keeps_key_across_older_block_eviction() {
+        let overlay_db: OverlayDb<MockDb> = OverlayDb::new(None);
+        overlay_db.set_max_committed_blocks(1);
+
+        let hash_v1 = b256!("aa000000000000000000000000000000000000000000000000000000000000aa");
+        let hash_v2 = b256!("bb000000000000000000000000000000000000000000000000000000000000bb");
+
+        overlay_db.set_current_block(U256::from(1));
+        overlay_db.store_block_hash(1, hash_v1);
+        assert_eq!(
+            overlay_db.commit_block(U256::from(1)),
+            OverlayEvictionOutcome::default()
+        );
+
+        overlay_db.set_current_block(U256::from(2));
+        overlay_db.store_block_hash(1, hash_v2);
+        let outcome = overlay_db.commit_block(U256::from(2));
+        assert_eq!(
+            outcome.min_required_synced_block, None,
+            "block 1 eviction should skip key rewritten in block 2"
+        );
+        assert!(overlay_db.is_cached(&TableKey::BlockHash(1)));
+        assert_eq!(overlay_db.block_hash_ref(1).unwrap(), hash_v2);
+
+        overlay_db.set_current_block(U256::from(3));
+        let outcome = overlay_db.commit_block(U256::from(3));
+        assert_eq!(outcome.min_required_synced_block, Some(U256::from(2)));
+        assert!(!overlay_db.is_cached(&TableKey::BlockHash(1)));
+    }
+
+    #[test]
+    fn test_zero_window_evicts_immediately() {
+        let overlay_db: OverlayDb<MockDb> = OverlayDb::new(None);
+        overlay_db.set_max_committed_blocks(0);
+
+        overlay_db.set_current_block(U256::from(10));
+        overlay_db.store_block_hash(
+            10,
+            b256!("1000000000000000000000000000000000000000000000000000000000000010"),
+        );
+        let outcome = overlay_db.commit_block(U256::from(10));
+
+        assert_eq!(outcome.min_required_synced_block, Some(U256::from(10)));
+        assert!(!overlay_db.is_cached(&TableKey::BlockHash(10)));
+    }
+
+    #[test]
+    fn test_empty_commits_do_not_report_eviction_floor() {
+        let overlay_db: OverlayDb<MockDb> = OverlayDb::new(None);
+        overlay_db.set_max_committed_blocks(1);
+
+        overlay_db.set_current_block(U256::from(1));
+        assert_eq!(
+            overlay_db.commit_block(U256::from(1)),
+            OverlayEvictionOutcome::default()
+        );
+
+        overlay_db.set_current_block(U256::from(2));
+        assert_eq!(
+            overlay_db.commit_block(U256::from(2)),
+            OverlayEvictionOutcome::default(),
+            "evicting an empty block must not advance min required synced floor"
+        );
+    }
+
+    #[test]
+    fn test_mixed_keys_floor_only_advances_on_real_removal() {
+        let overlay_db: OverlayDb<MockDb> = OverlayDb::new(None);
+        overlay_db.set_max_committed_blocks(2);
+
+        let hash1 = b256!("0100000000000000000000000000000000000000000000000000000000000001");
+        let hash2 = b256!("0200000000000000000000000000000000000000000000000000000000000002");
+        let hash3 = b256!("0300000000000000000000000000000000000000000000000000000000000003");
+
+        overlay_db.set_current_block(U256::from(1));
+        overlay_db.store_block_hash(1, hash1);
+        assert_eq!(
+            overlay_db.commit_block(U256::from(1)),
+            OverlayEvictionOutcome::default()
+        );
+
+        overlay_db.set_current_block(U256::from(2));
+        overlay_db.store_block_hash(2, hash2);
+        assert_eq!(
+            overlay_db.commit_block(U256::from(2)),
+            OverlayEvictionOutcome::default()
+        );
+
+        overlay_db.set_current_block(U256::from(3));
+        assert_eq!(
+            overlay_db.block_hash_ref(1).unwrap(),
+            hash1,
+            "read touch in block 3 should preserve key from block 1"
+        );
+        overlay_db.store_block_hash(3, hash3);
+        let outcome = overlay_db.commit_block(U256::from(3));
+        assert_eq!(outcome.min_required_synced_block, None);
+        assert!(overlay_db.is_cached(&TableKey::BlockHash(1)));
+        assert!(overlay_db.is_cached(&TableKey::BlockHash(2)));
+        assert!(overlay_db.is_cached(&TableKey::BlockHash(3)));
+
+        overlay_db.set_current_block(U256::from(4));
+        let outcome = overlay_db.commit_block(U256::from(4));
+        assert_eq!(
+            outcome.min_required_synced_block,
+            Some(U256::from(2)),
+            "block 2 should be the next real eviction floor"
+        );
+        assert!(overlay_db.is_cached(&TableKey::BlockHash(1)));
+        assert!(!overlay_db.is_cached(&TableKey::BlockHash(2)));
+        assert!(overlay_db.is_cached(&TableKey::BlockHash(3)));
+    }
+
+    #[test]
+    fn test_active_overlay_read_refreshes_last_touched() {
+        let overlay_db: OverlayDb<MockDb> = OverlayDb::new(None);
+        overlay_db.set_max_committed_blocks(1);
+
+        overlay_db.set_current_block(U256::from(1));
+        let hash = b256!("1100000000000000000000000000000000000000000000000000000000000011");
+        overlay_db.store_block_hash(1, hash);
+        assert_eq!(
+            overlay_db.commit_block(U256::from(1)),
+            OverlayEvictionOutcome::default()
+        );
+
+        overlay_db.set_current_block(U256::from(2));
+        let active_db = Arc::new(UnsafeCell::new(MockDb::new()));
+        let active_overlay = overlay_db.create_overlay(active_db);
+        assert_eq!(active_overlay.block_hash_ref(1).unwrap(), hash);
+        assert_eq!(
+            overlay_db.commit_block(U256::from(2)),
+            OverlayEvictionOutcome::default()
+        );
+        assert!(overlay_db.is_cached(&TableKey::BlockHash(1)));
+
+        overlay_db.set_current_block(U256::from(3));
+        let outcome = overlay_db.commit_block(U256::from(3));
+        assert_eq!(outcome.min_required_synced_block, Some(U256::from(2)));
+        assert!(!overlay_db.is_cached(&TableKey::BlockHash(1)));
+    }
+
+    #[test]
+    fn test_invalidate_all_preserves_retention_window() {
+        let overlay_db: OverlayDb<MockDb> = OverlayDb::new(None);
+        overlay_db.set_max_committed_blocks(1);
+
+        overlay_db.set_current_block(U256::from(1));
+        overlay_db.store_block_hash(
+            1,
+            b256!("0100000000000000000000000000000000000000000000000000000000000001"),
+        );
+        assert_eq!(
+            overlay_db.commit_block(U256::from(1)),
+            OverlayEvictionOutcome::default()
+        );
+
+        overlay_db.invalidate_all();
+
+        overlay_db.set_current_block(U256::from(2));
+        overlay_db.store_block_hash(
+            2,
+            b256!("0200000000000000000000000000000000000000000000000000000000000002"),
+        );
+        assert_eq!(
+            overlay_db.commit_block(U256::from(2)),
+            OverlayEvictionOutcome::default()
+        );
+
+        overlay_db.set_current_block(U256::from(3));
+        overlay_db.store_block_hash(
+            3,
+            b256!("0300000000000000000000000000000000000000000000000000000000000003"),
+        );
+        let outcome = overlay_db.commit_block(U256::from(3));
+        assert_eq!(
+            outcome.min_required_synced_block,
+            Some(U256::from(2)),
+            "retention window must remain active after invalidate_all"
+        );
+    }
+
+    #[test]
+    fn test_set_current_block_without_commit_keeps_entries_evictable() {
+        let overlay_db: OverlayDb<MockDb> = OverlayDb::new(None);
+        overlay_db.set_max_committed_blocks(1);
+
+        overlay_db.set_current_block(U256::from(1));
+        overlay_db.store_block_hash(
+            1,
+            b256!("0100000000000000000000000000000000000000000000000000000000000001"),
+        );
+        assert!(overlay_db.is_cached(&TableKey::BlockHash(1)));
+
+        // Move to next block without explicit commit for block 1.
+        // The touched set should be carried as a delta, not destructively dropped.
+        overlay_db.set_current_block(U256::from(2));
+        assert!(overlay_db.is_cached(&TableKey::BlockHash(1)));
+
+        overlay_db.store_block_hash(
+            2,
+            b256!("0200000000000000000000000000000000000000000000000000000000000002"),
+        );
+        let outcome = overlay_db.commit_block(U256::from(2));
+        assert_eq!(outcome.min_required_synced_block, Some(U256::from(1)));
+        assert!(!overlay_db.is_cached(&TableKey::BlockHash(1)));
     }
 
     #[test]

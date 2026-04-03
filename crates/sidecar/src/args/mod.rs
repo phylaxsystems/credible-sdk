@@ -182,6 +182,8 @@ pub struct CredibleConfigFile {
     pub assertion_gas_limit: Option<u64>,
     /// Whether the overlay cache has to be invalidated every block
     pub overlay_cache_invalidation_every_block: Option<bool>,
+    /// Number of committed blocks to retain in the in-memory overlay cache.
+    pub overlay_cache_retention_blocks: Option<u64>,
     /// Sled cache capacity, used in the `FsDb`, 256mb default
     pub cache_capacity_bytes: Option<usize>,
     /// How often in ms will the `FsDb` be flushed to disk, 5 sec default
@@ -234,6 +236,8 @@ pub struct CredibleConfig {
     pub assertion_gas_limit: u64,
     /// Whether the overlay cache has to be invalidated every block
     pub overlay_cache_invalidation_every_block: Option<bool>,
+    /// Number of committed blocks to retain in the in-memory overlay cache.
+    pub overlay_cache_retention_blocks: Option<u64>,
     /// Sled cache capacity, used in the `FsDb`, 256mb default
     pub cache_capacity_bytes: Option<usize>,
     /// How often in ms will the `FsDb` be flushed to disk, 5 sec default
@@ -416,6 +420,7 @@ fn resolve_credible(credible_file: &CredibleConfigFile) -> Result<CredibleConfig
     Ok(CredibleConfig {
         assertion_gas_limit: required.assertion_gas_limit,
         overlay_cache_invalidation_every_block: optional.overlay_cache_invalidation_every_block,
+        overlay_cache_retention_blocks: optional.overlay_cache_retention_blocks,
         cache_capacity_bytes: optional.cache_capacity_bytes,
         flush_every_ms: optional.flush_every_ms,
         assertion_da_rpc_url: required.assertion_da_rpc_url,
@@ -513,6 +518,7 @@ struct CredibleRequired {
 
 struct CredibleOptional {
     overlay_cache_invalidation_every_block: Option<bool>,
+    overlay_cache_retention_blocks: Option<u64>,
     cache_capacity_bytes: Option<usize>,
     flush_every_ms: Option<usize>,
     poll_interval: Duration,
@@ -588,6 +594,10 @@ fn resolve_credible_optional(
         overlay_cache_invalidation_every_block: optional_or_env(
             credible_file.overlay_cache_invalidation_every_block,
             "SIDECAR_OVERLAY_CACHE_INVALIDATION_EVERY_BLOCK",
+        )?,
+        overlay_cache_retention_blocks: optional_or_env(
+            credible_file.overlay_cache_retention_blocks,
+            "SIDECAR_OVERLAY_CACHE_RETENTION_BLOCKS",
         )?,
         cache_capacity_bytes: optional_or_env(
             credible_file.cache_capacity_bytes,

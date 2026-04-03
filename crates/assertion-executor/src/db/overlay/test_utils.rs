@@ -16,7 +16,6 @@ use crate::{
     },
 };
 use alloy_primitives::KECCAK256_EMPTY;
-use dashmap::DashMap;
 use revm::database::InMemoryDB;
 use std::{
     collections::HashMap,
@@ -29,10 +28,7 @@ use std::{
 impl<Db> OverlayDb<Db> {
     #[must_use]
     pub fn new_test() -> OverlayDb<InMemoryDB> {
-        OverlayDb {
-            underlying_db: Some(Arc::new(InMemoryDB::default())),
-            overlay: Arc::new(DashMap::new()),
-        }
+        OverlayDb::new(Some(Arc::new(InMemoryDB::default())))
     }
 }
 
