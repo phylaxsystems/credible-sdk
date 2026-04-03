@@ -5,6 +5,7 @@
 
 use crate::{
     connect_provider,
+    coordination::FlushControl,
     genesis::GenesisState,
     integration_tests::mdbx_fixture::MdbxTestDir,
     state,
@@ -20,8 +21,11 @@ use mdbx::{
     AddressHash,
     Reader,
 };
-use std::time::Duration;
-use tokio::sync::broadcast;
+use std::{
+    sync::Arc,
+    time::Duration,
+};
+use tokio_util::sync::CancellationToken;
 use tracing::error;
 
 /// Unified test instance for MDBX-backed integration tests.
@@ -43,18 +47,18 @@ impl TestInstance {
     }
 
     pub async fn new_mdbx() -> Result<Self, String> {
-        Self::new_mdbx_internal(|_| {}, None).await
+        Self::new_mdbx_internal(|_| {}, None, None, 3, Some(0)).await
     }
 
     pub async fn new_mdbx_with_setup<F>(setup: F) -> Result<Self, String>
     where
         F: FnOnce(&DualProtocolMockServer),
     {
-        Self::new_mdbx_internal(setup, None).await
+        Self::new_mdbx_internal(setup, None, None, 3, Some(0)).await
     }
 
     pub async fn new_mdbx_with_genesis(genesis: GenesisState) -> Result<Self, String> {
-        Self::new_mdbx_internal(|_| {}, Some(genesis)).await
+        Self::new_mdbx_internal(|_| {}, Some(genesis), None, 3, Some(0)).await
     }
 
     pub async fn new_mdbx_with_setup_and_genesis<F>(
@@ -64,12 +68,34 @@ impl TestInstance {
     where
         F: FnOnce(&DualProtocolMockServer),
     {
-        Self::new_mdbx_internal(setup, genesis).await
+        Self::new_mdbx_internal(setup, genesis, None, 3, Some(0)).await
+    }
+
+    pub async fn new_mdbx_with_flush_control<F>(
+        setup: F,
+        flush_control: Arc<FlushControl>,
+        buffer_capacity: usize,
+        start_override: Option<u64>,
+    ) -> Result<Self, String>
+    where
+        F: FnOnce(&DualProtocolMockServer),
+    {
+        Self::new_mdbx_internal(
+            setup,
+            None,
+            Some(flush_control),
+            buffer_capacity,
+            start_override,
+        )
+        .await
     }
 
     async fn new_mdbx_internal<F>(
         setup: F,
         genesis_state: Option<GenesisState>,
+        flush_control: Option<Arc<FlushControl>>,
+        buffer_capacity: usize,
+        start_override: Option<u64>,
     ) -> Result<Self, String>
     where
         F: FnOnce(&DualProtocolMockServer),
@@ -123,10 +149,12 @@ impl TestInstance {
             writer_reader,
             genesis_state,
             system_calls,
+            flush_control,
+            buffer_capacity,
         );
-        let (shutdown_tx, _) = broadcast::channel(1);
+        let shutdown = CancellationToken::new();
         let handle_worker = tokio::spawn(async move {
-            if let Err(e) = worker.run(Some(0), None, shutdown_tx.subscribe()).await {
+            if let Err(e) = worker.run(start_override, None, shutdown.clone()).await {
                 error!("worker server error: {}", e);
             }
         });

@@ -89,7 +89,7 @@ pub async fn init_indexer_config(
     da_client: DaClient,
 ) -> Result<IndexerCfg<GraphqlEventSource>, EventSourceError> {
     let event_source = GraphqlEventSource::new(GraphqlEventSourceConfig {
-        graphql_url: config.credible.event_source_url.clone(),
+        graphql_url: config.credible.event_source_url.to_string(),
     });
 
     let poll_interval = config.credible.poll_interval;

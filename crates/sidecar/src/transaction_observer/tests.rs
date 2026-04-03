@@ -858,8 +858,14 @@ async fn observer_posts_invalidating_transaction_from_local_instance() {
         tx_hash_fail,
         1,
     );
-    instance.wait_for_processed(&tx_execution_id_pass).await;
-    instance.wait_for_processed(&tx_execution_id_fail).await;
+    instance
+        .wait_for_processed(&tx_execution_id_pass)
+        .await
+        .expect("wait for processed tx pass");
+    instance
+        .wait_for_processed(&tx_execution_id_fail)
+        .await
+        .expect("wait for processed tx fail");
     let pass_invalid = instance
         .is_transaction_invalid(&tx_execution_id_pass)
         .await

@@ -106,7 +106,11 @@ use tracing::{
 };
 
 mod grpc_encode {
-    use super::*;
+    use super::{
+        Address,
+        B256,
+        U256,
+    };
 
     #[inline]
     pub fn address(addr: Address) -> Vec<u8> {
@@ -173,7 +177,7 @@ fn setup_assertion_store() -> Arc<AssertionStore> {
             COUNTER_ADDRESS,
             AssertionState::new_test(&assertion_bytecode),
         )
-        .unwrap();
+        .expect("failed to insert counter assertion into the test assertion store");
 
     assertion_store
 }
@@ -205,22 +209,22 @@ impl CommonSetup {
     ) -> Result<Self, String> {
         let eth_rpc_source_http_mock = DualProtocolMockServer::new()
             .await
-            .expect("Failed to create eth rpc source mock");
+            .map_err(|err| format!("failed to create eth rpc source mock: {err}"))?;
         let fallback_eth_rpc_source_http_mock = DualProtocolMockServer::new()
             .await
-            .expect("Failed to create eth rpc source mock");
+            .map_err(|err| format!("failed to create eth rpc source mock: {err}"))?;
         let eth_rpc_source_db: Arc<dyn Source> = EthRpcSource::try_build(
             eth_rpc_source_http_mock.ws_url(),
             eth_rpc_source_http_mock.http_url(),
         )
         .await
-        .expect("Failed to create eth rpc source mock");
+        .map_err(|err| format!("failed to create eth rpc source mock: {err}"))?;
         let fallback_eth_rpc_source_db: Arc<dyn Source> = EthRpcSource::try_build(
             fallback_eth_rpc_source_http_mock.ws_url(),
             fallback_eth_rpc_source_http_mock.http_url(),
         )
         .await
-        .expect("Failed to create eth rpc source mock");
+        .map_err(|err| format!("failed to create eth rpc source mock: {err}"))?;
         let sources = vec![eth_rpc_source_db, fallback_eth_rpc_source_db];
         let cache = Arc::new(Sources::new(sources.clone(), 10));
         let mut underlying_db = revm::database::CacheDB::new(cache.clone());
@@ -257,10 +261,13 @@ impl CommonSetup {
         &self,
         transport_rx: TransactionQueueReceiver,
         incident_sender: Option<IncidentReportSender>,
-    ) -> (
-        EngineThreadHandle,
-        std::thread::JoinHandle<Result<(), EventSequencingError>>,
-    ) {
+    ) -> Result<
+        (
+            EngineThreadHandle,
+            std::thread::JoinHandle<Result<(), EventSequencingError>>,
+        ),
+        String,
+    > {
         let (event_sequencing_tx_sender, core_engine_tx_receiver) = flume::unbounded();
 
         let state = OverlayDb::new(Some(self.underlying_db.clone()));
@@ -280,6 +287,7 @@ impl CommonSetup {
                 overlay_cache_invalidation_every_block: false,
                 overlay_cache_retention_blocks: 10,
                 incident_sender,
+                state_worker_flush_control: None,
                 #[cfg(feature = "cache_validation")]
                 provider_ws_url: Some(self.eth_rpc_source_http_mock.ws_url()),
             },
@@ -291,16 +299,16 @@ impl CommonSetup {
         let shutdown = Arc::new(AtomicBool::new(false));
         let (engine_handle, _engine_exit_rx) = engine
             .spawn(shutdown.clone())
-            .expect("failed to spawn engine thread");
+            .map_err(|err| format!("failed to spawn engine thread: {err}"))?;
         let engine_handle = EngineThreadHandle::new(engine_handle, shutdown);
 
         let event_sequencing = EventSequencing::new(transport_rx, event_sequencing_tx_sender);
         let sequencing_shutdown = Arc::new(AtomicBool::new(false));
         let (sequencing_handle, _sequencing_exit_rx) = event_sequencing
             .spawn(sequencing_shutdown)
-            .expect("failed to spawn event sequencing thread");
+            .map_err(|err| format!("failed to spawn event sequencing thread: {err}"))?;
 
-        (engine_handle, sequencing_handle)
+        Ok((engine_handle, sequencing_handle))
     }
 }
 
@@ -335,7 +343,7 @@ impl LocalInstanceMockDriver {
 
         let (engine_handle, _sequencing_handle) = setup
             .spawn_engine_with_sequencing(event_sequencing_tx_receiver, incident_sender)
-            .await;
+            .await?;
 
         let transport =
             MockTransport::with_receiver(transport_tx_sender, mock_rx, setup.state_results.clone());
@@ -834,7 +842,7 @@ impl LocalInstanceGrpcDriver {
         let (transport_tx_sender, event_sequencing_tx_receiver) = flume::unbounded();
         let (engine_handle, _sequencing_handle) = setup
             .spawn_engine_with_sequencing(event_sequencing_tx_receiver, incident_sender)
-            .await;
+            .await?;
 
         let address = Self::bind_local_address().await?;
         let config = Self::build_grpc_config(address, setup.event_id_buffer_capacity);
