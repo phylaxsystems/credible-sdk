@@ -48,8 +48,14 @@ jobs:
           fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
+  build-base-image:
+    uses: ./.github/workflows/docker-ghcr-push-base.yaml
+    permissions:
+      packages: write
+      contents: read
+
   docker-ghcr-push-assertion-da:
-    needs: get-version
+    needs: [get-version, build-base-image]
     uses: phylaxsystems/actions/.github/workflows/release-docker-ghcr.yaml@main
     with:
       rust-binary-name: assertion-da
@@ -58,7 +64,7 @@ jobs:
       version-tag: ${{ needs.get-version.outputs.version }}
 
   docker-ghcr-push-assertion-da-dev:
-    needs: get-version
+    needs: [get-version, build-base-image]
     uses: phylaxsystems/actions/.github/workflows/release-docker-ghcr.yaml@main
     with:
       rust-binary-name: assertion-da-dev
@@ -68,7 +74,7 @@ jobs:
       version-tag: ${{ needs.get-version.outputs.version }}
 
   docker-ghcr-push-sidecar:
-    needs: get-version
+    needs: [get-version, build-base-image]
     uses: phylaxsystems/actions/.github/workflows/release-docker-ghcr.yaml@main
     with:
       rust-binary-name: sidecar
@@ -77,7 +83,7 @@ jobs:
       version-tag: ${{ needs.get-version.outputs.version }}
 
   docker-ghcr-push-sidecar-dhat:
-    needs: get-version
+    needs: [get-version, build-base-image]
     uses: phylaxsystems/actions/.github/workflows/release-docker-ghcr.yaml@main
     with:
       rust-binary-name: sidecar-debug
@@ -87,7 +93,7 @@ jobs:
       version-tag: ${{ needs.get-version.outputs.version }}
 
   docker-ghcr-push-shadow-driver:
-    needs: get-version
+    needs: [get-version, build-base-image]
     uses: phylaxsystems/actions/.github/workflows/release-docker-ghcr.yaml@main
     with:
       rust-binary-name: shadow-driver
@@ -96,7 +102,7 @@ jobs:
       version-tag: ${{ needs.get-version.outputs.version }}
 
   docker-ghcr-push-state-worker:
-    needs: get-version
+    needs: [get-version, build-base-image]
     uses: phylaxsystems/actions/.github/workflows/release-docker-ghcr.yaml@main
     with:
       rust-binary-name: state-worker
@@ -105,7 +111,7 @@ jobs:
       version-tag: ${{ needs.get-version.outputs.version }}
 
   docker-ghcr-push-state-checker:
-    needs: get-version
+    needs: [get-version, build-base-image]
     uses: phylaxsystems/actions/.github/workflows/release-docker-ghcr.yaml@main
     with:
       rust-binary-name: state-checker
@@ -114,7 +120,7 @@ jobs:
       version-tag: ${{ needs.get-version.outputs.version }}
 
   docker-ghcr-push-verifier-service:
-    needs: get-version
+    needs: [get-version, build-base-image]
     uses: phylaxsystems/actions/.github/workflows/release-docker-ghcr.yaml@main
     with:
       rust-binary-name: verifier-service
