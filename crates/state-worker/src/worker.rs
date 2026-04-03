@@ -374,7 +374,7 @@ where
             .provider
             .get_block_by_number(block_number.into())
             .await?
-            .context(format!("block {block_number} not found"))?;
+            .with_context(|| format!("block {block_number} not found"))?;
 
         // Get parent block hash (current block's parent_hash field)
         let parent_block_hash = if block_number > 0 {
