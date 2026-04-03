@@ -10,33 +10,78 @@
 
 use super::AccountSnapshot;
 use alloy::primitives::{
+    Address,
+    B256,
+    Bytes,
     U256,
     keccak256,
-};
-use alloy_rpc_types_trace::geth::{
-    GethTrace,
-    PreStateFrame,
-    TraceResult,
 };
 use anyhow::anyhow;
 use mdbx::{
     AccountState,
     AddressHash,
 };
-use std::collections::HashMap;
+use serde::Deserialize;
+use std::collections::{
+    BTreeMap,
+    HashMap,
+};
 
-pub fn process_geth_traces(traces: Vec<TraceResult>) -> anyhow::Result<Vec<AccountState>> {
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(untagged)]
+pub enum RawTraceResult {
+    Success {
+        result: RawPreStateFrame,
+        #[serde(rename = "txHash")]
+        tx_hash: Option<B256>,
+    },
+    Error {
+        error: String,
+        #[serde(rename = "txHash")]
+        tx_hash: Option<B256>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(untagged)]
+pub enum RawPreStateFrame {
+    Default(RawPreStateMode),
+    Diff(RawDiffMode),
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+pub struct RawPreStateMode(pub BTreeMap<Address, RawAccountState>);
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawDiffMode {
+    pub post: BTreeMap<Address, RawAccountState>,
+    pub pre: BTreeMap<Address, RawAccountState>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+pub struct RawAccountState {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub balance: Option<U256>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<Bytes>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nonce: Option<u64>,
+    #[serde(default, rename = "codeHash", skip_serializing_if = "Option::is_none")]
+    pub code_hash: Option<B256>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub storage: BTreeMap<B256, B256>,
+}
+
+pub fn process_geth_traces(traces: Vec<RawTraceResult>) -> anyhow::Result<Vec<AccountState>> {
     let mut accounts: HashMap<AddressHash, AccountSnapshot> = HashMap::new();
 
     for trace in traces {
         match trace {
-            TraceResult::Success {
-                result: GethTrace::PreStateTracer(frame),
-                ..
-            } => {
-                process_frame(&mut accounts, frame);
+            RawTraceResult::Success { result, .. } => {
+                process_frame(&mut accounts, result);
             }
-            TraceResult::Success { tx_hash, .. } | TraceResult::Error { tx_hash, .. } => {
+            RawTraceResult::Error { tx_hash, .. } => {
                 return Err(anyhow!(
                     "trace failed or unexpected tracer type (tx: {tx_hash:?})"
                 ));
@@ -50,9 +95,9 @@ pub fn process_geth_traces(traces: Vec<TraceResult>) -> anyhow::Result<Vec<Accou
         .collect())
 }
 
-fn process_frame(accounts: &mut HashMap<AddressHash, AccountSnapshot>, frame: PreStateFrame) {
+fn process_frame(accounts: &mut HashMap<AddressHash, AccountSnapshot>, frame: RawPreStateFrame) {
     match frame {
-        PreStateFrame::Default(prestate_mode) => {
+        RawPreStateFrame::Default(prestate_mode) => {
             for (address, account_state) in prestate_mode.0 {
                 let snapshot = accounts.entry(address.into()).or_default();
 
@@ -68,10 +113,10 @@ fn process_frame(accounts: &mut HashMap<AddressHash, AccountSnapshot>, frame: Pr
 
                 if let Some(code) = account_state.code {
                     snapshot.code = Some(code);
+                    snapshot.code_cleared = false;
                     snapshot.touched = true;
                 }
 
-                // Hash storage slots
                 for (slot, value) in &account_state.storage {
                     let slot_hash = keccak256(slot.0);
                     let value_u256 = U256::from_be_bytes((*value).into());
@@ -80,16 +125,13 @@ fn process_frame(accounts: &mut HashMap<AddressHash, AccountSnapshot>, frame: Pr
                 }
             }
         }
-        PreStateFrame::Diff(diff) => {
+        RawPreStateFrame::Diff(diff) => {
             process_diff_frame(accounts, &diff);
         }
     }
 }
 
-fn process_diff_frame(
-    accounts: &mut HashMap<AddressHash, AccountSnapshot>,
-    diff: &alloy_rpc_types_trace::geth::DiffMode,
-) {
+fn process_diff_frame(accounts: &mut HashMap<AddressHash, AccountSnapshot>, diff: &RawDiffMode) {
     // Process pre-state first as baseline for ACCOUNT FIELDS (balance, nonce, code).
     // These are properties of the account that persist if unchanged.
     //
@@ -131,6 +173,7 @@ fn process_diff_frame(
         if !diff.post.contains_key(address) {
             let snapshot = accounts.entry((*address).into()).or_default();
             snapshot.deleted = true;
+            snapshot.code_cleared = false;
             snapshot.touched = true;
             snapshot.balance = None;
             snapshot.nonce = None;
@@ -155,6 +198,20 @@ fn process_diff_frame(
 
         if let Some(code) = &account.code {
             snapshot.code = Some(code.clone());
+            snapshot.code_cleared = false;
+        } else if matches!(
+            account.code_hash,
+            Some(B256::ZERO | revm::primitives::KECCAK_EMPTY)
+        ) {
+            // Geth prestateTracer can encode EIP-7702 revocation either as
+            // post.codeHash = 0x0 or as post.code = 0x with post.codeHash set to
+            // the empty-code hash, while keeping the account in post-state with
+            // updated nonce/balance.
+
+            // The post.codeHash = 0x0 is a bug in Geth. Revert the check for 0x0 once this issue
+            // https://github.com/ethereum/go-ethereum/issues/34648 is resolved
+            snapshot.code = None;
+            snapshot.code_cleared = true;
         }
 
         // Storage from post contains NEW values of changed slots
@@ -177,19 +234,56 @@ mod tests {
     use alloy_rpc_types_trace::geth::{
         AccountState as GethAccountState,
         DiffMode,
-        GethTrace,
         PreStateFrame,
     };
     use anyhow::{
         Context,
         Result,
     };
+    use serde_json::json;
     use std::collections::BTreeMap;
 
-    fn make_trace_result(frame: PreStateFrame) -> TraceResult {
-        TraceResult::Success {
-            result: GethTrace::PreStateTracer(frame),
+    fn make_trace_result(frame: PreStateFrame) -> RawTraceResult {
+        RawTraceResult::Success {
+            result: raw_frame_from_typed(frame),
             tx_hash: None,
+        }
+    }
+
+    fn raw_frame_from_typed(frame: PreStateFrame) -> RawPreStateFrame {
+        match frame {
+            PreStateFrame::Default(mode) => {
+                RawPreStateFrame::Default(RawPreStateMode(
+                    mode.0
+                        .into_iter()
+                        .map(|(address, account)| (address, raw_account_from_typed(account)))
+                        .collect(),
+                ))
+            }
+            PreStateFrame::Diff(diff) => {
+                RawPreStateFrame::Diff(RawDiffMode {
+                    pre: diff
+                        .pre
+                        .into_iter()
+                        .map(|(address, account)| (address, raw_account_from_typed(account)))
+                        .collect(),
+                    post: diff
+                        .post
+                        .into_iter()
+                        .map(|(address, account)| (address, raw_account_from_typed(account)))
+                        .collect(),
+                })
+            }
+        }
+    }
+
+    fn raw_account_from_typed(account: GethAccountState) -> RawAccountState {
+        RawAccountState {
+            balance: account.balance,
+            code: account.code,
+            nonce: account.nonce,
+            code_hash: None,
+            storage: account.storage,
         }
     }
 
@@ -848,6 +942,103 @@ mod tests {
         let account = results.first().context("expected one account result")?;
         assert_eq!(account.code, Some(new_code.clone()));
         assert_eq!(account.code_hash, keccak256(&new_code));
+        assert!(!account.deleted);
+        Ok(())
+    }
+
+    #[test]
+    fn test_eip7702_revocation_trace_clears_delegation_code() -> Result<()> {
+        let authority = Address::from_slice(
+            &hex::decode("7ec0e5a95169d31d6fa7d44e3308872e090c5bd1")
+                .context("authority hex should decode")?,
+        );
+        let old_code = Bytes::from(
+            hex::decode("ef0100d313d93607c016a85e63e557a11ca5ab0b53ad83")
+                .context("delegation code hex should decode")?,
+        );
+
+        let trace_json = json!([
+            {
+                "txHash": "0xd2f0012ecbcb7c50ea5415c94268c08bf951d7714209437458d6e6436ab0cd0c",
+                "result": {
+                    "pre": {
+                        format!("{authority:#x}"): {
+                            "balance": "0x0",
+                            "nonce": 1,
+                            "code": format!("0x{}", hex::encode(old_code.as_ref())),
+                            "codeHash": "0x9eea9f41ed2b35e6234d1e1c14e88c1136f85d56ed1f32a7efc0096d998dad3d"
+                        }
+                    },
+                    "post": {
+                        format!("{authority:#x}"): {
+                            "nonce": 2,
+                            "codeHash": "0x0000000000000000000000000000000000000000000000000000000000000000"
+                        }
+                    }
+                }
+            }
+        ]);
+
+        let traces: Vec<RawTraceResult> =
+            serde_json::from_value(trace_json).context("trace json should deserialize")?;
+
+        let results = process_geth_traces(traces)?;
+        assert_eq!(results.len(), 1);
+
+        let account = results.first().context("expected one account result")?;
+        assert_eq!(account.nonce, 2);
+        assert_eq!(account.balance, U256::ZERO);
+        assert_eq!(account.code, None);
+        assert_eq!(account.code_hash, revm::primitives::KECCAK_EMPTY);
+        assert!(!account.deleted);
+        Ok(())
+    }
+
+    #[test]
+    fn test_eip7702_revocation_trace_empty_code_hash_clears_delegation_code() -> Result<()> {
+        let authority = Address::from_slice(
+            &hex::decode("7ec0e5a95169d31d6fa7d44e3308872e090c5bd1")
+                .context("authority hex should decode")?,
+        );
+        let old_code = Bytes::from(
+            hex::decode("ef0100d313d93607c016a85e63e557a11ca5ab0b53ad83")
+                .context("delegation code hex should decode")?,
+        );
+
+        let trace_json = json!([
+            {
+                "txHash": "0xd2f0012ecbcb7c50ea5415c94268c08bf951d7714209437458d6e6436ab0cd0c",
+                "result": {
+                    "pre": {
+                        format!("{authority:#x}"): {
+                            "balance": "0x0",
+                            "nonce": 1,
+                            "code": format!("0x{}", hex::encode(old_code.as_ref())),
+                            "codeHash": "0x9eea9f41ed2b35e6234d1e1c14e88c1136f85d56ed1f32a7efc0096d998dad3d"
+                        }
+                    },
+                    "post": {
+                        format!("{authority:#x}"): {
+                            "nonce": 2,
+                            "code": "0x",
+                            "codeHash": format!("{:#x}", revm::primitives::KECCAK_EMPTY)
+                        }
+                    }
+                }
+            }
+        ]);
+
+        let traces: Vec<RawTraceResult> =
+            serde_json::from_value(trace_json).context("trace json should deserialize")?;
+
+        let results = process_geth_traces(traces)?;
+        assert_eq!(results.len(), 1);
+
+        let account = results.first().context("expected one account result")?;
+        assert_eq!(account.nonce, 2);
+        assert_eq!(account.balance, U256::ZERO);
+        assert_eq!(account.code, None);
+        assert_eq!(account.code_hash, revm::primitives::KECCAK_EMPTY);
         assert!(!account.deleted);
         Ok(())
     }

@@ -59,6 +59,7 @@ pub(crate) struct AccountSnapshot {
     pub(crate) balance: Option<U256>,
     pub(crate) nonce: Option<u64>,
     pub(crate) code: Option<Bytes>,
+    pub(crate) code_cleared: bool,
     pub(crate) storage_updates: HashMap<B256, U256>,
     pub(crate) touched: bool,
     pub(crate) deleted: bool,
@@ -79,6 +80,18 @@ impl AccountSnapshot {
                 code: None,
                 storage: HashMap::new(),
                 deleted: true,
+            });
+        }
+
+        if self.code_cleared {
+            return Some(AccountState {
+                address_hash: address,
+                balance: self.balance.unwrap_or_default(),
+                nonce: self.nonce.unwrap_or_default(),
+                code_hash: KECCAK_EMPTY,
+                code: None,
+                storage: self.storage_updates,
+                deleted: false,
             });
         }
 
@@ -118,7 +131,7 @@ impl BlockStateUpdateBuilder {
         block_number: u64,
         block_hash: B256,
         state_root: B256,
-        traces: Vec<alloy_rpc_types_trace::geth::TraceResult>,
+        traces: Vec<geth::RawTraceResult>,
     ) -> Result<BlockStateUpdate> {
         let accounts =
             geth::process_geth_traces(traces).with_context(|| format!("block {block_number}"))?;
@@ -175,6 +188,7 @@ mod account_deletion_tests {
             balance: Some(U256::from(100)),
             nonce: Some(1),
             code: None,
+            code_cleared: false,
             storage_updates: HashMap::new(),
             touched: true,
             deleted: false,
@@ -199,6 +213,7 @@ mod account_deletion_tests {
             balance: Some(U256::from(100)),
             nonce: Some(1),
             code: Some(Bytes::from_iter(code)),
+            code_cleared: false,
             storage_updates: HashMap::new(),
             touched: true,
             deleted: false,
