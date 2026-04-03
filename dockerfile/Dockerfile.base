@@ -15,4 +15,4 @@ RUN rustup install nightly-2026-01-07 && \
 
 # Pre-warm the crates.io registry index so cargo chef cook
 # doesn't spend ~30-60s downloading it on every service build.
-RUN cargo search --limit 0
+RUN cargo search --limit 1
