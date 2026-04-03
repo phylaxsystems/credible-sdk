@@ -1,0 +1,18 @@
+# syntax=docker/dockerfile:1.6
+# Shared base image for all Rust service builds.
+# Contains: Rust nightly toolchain, cargo-chef, clang/LLVM.
+# Built and cached separately so individual service images skip the slow
+# toolchain-install step.
+
+FROM rustlang/rust:nightly
+
+RUN rustup install nightly-2026-01-07 && \
+    rustup default nightly-2026-01-07 && \
+    cargo install cargo-chef && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends libclang-dev clang && \
+    rm -rf /var/lib/apt/lists/*
+
+# Pre-warm the crates.io registry index so cargo chef cook
+# doesn't spend ~30-60s downloading it on every service build.
+RUN cargo search --limit 0
