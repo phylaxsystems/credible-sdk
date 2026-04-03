@@ -65,19 +65,6 @@ impl<Db> Clone for ActiveOverlay<Db> {
 }
 
 impl<Db> ActiveOverlay<Db> {
-    /// Creates a new `ActiveOverlay` given a `revm::DatabaseRef` and an `OverlayDb` cache.
-    pub fn new(
-        active_db: Arc<UnsafeCell<Db>>,
-        overlay: Arc<DashMap<TableKey, TableValue>>,
-    ) -> Self {
-        let last_touched = Arc::new(DashMap::new());
-        Self {
-            active_db,
-            eviction: EvictionTracker::new(overlay.clone(), last_touched),
-            overlay,
-        }
-    }
-
     pub(super) fn new_with_tracking(
         active_db: Arc<UnsafeCell<Db>>,
         overlay: Arc<DashMap<TableKey, TableValue>>,
@@ -280,8 +267,9 @@ impl<Db: Database> DatabaseRef for ActiveOverlay<Db> {
 /// use std::sync::Arc;
 ///
 /// let active_db = Arc::new(UnsafeCell::new(some_db));
-/// let cache = Cache::new(1024);
-/// let mut active_overlay = ActiveOverlay::new(active_db, cache);
+/// let cache = Arc::new(DashMap::new());
+/// // Use OverlayDb::create_overlay to get a properly tracked ActiveOverlay
+/// let mut active_overlay = overlay_db.create_overlay(active_db);
 ///
 /// // Commit state changes to the shared cache
 /// active_overlay.commit(state_changes);
@@ -484,6 +472,23 @@ mod active_overlay_tests {
     };
 
     use std::collections::HashMap;
+
+    impl<Db> ActiveOverlay<Db> {
+        /// Test-only constructor that creates an isolated `EvictionTracker`.
+        /// Production code should use `OverlayDb::create_overlay` which shares
+        /// the parent's tracker.
+        fn new(
+            active_db: Arc<UnsafeCell<Db>>,
+            overlay: Arc<DashMap<TableKey, TableValue>>,
+        ) -> Self {
+            let last_touched = Arc::new(DashMap::new());
+            Self {
+                active_db,
+                eviction: EvictionTracker::new(overlay.clone(), last_touched),
+                overlay,
+            }
+        }
+    }
 
     // Helper macro for accessing MockDb methods safely
     macro_rules! get_mock_db_field {
