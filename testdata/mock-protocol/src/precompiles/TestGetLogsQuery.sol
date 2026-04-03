@@ -83,6 +83,7 @@ contract TestGetLogsQuery is Assertion {
     }
 
     function testGetLogsQueryRejectsRevertedCallSnapshot() external view {
+        // `+ 2` lands on the inner `writeStorage(9)` call inside `writeStorageAndRevert(9)`.
         uint256 revertedCallId = _successfulNestedWriteId() + 2;
         bytes memory calldata_ = abi.encodeWithSignature(
             "getLogsQuery((address,bytes32),(uint8,uint256))",
